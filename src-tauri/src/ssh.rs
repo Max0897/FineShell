@@ -117,6 +117,11 @@ enum SessionCommand {
         response: SyncSender<Result<NetworkTraceResult, String>>,
     },
     Processes(SyncSender<Result<ServerProcessListResult, String>>),
+    SignalProcess {
+        pid: u32,
+        force: bool,
+        response: SyncSender<Result<(), String>>,
+    },
     Close,
 }
 
@@ -472,6 +477,14 @@ fn run_session(
                     let _ = response.send(monitor::collect_processes(&session));
                     active = true;
                 }
+                Ok(SessionCommand::SignalProcess {
+                    pid,
+                    force,
+                    response,
+                }) => {
+                    let _ = response.send(monitor::signal_process(&session, pid, force));
+                    active = true;
+                }
                 Ok(SessionCommand::Close) | Err(TryRecvError::Disconnected) => {
                     closing = true;
                     break;
@@ -793,6 +806,31 @@ pub(crate) async fn ssh_processes(
     })
     .await
     .map_err(|error| format!("进程采集任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn ssh_signal_process(
+    manager: State<'_, SshSessionManager>,
+    session_id: String,
+    pid: u32,
+    force: bool,
+) -> Result<(), String> {
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    manager.send(
+        &session_id,
+        SessionCommand::SignalProcess {
+            pid,
+            force,
+            response: response_sender,
+        },
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        response_receiver
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| format!("等待进程操作结果失败：{error}"))?
+    })
+    .await
+    .map_err(|error| format!("进程操作任务异常结束：{error}"))?
 }
 
 #[tauri::command]

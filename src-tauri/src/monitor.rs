@@ -608,13 +608,36 @@ pub(crate) fn collect_processes(session: &Session) -> Result<ServerProcessListRe
     Ok(parse_process_list(&output))
 }
 
+fn process_signal_command(pid: u32, force: bool) -> Result<String, String> {
+    if pid <= 1 {
+        return Err("不允许结束系统初始化进程".to_string());
+    }
+    let signal = if force { "KILL" } else { "TERM" };
+    Ok(format!("LC_ALL=C\nkill -{signal} {pid} 2>&1"))
+}
+
+pub(crate) fn signal_process(session: &Session, pid: u32, force: bool) -> Result<(), String> {
+    let command = process_signal_command(pid, force)?;
+    let signal = if force { "KILL" } else { "TERM" };
+    let (output, exit_status) = execute_remote_command(session, &command, "进程操作")?;
+    if exit_status == 0 {
+        return Ok(());
+    }
+    let detail = output.lines().last().unwrap_or_default().trim();
+    Err(if detail.is_empty() {
+        format!("向进程 {pid} 发送 {signal} 失败")
+    } else {
+        format!("向进程 {pid} 发送 {signal} 失败：{detail}")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         parse_monitor_output, parse_network_connections, parse_ping_output, parse_process_list,
-        parse_trace_output, validate_ping_target, NetworkConnection, NetworkConnectionsResult,
-        NetworkPingResult, NetworkRouteHop, NetworkTraceResult, ServerMonitorSnapshot,
-        ServerProcess, ServerProcessListResult,
+        parse_trace_output, process_signal_command, validate_ping_target, NetworkConnection,
+        NetworkConnectionsResult, NetworkPingResult, NetworkRouteHop, NetworkTraceResult,
+        ServerMonitorSnapshot, ServerProcess, ServerProcessListResult,
     };
 
     #[test]
@@ -855,5 +878,19 @@ rtt min/avg/max/mdev = 4.800/5.100/5.400/0.245 ms
                 truncated: true,
             }
         );
+    }
+
+    #[test]
+    fn builds_only_supported_process_signal_commands() {
+        assert_eq!(
+            process_signal_command(812, false).unwrap(),
+            "LC_ALL=C\nkill -TERM 812 2>&1"
+        );
+        assert_eq!(
+            process_signal_command(812, true).unwrap(),
+            "LC_ALL=C\nkill -KILL 812 2>&1"
+        );
+        assert!(process_signal_command(1, false).is_err());
+        assert!(process_signal_command(0, true).is_err());
     }
 }

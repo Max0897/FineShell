@@ -5,6 +5,8 @@ import {
   Drawer,
   Empty,
   Input,
+  Message,
+  Modal,
   Space,
   Switch,
   Table,
@@ -13,7 +15,11 @@ import {
   Typography,
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
-import { IconRefresh } from "@arco-design/web-react/icon";
+import {
+  IconRefresh,
+  IconStop,
+  IconThunderbolt,
+} from "@arco-design/web-react/icon";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ServerProcess,
@@ -66,6 +72,10 @@ function ServerProcessDrawer({
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
+  const [signalingProcess, setSignalingProcess] = useState<{
+    force: boolean;
+    pid: number;
+  } | null>(null);
   const loadingRef = useRef(false);
   const requestVersionRef = useRef(0);
 
@@ -103,6 +113,7 @@ function ServerProcessDrawer({
     setQuery("");
     setError(undefined);
     setLoading(false);
+    setSignalingProcess(null);
   }, [session.id]);
 
   useEffect(() => {
@@ -119,6 +130,43 @@ function ServerProcessDrawer({
   const filteredProcesses = useMemo(
     () => filterServerProcesses(result?.processes ?? [], query),
     [query, result],
+  );
+  const signalProcess = useCallback(
+    async (process: ServerProcess, force: boolean) => {
+      setSignalingProcess({ force, pid: process.pid });
+      setError(undefined);
+      try {
+        await invoke("ssh_signal_process", {
+          force,
+          pid: process.pid,
+          sessionId: session.id,
+        });
+        Message.success(
+          `已向 ${process.name}（PID ${process.pid}）发送 ${force ? "KILL" : "TERM"}`,
+        );
+        await loadProcesses(false);
+      } catch (signalError) {
+        setError(String(signalError));
+      } finally {
+        setSignalingProcess(null);
+      }
+    },
+    [loadProcesses, session.id],
+  );
+  const confirmSignalProcess = useCallback(
+    (process: ServerProcess, force: boolean) => {
+      Modal.confirm({
+        cancelText: "取消",
+        content: force
+          ? `将立即强制结束 ${process.name}（PID ${process.pid}），进程无法执行清理操作。`
+          : `向 ${process.name}（PID ${process.pid}）发送 TERM，请求进程正常退出。`,
+        okButtonProps: force ? { status: "danger" } : undefined,
+        okText: force ? "强制结束" : "结束进程",
+        onOk: () => signalProcess(process, force),
+        title: force ? "强制结束进程？" : "结束进程？",
+      });
+    },
+    [signalProcess],
   );
   const columns = useMemo<TableColumnProps<ServerProcess>[]>(
     () => [
@@ -189,8 +237,43 @@ function ServerProcessDrawer({
         width: 120,
         render: (value: number) => formatProcessElapsed(value),
       },
+      {
+        title: "操作",
+        width: 96,
+        render: (_, process) => (
+          <Space size="mini">
+            <Tooltip content="结束进程（TERM）">
+              <Button
+                aria-label={`结束进程 ${process.pid}`}
+                disabled={process.pid <= 1 || signalingProcess !== null}
+                icon={<IconStop />}
+                loading={
+                  signalingProcess?.pid === process.pid &&
+                  !signalingProcess.force
+                }
+                onClick={() => confirmSignalProcess(process, false)}
+                size="mini"
+              />
+            </Tooltip>
+            <Tooltip content="强制结束（KILL）">
+              <Button
+                aria-label={`强制结束进程 ${process.pid}`}
+                disabled={process.pid <= 1 || signalingProcess !== null}
+                icon={<IconThunderbolt />}
+                loading={
+                  signalingProcess?.pid === process.pid &&
+                  signalingProcess.force
+                }
+                onClick={() => confirmSignalProcess(process, true)}
+                size="mini"
+                status="danger"
+              />
+            </Tooltip>
+          </Space>
+        ),
+      },
     ],
-    [],
+    [confirmSignalProcess, signalingProcess],
   );
 
   return (
@@ -201,7 +284,7 @@ function ServerProcessDrawer({
       onCancel={onCancel}
       title="进程管理"
       visible={visible}
-      width={980}
+      width={1080}
     >
       <div className="server-process-toolbar">
         <Input.Search
@@ -256,7 +339,7 @@ function ServerProcessDrawer({
         noDataElement={<Empty description={query ? "没有匹配的进程" : "暂无进程"} />}
         pagination={false}
         rowKey="id"
-        scroll={{ x: 928, y: "calc(100vh - 180px)" }}
+        scroll={{ x: 1024, y: "calc(100vh - 180px)" }}
         size="small"
       />
     </Drawer>

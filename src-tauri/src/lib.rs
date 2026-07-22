@@ -34,6 +34,7 @@ pub fn run() {
             ssh::ssh_network_connections,
             ssh::ssh_trace_route,
             ssh::ssh_processes,
+            ssh::ssh_signal_process,
             ssh::ssh_disconnect,
             sftp::sftp_connect,
             sftp::sftp_list,
