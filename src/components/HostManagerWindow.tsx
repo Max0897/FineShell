@@ -13,7 +13,7 @@ import {
   Typography,
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -47,6 +47,24 @@ function loadStoredList<T>(key: string): T[] {
   }
 }
 
+function loadHosts() {
+  return loadStoredList<HostRecord>(HOSTS_STORAGE_KEY).map((host) => ({
+    ...host,
+    authMethod: host.authMethod ?? "password",
+    connectTimeoutSeconds: host.connectTimeoutSeconds ?? 10,
+  }));
+}
+
+async function storeHostPassword(hostId: string, password: string) {
+  if (!isTauri()) return;
+  await invoke("store_host_password", { hostId, password });
+}
+
+async function removeHostPassword(hostId: string) {
+  if (!isTauri()) return;
+  await invoke("delete_host_password", { hostId });
+}
+
 function targetKey(
   target: Pick<HostRecord, "address" | "port" | "username">,
 ) {
@@ -70,9 +88,7 @@ function HostManagerWindow() {
       ? "history"
       : "hosts";
   const [activeTab, setActiveTab] = useState(initialTab);
-  const [hosts, setHosts] = useState<HostRecord[]>(() =>
-    loadStoredList<HostRecord>(HOSTS_STORAGE_KEY),
-  );
+  const [hosts, setHosts] = useState<HostRecord[]>(loadHosts);
   const [history, setHistory] = useState<ConnectionHistoryRecord[]>(() =>
     loadStoredList<ConnectionHistoryRecord>(HISTORY_STORAGE_KEY),
   );
@@ -84,6 +100,7 @@ function HostManagerWindow() {
     port: 22,
     username: "root",
   });
+  const [quickPassword, setQuickPassword] = useState("");
 
   useEffect(() => {
     document.title = "主机管理";
@@ -134,14 +151,24 @@ function HostManagerWindow() {
     setEditorVisible(true);
   }
 
-  function saveHost(values: HostFormValues) {
-    const normalized: HostFormValues = {
-      ...values,
+  async function saveHost(values: HostFormValues) {
+    const { password, ...hostValues } = values;
+    const normalized = {
+      ...hostValues,
       name: values.name.trim(),
       address: values.address.trim(),
       username: values.username.trim(),
       group: values.group?.trim() || undefined,
+      hostFingerprint: values.hostFingerprint?.trim() || undefined,
     };
+    const hostId = editingHost?.id ?? createId("host");
+
+    try {
+      if (password) await storeHostPassword(hostId, password);
+    } catch {
+      Message.error("密码保存失败，请检查系统凭据库权限");
+      return;
+    }
 
     if (editingHost) {
       setHosts((current) =>
@@ -153,7 +180,7 @@ function HostManagerWindow() {
     } else {
       setHosts((current) => [
         ...current,
-        { id: createId("host"), ...normalized },
+        { id: hostId, ...normalized },
       ]);
       Message.success("主机已添加");
     }
@@ -162,7 +189,12 @@ function HostManagerWindow() {
     setEditingHost(null);
   }
 
-  function deleteHost(host: HostRecord) {
+  async function deleteHost(host: HostRecord) {
+    try {
+      await removeHostPassword(host.id);
+    } catch {
+      Message.warning("主机已删除，但系统凭据清理失败");
+    }
     setHosts((current) => current.filter((item) => item.id !== host.id));
     Message.success(`已删除 ${host.name}`);
   }
@@ -204,19 +236,29 @@ function HostManagerWindow() {
     window.close();
   }
 
-  function quickConnect() {
-    if (!quickTarget.address.trim()) return;
+  async function quickConnect() {
+    if (!quickTarget.address.trim() || !quickPassword) return;
 
     const normalized = {
       ...quickTarget,
       address: quickTarget.address.trim(),
       username: quickTarget.username.trim() || "root",
     };
-    void sendConnection({
+    const host: HostRecord = {
       id: `quick-${targetKey(normalized)}`,
       name: normalized.address,
+      authMethod: "password",
+      connectTimeoutSeconds: 10,
       ...normalized,
-    });
+    };
+
+    try {
+      await storeHostPassword(host.id, quickPassword);
+      setQuickPassword("");
+      await sendConnection(host);
+    } catch {
+      Message.error("密码保存失败，请检查系统凭据库权限");
+    }
   }
 
   function reconnectFromHistory(record: ConnectionHistoryRecord) {
@@ -228,6 +270,8 @@ function HostManagerWindow() {
         address: record.address,
         port: record.port,
         username: record.username,
+        authMethod: "password",
+        connectTimeoutSeconds: 10,
       },
     );
   }
@@ -279,7 +323,7 @@ function HostManagerWindow() {
           />
           <Popconfirm
             content={`删除主机“${host.name}”？`}
-            onOk={() => deleteHost(host)}
+            onOk={() => void deleteHost(host)}
           >
             <Button
               aria-label={`删除 ${host.name}`}
@@ -388,6 +432,11 @@ function HostManagerWindow() {
                   placeholder="用户名"
                   value={quickTarget.username}
                 />
+                <Input.Password
+                  onChange={setQuickPassword}
+                  placeholder="密码"
+                  value={quickPassword}
+                />
                 <InputNumber
                   max={65535}
                   min={1}
@@ -398,9 +447,9 @@ function HostManagerWindow() {
                   value={quickTarget.port}
                 />
                 <Button
-                  disabled={!quickTarget.address.trim()}
+                  disabled={!quickTarget.address.trim() || !quickPassword}
                   icon={<IconLink />}
-                  onClick={quickConnect}
+                  onClick={() => void quickConnect()}
                   type="primary"
                 >
                   连接

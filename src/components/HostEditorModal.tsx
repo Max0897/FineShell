@@ -4,6 +4,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Select,
   Space,
 } from "@arco-design/web-react";
 import type { HostFormValues, HostRecord } from "../models";
@@ -27,14 +28,22 @@ function HostEditorModal({
         address: host.address,
         port: host.port,
         username: host.username,
+        authMethod: host.authMethod,
+        connectTimeoutSeconds: host.connectTimeoutSeconds,
+        password: "",
         group: host.group,
+        hostFingerprint: host.hostFingerprint,
       }
     : {
         name: "",
         address: "",
         port: 22,
         username: "root",
+        authMethod: "password",
+        connectTimeoutSeconds: 10,
+        password: "",
         group: "",
+        hostFingerprint: "",
       };
 
   return (
@@ -82,6 +91,34 @@ function HostEditorModal({
             <InputNumber max={65535} min={1} mode="button" />
           </Form.Item>
         </div>
+        <Form.Item field="authMethod" label="认证方式">
+          <Select
+            options={[{ label: "密码认证", value: "password" }]}
+          />
+        </Form.Item>
+        <Form.Item
+          field="password"
+          label="密码"
+          rules={
+            host
+              ? undefined
+              : [{ required: true, message: "请输入登录密码" }]
+          }
+        >
+          <Input.Password
+            placeholder={host ? "留空则保留原密码" : "登录密码"}
+          />
+        </Form.Item>
+        <Form.Item
+          field="connectTimeoutSeconds"
+          label="连接超时（秒）"
+          rules={[{ required: true, message: "请输入连接超时时间" }]}
+        >
+          <InputNumber max={120} min={3} mode="button" />
+        </Form.Item>
+        <Form.Item field="hostFingerprint" label="主机指纹">
+          <Input placeholder="首次连接后自动记录，也可预先填写 SHA256 指纹" />
+        </Form.Item>
         <Form.Item field="group" label="分组">
           <Input placeholder="可选" />
         </Form.Item>

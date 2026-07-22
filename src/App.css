@@ -299,7 +299,9 @@ body,
 .quick-connect-fields {
   margin-top: 10px;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(120px, 0.65fr) 104px auto;
+  grid-template-columns:
+    minmax(180px, 1fr) minmax(110px, 0.6fr) minmax(130px, 0.7fr)
+    104px auto;
   gap: 8px;
 }
 

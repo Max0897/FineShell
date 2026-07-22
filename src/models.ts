@@ -1,10 +1,15 @@
+export type HostAuthMethod = "password";
+
 export interface HostRecord {
   id: string;
   name: string;
   address: string;
   port: number;
   username: string;
+  authMethod: HostAuthMethod;
+  connectTimeoutSeconds: number;
   group?: string;
+  hostFingerprint?: string;
   lastConnectedAt?: string;
 }
 
@@ -13,7 +18,11 @@ export interface HostFormValues {
   address: string;
   port: number;
   username: string;
+  authMethod: HostAuthMethod;
+  connectTimeoutSeconds: number;
+  password?: string;
   group?: string;
+  hostFingerprint?: string;
 }
 
 export interface QuickTarget {
