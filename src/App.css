@@ -129,18 +129,6 @@ body,
   overflow: auto;
 }
 
-.server-title-row {
-  margin-bottom: 14px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.server-title-row .arco-typography {
-  margin: 0;
-}
-
 .server-info-descriptions {
   width: 100%;
   margin-bottom: 16px;

@@ -507,11 +507,6 @@ function App() {
       </div>
       {activeSession ? (
         <div className="server-info-content">
-          <div className="server-title-row">
-            <Typography.Title heading={6}>
-              {activeSession.host.name}
-            </Typography.Title>
-          </div>
           <Descriptions
             border
             className="server-info-descriptions"
