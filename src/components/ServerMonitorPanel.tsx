@@ -47,6 +47,23 @@ interface ServerMonitorPanelProps {
 
 const POLL_INTERVAL_MS = 5_000;
 
+const PERCENT_MARK_TOOLTIP = {
+  mark: {
+    content: [
+      { key: { field: "metric" }, value: { field: "displayValue" } },
+    ],
+  },
+};
+
+const PERCENT_TREND_TOOLTIP = {
+  dimension: {
+    content: [
+      { key: { field: "metric" }, value: { field: "displayValue" } },
+    ],
+  },
+  mark: PERCENT_MARK_TOOLTIP.mark,
+};
+
 type ConnectionFilter = "all" | "listening" | "connected";
 
 const CONNECTION_STATE_LABELS: Record<string, string> = {
@@ -77,10 +94,6 @@ function connectionStateColor(state: string) {
 
 function tooltipMetric(datum?: Record<string, unknown>) {
   return String(datum?.metric ?? "占用率");
-}
-
-function tooltipPercent(datum?: Record<string, unknown>) {
-  return formatMonitorPercent(Number(datum?.value));
 }
 
 function tooltipRate(datum?: Record<string, unknown>) {
@@ -212,9 +225,21 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
     () =>
       snapshot
         ? [
-            { metric: "CPU", value: snapshot.cpuUsagePercent },
-            { metric: "内存", value: snapshot.memoryUsagePercent },
-            { metric: "磁盘", value: snapshot.diskUsagePercent },
+            {
+              metric: "CPU",
+              value: Math.round(snapshot.cpuUsagePercent),
+              displayValue: formatMonitorPercent(snapshot.cpuUsagePercent),
+            },
+            {
+              metric: "内存",
+              value: Math.round(snapshot.memoryUsagePercent),
+              displayValue: formatMonitorPercent(snapshot.memoryUsagePercent),
+            },
+            {
+              metric: "磁盘",
+              value: Math.round(snapshot.diskUsagePercent),
+              displayValue: formatMonitorPercent(snapshot.diskUsagePercent),
+            },
           ]
         : [],
     [snapshot],
@@ -228,8 +253,18 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
           second: "2-digit",
         });
         return [
-          { metric: "CPU", time, value: point.cpuUsagePercent },
-          { metric: "内存", time, value: point.memoryUsagePercent },
+          {
+            metric: "CPU",
+            time,
+            value: Math.round(point.cpuUsagePercent),
+            displayValue: formatMonitorPercent(point.cpuUsagePercent),
+          },
+          {
+            metric: "内存",
+            time,
+            value: Math.round(point.memoryUsagePercent),
+            displayValue: formatMonitorPercent(point.memoryUsagePercent),
+          },
         ];
       }),
     [history],
@@ -381,7 +416,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
               {utilizationData.map((item) => (
                 <span key={item.metric}>
                   <span>{item.metric}</span>
-                  <strong>{formatMonitorPercent(item.value)}</strong>
+                  <strong>{item.displayValue}</strong>
                 </span>
               ))}
             </div>
@@ -411,13 +446,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
               height={105}
               padding={{ bottom: 8, left: 0, right: 0, top: 4 }}
               seriesField="metric"
-              tooltip={{
-                mark: {
-                  content: [
-                    { key: tooltipMetric, value: tooltipPercent },
-                  ],
-                },
-              }}
+              tooltip={PERCENT_MARK_TOOLTIP}
               xField="value"
               yField="metric"
             />
@@ -465,18 +494,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
               padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
               point={{ style: { size: 2 }, visible: history.length < 2 }}
               seriesField="metric"
-              tooltip={{
-                dimension: {
-                  content: [
-                    { key: tooltipMetric, value: tooltipPercent },
-                  ],
-                },
-                mark: {
-                  content: [
-                    { key: tooltipMetric, value: tooltipPercent },
-                  ],
-                },
-              }}
+              tooltip={PERCENT_TREND_TOOLTIP}
               xField="time"
               yField="value"
             />
