@@ -320,7 +320,8 @@ function SftpPanel({
   }, []);
 
   const browser = session ? browsers[session.id] ?? INITIAL_BROWSER : null;
-  const ready = Boolean(session && browser?.status === "ready");
+  const connected = session?.status === "connected";
+  const ready = Boolean(connected && browser?.status === "ready");
   const busy =
     browser?.status === "connecting" || browser?.status === "loading";
   const currentTransfers = useMemo(
@@ -707,11 +708,7 @@ function SftpPanel({
             void loadDirectory(session.id, browser.inputPath.trim())
           }
           size="small"
-          value={
-            session
-              ? browser?.inputPath ?? "/"
-              : "未连接"
-          }
+          value={connected ? browser?.inputPath ?? "/" : ""}
         />
         <Space size="mini">
           <Button
@@ -743,15 +740,7 @@ function SftpPanel({
           </Tooltip>
         </Space>
       </div>
-      {!session ? (
-        <div className="panel-empty">
-          <Empty description="SFTP 未连接" />
-        </div>
-      ) : session.status !== "connected" ? (
-        <div className="panel-empty">
-          <Empty description="等待 SSH 连接" />
-        </div>
-      ) : browser?.status === "failed" ? (
+      {connected && browser?.status === "failed" ? (
         <div className="panel-empty">
           <div className="empty-action">
             <Empty description={browser.error || "SFTP 连接失败"} />
@@ -767,9 +756,11 @@ function SftpPanel({
             className="sftp-table"
             columns={columns}
             components={SFTP_TABLE_COMPONENTS}
-            data={visibleEntries}
-            loading={busy}
-            noDataElement={<Empty description="目录为空" />}
+            data={ready ? visibleEntries : []}
+            loading={Boolean(connected && busy)}
+            noDataElement={
+              ready ? <Empty description="目录为空" /> : <span aria-hidden />
+            }
             onRow={(entry) => ({
               onDoubleClick: () => openDirectory(entry),
             })}
