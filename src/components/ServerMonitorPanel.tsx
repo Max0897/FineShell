@@ -62,23 +62,16 @@ function enforcePercentTooltipContent(content?: ITooltipLineActual[]) {
   });
 }
 
-const PERCENT_MARK_TOOLTIP = {
-  mark: {
-    content: [
-      { key: { field: "metric" }, value: { field: "displayValue" } },
-    ],
-    updateContent: enforcePercentTooltipContent,
-  },
+const PERCENT_TOOLTIP_CONTENT = {
+  content: [
+    { key: { field: "metric" }, value: { field: "displayValue" } },
+  ],
+  updateContent: enforcePercentTooltipContent,
 };
 
-const PERCENT_TREND_TOOLTIP = {
-  dimension: {
-    content: [
-      { key: { field: "metric" }, value: { field: "displayValue" } },
-    ],
-    updateContent: enforcePercentTooltipContent,
-  },
-  mark: PERCENT_MARK_TOOLTIP.mark,
+const PERCENT_TOOLTIP = {
+  dimension: PERCENT_TOOLTIP_CONTENT,
+  mark: PERCENT_TOOLTIP_CONTENT,
 };
 
 type ConnectionFilter = "all" | "listening" | "connected";
@@ -463,7 +456,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
               height={105}
               padding={{ bottom: 8, left: 0, right: 0, top: 4 }}
               seriesField="metric"
-              tooltip={PERCENT_MARK_TOOLTIP}
+              tooltip={PERCENT_TOOLTIP}
               xField="value"
               yField="metric"
             />
@@ -511,7 +504,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
               padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
               point={{ style: { size: 2 }, visible: history.length < 2 }}
               seriesField="metric"
-              tooltip={PERCENT_TREND_TOOLTIP}
+              tooltip={PERCENT_TOOLTIP}
               xField="time"
               yField="value"
             />
