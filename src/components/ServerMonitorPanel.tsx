@@ -10,11 +10,16 @@ import {
   Skeleton,
   Table,
   Tag,
+  Timeline,
   Tooltip,
   Typography,
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
-import { IconRefresh, IconWifi } from "@arco-design/web-react/icon";
+import {
+  IconBranch,
+  IconRefresh,
+  IconWifi,
+} from "@arco-design/web-react/icon";
 import { invoke } from "@tauri-apps/api/core";
 import { AreaChart, BarChart } from "@visactor/react-vchart";
 import type {
@@ -24,6 +29,7 @@ import type {
   NetworkConnection,
   NetworkConnectionsResult,
   NetworkPingResult,
+  NetworkTraceResult,
 } from "../models";
 import {
   appendMonitorHistory,
@@ -97,6 +103,9 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
   const [connectionsError, setConnectionsError] = useState<string>();
   const [connectionFilter, setConnectionFilter] =
     useState<ConnectionFilter>("all");
+  const [traceResult, setTraceResult] = useState<NetworkTraceResult | null>(null);
+  const [traceLoading, setTraceLoading] = useState(false);
+  const [traceError, setTraceError] = useState<string>();
 
   useEffect(() => {
     setSnapshot(null);
@@ -107,6 +116,8 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
     setConnectionsResult(null);
     setConnectionsError(undefined);
     setConnectionFilter("all");
+    setTraceResult(null);
+    setTraceError(undefined);
     setDiagnosticsVisible(false);
     if (session.status !== "connected") {
       setLoading(false);
@@ -176,6 +187,24 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
       setConnectionsError(String(connectionFailure));
     } finally {
       setConnectionsLoading(false);
+    }
+  };
+
+  const runTraceRoute = async () => {
+    const target = pingTarget.trim();
+    setTraceLoading(true);
+    setTraceError(undefined);
+    try {
+      const result = await invoke<NetworkTraceResult>("ssh_trace_route", {
+        sessionId: session.id,
+        target,
+      });
+      setTraceResult(result);
+    } catch (traceFailure) {
+      setTraceResult(null);
+      setTraceError(String(traceFailure));
+    } finally {
+      setTraceLoading(false);
     }
   };
 
@@ -576,6 +605,67 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
               ]}
               size="small"
             />
+          )}
+        </section>
+        <section className="network-diagnostics-section">
+          <div className="network-diagnostics-section-heading">
+            <span>
+              <Typography.Text bold>路由追踪</Typography.Text>
+              {traceResult && (
+                <Typography.Text type="secondary">
+                  {traceResult.resolvedAddress ?? traceResult.target}
+                </Typography.Text>
+              )}
+            </span>
+            <Button
+              icon={<IconBranch />}
+              loading={traceLoading}
+              onClick={() => void runTraceRoute()}
+              size="small"
+            >
+              开始追踪
+            </Button>
+          </div>
+          {traceError && <Alert content={traceError} showIcon type="error" />}
+          {traceLoading && !traceResult && (
+            <Skeleton animation text={{ rows: 3, width: ["70%", "85%", "60%"] }} />
+          )}
+          {traceResult && (
+            <>
+              <Tag color={traceResult.reached ? "green" : "orange"}>
+                {traceResult.reached ? "已到达目标" : "未在最大跳数内到达"}
+              </Tag>
+              <Timeline className="network-trace-timeline" mode="left">
+                {traceResult.hops.map((hop) => {
+                  const reachedTarget =
+                    hop.address ===
+                    (traceResult.resolvedAddress ?? traceResult.target);
+                  return (
+                    <Timeline.Item
+                      dotColor={
+                        reachedTarget
+                          ? "#00b42a"
+                          : hop.address
+                            ? "#165dff"
+                            : "#c9cdd4"
+                      }
+                      key={hop.hop}
+                      label={`第 ${hop.hop} 跳`}
+                      lineType={hop.address ? "solid" : "dashed"}
+                    >
+                      <div className="network-trace-hop">
+                        <Typography.Text>
+                          {hop.address ?? "请求超时"}
+                        </Typography.Text>
+                        <Typography.Text type="secondary">
+                          {formatLatency(hop.latencyMs)}
+                        </Typography.Text>
+                      </div>
+                    </Timeline.Item>
+                  );
+                })}
+              </Timeline>
+            </>
           )}
         </section>
         <section className="network-diagnostics-section">

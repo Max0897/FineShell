@@ -130,6 +130,19 @@ export interface NetworkConnectionsResult {
   truncated: boolean;
 }
 
+export interface NetworkRouteHop {
+  hop: number;
+  address?: string;
+  latencyMs?: number;
+}
+
+export interface NetworkTraceResult {
+  target: string;
+  resolvedAddress?: string;
+  reached: boolean;
+  hops: NetworkRouteHop[];
+}
+
 export type SftpEntryKind = "directory" | "file" | "symlink" | "other";
 
 export interface SftpEntry {

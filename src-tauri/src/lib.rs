@@ -32,6 +32,7 @@ pub fn run() {
             ssh::ssh_monitor_snapshot,
             ssh::ssh_ping,
             ssh::ssh_network_connections,
+            ssh::ssh_trace_route,
             ssh::ssh_disconnect,
             sftp::sftp_connect,
             sftp::sftp_list,

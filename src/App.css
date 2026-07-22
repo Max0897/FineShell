@@ -307,6 +307,25 @@ body,
   white-space: nowrap;
 }
 
+.network-trace-timeline {
+  margin-top: 4px;
+}
+
+.network-trace-hop {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.network-trace-hop > .arco-typography:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .network-diagnostics-section > .arco-typography {
   margin: 0;
 }

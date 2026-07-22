@@ -102,6 +102,23 @@ pub(crate) struct NetworkConnectionsResult {
     truncated: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NetworkRouteHop {
+    hop: u16,
+    address: Option<String>,
+    latency_ms: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NetworkTraceResult {
+    target: String,
+    resolved_address: Option<String>,
+    reached: bool,
+    hops: Vec<NetworkRouteHop>,
+}
+
 fn parse_number<T: std::str::FromStr>(value: Option<&str>, field: &str) -> Result<T, String> {
     value
         .map(str::trim)
@@ -289,6 +306,70 @@ pub(crate) fn parse_network_connections(output: &str) -> NetworkConnectionsResul
     }
 }
 
+pub(crate) fn parse_trace_output(target: &str, output: &str) -> NetworkTraceResult {
+    let resolved_address = output.lines().find_map(|line| {
+        if !line.starts_with("traceroute to ") {
+            return None;
+        }
+        let (_, after_opening) = line.split_once('(')?;
+        let (address, _) = after_opening.split_once(')')?;
+        (!address.is_empty()).then(|| address.to_string())
+    });
+    let mut hops = Vec::<NetworkRouteHop>::new();
+    for line in output.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(hop) = fields
+            .next()
+            .map(|value| value.trim_end_matches(['?', ':']))
+            .and_then(|value| value.parse::<u16>().ok())
+        else {
+            continue;
+        };
+        let Some(address) = fields.next() else {
+            continue;
+        };
+        if address.starts_with('[') {
+            continue;
+        }
+        let address = if address == "*" || address == "no" {
+            None
+        } else {
+            Some(address.to_string())
+        };
+        let latency_ms = fields.find_map(|field| {
+            field
+                .strip_suffix("ms")
+                .unwrap_or(field)
+                .parse::<f64>()
+                .ok()
+        });
+        let next_hop = NetworkRouteHop {
+            hop,
+            address,
+            latency_ms,
+        };
+        if let Some(existing) = hops.iter_mut().find(|existing| existing.hop == hop) {
+            if existing.address.is_none() && next_hop.address.is_some() {
+                *existing = next_hop;
+            }
+        } else {
+            hops.push(next_hop);
+        }
+    }
+    let expected_address = resolved_address.as_deref().unwrap_or(target);
+    let reached = hops
+        .iter()
+        .any(|hop| hop.address.as_deref() == Some(expected_address))
+        || output.lines().any(|line| line.contains("reached"));
+
+    NetworkTraceResult {
+        target: target.to_string(),
+        resolved_address,
+        reached,
+        hops,
+    }
+}
+
 pub(crate) fn parse_monitor_output(output: &str) -> Result<ServerMonitorSnapshot, String> {
     let values = output
         .lines()
@@ -405,11 +486,36 @@ pub(crate) fn collect_network_connections(
     Ok(parse_network_connections(&output))
 }
 
+pub(crate) fn collect_trace_route(
+    session: &Session,
+    target: &str,
+) -> Result<NetworkTraceResult, String> {
+    let target = validate_ping_target(target)?;
+    let command = format!(
+        "LC_ALL=C\nif command -v traceroute >/dev/null 2>&1; then traceroute -n -m 12 -q 1 -w 1 {target} 2>&1; elif command -v busybox >/dev/null 2>&1 && busybox traceroute --help >/dev/null 2>&1; then busybox traceroute -n -m 12 -q 1 -w 1 {target} 2>&1; elif command -v tracepath >/dev/null 2>&1; then tracepath -n -m 12 {target} 2>&1; else printf '__FINESHELL_TRACEROUTE_MISSING__\\n'; exit 127; fi"
+    );
+    let (output, exit_status) = execute_remote_command(session, &command, "路由追踪")?;
+    if exit_status == 127 || output.contains("__FINESHELL_TRACEROUTE_MISSING__") {
+        return Err("远程服务器未安装 traceroute 或 tracepath 命令".to_string());
+    }
+    let result = parse_trace_output(target, &output);
+    if result.hops.is_empty() {
+        let detail = output.lines().last().unwrap_or_default().trim();
+        return Err(if detail.is_empty() {
+            format!("路由追踪命令异常退出：{exit_status}")
+        } else {
+            format!("路由追踪失败：{detail}")
+        });
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_monitor_output, parse_network_connections, parse_ping_output, validate_ping_target,
-        NetworkConnection, NetworkConnectionsResult, NetworkPingResult, ServerMonitorSnapshot,
+        parse_monitor_output, parse_network_connections, parse_ping_output, parse_trace_output,
+        validate_ping_target, NetworkConnection, NetworkConnectionsResult, NetworkPingResult,
+        NetworkRouteHop, NetworkTraceResult, ServerMonitorSnapshot,
     };
 
     #[test]
@@ -545,5 +651,65 @@ rtt min/avg/max/mdev = 4.800/5.100/5.400/0.245 ms
                 truncated: true,
             }
         );
+    }
+
+    #[test]
+    fn parses_trace_route_hops_and_timeouts() {
+        let output = r#"traceroute to example.com (93.184.216.34), 12 hops max, 60 byte packets
+ 1  192.168.1.1  0.421 ms
+ 2  *
+ 3  203.0.113.10  5.382 ms
+ 4  93.184.216.34  12.641 ms
+"#;
+
+        assert_eq!(
+            parse_trace_output("example.com", output),
+            NetworkTraceResult {
+                target: "example.com".to_string(),
+                resolved_address: Some("93.184.216.34".to_string()),
+                reached: true,
+                hops: vec![
+                    NetworkRouteHop {
+                        hop: 1,
+                        address: Some("192.168.1.1".to_string()),
+                        latency_ms: Some(0.421),
+                    },
+                    NetworkRouteHop {
+                        hop: 2,
+                        address: None,
+                        latency_ms: None,
+                    },
+                    NetworkRouteHop {
+                        hop: 3,
+                        address: Some("203.0.113.10".to_string()),
+                        latency_ms: Some(5.382),
+                    },
+                    NetworkRouteHop {
+                        hop: 4,
+                        address: Some("93.184.216.34".to_string()),
+                        latency_ms: Some(12.641),
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tracepath_output_and_deduplicates_hops() {
+        let output = r#" 1?: [LOCALHOST]                      pmtu 1500
+ 1:  192.168.1.1                                          0.224ms
+ 1:  192.168.1.1                                          0.181ms asymm 2
+ 2:  no reply
+ 3:  1.1.1.1                                              8.412ms reached
+     Resume: pmtu 1500 hops 3 back 3
+"#;
+        let result = parse_trace_output("1.1.1.1", output);
+
+        assert!(result.reached);
+        assert_eq!(result.hops.len(), 3);
+        assert_eq!(result.hops[0].address.as_deref(), Some("192.168.1.1"));
+        assert_eq!(result.hops[0].latency_ms, Some(0.224));
+        assert_eq!(result.hops[1].address, None);
+        assert_eq!(result.hops[2].latency_ms, Some(8.412));
     }
 }

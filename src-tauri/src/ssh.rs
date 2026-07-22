@@ -18,7 +18,9 @@ use ssh2::{Channel, HashType, Session};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::credentials;
-use crate::monitor::{self, NetworkConnectionsResult, NetworkPingResult, ServerMonitorSnapshot};
+use crate::monitor::{
+    self, NetworkConnectionsResult, NetworkPingResult, NetworkTraceResult, ServerMonitorSnapshot,
+};
 
 const SSH_OUTPUT_EVENT: &str = "ssh-output";
 const SSH_STATUS_EVENT: &str = "ssh-status";
@@ -109,6 +111,10 @@ enum SessionCommand {
         response: SyncSender<Result<NetworkPingResult, String>>,
     },
     NetworkConnections(SyncSender<Result<NetworkConnectionsResult, String>>),
+    TraceRoute {
+        target: String,
+        response: SyncSender<Result<NetworkTraceResult, String>>,
+    },
     Close,
 }
 
@@ -456,6 +462,10 @@ fn run_session(
                     let _ = response.send(monitor::collect_network_connections(&session));
                     active = true;
                 }
+                Ok(SessionCommand::TraceRoute { target, response }) => {
+                    let _ = response.send(monitor::collect_trace_route(&session, &target));
+                    active = true;
+                }
                 Ok(SessionCommand::Close) | Err(TryRecvError::Disconnected) => {
                     closing = true;
                     break;
@@ -738,6 +748,29 @@ pub(crate) async fn ssh_network_connections(
     })
     .await
     .map_err(|error| format!("网络连接采集任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn ssh_trace_route(
+    manager: State<'_, SshSessionManager>,
+    session_id: String,
+    target: String,
+) -> Result<NetworkTraceResult, String> {
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    manager.send(
+        &session_id,
+        SessionCommand::TraceRoute {
+            target,
+            response: response_sender,
+        },
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        response_receiver
+            .recv_timeout(Duration::from_secs(20))
+            .map_err(|error| format!("等待路由追踪结果失败：{error}"))?
+    })
+    .await
+    .map_err(|error| format!("路由追踪任务异常结束：{error}"))?
 }
 
 #[tauri::command]
