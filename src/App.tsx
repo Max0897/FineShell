@@ -21,7 +21,6 @@ import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   IconRefresh,
-  IconStorage,
 } from "@arco-design/web-react/icon";
 import type { HostRecord, TerminalSession } from "./models";
 import SftpPanel from "./components/SftpPanel";
@@ -545,23 +544,23 @@ function App() {
 
   const serverMonitorPanel = (
     <aside className="panel server-monitor-sidebar">
-      {activeSession ? (
-        <div className="server-monitor-content">
-          <Suspense
-            fallback={
-              <div className="server-monitor-loading">
-                <Typography.Text type="secondary">
-                  正在加载监控…
-                </Typography.Text>
-              </div>
-            }
-          >
-            <ServerMonitorPanel
-              refreshIntervalSeconds={settings.monitorRefreshIntervalSeconds}
-              session={activeSession}
-            />
-          </Suspense>
-          {(activeSession.status === "failed" ||
+      <div className="server-monitor-content">
+        <Suspense
+          fallback={
+            <div className="server-monitor-loading">
+              <Typography.Text type="secondary">
+                正在加载监控…
+              </Typography.Text>
+            </div>
+          }
+        >
+          <ServerMonitorPanel
+            refreshIntervalSeconds={settings.monitorRefreshIntervalSeconds}
+            session={activeSession}
+          />
+        </Suspense>
+        {activeSession &&
+          (activeSession.status === "failed" ||
             activeSession.status === "disconnected") && (
             <div className="server-actions">
               <Button
@@ -572,21 +571,7 @@ function App() {
               </Button>
             </div>
           )}
-        </div>
-      ) : (
-        <div className="panel-empty">
-          <div className="empty-action">
-            <Empty description="未选择服务器" />
-            <Button
-              icon={<IconStorage />}
-              onClick={() => void openHostManager()}
-              type="primary"
-            >
-              主机管理
-            </Button>
-          </div>
-        </div>
-      )}
+      </div>
     </aside>
   );
 

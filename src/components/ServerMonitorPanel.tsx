@@ -48,7 +48,7 @@ import ServerProcessDrawer from "./ServerProcessDrawer";
 
 interface ServerMonitorPanelProps {
   refreshIntervalSeconds: number;
-  session: TerminalSession;
+  session: TerminalSession | null;
 }
 
 function enforcePercentTooltipContent(content?: ITooltipLineActual[]) {
@@ -118,7 +118,6 @@ function ServerMonitorPanel({
 }: ServerMonitorPanelProps) {
   const [snapshot, setSnapshot] = useState<ServerMonitorSnapshot | null>(null);
   const [history, setHistory] = useState<ServerMonitorHistoryPoint[]>([]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [diagnosticsVisible, setDiagnosticsVisible] = useState(false);
   const [processDrawerVisible, setProcessDrawerVisible] = useState(false);
@@ -149,19 +148,18 @@ function ServerMonitorPanel({
     setTraceError(undefined);
     setDiagnosticsVisible(false);
     setProcessDrawerVisible(false);
-    if (session.status !== "connected") {
-      setLoading(false);
+    const sessionId = session?.id;
+    if (!sessionId || session.status !== "connected") {
       return;
     }
 
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    setLoading(true);
     const collect = async () => {
       try {
         const next = await invoke<ServerMonitorSnapshot>(
           "ssh_monitor_snapshot",
-          { sessionId: session.id },
+          { sessionId },
         );
         if (disposed) return;
         setSnapshot(next);
@@ -171,7 +169,6 @@ function ServerMonitorPanel({
         if (!disposed) setError(String(collectionError));
       } finally {
         if (!disposed) {
-          setLoading(false);
           timer = setTimeout(collect, refreshIntervalSeconds * 1_000);
         }
       }
@@ -182,9 +179,10 @@ function ServerMonitorPanel({
       disposed = true;
       if (timer) clearTimeout(timer);
     };
-  }, [refreshIntervalSeconds, session.id, session.status]);
+  }, [refreshIntervalSeconds, session?.id, session?.status]);
 
   const runPing = async (target = pingTarget) => {
+    if (!session) return;
     const nextTarget = target.trim();
     setPingTarget(nextTarget);
     setPingLoading(true);
@@ -204,6 +202,7 @@ function ServerMonitorPanel({
   };
 
   const loadNetworkConnections = async () => {
+    if (!session) return;
     setConnectionsLoading(true);
     setConnectionsError(undefined);
     try {
@@ -221,6 +220,7 @@ function ServerMonitorPanel({
   };
 
   const runTraceRoute = async () => {
+    if (!session) return;
     const target = pingTarget.trim();
     setTraceLoading(true);
     setTraceError(undefined);
@@ -258,7 +258,11 @@ function ServerMonitorPanel({
               displayValue: formatMonitorPercent(snapshot.diskUsagePercent),
             },
           ]
-        : [],
+        : [
+            { metric: "CPU", value: 0, displayValue: "-" },
+            { metric: "内存", value: 0, displayValue: "-" },
+            { metric: "磁盘", value: 0, displayValue: "-" },
+          ],
     [snapshot],
   );
   const trendData = useMemo(
@@ -365,13 +369,7 @@ function ServerMonitorPanel({
     [],
   );
 
-  if (session.status !== "connected") {
-    return (
-      <section className="server-monitor">
-        <Typography.Text bold>服务器监控</Typography.Text>
-      </section>
-    );
-  }
+  const connected = session?.status === "connected";
 
   return (
     <section className="server-monitor">
@@ -381,6 +379,7 @@ function ServerMonitorPanel({
           <Tooltip content="进程管理">
             <Button
               aria-label="打开进程管理"
+              disabled={!connected}
               icon={<IconApps />}
               onClick={() => setProcessDrawerVisible(true)}
               size="mini"
@@ -390,6 +389,7 @@ function ServerMonitorPanel({
           <Tooltip content="网络诊断">
             <Button
               aria-label="打开网络诊断"
+              disabled={!connected}
               icon={<IconWifi />}
               onClick={() => {
                 setDiagnosticsVisible(true);
@@ -405,39 +405,42 @@ function ServerMonitorPanel({
         </Space>
       </div>
       {error && <Alert content={error} showIcon type="warning" />}
-      {loading && !snapshot && (
-        <Skeleton animation text={{ rows: 4, width: ["90%", "75%", "95%", "70%"] }} />
-      )}
-      {snapshot && (
-        <>
-          <dl className="monitor-system-facts">
+      <dl className="monitor-system-facts">
             <div>
               <dt>系统</dt>
-              <dd>{snapshot.operatingSystem}</dd>
+              <dd>{snapshot?.operatingSystem || "-"}</dd>
             </div>
             <div>
               <dt>主机名</dt>
-              <dd>{snapshot.hostname}</dd>
+              <dd>{snapshot?.hostname || "-"}</dd>
             </div>
             <div>
               <dt>内核</dt>
-              <dd>{snapshot.kernel}</dd>
+              <dd>{snapshot?.kernel || "-"}</dd>
             </div>
             <div>
               <dt>运行时间</dt>
-              <dd>{formatUptime(snapshot.uptimeSeconds)}</dd>
+              <dd>{snapshot ? formatUptime(snapshot.uptimeSeconds) : "-"}</dd>
             </div>
             <div>
               <dt>负载</dt>
-              <dd>{snapshot.loadAverage.map((value) => value.toFixed(2)).join(" / ")}</dd>
+              <dd>
+                {snapshot
+                  ? snapshot.loadAverage
+                      .map((value) => value.toFixed(2))
+                      .join(" / ")
+                  : "-"}
+              </dd>
             </div>
-          </dl>
+      </dl>
 
-          <div className="monitor-chart-section">
+      <div className="monitor-chart-section">
             <div className="monitor-chart-heading">
               <Typography.Text bold>资源占用</Typography.Text>
               <Typography.Text type="secondary">
-                内存 {formatMonitorBytes(snapshot.memoryUsedBytes)} / {formatMonitorBytes(snapshot.memoryTotalBytes)}
+                {snapshot
+                  ? `内存 ${formatMonitorBytes(snapshot.memoryUsedBytes)} / ${formatMonitorBytes(snapshot.memoryTotalBytes)}`
+                  : "内存 - / -"}
               </Typography.Text>
             </div>
             <div className="monitor-current-values">
@@ -478,13 +481,15 @@ function ServerMonitorPanel({
               xField="value"
               yField="metric"
             />
-          </div>
+      </div>
 
-          <div className="monitor-chart-section">
+      <div className="monitor-chart-section">
             <div className="monitor-chart-heading">
               <Typography.Text bold>资源趋势</Typography.Text>
               <Typography.Text type="secondary">
-                磁盘 {formatMonitorBytes(snapshot.diskUsedBytes)} / {formatMonitorBytes(snapshot.diskTotalBytes)}
+                {snapshot
+                  ? `磁盘 ${formatMonitorBytes(snapshot.diskUsedBytes)} / ${formatMonitorBytes(snapshot.diskTotalBytes)}`
+                  : "磁盘 - / -"}
               </Typography.Text>
             </div>
             <AreaChart
@@ -526,23 +531,37 @@ function ServerMonitorPanel({
               xField="time"
               yField="value"
             />
-          </div>
+      </div>
 
-          <div className="monitor-chart-section">
+      <div className="monitor-chart-section">
             <div className="monitor-chart-heading">
               <Typography.Text bold>网络流量</Typography.Text>
               <Typography.Text type="secondary">
-                累计 ↓ {formatMonitorBytes(snapshot.networkReceiveBytes)} / ↑ {formatMonitorBytes(snapshot.networkTransmitBytes)}
+                {snapshot
+                  ? `累计 ↓ ${formatMonitorBytes(snapshot.networkReceiveBytes)} / ↑ ${formatMonitorBytes(snapshot.networkTransmitBytes)}`
+                  : "累计 ↓ - / ↑ -"}
               </Typography.Text>
             </div>
             <div className="monitor-current-values monitor-network-values">
               <span>
                 <span>下载</span>
-                <strong>{formatMonitorRate(latestHistoryPoint?.networkReceiveBytesPerSecond ?? 0)}</strong>
+                <strong>
+                  {snapshot
+                    ? formatMonitorRate(
+                        latestHistoryPoint?.networkReceiveBytesPerSecond ?? 0,
+                      )
+                    : "-"}
+                </strong>
               </span>
               <span>
                 <span>上传</span>
-                <strong>{formatMonitorRate(latestHistoryPoint?.networkTransmitBytesPerSecond ?? 0)}</strong>
+                <strong>
+                  {snapshot
+                    ? formatMonitorRate(
+                        latestHistoryPoint?.networkTransmitBytesPerSecond ?? 0,
+                      )
+                    : "-"}
+                </strong>
               </span>
             </div>
             <AreaChart
@@ -590,9 +609,7 @@ function ServerMonitorPanel({
               xField="time"
               yField="value"
             />
-          </div>
-        </>
-      )}
+      </div>
       <Drawer
         className="network-diagnostics-drawer"
         footer={null}
@@ -766,11 +783,13 @@ function ServerMonitorPanel({
           />
         </section>
       </Drawer>
-      <ServerProcessDrawer
-        onCancel={() => setProcessDrawerVisible(false)}
-        session={session}
-        visible={processDrawerVisible}
-      />
+      {session && (
+        <ServerProcessDrawer
+          onCancel={() => setProcessDrawerVisible(false)}
+          session={session}
+          visible={processDrawerVisible}
+        />
+      )}
     </section>
   );
 }
