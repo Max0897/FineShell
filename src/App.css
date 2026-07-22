@@ -711,6 +711,18 @@ body,
   white-space: nowrap;
 }
 
+.configuration-maintenance-heading {
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.configuration-maintenance-heading > .arco-typography {
+  margin: 0;
+}
+
 .settings-footer {
   flex: 0 0 auto;
   min-height: 60px;

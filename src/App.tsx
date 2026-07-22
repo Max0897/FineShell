@@ -484,11 +484,7 @@ function App() {
             </span>
           }
         >
-          <HostManagerPanel
-            onConnect={openSession}
-            onSettingsChange={setSettings}
-            settings={settings}
-          />
+          <HostManagerPanel onConnect={openSession} settings={settings} />
         </Tabs.TabPane>
         {sessions.map((session) => (
           <Tabs.TabPane

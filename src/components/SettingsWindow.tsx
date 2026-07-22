@@ -326,7 +326,15 @@ function SettingsWindow() {
           </>
         );
       case "backups":
-        return <ConfigurationMaintenance section="backups" />;
+        return (
+          <ConfigurationMaintenance
+            onConfigurationImported={(importedSettings) => {
+              setSettings(importedSettings);
+              setSavedSettings(importedSettings);
+            }}
+            section="backups"
+          />
+        );
       case "trash":
         return <ConfigurationMaintenance section="trash" />;
       default:

@@ -16,15 +16,13 @@ import {
 import type { TableColumnProps } from "@arco-design/web-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
-import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   IconDelete,
   IconCopy,
   IconEdit,
-  IconExport,
   IconFolder,
   IconHistory,
-  IconImport,
   IconLink,
   IconPlus,
   IconSort,
@@ -46,13 +44,10 @@ import {
   type HostTableRow,
 } from "../host-organization";
 import {
-  importConfiguration,
   loadConfiguration,
   moveHostToTrash,
-  parseConfigurationExport,
   purgeExpiredDeletedHosts,
   replaceConfigurationContent,
-  serializeConfigurationExport,
   updateHostSortMode,
 } from "../config-database";
 import type { AppSettings } from "../app-settings";
@@ -108,15 +103,10 @@ function formatTime(value?: string) {
 
 interface HostManagerPanelProps {
   onConnect: (host: HostRecord) => void;
-  onSettingsChange: (settings: AppSettings) => void;
   settings: AppSettings;
 }
 
-function HostManagerPanel({
-  onConnect,
-  onSettingsChange,
-  settings,
-}: HostManagerPanelProps) {
+function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [history, setHistory] = useState<ConnectionHistoryRecord[]>([]);
   const [hostSort, setHostSort] = useState<HostSortMode>("manual");
@@ -233,91 +223,6 @@ function HostManagerPanel({
       setHostSort(next.hostSort);
     } catch (error) {
       setHostSort(previousSort);
-      Message.error(String(error));
-    } finally {
-      setConfigurationAction(false);
-    }
-  }
-
-  async function exportConfiguration() {
-    if (!isTauri()) {
-      Message.warning("配置导出仅支持桌面应用");
-      return;
-    }
-
-    setConfigurationAction(true);
-    try {
-      const path = await saveDialog({
-        defaultPath: `fineshell-config-${new Date().toISOString().slice(0, 10)}.json`,
-        filters: [{ name: "FineShell 配置", extensions: ["json"] }],
-        title: "导出 FineShell 配置",
-      });
-      if (!path) return;
-
-      const configuration = await loadConfiguration();
-      await invoke("write_config_file", {
-        path,
-        contents: serializeConfigurationExport(configuration),
-      });
-      Message.success("配置已导出");
-    } catch (error) {
-      Message.error(String(error));
-    } finally {
-      setConfigurationAction(false);
-    }
-  }
-
-  async function importConfigurationFile() {
-    if (!isTauri()) {
-      Message.warning("配置导入仅支持桌面应用");
-      return;
-    }
-
-    setConfigurationAction(true);
-    try {
-      const path = await open({
-        directory: false,
-        filters: [{ name: "FineShell 配置", extensions: ["json"] }],
-        multiple: false,
-        title: "导入 FineShell 配置",
-      });
-      if (typeof path !== "string") return;
-
-      const contents = await invoke<string>("read_config_file", { path });
-      const imported = parseConfigurationExport(contents);
-      Modal.confirm({
-        cancelText: "取消",
-        content: (
-          <Typography.Paragraph>
-            将导入 {imported.hosts.length} 台主机和 {imported.history.length}
-            条连接记录。当前配置会先自动备份，认证凭据不会被导入或覆盖。
-          </Typography.Paragraph>
-        ),
-        okText: "确认导入",
-        onOk: async () => {
-          setConfigurationAction(true);
-          try {
-            const next = await importConfiguration(imported);
-            setHosts(next.hosts);
-            setHistory(next.history);
-            setHostSort(next.hostSort);
-            onSettingsChange(next.settings);
-            if (isTauri()) {
-              await emitTo("settings", "configuration:changed").catch(
-                () => undefined,
-              );
-            }
-            Message.success("配置导入完成");
-          } catch (error) {
-            Message.error(String(error));
-            throw error;
-          } finally {
-            setConfigurationAction(false);
-          }
-        },
-        title: "确认导入配置",
-      });
-    } catch (error) {
       Message.error(String(error));
     } finally {
       setConfigurationAction(false);
@@ -659,22 +564,6 @@ function HostManagerPanel({
             >
               连接历史
             </Button>
-            <Tooltip content="导入配置">
-              <Button
-                aria-label="导入配置"
-                disabled={configurationLoading || configurationAction}
-                icon={<IconImport />}
-                onClick={() => void importConfigurationFile()}
-              />
-            </Tooltip>
-            <Tooltip content="导出配置">
-              <Button
-                aria-label="导出配置"
-                disabled={configurationLoading || configurationAction}
-                icon={<IconExport />}
-                onClick={() => void exportConfiguration()}
-              />
-            </Tooltip>
             <Button
               disabled={configurationLoading || configurationAction}
               icon={<IconPlus />}

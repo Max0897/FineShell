@@ -3,26 +3,38 @@ import {
   Button,
   Empty,
   Message,
+  Modal,
   Popconfirm,
   Space,
   Table,
   Typography,
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
-import { IconDelete, IconUndo } from "@arco-design/web-react/icon";
+import {
+  IconDelete,
+  IconExport,
+  IconImport,
+  IconUndo,
+} from "@arco-design/web-react/icon";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
+import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import type { AppSettings } from "../app-settings";
 import {
   type ConfigurationBackup,
   type DeletedHostRecord,
+  importConfiguration,
   loadConfiguration,
+  parseConfigurationExport,
   permanentlyDeleteHost,
   purgeExpiredDeletedHosts,
   restoreConfigurationBackup,
   restoreDeletedHost,
+  serializeConfigurationExport,
 } from "../config-database";
 
 interface ConfigurationMaintenanceProps {
+  onConfigurationImported?: (settings: AppSettings) => void;
   section: "backups" | "trash";
 }
 
@@ -43,12 +55,18 @@ async function removeHostCredentials(hostId: string) {
   ]);
 }
 
-async function notifyMainWindow() {
+async function notifyMainWindow(settings?: AppSettings) {
   if (!isTauri()) return;
-  await emitTo("main", "configuration:changed").catch(() => undefined);
+  await Promise.allSettled([
+    emitTo("main", "configuration:changed"),
+    ...(settings ? [emitTo("main", "settings:changed", settings)] : []),
+  ]);
 }
 
-function ConfigurationMaintenance({ section }: ConfigurationMaintenanceProps) {
+function ConfigurationMaintenance({
+  onConfigurationImported,
+  section,
+}: ConfigurationMaintenanceProps) {
   const [backups, setBackups] = useState<ConfigurationBackup[]>([]);
   const [trash, setTrash] = useState<DeletedHostRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -110,6 +128,86 @@ function ConfigurationMaintenance({ section }: ConfigurationMaintenanceProps) {
       unlisten?.();
     };
   }, [refresh]);
+
+  const exportConfiguration = async () => {
+    if (!isTauri()) {
+      Message.warning("配置导出仅支持桌面应用");
+      return;
+    }
+
+    setActing(true);
+    try {
+      const path = await saveDialog({
+        defaultPath: `fineshell-config-${new Date().toISOString().slice(0, 10)}.json`,
+        filters: [{ name: "FineShell 配置", extensions: ["json"] }],
+        title: "导出 FineShell 配置",
+      });
+      if (!path) return;
+
+      const configuration = await loadConfiguration();
+      await invoke("write_config_file", {
+        path,
+        contents: serializeConfigurationExport(configuration),
+      });
+      Message.success("配置已导出");
+    } catch (error) {
+      Message.error(String(error));
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const importConfigurationFile = async () => {
+    if (!isTauri()) {
+      Message.warning("配置导入仅支持桌面应用");
+      return;
+    }
+
+    setActing(true);
+    try {
+      const path = await open({
+        directory: false,
+        filters: [{ name: "FineShell 配置", extensions: ["json"] }],
+        multiple: false,
+        title: "导入 FineShell 配置",
+      });
+      if (typeof path !== "string") return;
+
+      const contents = await invoke<string>("read_config_file", { path });
+      const imported = parseConfigurationExport(contents);
+      Modal.confirm({
+        cancelText: "取消",
+        content: (
+          <Typography.Paragraph>
+            将导入 {imported.hosts.length} 台主机和 {imported.history.length}
+            条连接记录。当前配置会先自动备份，认证凭据不会被导入或覆盖。
+          </Typography.Paragraph>
+        ),
+        okText: "确认导入",
+        onOk: async () => {
+          setActing(true);
+          try {
+            const configuration = await importConfiguration(imported);
+            setBackups(configuration.backups);
+            setTrash(configuration.trash);
+            onConfigurationImported?.(configuration.settings);
+            await notifyMainWindow(configuration.settings);
+            Message.success("配置导入完成");
+          } catch (error) {
+            Message.error(String(error));
+            throw error;
+          } finally {
+            setActing(false);
+          }
+        },
+        title: "确认导入配置",
+      });
+    } catch (error) {
+      Message.error(String(error));
+    } finally {
+      setActing(false);
+    }
+  };
 
   const restoreBackup = async (backup: ConfigurationBackup) => {
     setActing(true);
@@ -260,31 +358,52 @@ function ConfigurationMaintenance({ section }: ConfigurationMaintenanceProps) {
 
   return (
     <>
-      <Typography.Title heading={5}>
-        {section === "backups" ? "备份与恢复" : "回收站"}
-      </Typography.Title>
       {section === "backups" ? (
-        <Table<ConfigurationBackup>
-          border={false}
-          columns={backupColumns}
-          data={backups}
-          loading={loading || acting}
-          noDataElement={<Empty description="暂无自动备份" />}
-          pagination={false}
-          rowKey="id"
-          size="small"
-        />
+        <>
+          <div className="configuration-maintenance-heading">
+            <Typography.Title heading={5}>备份与恢复</Typography.Title>
+            <Space size="small">
+              <Button
+                disabled={loading || acting}
+                icon={<IconImport />}
+                onClick={() => void importConfigurationFile()}
+              >
+                导入配置
+              </Button>
+              <Button
+                disabled={loading || acting}
+                icon={<IconExport />}
+                onClick={() => void exportConfiguration()}
+              >
+                导出配置
+              </Button>
+            </Space>
+          </div>
+          <Table<ConfigurationBackup>
+            border={false}
+            columns={backupColumns}
+            data={backups}
+            loading={loading || acting}
+            noDataElement={<Empty description="暂无自动备份" />}
+            pagination={false}
+            rowKey="id"
+            size="small"
+          />
+        </>
       ) : (
-        <Table<DeletedHostRecord>
-          border={false}
-          columns={trashColumns}
-          data={trash}
-          loading={loading || acting}
-          noDataElement={<Empty description="回收站为空" />}
-          pagination={false}
-          rowKey="id"
-          size="small"
-        />
+        <>
+          <Typography.Title heading={5}>回收站</Typography.Title>
+          <Table<DeletedHostRecord>
+            border={false}
+            columns={trashColumns}
+            data={trash}
+            loading={loading || acting}
+            noDataElement={<Empty description="回收站为空" />}
+            pagination={false}
+            rowKey="id"
+            size="small"
+          />
+        </>
       )}
     </>
   );
