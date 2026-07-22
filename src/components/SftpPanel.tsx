@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { HTMLAttributes } from "react";
 import {
   Badge,
   Button,
@@ -18,6 +19,7 @@ import type { TableColumnProps } from "@arco-design/web-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { Sticky, StickyContainer } from "react-sticky";
 import {
   IconArrowUp,
   IconDelete,
@@ -82,6 +84,39 @@ const INITIAL_BROWSER: BrowserState = {
   path: "/",
   inputPath: "/",
   entries: [],
+};
+
+function SftpStickyHeader({
+  children,
+  className,
+  style: headerStyle,
+  ...props
+}: HTMLAttributes<HTMLDivElement>) {
+  return (
+    <Sticky relative>
+      {({ isSticky, style }) => (
+        <div
+          {...props}
+          className={[
+            className,
+            "sftp-sticky-header",
+            isSticky ? "sftp-sticky-header-active" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          style={{ ...headerStyle, ...style }}
+        >
+          {children}
+        </div>
+      )}
+    </Sticky>
+  );
+}
+
+const SFTP_TABLE_COMPONENTS = {
+  header: {
+    wrapper: SftpStickyHeader,
+  },
 };
 
 function createTransferId() {
@@ -700,20 +735,24 @@ function SftpPanel({ session }: SftpPanelProps) {
           </div>
         </div>
       ) : (
-        <Table
-          border={false}
-          className="sftp-table"
-          columns={columns}
-          data={browser?.entries ?? []}
-          loading={busy}
-          noDataElement={<Empty description="目录为空" />}
-          onRow={(entry) => ({
-            onDoubleClick: () => openDirectory(entry),
-          })}
-          pagination={false}
-          rowKey="id"
-          size="small"
-        />
+        <StickyContainer className="sftp-table-container">
+          <Table
+            border={false}
+            className="sftp-table"
+            columns={columns}
+            components={SFTP_TABLE_COMPONENTS}
+            data={browser?.entries ?? []}
+            loading={busy}
+            noDataElement={<Empty description="目录为空" />}
+            onRow={(entry) => ({
+              onDoubleClick: () => openDirectory(entry),
+            })}
+            pagination={false}
+            rowKey="id"
+            scroll={{ y: true }}
+            size="small"
+          />
+        </StickyContainer>
       )}
       <Drawer
         bodyStyle={{ padding: 0 }}

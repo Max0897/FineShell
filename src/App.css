@@ -358,10 +358,25 @@ body,
   outline: none;
 }
 
-.sftp-table {
+.sftp-table-container {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  position: relative;
+}
+
+.sftp-table {
+  min-width: 0;
+}
+
+.sftp-sticky-header {
+  z-index: 3;
+  overflow: auto;
+  background: #f7f8fa;
+}
+
+.sftp-sticky-header-active {
+  border-bottom: 1px solid #e5e6eb;
 }
 
 .sftp-table .arco-table-tr {
