@@ -8,6 +8,7 @@ import {
 } from "react";
 import {
   Button,
+  Descriptions,
   Empty,
   Message,
   Modal,
@@ -494,7 +495,7 @@ function App() {
   const serverInfoPanel = (
     <aside className="panel server-info-panel">
       <div className="panel-toolbar">
-        <Typography.Text bold>服务器监控</Typography.Text>
+        <Typography.Text bold>服务器信息</Typography.Text>
         <Tooltip content="主机管理">
           <Button
             aria-label="打开主机管理"
@@ -507,15 +508,45 @@ function App() {
       {activeSession ? (
         <div className="server-info-content">
           <div className="server-title-row">
-            <div>
-              <Typography.Title heading={6}>
-                {activeSession.host.name}
-              </Typography.Title>
-              <Typography.Text type="secondary">
-                {activeSession.host.address}
-              </Typography.Text>
-            </div>
+            <Typography.Title heading={6}>
+              {activeSession.host.name}
+            </Typography.Title>
           </div>
+          <Descriptions
+            border
+            className="server-info-descriptions"
+            column={1}
+            data={[
+              {
+                label: "IP",
+                value: (
+                  <Typography.Text
+                    copyable={{
+                      text: activeSession.host.address,
+                      tooltips: ["复制 IP", "已复制"],
+                    }}
+                  >
+                    {activeSession.host.address}
+                  </Typography.Text>
+                ),
+              },
+              {
+                label: "端口",
+                value: (
+                  <Typography.Text
+                    copyable={{
+                      text: String(activeSession.host.port),
+                      tooltips: ["复制端口", "已复制"],
+                    }}
+                  >
+                    {activeSession.host.port}
+                  </Typography.Text>
+                ),
+              },
+            ]}
+            size="small"
+            tableLayout="fixed"
+          />
           <Suspense
             fallback={
               <div className="server-monitor-loading">

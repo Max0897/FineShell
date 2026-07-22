@@ -141,6 +141,20 @@ body,
   margin: 0;
 }
 
+.server-info-descriptions {
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+.server-info-descriptions .arco-descriptions-item-label {
+  width: 64px;
+  color: #86909c;
+}
+
+.server-info-descriptions .arco-typography {
+  margin: 0;
+}
+
 .server-actions {
   margin-top: 20px;
   padding-top: 16px;
