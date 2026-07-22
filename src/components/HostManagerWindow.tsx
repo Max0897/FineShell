@@ -13,9 +13,11 @@ import {
   Tabs,
   Tag,
   Tooltip,
+  Tree,
   Typography,
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
+import type { TreeDataType } from "@arco-design/web-react/es/Tree/interface";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -41,6 +43,13 @@ import type {
 } from "../models";
 import HostEditorModal from "./HostEditorModal";
 import { normalizeHostForm } from "../host-storage";
+import {
+  ALL_HOSTS_GROUP_KEY,
+  buildHostGroupTree,
+  collectHostGroupKeys,
+  filterHostsByGroup,
+  type HostGroupTreeNode,
+} from "../host-organization";
 import {
   type ConfigurationBackup,
   type DeletedHostRecord,
@@ -120,6 +129,10 @@ function HostManagerWindow() {
   const [configurationLoading, setConfigurationLoading] = useState(true);
   const [configurationAction, setConfigurationAction] = useState(false);
   const [keyword, setKeyword] = useState("");
+  const [selectedGroupKey, setSelectedGroupKey] = useState(
+    ALL_HOSTS_GROUP_KEY,
+  );
+  const [expandedGroupKeys, setExpandedGroupKeys] = useState<string[]>([]);
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingHost, setEditingHost] = useState<HostRecord | null>(null);
   const [quickTarget, setQuickTarget] = useState<QuickTarget>({
@@ -194,16 +207,53 @@ function HostManagerWindow() {
     };
   }, []);
 
-  const filteredHosts = useMemo(() => {
-    const normalized = keyword.trim().toLowerCase();
-    if (!normalized) return hosts;
+  const hostGroupTree = useMemo(() => buildHostGroupTree(hosts), [hosts]);
+  const hostGroupKeys = useMemo(
+    () => collectHostGroupKeys(hostGroupTree),
+    [hostGroupTree],
+  );
+  const hostGroupTreeData = useMemo<TreeDataType[]>(() => {
+    const toTreeData = (nodes: HostGroupTreeNode[]): TreeDataType[] =>
+      nodes.map((node) => ({
+        children: node.children ? toTreeData(node.children) : undefined,
+        icon: node.key.startsWith("host-group:") ? <IconFolder /> : undefined,
+        key: node.key,
+        title: (
+          <span className="host-group-tree-title">
+            <span>{node.title}</span>
+            <span className="host-group-tree-count">{node.count}</span>
+          </span>
+        ),
+      }));
+    return toTreeData(hostGroupTree);
+  }, [hostGroupTree]);
 
-    return hosts.filter((host) =>
+  useEffect(() => {
+    setExpandedGroupKeys((current) => [
+      ...new Set([...current, ...hostGroupKeys]),
+    ]);
+  }, [hostGroupKeys]);
+
+  useEffect(() => {
+    const availableKeys = new Set(
+      hostGroupTree.flatMap((node) => [node.key, ...collectHostGroupKeys([node])]),
+    );
+    if (!availableKeys.has(selectedGroupKey)) {
+      setSelectedGroupKey(ALL_HOSTS_GROUP_KEY);
+    }
+  }, [hostGroupTree, selectedGroupKey]);
+
+  const filteredHosts = useMemo(() => {
+    const groupedHosts = filterHostsByGroup(hosts, selectedGroupKey);
+    const normalized = keyword.trim().toLowerCase();
+    if (!normalized) return groupedHosts;
+
+    return groupedHosts.filter((host) =>
       [host.name, host.address, host.username, host.group]
         .filter(Boolean)
         .some((value) => value?.toLowerCase().includes(normalized)),
     );
-  }, [hosts, keyword]);
+  }, [hosts, keyword, selectedGroupKey]);
 
   function openHostEditor(host: HostRecord | null) {
     setEditingHost(host);
@@ -703,8 +753,23 @@ function HostManagerWindow() {
     <main className="host-manager-window">
       <Tabs activeTab={activeTab} onChange={setActiveTab} type="line">
         <Tabs.TabPane key="hosts" title="主机">
-          <div className="manager-pane">
-            <div className="manager-toolbar">
+          <div className="hosts-manager-layout">
+            <aside className="host-group-sidebar">
+              <Typography.Text bold>分组</Typography.Text>
+              <Tree
+                blockNode
+                expandedKeys={expandedGroupKeys}
+                onExpand={setExpandedGroupKeys}
+                onSelect={(keys) => {
+                  if (keys[0]) setSelectedGroupKey(keys[0]);
+                }}
+                selectedKeys={[selectedGroupKey]}
+                size="small"
+                treeData={hostGroupTreeData}
+              />
+            </aside>
+            <section className="manager-pane hosts-manager-content">
+              <div className="manager-toolbar">
               <Input.Search
                 allowClear
                 onChange={setKeyword}
@@ -737,19 +802,22 @@ function HostManagerWindow() {
                   新增主机
                 </Button>
               </div>
-            </div>
-            <Table
-              border={false}
-              columns={hostColumns}
-              data={filteredHosts}
-              loading={configurationLoading}
-              noDataElement={
-                <Empty description={keyword ? "没有匹配的主机" : "暂无主机"} />
-              }
-              pagination={false}
-              rowKey="id"
-              size="small"
-            />
+              </div>
+              <Table
+                border={false}
+                columns={hostColumns}
+                data={filteredHosts}
+                loading={configurationLoading}
+                noDataElement={
+                  <Empty
+                    description={keyword ? "没有匹配的主机" : "该分组暂无主机"}
+                  />
+                }
+                pagination={false}
+                rowKey="id"
+                size="small"
+              />
+            </section>
           </div>
         </Tabs.TabPane>
         <Tabs.TabPane

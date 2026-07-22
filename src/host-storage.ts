@@ -1,4 +1,5 @@
 import type { HostFormValues, HostRecord } from "./models";
+import { normalizeGroupPath } from "./host-organization";
 
 type StoredHostRecord = Omit<
   HostRecord,
@@ -22,6 +23,7 @@ type StoredHostRecord = Omit<
 export function withHostDefaults(host: StoredHostRecord): HostRecord {
   return {
     ...host,
+    group: normalizeGroupPath(host.group),
     authMethod: host.authMethod ?? "password",
     connectTimeoutSeconds: host.connectTimeoutSeconds ?? 10,
     keepAliveIntervalSeconds: host.keepAliveIntervalSeconds ?? 15,
@@ -45,7 +47,7 @@ export function normalizeHostForm(values: HostFormValues) {
         values.authMethod === "privateKey"
           ? values.privateKeyPath?.trim() || undefined
           : undefined,
-      group: values.group?.trim() || undefined,
+      group: normalizeGroupPath(values.group),
       hostFingerprint: values.hostFingerprint?.trim() || undefined,
     },
   };

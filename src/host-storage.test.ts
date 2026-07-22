@@ -76,6 +76,23 @@ describe("normalizeHostForm", () => {
     expect(result.host.hostFingerprint).toBeUndefined();
   });
 
+  test("normalizes nested group paths", () => {
+    const result = normalizeHostForm({
+      name: "Server",
+      address: "server.example.com",
+      port: 22,
+      username: "root",
+      authMethod: "password",
+      connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
+      group: " 生产 / 华东 / ",
+    });
+
+    expect(result.host.group).toBe("生产/华东");
+  });
+
   test("does not retain inactive private key fields", () => {
     const result = normalizeHostForm({
       name: "Server",
