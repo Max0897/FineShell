@@ -8,6 +8,8 @@
     "core:webview:allow-create-webview-window",
     "core:window:allow-close",
     "core:window:allow-set-focus",
+    "dialog:allow-open",
+    "dialog:allow-save",
     "opener:default"
   ]
 }

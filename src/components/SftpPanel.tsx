@@ -4,6 +4,8 @@ import {
   Empty,
   Input,
   Message,
+  Modal,
+  Progress,
   Space,
   Table,
   Tooltip,
@@ -11,8 +13,12 @@ import {
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   IconArrowUp,
+  IconDelete,
+  IconDownload,
   IconFile,
   IconFolder,
   IconFolderAdd,
@@ -29,6 +35,8 @@ import {
   formatFileSize,
   formatPermissions,
   formatRemoteTime,
+  localFileName,
+  remoteJoinPath,
   remoteParentPath,
 } from "../sftp-utils";
 
@@ -46,6 +54,23 @@ interface SftpPanelProps {
   session: TerminalSession | null;
 }
 
+interface SftpTransferPayload {
+  sessionId: string;
+  transferId: string;
+  direction: "upload" | "download";
+  fileName: string;
+  transferredBytes: number;
+  totalBytes: number;
+  status: "running" | "completed" | "failed";
+  error?: string;
+}
+
+interface TransferRecord extends SftpTransferPayload {
+  localPath: string;
+  remotePath: string;
+  overwrite: boolean;
+}
+
 const INITIAL_BROWSER: BrowserState = {
   status: "idle",
   path: "/",
@@ -53,8 +78,15 @@ const INITIAL_BROWSER: BrowserState = {
   entries: [],
 };
 
+function createTransferId() {
+  return `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function SftpPanel({ session }: SftpPanelProps) {
   const [browsers, setBrowsers] = useState<Record<string, BrowserState>>({});
+  const [transfers, setTransfers] = useState<Record<string, TransferRecord>>(
+    {},
+  );
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
 
@@ -188,10 +220,53 @@ function SftpPanel({ session }: SftpPanelProps) {
     }
   }, [browsers, connectAndLoad, session, updateBrowser]);
 
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<SftpTransferPayload>("sftp-transfer", ({ payload }) => {
+      setTransfers((current) => {
+        const previous = current[payload.transferId];
+        if (!previous) return current;
+        return {
+          ...current,
+          [payload.transferId]: {
+            ...previous,
+            ...payload,
+            transferredBytes:
+              payload.status === "failed" && payload.transferredBytes === 0
+                ? previous.transferredBytes
+                : payload.transferredBytes,
+            totalBytes: payload.totalBytes || previous.totalBytes,
+          },
+        };
+      });
+    }).then((stopListening) => {
+      if (disposed) {
+        stopListening();
+      } else {
+        unlisten = stopListening;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const browser = session ? browsers[session.id] ?? INITIAL_BROWSER : null;
   const ready = Boolean(session && browser?.status === "ready");
   const busy =
     browser?.status === "connecting" || browser?.status === "loading";
+  const currentTransfers = useMemo(
+    () =>
+      Object.values(transfers)
+        .filter((transfer) => transfer.sessionId === session?.id)
+        .reverse(),
+    [session?.id, transfers],
+  );
 
   const columns = useMemo<TableColumnProps<SftpEntry>[]>(
     () => [
@@ -224,9 +299,138 @@ function SftpPanel({ session }: SftpPanelProps) {
         width: 150,
         render: (value) => formatRemoteTime(value),
       },
+      {
+        title: "操作",
+        width: 62,
+        render: (_, entry) =>
+          entry.kind === "directory" ? null : (
+            <Tooltip content="下载">
+              <Button
+                aria-label={`下载 ${entry.name}`}
+                disabled={!ready}
+                icon={<IconDownload />}
+                onClick={() => void downloadEntry(entry)}
+                size="mini"
+              />
+            </Tooltip>
+          ),
+      },
     ],
-    [],
+    [ready, session, browser],
   );
+
+  async function runTransfer(
+    direction: "upload" | "download",
+    localPath: string,
+    remotePath: string,
+    overwrite: boolean,
+    transferId = createTransferId(),
+  ) {
+    if (!session) return;
+    const fileName =
+      direction === "upload"
+        ? localFileName(localPath)
+        : remotePath.split("/").pop() || remotePath;
+    const record: TransferRecord = {
+      sessionId: session.id,
+      transferId,
+      direction,
+      fileName,
+      transferredBytes: 0,
+      totalBytes: 0,
+      status: "running",
+      localPath,
+      remotePath,
+      overwrite,
+    };
+    setTransfers((current) => ({ ...current, [transferId]: record }));
+
+    try {
+      await invoke(direction === "upload" ? "sftp_upload" : "sftp_download", {
+        sessionId: session.id,
+        transferId,
+        localPath,
+        remotePath,
+        overwrite,
+      });
+      Message.success(`${direction === "upload" ? "上传" : "下载"}完成：${fileName}`);
+      if (direction === "upload" && browser) {
+        await loadDirectory(session.id, browser.path);
+      }
+    } catch (error) {
+      const message = String(error);
+      setTransfers((current) => {
+        const previous = current[transferId] ?? record;
+        return {
+          ...current,
+          [transferId]: {
+            ...previous,
+            status: "failed",
+            error: message,
+          },
+        };
+      });
+      Message.error(message);
+    }
+  }
+
+  async function chooseUploadFile() {
+    if (!session || !browser || !ready) return;
+    const selected = await open({
+      directory: false,
+      multiple: false,
+      title: "选择上传文件",
+    });
+    if (typeof selected !== "string") return;
+
+    const fileName = localFileName(selected);
+    const remotePath = remoteJoinPath(browser.path, fileName);
+    const existing = browser.entries.find((entry) => entry.name === fileName);
+    if (existing) {
+      Modal.confirm({
+        title: "覆盖远程文件？",
+        content: `“${fileName}”已存在，继续上传将覆盖它。`,
+        okText: "覆盖",
+        cancelText: "取消",
+        onOk: () => runTransfer("upload", selected, remotePath, true),
+      });
+      return;
+    }
+
+    await runTransfer("upload", selected, remotePath, false);
+  }
+
+  async function downloadEntry(entry: SftpEntry) {
+    if (!session || !ready) return;
+    const target = await save({
+      defaultPath: entry.name,
+      title: `下载 ${entry.name}`,
+    });
+    if (!target) return;
+    await runTransfer("download", target, entry.path, true);
+  }
+
+  async function retryTransfer(transfer: TransferRecord) {
+    await runTransfer(
+      transfer.direction,
+      transfer.localPath,
+      transfer.remotePath,
+      transfer.overwrite,
+      transfer.transferId,
+    );
+  }
+
+  function clearFinishedTransfers() {
+    if (!session) return;
+    setTransfers((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(
+          ([, transfer]) =>
+            transfer.sessionId !== session.id || transfer.status === "running",
+        ),
+      ),
+    );
+  }
 
   async function retryConnection() {
     if (!session) return;
@@ -300,11 +504,75 @@ function SftpPanel({ session }: SftpPanelProps) {
           <Button disabled icon={<IconFolderAdd />} size="mini">
             新建目录
           </Button>
-          <Button disabled icon={<IconUpload />} size="mini" type="primary">
+          <Button
+            disabled={!ready}
+            icon={<IconUpload />}
+            onClick={() => void chooseUploadFile()}
+            size="mini"
+            type="primary"
+          >
             上传
           </Button>
         </Space>
       </div>
+      {currentTransfers.length > 0 && (
+        <div className="sftp-transfers">
+          <div className="sftp-transfers-heading">
+            <Typography.Text type="secondary">传输任务</Typography.Text>
+            {currentTransfers.some((item) => item.status !== "running") && (
+              <Tooltip content="清除已完成任务">
+                <Button
+                  aria-label="清除已完成传输任务"
+                  icon={<IconDelete />}
+                  onClick={clearFinishedTransfers}
+                  size="mini"
+                  type="text"
+                />
+              </Tooltip>
+            )}
+          </div>
+          {currentTransfers.slice(0, 3).map((transfer) => {
+            const percent = transfer.totalBytes
+              ? Math.min(
+                  100,
+                  Math.round(
+                    (transfer.transferredBytes / transfer.totalBytes) * 100,
+                  ),
+                )
+              : transfer.status === "completed"
+                ? 100
+                : 0;
+            return (
+              <div className="sftp-transfer-row" key={transfer.transferId}>
+                <span className="sftp-transfer-direction">
+                  {transfer.direction === "upload" ? (
+                    <IconUpload />
+                  ) : (
+                    <IconDownload />
+                  )}
+                </span>
+                <Typography.Text ellipsis>{transfer.fileName}</Typography.Text>
+                <Progress
+                  percent={percent}
+                  showText
+                  size="small"
+                  status={transfer.status === "failed" ? "error" : "normal"}
+                />
+                {transfer.status === "failed" && (
+                  <Tooltip content="重试">
+                    <Button
+                      aria-label={`重试 ${transfer.fileName}`}
+                      icon={<IconRefresh />}
+                      onClick={() => void retryTransfer(transfer)}
+                      size="mini"
+                    />
+                  </Tooltip>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
       {!session ? (
         <div className="panel-empty">
           <Empty description="SFTP 未连接" />

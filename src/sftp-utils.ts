@@ -10,6 +10,10 @@ export function remoteJoinPath(directory: string, name: string) {
   return `${directory.replace(/\/+$/, "")}/${name}`;
 }
 
+export function localFileName(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 export function formatFileSize(size: number) {
   if (!Number.isFinite(size) || size < 0) return "-";
   if (size < 1024) return `${size} B`;

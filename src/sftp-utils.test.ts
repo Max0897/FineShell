@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   formatFileSize,
   formatPermissions,
+  localFileName,
   remoteJoinPath,
   remoteParentPath,
 } from "./sftp-utils";
@@ -16,6 +17,11 @@ describe("SFTP path helpers", () => {
   test("joins names without duplicating separators", () => {
     expect(remoteJoinPath("/", "tmp")).toBe("/tmp");
     expect(remoteJoinPath("/var/", "log")).toBe("/var/log");
+  });
+
+  test("extracts file names from Unix and Windows paths", () => {
+    expect(localFileName("/Users/test/report.txt")).toBe("report.txt");
+    expect(localFileName("C:\\Users\\test\\report.txt")).toBe("report.txt");
   });
 });
 
