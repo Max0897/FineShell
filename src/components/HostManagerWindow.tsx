@@ -6,19 +6,23 @@ import {
   InputNumber,
   Message,
   Popconfirm,
+  Select,
   Space,
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   IconDelete,
   IconEdit,
+  IconFolder,
   IconHistory,
   IconLink,
   IconPlus,
@@ -26,6 +30,7 @@ import {
 import type {
   ConnectionHistoryRecord,
   HostFormValues,
+  HostAuthMethod,
   HostRecord,
   QuickTarget,
 } from "../models";
@@ -66,6 +71,26 @@ async function removeHostPassword(hostId: string) {
   await invoke("delete_host_password", { hostId });
 }
 
+async function storePrivateKeyPassphrase(hostId: string, passphrase: string) {
+  if (!isTauri()) return;
+  await invoke("store_private_key_passphrase", { hostId, passphrase });
+}
+
+async function removePrivateKeyPassphrase(hostId: string) {
+  if (!isTauri()) return;
+  await invoke("delete_private_key_passphrase", { hostId });
+}
+
+async function choosePrivateKeyPath() {
+  if (!isTauri()) return undefined;
+  const selected = await open({
+    directory: false,
+    multiple: false,
+    title: "选择 SSH 私钥",
+  });
+  return typeof selected === "string" ? selected : undefined;
+}
+
 function targetKey(
   target: Pick<HostRecord, "address" | "port" | "username">,
 ) {
@@ -102,6 +127,11 @@ function HostManagerWindow() {
     username: "root",
   });
   const [quickPassword, setQuickPassword] = useState("");
+  const [quickAuthMethod, setQuickAuthMethod] =
+    useState<HostAuthMethod>("password");
+  const [quickPrivateKeyPath, setQuickPrivateKeyPath] = useState("");
+  const [quickPrivateKeyPassphrase, setQuickPrivateKeyPassphrase] =
+    useState("");
 
   useEffect(() => {
     document.title = "主机管理";
@@ -153,13 +183,17 @@ function HostManagerWindow() {
   }
 
   async function saveHost(values: HostFormValues) {
-    const { password, host: normalized } = normalizeHostForm(values);
+    const { password, privateKeyPassphrase, host: normalized } =
+      normalizeHostForm(values);
     const hostId = editingHost?.id ?? createId("host");
 
     try {
       if (password) await storeHostPassword(hostId, password);
+      if (privateKeyPassphrase) {
+        await storePrivateKeyPassphrase(hostId, privateKeyPassphrase);
+      }
     } catch {
-      Message.error("密码保存失败，请检查系统凭据库权限");
+      Message.error("认证凭据保存失败，请检查系统凭据库权限");
       return;
     }
 
@@ -183,9 +217,11 @@ function HostManagerWindow() {
   }
 
   async function deleteHost(host: HostRecord) {
-    try {
-      await removeHostPassword(host.id);
-    } catch {
+    const credentialCleanup = await Promise.allSettled([
+      removeHostPassword(host.id),
+      removePrivateKeyPassphrase(host.id),
+    ]);
+    if (credentialCleanup.some((result) => result.status === "rejected")) {
       Message.warning("主机已删除，但系统凭据清理失败");
     }
     setHosts((current) => current.filter((item) => item.id !== host.id));
@@ -203,6 +239,8 @@ function HostManagerWindow() {
       address: host.address,
       port: host.port,
       username: host.username,
+      authMethod: host.authMethod,
+      privateKeyPath: host.privateKeyPath,
       connectedAt: now,
     };
 
@@ -232,7 +270,11 @@ function HostManagerWindow() {
   }
 
   async function quickConnect() {
-    if (!quickTarget.address.trim() || !quickPassword) return;
+    const credentialReady =
+      quickAuthMethod === "password"
+        ? Boolean(quickPassword)
+        : Boolean(quickPrivateKeyPath.trim());
+    if (!quickTarget.address.trim() || !credentialReady) return;
 
     const normalized = {
       ...quickTarget,
@@ -242,17 +284,28 @@ function HostManagerWindow() {
     const host: HostRecord = {
       id: `quick-${targetKey(normalized)}`,
       name: normalized.address,
-      authMethod: "password",
+      authMethod: quickAuthMethod,
+      privateKeyPath:
+        quickAuthMethod === "privateKey"
+          ? quickPrivateKeyPath.trim()
+          : undefined,
       connectTimeoutSeconds: 10,
       ...normalized,
     };
 
     try {
-      await storeHostPassword(host.id, quickPassword);
+      if (quickAuthMethod === "password") {
+        await storeHostPassword(host.id, quickPassword);
+      } else if (quickPrivateKeyPassphrase) {
+        await storePrivateKeyPassphrase(host.id, quickPrivateKeyPassphrase);
+      } else {
+        await removePrivateKeyPassphrase(host.id);
+      }
       setQuickPassword("");
+      setQuickPrivateKeyPassphrase("");
       await sendConnection(host);
     } catch {
-      Message.error("密码保存失败，请检查系统凭据库权限");
+      Message.error("认证凭据保存失败，请检查系统凭据库权限");
     }
   }
 
@@ -265,7 +318,8 @@ function HostManagerWindow() {
         address: record.address,
         port: record.port,
         username: record.username,
-        authMethod: "password",
+        authMethod: record.authMethod ?? "password",
+        privateKeyPath: record.privateKeyPath,
         connectTimeoutSeconds: 10,
       },
     );
@@ -427,11 +481,44 @@ function HostManagerWindow() {
                   placeholder="用户名"
                   value={quickTarget.username}
                 />
-                <Input.Password
-                  onChange={setQuickPassword}
-                  placeholder="密码"
-                  value={quickPassword}
+                <Select
+                  onChange={setQuickAuthMethod}
+                  options={[
+                    { label: "密码认证", value: "password" },
+                    { label: "私钥认证", value: "privateKey" },
+                  ]}
+                  value={quickAuthMethod}
                 />
+                {quickAuthMethod === "password" ? (
+                  <Input.Password
+                    onChange={setQuickPassword}
+                    placeholder="密码"
+                    value={quickPassword}
+                  />
+                ) : (
+                  <div className="quick-key-credentials">
+                    <Input.Search
+                      onChange={setQuickPrivateKeyPath}
+                      onSearch={() =>
+                        void choosePrivateKeyPath().then((path) => {
+                          if (path) setQuickPrivateKeyPath(path);
+                        })
+                      }
+                      placeholder="私钥文件"
+                      searchButton={
+                        <Tooltip content="选择私钥文件">
+                          <IconFolder />
+                        </Tooltip>
+                      }
+                      value={quickPrivateKeyPath}
+                    />
+                    <Input.Password
+                      onChange={setQuickPrivateKeyPassphrase}
+                      placeholder="私钥口令（可选）"
+                      value={quickPrivateKeyPassphrase}
+                    />
+                  </div>
+                )}
                 <InputNumber
                   max={65535}
                   min={1}
@@ -442,7 +529,12 @@ function HostManagerWindow() {
                   value={quickTarget.port}
                 />
                 <Button
-                  disabled={!quickTarget.address.trim() || !quickPassword}
+                  disabled={
+                    !quickTarget.address.trim() ||
+                    (quickAuthMethod === "password"
+                      ? !quickPassword
+                      : !quickPrivateKeyPath.trim())
+                  }
                   icon={<IconLink />}
                   onClick={() => void quickConnect()}
                   type="primary"
@@ -474,6 +566,7 @@ function HostManagerWindow() {
             setEditorVisible(false);
             setEditingHost(null);
           }}
+          onChoosePrivateKey={choosePrivateKeyPath}
           onSubmit={saveHost}
           visible
         />

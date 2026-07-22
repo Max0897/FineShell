@@ -417,8 +417,15 @@ body,
   margin-top: 10px;
   display: grid;
   grid-template-columns:
-    minmax(180px, 1fr) minmax(110px, 0.6fr) minmax(130px, 0.7fr)
+    minmax(160px, 1fr) minmax(100px, 0.6fr) 112px minmax(180px, 1fr)
     104px auto;
+  gap: 8px;
+}
+
+.quick-key-credentials {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(130px, 0.75fr);
   gap: 8px;
 }
 
@@ -444,6 +451,10 @@ body,
 @media (max-width: 820px) {
   .quick-connect-fields {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .quick-key-credentials {
+    grid-template-columns: 1fr;
   }
 
   .sftp-toolbar {

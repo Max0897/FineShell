@@ -179,6 +179,8 @@ function App() {
             address: session.host.address,
             port: session.host.port,
             username: session.host.username,
+            authMethod: session.host.authMethod,
+            privateKeyPath: session.host.privateKeyPath,
             connectTimeoutSeconds: session.host.connectTimeoutSeconds,
             expectedFingerprint: session.host.hostFingerprint,
             cols: 80,
@@ -364,6 +366,13 @@ function App() {
             data={[
               { label: "协议", value: "SSH" },
               { label: "状态", value: sessionStatusLabel(activeSession) },
+              {
+                label: "认证",
+                value:
+                  activeSession.host.authMethod === "privateKey"
+                    ? "私钥"
+                    : "密码",
+              },
               { label: "用户名", value: activeSession.host.username },
               { label: "端口", value: activeSession.host.port },
               {

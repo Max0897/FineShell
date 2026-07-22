@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Button,
   Form,
@@ -6,13 +7,16 @@ import {
   Modal,
   Select,
   Space,
+  Tooltip,
 } from "@arco-design/web-react";
+import { IconFolder } from "@arco-design/web-react/icon";
 import type { HostFormValues, HostRecord } from "../models";
 
 interface HostEditorModalProps {
   host: HostRecord | null;
   visible: boolean;
   onCancel: () => void;
+  onChoosePrivateKey: () => Promise<string | undefined>;
   onSubmit: (values: HostFormValues) => void;
 }
 
@@ -20,8 +24,13 @@ function HostEditorModal({
   host,
   visible,
   onCancel,
+  onChoosePrivateKey,
   onSubmit,
 }: HostEditorModalProps) {
+  const [form] = Form.useForm<HostFormValues>();
+  const [authMethod, setAuthMethod] = useState(
+    host?.authMethod ?? "password",
+  );
   const initialValues: HostFormValues = host
     ? {
         name: host.name,
@@ -29,6 +38,8 @@ function HostEditorModal({
         port: host.port,
         username: host.username,
         authMethod: host.authMethod,
+        privateKeyPath: host.privateKeyPath,
+        privateKeyPassphrase: "",
         connectTimeoutSeconds: host.connectTimeoutSeconds,
         password: "",
         group: host.group,
@@ -40,6 +51,8 @@ function HostEditorModal({
         port: 22,
         username: "root",
         authMethod: "password",
+        privateKeyPath: "",
+        privateKeyPassphrase: "",
         connectTimeoutSeconds: 10,
         password: "",
         group: "",
@@ -57,6 +70,7 @@ function HostEditorModal({
       visible={visible}
     >
       <Form<HostFormValues>
+        form={form}
         initialValues={initialValues}
         layout="vertical"
         onSubmit={onSubmit}
@@ -93,22 +107,59 @@ function HostEditorModal({
         </div>
         <Form.Item field="authMethod" label="认证方式">
           <Select
-            options={[{ label: "密码认证", value: "password" }]}
+            onChange={setAuthMethod}
+            options={[
+              { label: "密码认证", value: "password" },
+              { label: "私钥认证", value: "privateKey" },
+            ]}
           />
         </Form.Item>
-        <Form.Item
-          field="password"
-          label="密码"
-          rules={
-            host
-              ? undefined
-              : [{ required: true, message: "请输入登录密码" }]
-          }
-        >
-          <Input.Password
-            placeholder={host ? "留空则保留原密码" : "登录密码"}
-          />
-        </Form.Item>
+        {authMethod === "password" ? (
+          <Form.Item
+            field="password"
+            label="密码"
+            rules={
+              host?.authMethod === "password"
+                ? undefined
+                : [{ required: true, message: "请输入登录密码" }]
+            }
+          >
+            <Input.Password
+              placeholder={host ? "留空则保留原密码" : "登录密码"}
+            />
+          </Form.Item>
+        ) : (
+          <>
+            <Form.Item
+              field="privateKeyPath"
+              label="私钥文件"
+              rules={[{ required: true, message: "请选择私钥文件" }]}
+            >
+              <Input.Search
+                onSearch={() =>
+                  void onChoosePrivateKey().then((path) => {
+                    if (path) form.setFieldValue("privateKeyPath", path);
+                  })
+                }
+                placeholder="选择或输入私钥文件路径"
+                searchButton={
+                  <Tooltip content="选择私钥文件">
+                    <IconFolder />
+                  </Tooltip>
+                }
+              />
+            </Form.Item>
+            <Form.Item field="privateKeyPassphrase" label="私钥口令">
+              <Input.Password
+                placeholder={
+                  host?.authMethod === "privateKey"
+                    ? "留空则保留原口令"
+                    : "没有口令可留空"
+                }
+              />
+            </Form.Item>
+          </>
+        )}
         <Form.Item
           field="connectTimeoutSeconds"
           label="连接超时（秒）"

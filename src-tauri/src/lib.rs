@@ -12,6 +12,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             credentials::store_host_password,
             credentials::delete_host_password,
+            credentials::store_private_key_passphrase,
+            credentials::delete_private_key_passphrase,
             ssh::ssh_connect,
             ssh::ssh_write,
             ssh::ssh_resize,

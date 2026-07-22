@@ -1,4 +1,4 @@
-export type HostAuthMethod = "password";
+export type HostAuthMethod = "password" | "privateKey";
 
 export interface HostRecord {
   id: string;
@@ -7,6 +7,7 @@ export interface HostRecord {
   port: number;
   username: string;
   authMethod: HostAuthMethod;
+  privateKeyPath?: string;
   connectTimeoutSeconds: number;
   group?: string;
   hostFingerprint?: string;
@@ -19,6 +20,8 @@ export interface HostFormValues {
   port: number;
   username: string;
   authMethod: HostAuthMethod;
+  privateKeyPath?: string;
+  privateKeyPassphrase?: string;
   connectTimeoutSeconds: number;
   password?: string;
   group?: string;
@@ -35,6 +38,8 @@ export interface ConnectionHistoryRecord extends QuickTarget {
   id: string;
   hostId?: string;
   name: string;
+  authMethod?: HostAuthMethod;
+  privateKeyPath?: string;
   connectedAt: string;
 }
 

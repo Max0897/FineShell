@@ -22,11 +22,30 @@ describe("normalizeHostForm", () => {
       port: 22,
       username: "root",
       authMethod: "password",
+      privateKeyPath: undefined,
       connectTimeoutSeconds: 10,
       group: "Linux",
       hostFingerprint: "SHA256:abc123",
     });
     expect("password" in result.host).toBe(false);
+    expect("privateKeyPassphrase" in result.host).toBe(false);
+  });
+
+  test("keeps private key metadata while separating its passphrase", () => {
+    const result = normalizeHostForm({
+      name: "Key Server",
+      address: "server.example.com",
+      port: 22,
+      username: "deploy",
+      authMethod: "privateKey",
+      privateKeyPath: "  /Users/demo/.ssh/id_ed25519  ",
+      privateKeyPassphrase: "key-secret",
+      connectTimeoutSeconds: 10,
+    });
+
+    expect(result.privateKeyPassphrase).toBe("key-secret");
+    expect(result.host.privateKeyPath).toBe("/Users/demo/.ssh/id_ed25519");
+    expect("privateKeyPassphrase" in result.host).toBe(false);
   });
 
   test("removes empty optional metadata", () => {
@@ -43,5 +62,22 @@ describe("normalizeHostForm", () => {
 
     expect(result.host.group).toBeUndefined();
     expect(result.host.hostFingerprint).toBeUndefined();
+  });
+
+  test("does not retain inactive private key fields", () => {
+    const result = normalizeHostForm({
+      name: "Server",
+      address: "127.0.0.1",
+      port: 22,
+      username: "root",
+      authMethod: "password",
+      password: "secret",
+      privateKeyPath: "/tmp/old-key",
+      privateKeyPassphrase: "old-secret",
+      connectTimeoutSeconds: 10,
+    });
+
+    expect(result.host.privateKeyPath).toBeUndefined();
+    expect(result.privateKeyPassphrase).toBeUndefined();
   });
 });

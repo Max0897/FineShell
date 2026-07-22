@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use ssh2::{FileStat, FileType, RenameFlags, Session, Sftp};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::ssh::{connect_authenticated_session, SshAuthConfig};
+use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
 
 const SFTP_TRANSFER_EVENT: &str = "sftp-transfer";
 const TRANSFER_BUFFER_SIZE: usize = 64 * 1024;
@@ -28,6 +28,8 @@ pub(crate) struct SftpConnectRequest {
     address: String,
     port: u16,
     username: String,
+    auth_method: SshAuthMethod,
+    private_key_path: Option<String>,
     connect_timeout_seconds: u64,
     expected_fingerprint: Option<String>,
 }
@@ -547,6 +549,8 @@ fn connect_session(
         address: request.address,
         port: request.port,
         username: request.username,
+        auth_method: request.auth_method,
+        private_key_path: request.private_key_path,
         connect_timeout_seconds: request.connect_timeout_seconds,
         expected_fingerprint: request.expected_fingerprint,
     };
@@ -749,7 +753,7 @@ mod tests {
     use ssh2::{FileStat, RenameFlags};
 
     use super::{entry_kind, SftpCommand, SftpSessionManager};
-    use crate::ssh::{connect_authenticated_session, SshAuthConfig};
+    use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
 
     #[test]
     fn classifies_common_remote_entry_types() {
@@ -807,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires FINESHELL_LIVE_* environment variables and a stored host password"]
+    #[ignore = "requires FINESHELL_LIVE_* environment variables and a stored password or test private key"]
     fn completes_a_live_sftp_round_trip() -> Result<(), String> {
         let host_id = std::env::var("FINESHELL_LIVE_HOST_ID")
             .map_err(|_| "缺少 FINESHELL_LIVE_HOST_ID".to_string())?;
@@ -820,11 +824,18 @@ mod tests {
         let username =
             std::env::var("FINESHELL_LIVE_USERNAME").unwrap_or_else(|_| "root".to_string());
         let expected_fingerprint = std::env::var("FINESHELL_LIVE_FINGERPRINT").ok();
+        let private_key_path = std::env::var("FINESHELL_LIVE_PRIVATE_KEY").ok();
         let config = SshAuthConfig {
             host_id,
             address,
             port,
             username,
+            auth_method: if private_key_path.is_some() {
+                SshAuthMethod::PrivateKey
+            } else {
+                SshAuthMethod::Password
+            },
+            private_key_path,
             connect_timeout_seconds: 10,
             expected_fingerprint,
         };

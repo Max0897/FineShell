@@ -187,6 +187,8 @@ function SftpPanel({ session }: SftpPanelProps) {
               address: currentSession.host.address,
               port: currentSession.host.port,
               username: currentSession.host.username,
+              authMethod: currentSession.host.authMethod,
+              privateKeyPath: currentSession.host.privateKeyPath,
               connectTimeoutSeconds:
                 currentSession.host.connectTimeoutSeconds,
               expectedFingerprint:

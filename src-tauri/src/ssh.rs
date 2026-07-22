@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     io::{self, Read, Write},
     net::{TcpStream, ToSocketAddrs},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender, TryRecvError},
@@ -29,10 +30,19 @@ pub(crate) struct SshConnectRequest {
     address: String,
     port: u16,
     username: String,
+    auth_method: SshAuthMethod,
+    private_key_path: Option<String>,
     connect_timeout_seconds: u64,
     expected_fingerprint: Option<String>,
     cols: u32,
     rows: u32,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SshAuthMethod {
+    Password,
+    PrivateKey,
 }
 
 pub(crate) struct SshAuthConfig {
@@ -40,6 +50,8 @@ pub(crate) struct SshAuthConfig {
     pub(crate) address: String,
     pub(crate) port: u16,
     pub(crate) username: String,
+    pub(crate) auth_method: SshAuthMethod,
+    pub(crate) private_key_path: Option<String>,
     pub(crate) connect_timeout_seconds: u64,
     pub(crate) expected_fingerprint: Option<String>,
 }
@@ -202,6 +214,16 @@ fn validate_fingerprint(expected: Option<&str>, actual: &str) -> Result<(), Stri
     }
 }
 
+fn resolve_private_key_path(path: &str) -> PathBuf {
+    let Some(relative) = path.strip_prefix("~/") else {
+        return PathBuf::from(path);
+    };
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join(relative))
+        .unwrap_or_else(|| PathBuf::from(path))
+}
+
 pub(crate) fn connect_authenticated_session(
     config: &SshAuthConfig,
     cancelled: &AtomicBool,
@@ -229,10 +251,30 @@ pub(crate) fn connect_authenticated_session(
     let fingerprint = host_fingerprint(&session)?;
     validate_fingerprint(config.expected_fingerprint.as_deref(), &fingerprint)?;
 
-    let password = credentials::get_host_password(&config.host_id)?;
-    session
-        .userauth_password(&config.username, &password)
-        .map_err(|error| format!("SSH 密码认证失败：{error}"))?;
+    match config.auth_method {
+        SshAuthMethod::Password => {
+            let password = credentials::get_host_password(&config.host_id)?;
+            session
+                .userauth_password(&config.username, &password)
+                .map_err(|error| format!("SSH 密码认证失败：{error}"))?;
+        }
+        SshAuthMethod::PrivateKey => {
+            let private_key_path = config
+                .private_key_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| "未配置 SSH 私钥文件".to_string())?;
+            let private_key = resolve_private_key_path(private_key_path);
+            if !private_key.is_file() {
+                return Err(format!("SSH 私钥文件不存在：{private_key_path}"));
+            }
+            let passphrase = credentials::get_private_key_passphrase(&config.host_id)?;
+            session
+                .userauth_pubkey_file(&config.username, None, &private_key, passphrase.as_deref())
+                .map_err(|error| format!("SSH 私钥认证失败：{error}"))?;
+        }
+    }
     if !session.authenticated() {
         return Err("SSH 认证未通过".to_string());
     }
@@ -400,6 +442,8 @@ fn connect_session(
         address: request.address.clone(),
         port: request.port,
         username: request.username.clone(),
+        auth_method: request.auth_method,
+        private_key_path: request.private_key_path.clone(),
         connect_timeout_seconds: request.connect_timeout_seconds,
         expected_fingerprint: request.expected_fingerprint.clone(),
     };
@@ -511,9 +555,12 @@ pub(crate) fn ssh_disconnect(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{validate_fingerprint, SessionCommand, SshSessionManager};
+    use super::{
+        connect_authenticated_session, validate_fingerprint, SessionCommand, SshAuthConfig,
+        SshAuthMethod, SshSessionManager,
+    };
 
     #[test]
     fn accepts_fingerprint_with_or_without_prefix() {
@@ -555,5 +602,37 @@ mod tests {
             receiver.recv().unwrap(),
             SessionCommand::Write(data) if data == vec![1, 2, 3]
         ));
+    }
+
+    #[test]
+    #[ignore = "requires FINESHELL_LIVE_* environment variables and a test private key"]
+    fn connects_with_a_live_private_key() -> Result<(), String> {
+        let address = std::env::var("FINESHELL_LIVE_ADDRESS")
+            .map_err(|_| "缺少 FINESHELL_LIVE_ADDRESS".to_string())?;
+        let port = std::env::var("FINESHELL_LIVE_PORT")
+            .unwrap_or_else(|_| "22".to_string())
+            .parse::<u16>()
+            .map_err(|error| format!("FINESHELL_LIVE_PORT 无效：{error}"))?;
+        let username =
+            std::env::var("FINESHELL_LIVE_USERNAME").unwrap_or_else(|_| "root".to_string());
+        let private_key_path = std::env::var("FINESHELL_LIVE_PRIVATE_KEY")
+            .map_err(|_| "缺少 FINESHELL_LIVE_PRIVATE_KEY".to_string())?;
+        let config = SshAuthConfig {
+            host_id: "fineshell-live-private-key".to_string(),
+            address,
+            port,
+            username,
+            auth_method: SshAuthMethod::PrivateKey,
+            private_key_path: Some(private_key_path),
+            connect_timeout_seconds: 10,
+            expected_fingerprint: std::env::var("FINESHELL_LIVE_FINGERPRINT").ok(),
+        };
+
+        let (session, fingerprint) =
+            connect_authenticated_session(&config, &AtomicBool::new(false))?;
+        if !session.authenticated() || !fingerprint.starts_with("SHA256:") {
+            return Err("私钥认证结果无效".to_string());
+        }
+        Ok(())
     }
 }
