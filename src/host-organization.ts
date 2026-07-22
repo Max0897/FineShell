@@ -144,3 +144,21 @@ export function sortHosts(hosts: HostRecord[], mode: HostSortMode) {
     return rightTime - leftTime || compareHostNames(left, right);
   });
 }
+
+export function createHostCopy(
+  source: HostRecord,
+  existingHosts: HostRecord[],
+  id: string,
+): HostRecord {
+  const existingNames = new Set(existingHosts.map((host) => host.name));
+  const baseName = `${source.name} 副本`;
+  let name = baseName;
+  let suffix = 2;
+  while (existingNames.has(name)) {
+    name = `${baseName} ${suffix}`;
+    suffix += 1;
+  }
+
+  const { lastConnectedAt: _lastConnectedAt, ...metadata } = source;
+  return { ...metadata, id, name };
+}

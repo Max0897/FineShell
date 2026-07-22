@@ -3,6 +3,7 @@ import type { HostRecord } from "./models";
 import {
   ALL_HOSTS_GROUP_KEY,
   buildHostGroupTree,
+  createHostCopy,
   filterHostsByGroup,
   hostGroupKey,
   normalizeGroupPath,
@@ -118,5 +119,27 @@ describe("host sorting", () => {
       "alpha",
     ]);
     expect(sortHosts(hosts, "recentDesc")[0].id).toBe("server-2");
+  });
+});
+
+describe("host copy", () => {
+  test("creates a new identity and a unique name", () => {
+    const source = {
+      ...host("source", "生产/华东"),
+      name: "Application",
+      hostFingerprint: "SHA256:fingerprint",
+      lastConnectedAt: "2026-07-22T10:00:00.000Z",
+    };
+    const copied = createHostCopy(
+      source,
+      [source, { ...host("copy"), name: "Application 副本" }],
+      "new-id",
+    );
+
+    expect(copied.id).toBe("new-id");
+    expect(copied.name).toBe("Application 副本 2");
+    expect(copied.group).toBe("生产/华东");
+    expect(copied.hostFingerprint).toBe("SHA256:fingerprint");
+    expect(copied.lastConnectedAt).toBeUndefined();
   });
 });

@@ -28,6 +28,62 @@ pub(crate) fn get_host_password(host_id: &str) -> Result<String, String> {
         })
 }
 
+fn validate_copy_ids(source_host_id: &str, target_host_id: &str) -> Result<(), String> {
+    if source_host_id.trim().is_empty() || target_host_id.trim().is_empty() {
+        return Err("源主机标识和目标主机标识不能为空".to_string());
+    }
+    if source_host_id == target_host_id {
+        return Err("源主机和目标主机标识不能相同".to_string());
+    }
+    Ok(())
+}
+
+fn copy_optional_credential(
+    source: keyring::Entry,
+    target: keyring::Entry,
+    credential_name: &str,
+) -> Result<bool, String> {
+    match source.get_password() {
+        Ok(value) => target
+            .set_password(&value)
+            .map(|_| true)
+            .map_err(|error| format!("复制{credential_name}失败：{error}")),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(error) => Err(format!("读取{credential_name}失败：{error}")),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn copy_host_credentials(
+    source_host_id: String,
+    target_host_id: String,
+) -> Result<(), String> {
+    validate_copy_ids(&source_host_id, &target_host_id)?;
+
+    let password_copied = copy_optional_credential(
+        password_entry(&source_host_id)?,
+        password_entry(&target_host_id)?,
+        "登录密码",
+    )?;
+    let passphrase_result = (|| {
+        copy_optional_credential(
+            private_key_passphrase_entry(&source_host_id)?,
+            private_key_passphrase_entry(&target_host_id)?,
+            "私钥口令",
+        )
+    })();
+    if let Err(error) = passphrase_result {
+        if password_copied {
+            if let Ok(entry) = password_entry(&target_host_id) {
+                let _ = entry.delete_credential();
+            }
+        }
+        return Err(error);
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) fn store_host_password(host_id: String, password: String) -> Result<(), String> {
     if host_id.trim().is_empty() || password.is_empty() {
@@ -66,5 +122,17 @@ pub(crate) fn delete_private_key_passphrase(host_id: String) -> Result<(), Strin
     match private_key_passphrase_entry(&host_id)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("删除私钥口令失败：{error}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_copy_ids;
+
+    #[test]
+    fn validates_credential_copy_identifiers() {
+        assert!(validate_copy_ids("source", "target").is_ok());
+        assert!(validate_copy_ids("", "target").is_err());
+        assert!(validate_copy_ids("same", "same").is_err());
     }
 }

@@ -15,6 +15,7 @@ pub fn run() {
             config_files::write_config_file,
             credentials::store_host_password,
             credentials::delete_host_password,
+            credentials::copy_host_credentials,
             credentials::store_private_key_passphrase,
             credentials::delete_private_key_passphrase,
             ssh::ssh_connect,

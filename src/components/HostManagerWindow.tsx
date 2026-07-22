@@ -24,6 +24,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   IconDelete,
+  IconCopy,
   IconEdit,
   IconExport,
   IconFolder,
@@ -49,6 +50,7 @@ import {
   ALL_HOSTS_GROUP_KEY,
   buildHostGroupTree,
   collectHostGroupKeys,
+  createHostCopy,
   filterHostsByGroup,
   sortHosts,
   type HostGroupTreeNode,
@@ -432,6 +434,36 @@ function HostManagerWindow() {
     }
   }
 
+  async function copyHost(host: HostRecord) {
+    const copiedHost = createHostCopy(host, hosts, createId("host"));
+    let credentialsCopied = false;
+    setConfigurationAction(true);
+    try {
+      if (isTauri()) {
+        await invoke("copy_host_credentials", {
+          sourceHostId: host.id,
+          targetHostId: copiedHost.id,
+        });
+        credentialsCopied = true;
+      }
+
+      const nextHosts = [...hosts, copiedHost];
+      await replaceConfigurationContent(nextHosts, history);
+      setHosts(nextHosts);
+      Message.success(`已复制为 ${copiedHost.name}`);
+    } catch (error) {
+      if (credentialsCopied) {
+        await Promise.allSettled([
+          removeHostPassword(copiedHost.id),
+          removePrivateKeyPassphrase(copiedHost.id),
+        ]);
+      }
+      Message.error(String(error));
+    } finally {
+      setConfigurationAction(false);
+    }
+  }
+
   async function restoreTrashedHost(deletedHost: DeletedHostRecord) {
     setConfigurationAction(true);
     try {
@@ -613,7 +645,7 @@ function HostManagerWindow() {
     },
     {
       title: "操作",
-      width: 190,
+      width: 228,
       render: (_, host) => (
         <Space size="mini">
           <Button
@@ -632,6 +664,15 @@ function HostManagerWindow() {
             onClick={() => openHostEditor(host)}
             size="mini"
           />
+          <Tooltip content="复制主机">
+            <Button
+              aria-label={`复制 ${host.name}`}
+              disabled={configurationAction}
+              icon={<IconCopy />}
+              onClick={() => void copyHost(host)}
+              size="mini"
+            />
+          </Tooltip>
           <Popconfirm
             content={`删除主机“${host.name}”？`}
             onOk={() => void deleteHost(host)}
