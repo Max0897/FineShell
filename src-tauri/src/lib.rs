@@ -30,6 +30,7 @@ pub fn run() {
             ssh::ssh_write,
             ssh::ssh_resize,
             ssh::ssh_monitor_snapshot,
+            ssh::ssh_ping,
             ssh::ssh_disconnect,
             sftp::sftp_connect,
             sftp::sftp_list,

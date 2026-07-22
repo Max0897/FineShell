@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ServerMonitorSnapshot } from "./models";
 import {
   appendMonitorHistory,
+  formatLatency,
   formatMonitorBytes,
   formatMonitorPercent,
   formatMonitorRate,
@@ -32,6 +33,9 @@ describe("server monitor display helpers", () => {
     expect(formatMonitorPercent(49.876)).toBe("50%");
     expect(formatMonitorPercent(Number.NaN)).toBe("0%");
     expect(formatMonitorRate(1536)).toBe("1.5 KB/s");
+    expect(formatLatency(5.123)).toBe("5.12 ms");
+    expect(formatLatency(15.123)).toBe("15.1 ms");
+    expect(formatLatency()).toBe("--");
     expect(formatUptime(90_000)).toBe("1 天 1 小时");
     expect(formatUptime(7_500)).toBe("2 小时 5 分钟");
   });

@@ -1,14 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Skeleton, Typography } from "@arco-design/web-react";
+import {
+  Alert,
+  Button,
+  Descriptions,
+  Drawer,
+  Input,
+  Skeleton,
+  Tag,
+  Tooltip,
+  Typography,
+} from "@arco-design/web-react";
+import { IconWifi } from "@arco-design/web-react/icon";
 import { invoke } from "@tauri-apps/api/core";
 import { AreaChart, BarChart } from "@visactor/react-vchart";
 import type {
   ServerMonitorHistoryPoint,
   ServerMonitorSnapshot,
   TerminalSession,
+  NetworkPingResult,
 } from "../models";
 import {
   appendMonitorHistory,
+  formatLatency,
   formatMonitorBytes,
   formatMonitorPercent,
   formatMonitorRate,
@@ -38,11 +51,19 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
   const [history, setHistory] = useState<ServerMonitorHistoryPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
+  const [diagnosticsVisible, setDiagnosticsVisible] = useState(false);
+  const [pingTarget, setPingTarget] = useState("1.1.1.1");
+  const [pingResult, setPingResult] = useState<NetworkPingResult | null>(null);
+  const [pingLoading, setPingLoading] = useState(false);
+  const [pingError, setPingError] = useState<string>();
 
   useEffect(() => {
     setSnapshot(null);
     setHistory([]);
     setError(undefined);
+    setPingResult(null);
+    setPingError(undefined);
+    setDiagnosticsVisible(false);
     if (session.status !== "connected") {
       setLoading(false);
       return;
@@ -77,6 +98,25 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
       if (timer) clearTimeout(timer);
     };
   }, [session.id, session.status]);
+
+  const runPing = async (target = pingTarget) => {
+    const nextTarget = target.trim();
+    setPingTarget(nextTarget);
+    setPingLoading(true);
+    setPingError(undefined);
+    try {
+      const result = await invoke<NetworkPingResult>("ssh_ping", {
+        sessionId: session.id,
+        target: nextTarget,
+      });
+      setPingResult(result);
+    } catch (pingFailure) {
+      setPingResult(null);
+      setPingError(String(pingFailure));
+    } finally {
+      setPingLoading(false);
+    }
+  };
 
   const utilizationData = useMemo(
     () =>
@@ -133,6 +173,18 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
     <section className="server-monitor">
       <div className="server-monitor-heading">
         <Typography.Text bold>服务器监控</Typography.Text>
+        <Tooltip content="网络诊断">
+          <Button
+            aria-label="打开网络诊断"
+            icon={<IconWifi />}
+            onClick={() => {
+              setDiagnosticsVisible(true);
+              if (!pingResult && !pingLoading) void runPing();
+            }}
+            size="mini"
+            type="text"
+          />
+        </Tooltip>
       </div>
       {error && <Alert content={error} showIcon type="warning" />}
       {loading && !snapshot && (
@@ -340,6 +392,67 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
           </div>
         </>
       )}
+      <Drawer
+        className="network-diagnostics-drawer"
+        footer={null}
+        onCancel={() => setDiagnosticsVisible(false)}
+        title="网络诊断"
+        visible={diagnosticsVisible}
+        width={480}
+      >
+        <section className="network-diagnostics-section">
+          <Typography.Text bold>Ping</Typography.Text>
+          <Input.Search
+            loading={pingLoading}
+            onChange={setPingTarget}
+            onSearch={(value) => void runPing(value)}
+            placeholder="域名或 IP 地址"
+            searchButton="测试"
+            value={pingTarget}
+          />
+          {pingError && <Alert content={pingError} showIcon type="error" />}
+          {pingLoading && !pingResult && (
+            <Skeleton animation text={{ rows: 2, width: ["100%", "80%"] }} />
+          )}
+          {pingResult && (
+            <Descriptions
+              border
+              column={2}
+              data={[
+                {
+                  label: "状态",
+                  value: (
+                    <Tag color={pingResult.reachable ? "green" : "red"}>
+                      {pingResult.reachable ? "可达" : "不可达"}
+                    </Tag>
+                  ),
+                },
+                {
+                  label: "平均延迟",
+                  value: formatLatency(pingResult.averageLatencyMs),
+                },
+                {
+                  label: "丢包率",
+                  value: formatMonitorPercent(pingResult.packetLossPercent),
+                },
+                {
+                  label: "收发",
+                  value: `${pingResult.received} / ${pingResult.transmitted}`,
+                },
+                {
+                  label: "最低延迟",
+                  value: formatLatency(pingResult.minimumLatencyMs),
+                },
+                {
+                  label: "最高延迟",
+                  value: formatLatency(pingResult.maximumLatencyMs),
+                },
+              ]}
+              size="small"
+            />
+          )}
+        </section>
+      </Drawer>
     </section>
   );
 }

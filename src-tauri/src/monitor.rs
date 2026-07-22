@@ -60,6 +60,19 @@ pub(crate) struct ServerMonitorSnapshot {
     network_transmit_bytes: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NetworkPingResult {
+    target: String,
+    reachable: bool,
+    transmitted: u32,
+    received: u32,
+    packet_loss_percent: f64,
+    minimum_latency_ms: Option<f64>,
+    average_latency_ms: Option<f64>,
+    maximum_latency_ms: Option<f64>,
+}
+
 fn parse_number<T: std::str::FromStr>(value: Option<&str>, field: &str) -> Result<T, String> {
     value
         .map(str::trim)
@@ -91,6 +104,86 @@ fn percent(used: u64, total: u64) -> f64 {
     } else {
         (used as f64 * 100.0 / total as f64).clamp(0.0, 100.0)
     }
+}
+
+fn validate_ping_target(target: &str) -> Result<&str, String> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Err("请输入 Ping 目标".to_string());
+    }
+    if target.len() > 253
+        || target.starts_with('-')
+        || !target.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | ':')
+        })
+    {
+        return Err("Ping 目标格式无效".to_string());
+    }
+    Ok(target)
+}
+
+fn parse_packet_count(value: &str) -> Option<u32> {
+    value
+        .split_whitespace()
+        .find_map(|part| part.parse::<u32>().ok())
+}
+
+pub(crate) fn parse_ping_output(target: &str, output: &str) -> Result<NetworkPingResult, String> {
+    let packet_line = output
+        .lines()
+        .find(|line| line.contains("packets transmitted") && line.contains("packet loss"))
+        .ok_or_else(|| {
+            let detail = output.lines().last().unwrap_or_default().trim();
+            if detail.is_empty() {
+                "Ping 未返回统计结果".to_string()
+            } else {
+                format!("Ping 执行失败：{detail}")
+            }
+        })?;
+    let packet_parts = packet_line.split(',').collect::<Vec<_>>();
+    let transmitted = packet_parts
+        .first()
+        .and_then(|value| parse_packet_count(value))
+        .ok_or_else(|| "无法解析 Ping 发送数量".to_string())?;
+    let received = packet_parts
+        .get(1)
+        .and_then(|value| parse_packet_count(value))
+        .ok_or_else(|| "无法解析 Ping 接收数量".to_string())?;
+    let packet_loss_percent = packet_parts
+        .iter()
+        .find(|value| value.contains("packet loss"))
+        .and_then(|value| value.split('%').next())
+        .and_then(|value| value.split_whitespace().last())
+        .and_then(|value| value.parse::<f64>().ok())
+        .ok_or_else(|| "无法解析 Ping 丢包率".to_string())?
+        .clamp(0.0, 100.0);
+
+    let latency_values = output
+        .lines()
+        .find(|line| line.contains("min/avg/max") && line.contains('='))
+        .and_then(|line| line.split_once('='))
+        .map(|(_, values)| {
+            values
+                .trim()
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .split('/')
+                .filter_map(|value| value.parse::<f64>().ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Ok(NetworkPingResult {
+        target: target.to_string(),
+        reachable: received > 0,
+        transmitted,
+        received,
+        packet_loss_percent,
+        minimum_latency_ms: latency_values.first().copied(),
+        average_latency_ms: latency_values.get(1).copied(),
+        maximum_latency_ms: latency_values.get(2).copied(),
+    })
 }
 
 pub(crate) fn parse_monitor_output(output: &str) -> Result<ServerMonitorSnapshot, String> {
@@ -146,37 +239,61 @@ pub(crate) fn parse_monitor_output(output: &str) -> Result<ServerMonitorSnapshot
     })
 }
 
-pub(crate) fn collect_server_snapshot(session: &Session) -> Result<ServerMonitorSnapshot, String> {
+fn execute_remote_command(
+    session: &Session,
+    command: &str,
+    operation: &str,
+) -> Result<(String, i32), String> {
     session.set_blocking(true);
     let result = (|| {
         let mut channel = session
             .channel_session()
-            .map_err(|error| format!("无法创建监控通道：{error}"))?;
+            .map_err(|error| format!("无法创建{operation}通道：{error}"))?;
         channel
-            .exec(MONITOR_COMMAND)
-            .map_err(|error| format!("无法执行监控命令：{error}"))?;
+            .exec(command)
+            .map_err(|error| format!("无法执行{operation}命令：{error}"))?;
         let mut output = String::new();
         channel
             .read_to_string(&mut output)
-            .map_err(|error| format!("无法读取监控数据：{error}"))?;
+            .map_err(|error| format!("无法读取{operation}数据：{error}"))?;
         channel
             .wait_close()
-            .map_err(|error| format!("监控通道关闭失败：{error}"))?;
+            .map_err(|error| format!("{operation}通道关闭失败：{error}"))?;
         let exit_status = channel
             .exit_status()
-            .map_err(|error| format!("无法读取监控命令状态：{error}"))?;
-        if exit_status != 0 {
-            return Err(format!("监控命令异常退出：{exit_status}"));
-        }
-        parse_monitor_output(&output)
+            .map_err(|error| format!("无法读取{operation}命令状态：{error}"))?;
+        Ok((output, exit_status))
     })();
     session.set_blocking(false);
     result
 }
 
+pub(crate) fn collect_server_snapshot(session: &Session) -> Result<ServerMonitorSnapshot, String> {
+    let (output, exit_status) = execute_remote_command(session, MONITOR_COMMAND, "监控")?;
+    if exit_status != 0 {
+        return Err(format!("监控命令异常退出：{exit_status}"));
+    }
+    parse_monitor_output(&output)
+}
+
+pub(crate) fn collect_ping(session: &Session, target: &str) -> Result<NetworkPingResult, String> {
+    let target = validate_ping_target(target)?;
+    let command = format!(
+        "LC_ALL=C\nif ! command -v ping >/dev/null 2>&1; then printf '__FINESHELL_PING_MISSING__\\n'; exit 127; fi\nping -n -c 3 -i 0.2 -W 1 {target} 2>&1"
+    );
+    let (output, exit_status) = execute_remote_command(session, &command, "Ping")?;
+    if exit_status == 127 || output.contains("__FINESHELL_PING_MISSING__") {
+        return Err("远程服务器未安装 ping 命令".to_string());
+    }
+    parse_ping_output(target, &output)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_monitor_output, ServerMonitorSnapshot};
+    use super::{
+        parse_monitor_output, parse_ping_output, validate_ping_target, NetworkPingResult,
+        ServerMonitorSnapshot,
+    };
 
     #[test]
     fn parses_linux_monitor_output() {
@@ -215,5 +332,52 @@ network_bytes=15728640,6291456
     #[test]
     fn rejects_incomplete_monitor_output() {
         assert!(parse_monitor_output("hostname=test\n").is_err());
+    }
+
+    #[test]
+    fn parses_ping_statistics() {
+        let output = r#"PING 1.1.1.1 (1.1.1.1) 56(84) bytes of data.
+64 bytes from 1.1.1.1: icmp_seq=1 ttl=56 time=5.12 ms
+
+--- 1.1.1.1 ping statistics ---
+3 packets transmitted, 2 received, 33.3333% packet loss, time 402ms
+rtt min/avg/max/mdev = 4.800/5.100/5.400/0.245 ms
+"#;
+
+        assert_eq!(
+            parse_ping_output("1.1.1.1", output).unwrap(),
+            NetworkPingResult {
+                target: "1.1.1.1".to_string(),
+                reachable: true,
+                transmitted: 3,
+                received: 2,
+                packet_loss_percent: 33.3333,
+                minimum_latency_ms: Some(4.8),
+                average_latency_ms: Some(5.1),
+                maximum_latency_ms: Some(5.4),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_unreachable_ping_result() {
+        let output = r#"PING 192.0.2.1 (192.0.2.1) 56(84) bytes of data.
+
+--- 192.0.2.1 ping statistics ---
+3 packets transmitted, 0 received, 100% packet loss, time 410ms
+"#;
+        let result = parse_ping_output("192.0.2.1", output).unwrap();
+
+        assert!(!result.reachable);
+        assert_eq!(result.packet_loss_percent, 100.0);
+        assert_eq!(result.average_latency_ms, None);
+    }
+
+    #[test]
+    fn rejects_unsafe_ping_targets() {
+        assert!(validate_ping_target("example.com").is_ok());
+        assert!(validate_ping_target("2001:db8::1").is_ok());
+        assert!(validate_ping_target("-c 100").is_err());
+        assert!(validate_ping_target("example.com; reboot").is_err());
     }
 }

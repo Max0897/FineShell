@@ -277,6 +277,16 @@ body,
   display: block;
 }
 
+.network-diagnostics-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.network-diagnostics-section > .arco-typography {
+  margin: 0;
+}
+
 .terminal-tabs {
   height: 100%;
   display: flex;

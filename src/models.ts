@@ -103,6 +103,17 @@ export interface ServerMonitorHistoryPoint {
   networkTransmitBytesPerSecond: number;
 }
 
+export interface NetworkPingResult {
+  target: string;
+  reachable: boolean;
+  transmitted: number;
+  received: number;
+  packetLossPercent: number;
+  minimumLatencyMs?: number;
+  averageLatencyMs?: number;
+  maximumLatencyMs?: number;
+}
+
 export type SftpEntryKind = "directory" | "file" | "symlink" | "other";
 
 export interface SftpEntry {

@@ -59,6 +59,11 @@ export function formatMonitorRate(bytesPerSecond: number) {
   return `${formatMonitorBytes(bytesPerSecond)}/s`;
 }
 
+export function formatLatency(milliseconds?: number) {
+  if (milliseconds === undefined || !Number.isFinite(milliseconds)) return "--";
+  return `${milliseconds.toFixed(milliseconds >= 10 ? 1 : 2)} ms`;
+}
+
 export function formatMonitorPercent(value: number) {
   if (!Number.isFinite(value)) return "0%";
   return `${Math.round(value)}%`;

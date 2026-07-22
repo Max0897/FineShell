@@ -18,7 +18,7 @@ use ssh2::{Channel, HashType, Session};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::credentials;
-use crate::monitor::{self, ServerMonitorSnapshot};
+use crate::monitor::{self, NetworkPingResult, ServerMonitorSnapshot};
 
 const SSH_OUTPUT_EVENT: &str = "ssh-output";
 const SSH_STATUS_EVENT: &str = "ssh-status";
@@ -99,8 +99,15 @@ struct SshStatusPayload {
 
 enum SessionCommand {
     Write(Vec<u8>),
-    Resize { cols: u32, rows: u32 },
+    Resize {
+        cols: u32,
+        rows: u32,
+    },
     Monitor(SyncSender<Result<ServerMonitorSnapshot, String>>),
+    Ping {
+        target: String,
+        response: SyncSender<Result<NetworkPingResult, String>>,
+    },
     Close,
 }
 
@@ -440,6 +447,10 @@ fn run_session(
                     let _ = response.send(monitor::collect_server_snapshot(&session));
                     active = true;
                 }
+                Ok(SessionCommand::Ping { target, response }) => {
+                    let _ = response.send(monitor::collect_ping(&session, &target));
+                    active = true;
+                }
                 Ok(SessionCommand::Close) | Err(TryRecvError::Disconnected) => {
                     closing = true;
                     break;
@@ -680,6 +691,29 @@ pub(crate) async fn ssh_monitor_snapshot(
     })
     .await
     .map_err(|error| format!("服务器监控任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn ssh_ping(
+    manager: State<'_, SshSessionManager>,
+    session_id: String,
+    target: String,
+) -> Result<NetworkPingResult, String> {
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    manager.send(
+        &session_id,
+        SessionCommand::Ping {
+            target,
+            response: response_sender,
+        },
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        response_receiver
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| format!("等待 Ping 结果失败：{error}"))?
+    })
+    .await
+    .map_err(|error| format!("Ping 任务异常结束：{error}"))?
 }
 
 #[tauri::command]
