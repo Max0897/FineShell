@@ -33,8 +33,6 @@ import {
   IconLink,
   IconPlus,
   IconSort,
-  IconStorage,
-  IconUndo,
 } from "@arco-design/web-react/icon";
 import type {
   ConnectionHistoryRecord,
@@ -56,17 +54,12 @@ import {
   type HostGroupTreeNode,
 } from "../host-organization";
 import {
-  type ConfigurationBackup,
-  type DeletedHostRecord,
   importConfiguration,
   loadConfiguration,
   moveHostToTrash,
   parseConfigurationExport,
-  permanentlyDeleteHost,
   purgeExpiredDeletedHosts,
   replaceConfigurationContent,
-  restoreConfigurationBackup,
-  restoreDeletedHost,
   serializeConfigurationExport,
   updateHostSortMode,
 } from "../config-database";
@@ -135,8 +128,6 @@ function HostManagerWindow() {
   const [activeTab, setActiveTab] = useState(initialTab);
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [history, setHistory] = useState<ConnectionHistoryRecord[]>([]);
-  const [backups, setBackups] = useState<ConfigurationBackup[]>([]);
-  const [trash, setTrash] = useState<DeletedHostRecord[]>([]);
   const [hostSort, setHostSort] = useState<HostSortMode>("manual");
   const [appSettings, setAppSettings] =
     useState<AppSettings>(DEFAULT_APP_SETTINGS);
@@ -172,8 +163,6 @@ function HostManagerWindow() {
         if (disposed) return;
         setHosts(configuration.hosts);
         setHistory(configuration.history);
-        setBackups(configuration.backups);
-        setTrash(configuration.trash);
         setHostSort(configuration.hostSort);
         setAppSettings(configuration.settings);
 
@@ -199,6 +188,35 @@ function HostManagerWindow() {
 
     return () => {
       disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen("configuration:changed", () => {
+      void loadConfiguration()
+        .then((configuration) => {
+          if (disposed) return;
+          setHosts(configuration.hosts);
+          setHistory(configuration.history);
+          setHostSort(configuration.hostSort);
+          setAppSettings(configuration.settings);
+        })
+        .catch((error) => {
+          if (!disposed) Message.error(String(error));
+        });
+    }).then((stopListening) => {
+      if (disposed) {
+        stopListening();
+      } else {
+        unlisten = stopListening;
+      }
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
     };
   }, []);
 
@@ -375,12 +393,13 @@ function HostManagerWindow() {
             const next = await importConfiguration(imported);
             setHosts(next.hosts);
             setHistory(next.history);
-            setBackups(next.backups);
-            setTrash(next.trash);
             setHostSort(next.hostSort);
             setAppSettings(next.settings);
             if (isTauri()) {
               await emitTo("main", "settings:changed", next.settings);
+              await emitTo("settings", "configuration:changed").catch(
+                () => undefined,
+              );
             }
             Message.success("配置导入完成");
           } catch (error) {
@@ -392,23 +411,6 @@ function HostManagerWindow() {
         },
         title: "确认导入配置",
       });
-    } catch (error) {
-      Message.error(String(error));
-    } finally {
-      setConfigurationAction(false);
-    }
-  }
-
-  async function restoreBackup(backup: ConfigurationBackup) {
-    setConfigurationAction(true);
-    try {
-      const next = await restoreConfigurationBackup(backup.id);
-      setHosts(next.hosts);
-      setHistory(next.history);
-      setBackups(next.backups);
-      setTrash(next.trash);
-      setHostSort(next.hostSort);
-      Message.success("配置已恢复");
     } catch (error) {
       Message.error(String(error));
     } finally {
@@ -455,8 +457,11 @@ function HostManagerWindow() {
     try {
       const next = await moveHostToTrash(host.id);
       setHosts(next.hosts);
-      setBackups(next.backups);
-      setTrash(next.trash);
+      if (isTauri()) {
+        await emitTo("settings", "configuration:changed").catch(
+          () => undefined,
+        );
+      }
       Message.success(`已将 ${host.name} 移至回收站`);
     } catch (error) {
       Message.error(String(error));
@@ -489,48 +494,6 @@ function HostManagerWindow() {
           removePrivateKeyPassphrase(copiedHost.id),
         ]);
       }
-      Message.error(String(error));
-    } finally {
-      setConfigurationAction(false);
-    }
-  }
-
-  async function restoreTrashedHost(deletedHost: DeletedHostRecord) {
-    setConfigurationAction(true);
-    try {
-      const next = await restoreDeletedHost(deletedHost.id);
-      setHosts(next.hosts);
-      setTrash(next.trash);
-      Message.success(`已恢复 ${deletedHost.host.name}`);
-    } catch (error) {
-      Message.error(String(error));
-    } finally {
-      setConfigurationAction(false);
-    }
-  }
-
-  async function permanentlyDeleteTrashedHost(
-    deletedHost: DeletedHostRecord,
-  ) {
-    setConfigurationAction(true);
-    try {
-      const next = await permanentlyDeleteHost(deletedHost.id);
-      setTrash(next.trash);
-      const hostIdIsActive = next.hosts.some(
-        (host) => host.id === deletedHost.host.id,
-      );
-      const credentialCleanup = hostIdIsActive
-        ? []
-        : await Promise.allSettled([
-            removeHostPassword(deletedHost.host.id),
-            removePrivateKeyPassphrase(deletedHost.host.id),
-          ]);
-      if (credentialCleanup.some((result) => result.status === "rejected")) {
-        Message.warning("主机已永久删除，但部分系统凭据清理失败");
-      } else {
-        Message.success(`已永久删除 ${deletedHost.host.name}`);
-      }
-    } catch (error) {
       Message.error(String(error));
     } finally {
       setConfigurationAction(false);
@@ -763,97 +726,6 @@ function HostManagerWindow() {
     },
   ];
 
-  const backupColumns: TableColumnProps<ConfigurationBackup>[] = [
-    {
-      title: "备份时间",
-      dataIndex: "createdAt",
-      width: 180,
-      render: (value) => formatTime(value),
-    },
-    {
-      title: "原因",
-      dataIndex: "reason",
-    },
-    {
-      title: "内容",
-      width: 180,
-      render: (_, backup) =>
-        `${backup.hosts.length} 台主机，${backup.history.length} 条记录`,
-    },
-    {
-      title: "操作",
-      width: 100,
-      render: (_, backup) => (
-        <Popconfirm
-          content="恢复后当前配置会自动备份，是否继续？"
-          onOk={() => void restoreBackup(backup)}
-        >
-          <Button
-            disabled={configurationAction}
-            icon={<IconUndo />}
-            size="mini"
-          >
-            恢复
-          </Button>
-        </Popconfirm>
-      ),
-    },
-  ];
-
-  const trashColumns: TableColumnProps<DeletedHostRecord>[] = [
-    {
-      title: "主机",
-      render: (_, deletedHost) => (
-        <div className="host-name-cell">
-          <Typography.Text bold>{deletedHost.host.name}</Typography.Text>
-          <Typography.Text type="secondary">
-            {deletedHost.host.username}@{deletedHost.host.address}:
-            {deletedHost.host.port}
-          </Typography.Text>
-        </div>
-      ),
-    },
-    {
-      title: "删除时间",
-      dataIndex: "deletedAt",
-      width: 170,
-      render: (value) => formatTime(value),
-    },
-    {
-      title: "自动清理时间",
-      dataIndex: "expiresAt",
-      width: 170,
-      render: (value) => formatTime(value),
-    },
-    {
-      title: "操作",
-      width: 150,
-      render: (_, deletedHost) => (
-        <Space size="mini">
-          <Button
-            aria-label={`恢复 ${deletedHost.host.name}`}
-            disabled={configurationAction}
-            icon={<IconUndo />}
-            onClick={() => void restoreTrashedHost(deletedHost)}
-            size="mini"
-          />
-          <Popconfirm
-            content={`永久删除“${deletedHost.host.name}”及其系统凭据？`}
-            onOk={() => void permanentlyDeleteTrashedHost(deletedHost)}
-          >
-            <Button
-              aria-label={`永久删除 ${deletedHost.host.name}`}
-              disabled={configurationAction}
-              icon={<IconDelete />}
-              size="mini"
-              status="danger"
-            />
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ];
-
   return (
     <main className="host-manager-window">
       <Tabs activeTab={activeTab} justify onChange={setActiveTab} type="line">
@@ -1045,50 +917,6 @@ function HostManagerWindow() {
               data={history}
               loading={configurationLoading}
               noDataElement={<Empty description="暂无连接历史" />}
-              pagination={false}
-              rowKey="id"
-              size="small"
-            />
-          </div>
-        </Tabs.TabPane>
-        <Tabs.TabPane
-          key="backups"
-          title={
-            <Space size="mini">
-              <IconStorage />
-              备份与恢复
-            </Space>
-          }
-        >
-          <div className="manager-pane">
-            <Table
-              border={false}
-              columns={backupColumns}
-              data={backups}
-              loading={configurationLoading || configurationAction}
-              noDataElement={<Empty description="暂无自动备份" />}
-              pagination={false}
-              rowKey="id"
-              size="small"
-            />
-          </div>
-        </Tabs.TabPane>
-        <Tabs.TabPane
-          key="trash"
-          title={
-            <Space size="mini">
-              <IconDelete />
-              回收站
-            </Space>
-          }
-        >
-          <div className="manager-pane">
-            <Table
-              border={false}
-              columns={trashColumns}
-              data={trash}
-              loading={configurationLoading || configurationAction}
-              noDataElement={<Empty description="回收站为空" />}
               pagination={false}
               rowKey="id"
               size="small"

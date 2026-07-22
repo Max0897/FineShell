@@ -16,6 +16,8 @@ import {
   IconCode,
   IconCommon,
   IconDashboard,
+  IconDelete,
+  IconSave,
   IconStorage,
   IconThunderbolt,
 } from "@arco-design/web-react/icon";
@@ -27,13 +29,16 @@ import {
   type AppSettings,
 } from "../app-settings";
 import { loadConfiguration, updateAppSettings } from "../config-database";
+import ConfigurationMaintenance from "./ConfigurationMaintenance";
 
 type SettingsSection =
   | "general"
   | "terminal"
   | "files"
   | "monitor"
-  | "connection";
+  | "connection"
+  | "backups"
+  | "trash";
 
 interface SettingRowProps {
   control: ReactNode;
@@ -325,6 +330,10 @@ function SettingsWindow() {
             </div>
           </>
         );
+      case "backups":
+        return <ConfigurationMaintenance section="backups" />;
+      case "trash":
+        return <ConfigurationMaintenance section="trash" />;
       default:
         return (
           <>
@@ -374,6 +383,14 @@ function SettingsWindow() {
             <IconThunderbolt />
             连接
           </Menu.Item>
+          <Menu.Item key="backups">
+            <IconSave />
+            备份与恢复
+          </Menu.Item>
+          <Menu.Item key="trash">
+            <IconDelete />
+            回收站
+          </Menu.Item>
         </Menu>
       </aside>
       <section className="settings-content">
@@ -384,36 +401,38 @@ function SettingsWindow() {
         ) : (
           <div className="settings-page">{content}</div>
         )}
-        <footer className="settings-footer">
-          <Popconfirm
-            onOk={() => setSettings({ ...DEFAULT_APP_SETTINGS })}
-            position="top"
-            title="将所有设置恢复为默认值？"
-            unmountOnExit={false}
-          >
-            <Button disabled={loading || saving}>恢复默认</Button>
-          </Popconfirm>
-          <Space>
-            <Button
-              disabled={
-                loading || appSettingsEqual(settings, savedSettings)
-              }
-              onClick={() => setSettings(savedSettings)}
+        {activeSection !== "backups" && activeSection !== "trash" && (
+          <footer className="settings-footer">
+            <Popconfirm
+              onOk={() => setSettings({ ...DEFAULT_APP_SETTINGS })}
+              position="top"
+              title="将所有设置恢复为默认值？"
+              unmountOnExit={false}
             >
-              撤销更改
-            </Button>
-            <Button
-              disabled={
-                loading || appSettingsEqual(settings, savedSettings)
-              }
-              loading={saving}
-              onClick={() => void saveSettings()}
-              type="primary"
-            >
-              保存设置
-            </Button>
-          </Space>
-        </footer>
+              <Button disabled={loading || saving}>恢复默认</Button>
+            </Popconfirm>
+            <Space>
+              <Button
+                disabled={
+                  loading || appSettingsEqual(settings, savedSettings)
+                }
+                onClick={() => setSettings(savedSettings)}
+              >
+                撤销更改
+              </Button>
+              <Button
+                disabled={
+                  loading || appSettingsEqual(settings, savedSettings)
+                }
+                loading={saving}
+                onClick={() => void saveSettings()}
+                type="primary"
+              >
+                保存设置
+              </Button>
+            </Space>
+          </footer>
+        )}
       </section>
     </main>
   );
