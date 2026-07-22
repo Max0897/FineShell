@@ -16,7 +16,6 @@ import type { TableColumnProps } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   IconArrowUp,
   IconFolderAdd,
@@ -40,14 +39,7 @@ interface BrowserConnectionMessage {
   host: HostRecord;
 }
 
-const HOST_MANAGER_STATE_EVENT = "fineshell:host-manager-state";
 let hostManagerOpening = false;
-
-function setMainWindowBlocked(blocked: boolean) {
-  window.dispatchEvent(
-    new CustomEvent<boolean>(HOST_MANAGER_STATE_EVENT, { detail: blocked }),
-  );
-}
 
 const fileColumns: TableColumnProps<FileEntry>[] = [
   { title: "名称", dataIndex: "name" },
@@ -100,24 +92,15 @@ async function openHostManager(tab: "hosts" | "history" = "hosts") {
   if (hostManagerOpening) return;
   hostManagerOpening = true;
 
-  const mainWindow = getCurrentWindow();
-  const restoreMainWindow = () => {
-    setMainWindowBlocked(false);
-    void mainWindow.setFocus();
-  };
-
   try {
     const existingWindow = await WebviewWindow.getByLabel("host-manager");
     if (existingWindow) {
-      setMainWindowBlocked(true);
-      existingWindow.once("tauri://destroyed", restoreMainWindow);
       await emitTo("host-manager", "host-manager:show-tab", tab);
       await existingWindow.setFocus();
       hostManagerOpening = false;
       return;
     }
 
-    setMainWindowBlocked(true);
     const managerWindow = new WebviewWindow("host-manager", {
       url: `/?view=host-manager&tab=${tab}`,
       title: "主机管理",
@@ -128,21 +111,16 @@ async function openHostManager(tab: "hosts" | "history" = "hosts") {
       center: true,
       focus: true,
       resizable: true,
-      alwaysOnTop: true,
-      parent: "main",
     });
     managerWindow.once("tauri://created", () => {
       hostManagerOpening = false;
     });
-    managerWindow.once("tauri://destroyed", restoreMainWindow);
     managerWindow.once("tauri://error", () => {
       hostManagerOpening = false;
-      restoreMainWindow();
       Message.error("无法打开主机管理窗口");
     });
   } catch {
     hostManagerOpening = false;
-    restoreMainWindow();
     Message.error("无法打开主机管理窗口");
   }
 }
@@ -150,7 +128,6 @@ async function openHostManager(tab: "hosts" | "history" = "hosts") {
 function App() {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [hostManagerActive, setHostManagerActive] = useState(false);
 
   const openSession = useCallback((host: HostRecord) => {
     setSessions((current) => {
@@ -205,38 +182,6 @@ function App() {
     window.addEventListener("message", handleWindowMessage);
     return () => window.removeEventListener("message", handleWindowMessage);
   }, [openSession]);
-
-  useEffect(() => {
-    function handleHostManagerState(event: Event) {
-      setHostManagerActive((event as CustomEvent<boolean>).detail);
-    }
-
-    window.addEventListener(HOST_MANAGER_STATE_EVENT, handleHostManagerState);
-    return () => {
-      window.removeEventListener(
-        HOST_MANAGER_STATE_EVENT,
-        handleHostManagerState,
-      );
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!hostManagerActive) return;
-
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
-
-    function blockMainWindowKeyboard(event: KeyboardEvent) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
-
-    window.addEventListener("keydown", blockMainWindowKeyboard, true);
-    return () => {
-      window.removeEventListener("keydown", blockMainWindowKeyboard, true);
-    };
-  }, [hostManagerActive]);
 
   useEffect(() => {
     if (isTauri()) void openHostManager();
@@ -330,7 +275,6 @@ function App() {
         activeTab={activeSessionId ?? undefined}
         className={`terminal-tabs${sessions.length === 0 ? " terminal-tabs-empty-state" : ""}`}
         editable
-        justify
         onAddTab={() => void openHostManager()}
         onChange={setActiveSessionId}
         onDeleteTab={closeSession}
@@ -368,7 +312,6 @@ function App() {
     <section className="panel sftp-panel">
       <div className="panel-toolbar sftp-toolbar">
         <Space size="mini">
-          <Typography.Text bold>SFTP</Typography.Text>
           <Tooltip content="返回上级目录">
             <Button
               aria-label="返回上级目录"
@@ -442,24 +385,19 @@ function App() {
 
   return (
     <main className="app-shell">
-      <div className="app-content">
-        <ResizeBox.SplitGroup
-          className="main-split"
-          direction="horizontal"
-          panes={[
-            {
-              content: serverInfoPanel,
-              size: "280px",
-              min: "220px",
-              max: "400px",
-            },
-            { content: rightPanels, min: "480px" },
-          ]}
-        />
-      </div>
-      {hostManagerActive && (
-        <div aria-hidden className="main-input-guard" />
-      )}
+      <ResizeBox.SplitGroup
+        className="main-split"
+        direction="horizontal"
+        panes={[
+          {
+            content: serverInfoPanel,
+            size: "280px",
+            min: "220px",
+            max: "400px",
+          },
+          { content: rightPanels, min: "480px" },
+        ]}
+      />
     </main>
   );
 }
