@@ -264,6 +264,10 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
+.monitor-network-values {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .server-monitor .arco-alert {
   padding: 6px 8px;
   font-size: 12px;

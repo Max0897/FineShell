@@ -89,12 +89,18 @@ export interface ServerMonitorSnapshot {
   diskUsedBytes: number;
   diskUsagePercent: number;
   loadAverage: [number, number, number];
+  networkReceiveBytes: number;
+  networkTransmitBytes: number;
 }
 
 export interface ServerMonitorHistoryPoint {
   collectedAt: number;
   cpuUsagePercent: number;
   memoryUsagePercent: number;
+  networkReceiveBytes: number;
+  networkTransmitBytes: number;
+  networkReceiveBytesPerSecond: number;
+  networkTransmitBytesPerSecond: number;
 }
 
 export type SftpEntryKind = "directory" | "file" | "symlink" | "other";

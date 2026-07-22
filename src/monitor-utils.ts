@@ -9,12 +9,37 @@ export function appendMonitorHistory(
   collectedAt = Date.now(),
   limit = 24,
 ) {
+  const previous = history[history.length - 1];
+  const elapsedSeconds = previous
+    ? (collectedAt - previous.collectedAt) / 1_000
+    : 0;
+  const receiveBytesPerSecond =
+    previous && elapsedSeconds > 0
+      ? Math.max(
+          0,
+          (snapshot.networkReceiveBytes - previous.networkReceiveBytes) /
+            elapsedSeconds,
+        )
+      : 0;
+  const transmitBytesPerSecond =
+    previous && elapsedSeconds > 0
+      ? Math.max(
+          0,
+          (snapshot.networkTransmitBytes - previous.networkTransmitBytes) /
+            elapsedSeconds,
+        )
+      : 0;
+
   return [
     ...history,
     {
       collectedAt,
       cpuUsagePercent: snapshot.cpuUsagePercent,
       memoryUsagePercent: snapshot.memoryUsagePercent,
+      networkReceiveBytes: snapshot.networkReceiveBytes,
+      networkTransmitBytes: snapshot.networkTransmitBytes,
+      networkReceiveBytesPerSecond: receiveBytesPerSecond,
+      networkTransmitBytesPerSecond: transmitBytesPerSecond,
     },
   ].slice(-Math.max(1, limit));
 }
@@ -28,6 +53,10 @@ export function formatMonitorBytes(bytes: number) {
   );
   const value = bytes / 1024 ** unitIndex;
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+export function formatMonitorRate(bytesPerSecond: number) {
+  return `${formatMonitorBytes(bytesPerSecond)}/s`;
 }
 
 export function formatMonitorPercent(value: number) {

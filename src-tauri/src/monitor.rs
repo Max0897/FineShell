@@ -36,6 +36,8 @@ printf '\ndisk_kib='
 df -Pk / 2>/dev/null | awk 'NR==2 { printf "%s,%s,%s", $2, $3, $4 }'
 printf '\nload_average='
 awk '{ printf "%s,%s,%s", $1, $2, $3 }' /proc/loadavg 2>/dev/null || printf '0,0,0'
+printf '\nnetwork_bytes='
+awk -F '[: ]+' 'NR > 2 { interface=$2; if (interface != "lo") { received += $3; transmitted += $11 } } END { printf "%.0f,%.0f", received, transmitted }' /proc/net/dev 2>/dev/null || printf '0,0'
 printf '\n'
 "#;
 
@@ -54,6 +56,8 @@ pub(crate) struct ServerMonitorSnapshot {
     disk_used_bytes: u64,
     disk_usage_percent: f64,
     load_average: [f64; 3],
+    network_receive_bytes: u64,
+    network_transmit_bytes: u64,
 }
 
 fn parse_number<T: std::str::FromStr>(value: Option<&str>, field: &str) -> Result<T, String> {
@@ -115,6 +119,8 @@ pub(crate) fn parse_monitor_output(output: &str) -> Result<ServerMonitorSnapshot
     let (memory_total_kib, memory_available_kib) =
         parse_pair(values.get("memory_kib").copied(), "memory_kib")?;
     let (disk_total_kib, disk_used_kib) = parse_pair(values.get("disk_kib").copied(), "disk_kib")?;
+    let (network_receive_bytes, network_transmit_bytes) =
+        parse_pair(values.get("network_bytes").copied(), "network_bytes")?;
     let memory_total_bytes = memory_total_kib.saturating_mul(1024);
     let memory_used_bytes = memory_total_kib
         .saturating_sub(memory_available_kib)
@@ -135,6 +141,8 @@ pub(crate) fn parse_monitor_output(output: &str) -> Result<ServerMonitorSnapshot
         disk_used_bytes,
         disk_usage_percent: percent(disk_used_bytes, disk_total_bytes),
         load_average: parse_load_average(values.get("load_average").copied())?,
+        network_receive_bytes,
+        network_transmit_bytes,
     })
 }
 
@@ -180,6 +188,7 @@ cpu_percent=37.50
 memory_kib=8192000,3072000
 disk_kib=104857600,52428800,52428800
 load_average=0.42,0.35,0.30
+network_bytes=15728640,6291456
 "#;
 
         assert_eq!(
@@ -197,6 +206,8 @@ load_average=0.42,0.35,0.30
                 disk_used_bytes: 53_687_091_200,
                 disk_usage_percent: 50.0,
                 load_average: [0.42, 0.35, 0.30],
+                network_receive_bytes: 15_728_640,
+                network_transmit_bytes: 6_291_456,
             }
         );
     }

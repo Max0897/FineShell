@@ -11,6 +11,7 @@ import {
   appendMonitorHistory,
   formatMonitorBytes,
   formatMonitorPercent,
+  formatMonitorRate,
   formatUptime,
 } from "../monitor-utils";
 
@@ -26,6 +27,10 @@ function tooltipMetric(datum?: Record<string, unknown>) {
 
 function tooltipPercent(datum?: Record<string, unknown>) {
   return formatMonitorPercent(Number(datum?.value));
+}
+
+function tooltipRate(datum?: Record<string, unknown>) {
+  return formatMonitorRate(Number(datum?.value));
 }
 
 function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
@@ -99,6 +104,22 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
       }),
     [history],
   );
+  const networkTrendData = useMemo(
+    () =>
+      history.flatMap((point) => {
+        const time = new Date(point.collectedAt).toLocaleTimeString("zh-CN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        return [
+          { metric: "下载", time, value: point.networkReceiveBytesPerSecond },
+          { metric: "上传", time, value: point.networkTransmitBytesPerSecond },
+        ];
+      }),
+    [history],
+  );
+  const latestHistoryPoint = history[history.length - 1];
 
   if (session.status !== "connected") {
     return (
@@ -246,6 +267,70 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
                 mark: {
                   content: [
                     { key: tooltipMetric, value: tooltipPercent },
+                  ],
+                },
+              }}
+              xField="time"
+              yField="value"
+            />
+          </div>
+
+          <div className="monitor-chart-section">
+            <div className="monitor-chart-heading">
+              <Typography.Text bold>网络流量</Typography.Text>
+              <Typography.Text type="secondary">
+                累计 ↓ {formatMonitorBytes(snapshot.networkReceiveBytes)} / ↑ {formatMonitorBytes(snapshot.networkTransmitBytes)}
+              </Typography.Text>
+            </div>
+            <div className="monitor-current-values monitor-network-values">
+              <span>
+                <span>下载</span>
+                <strong>{formatMonitorRate(latestHistoryPoint?.networkReceiveBytesPerSecond ?? 0)}</strong>
+              </span>
+              <span>
+                <span>上传</span>
+                <strong>{formatMonitorRate(latestHistoryPoint?.networkTransmitBytesPerSecond ?? 0)}</strong>
+              </span>
+            </div>
+            <AreaChart
+              animation={false}
+              area={{ style: { fillOpacity: 0.12 } }}
+              axes={[
+                {
+                  orient: "bottom",
+                  type: "band",
+                  label: { visible: false },
+                  tick: { visible: false },
+                },
+                {
+                  orient: "left",
+                  type: "linear",
+                  label: { visible: false },
+                  tick: { visible: false },
+                },
+              ]}
+              className="monitor-chart"
+              color={["#165dff", "#f77234"]}
+              data={[{ id: "network-trend", values: networkTrendData }]}
+              height={128}
+              legends={{
+                orient: "top",
+                position: "start",
+                item: { label: { style: { fill: "#4e5969", fontSize: 10 } } },
+              }}
+              line={{ style: { lineWidth: 2 } }}
+              padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
+              point={{ style: { size: 2 }, visible: history.length < 2 }}
+              seriesField="metric"
+              tooltip={{
+                dimension: {
+                  content: [
+                    { key: tooltipMetric, value: tooltipRate },
+                  ],
+                },
+                mark: {
+                  content: [
+                    { key: tooltipMetric, value: tooltipRate },
                   ],
                 },
               }}
