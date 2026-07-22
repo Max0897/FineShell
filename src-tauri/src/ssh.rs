@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::credentials;
 use crate::monitor::{
     self, NetworkConnectionsResult, NetworkPingResult, NetworkTraceResult, ServerMonitorSnapshot,
+    ServerProcessListResult,
 };
 
 const SSH_OUTPUT_EVENT: &str = "ssh-output";
@@ -115,6 +116,7 @@ enum SessionCommand {
         target: String,
         response: SyncSender<Result<NetworkTraceResult, String>>,
     },
+    Processes(SyncSender<Result<ServerProcessListResult, String>>),
     Close,
 }
 
@@ -466,6 +468,10 @@ fn run_session(
                     let _ = response.send(monitor::collect_trace_route(&session, &target));
                     active = true;
                 }
+                Ok(SessionCommand::Processes(response)) => {
+                    let _ = response.send(monitor::collect_processes(&session));
+                    active = true;
+                }
                 Ok(SessionCommand::Close) | Err(TryRecvError::Disconnected) => {
                     closing = true;
                     break;
@@ -771,6 +777,22 @@ pub(crate) async fn ssh_trace_route(
     })
     .await
     .map_err(|error| format!("路由追踪任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn ssh_processes(
+    manager: State<'_, SshSessionManager>,
+    session_id: String,
+) -> Result<ServerProcessListResult, String> {
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    manager.send(&session_id, SessionCommand::Processes(response_sender))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        response_receiver
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| format!("等待进程列表失败：{error}"))?
+    })
+    .await
+    .map_err(|error| format!("进程采集任务异常结束：{error}"))?
 }
 
 #[tauri::command]

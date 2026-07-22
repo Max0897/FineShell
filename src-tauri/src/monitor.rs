@@ -50,6 +50,19 @@ fi
 ss -H -tunap 2>/dev/null | awk 'BEGIN { OFS="\t" } NR <= 500 { process=""; for (i=7; i<=NF; i++) process=process (i == 7 ? "" : " ") $i; print $1, $2, $5, $6, process } END { if (NR > 500) print "__FINESHELL_TRUNCATED__" }'
 "#;
 
+const PROCESS_LIST_COMMAND: &str = r#"
+LC_ALL=C
+if ! command -v ps >/dev/null 2>&1; then
+  printf '__FINESHELL_PS_MISSING__\n'
+  exit 127
+fi
+if ! ps -eo pid=,ppid=,user=,stat=,pcpu=,pmem=,rss=,etimes=,comm=,args= --sort=-pcpu >/dev/null 2>&1; then
+  printf '__FINESHELL_PS_UNSUPPORTED__\n'
+  exit 2
+fi
+ps -eo pid=,ppid=,user=,stat=,pcpu=,pmem=,rss=,etimes=,comm=,args= --sort=-pcpu 2>/dev/null | awk 'NR <= 500 { print } END { if (NR > 500) print "__FINESHELL_TRUNCATED__" }'
+"#;
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ServerMonitorSnapshot {
@@ -117,6 +130,29 @@ pub(crate) struct NetworkTraceResult {
     resolved_address: Option<String>,
     reached: bool,
     hops: Vec<NetworkRouteHop>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServerProcess {
+    id: String,
+    pid: u32,
+    parent_pid: u32,
+    user: String,
+    state: String,
+    cpu_usage_percent: f64,
+    memory_usage_percent: f64,
+    resident_memory_bytes: u64,
+    elapsed_seconds: u64,
+    name: String,
+    command: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServerProcessListResult {
+    processes: Vec<ServerProcess>,
+    truncated: bool,
 }
 
 fn parse_number<T: std::str::FromStr>(value: Option<&str>, field: &str) -> Result<T, String> {
@@ -370,6 +406,54 @@ pub(crate) fn parse_trace_output(target: &str, output: &str) -> NetworkTraceResu
     }
 }
 
+pub(crate) fn parse_process_list(output: &str) -> ServerProcessListResult {
+    let mut truncated = false;
+    let processes = output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line == "__FINESHELL_TRUNCATED__" {
+                truncated = true;
+                return None;
+            }
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 9 {
+                return None;
+            }
+            let pid = fields[0].parse::<u32>().ok()?;
+            let parent_pid = fields[1].parse::<u32>().ok()?;
+            let cpu_usage_percent = fields[4].parse::<f64>().ok()?.max(0.0);
+            let memory_usage_percent = fields[5].parse::<f64>().ok()?.clamp(0.0, 100.0);
+            let resident_memory_bytes = fields[6].parse::<u64>().ok()?.saturating_mul(1024);
+            let elapsed_seconds = fields[7].parse::<u64>().ok()?;
+            let name = fields[8].to_string();
+            let command = if fields.len() > 9 {
+                fields[9..].join(" ")
+            } else {
+                name.clone()
+            };
+            Some(ServerProcess {
+                id: format!("process-{pid}"),
+                pid,
+                parent_pid,
+                user: fields[2].to_string(),
+                state: fields[3].to_string(),
+                cpu_usage_percent,
+                memory_usage_percent,
+                resident_memory_bytes,
+                elapsed_seconds,
+                name,
+                command,
+            })
+        })
+        .collect();
+
+    ServerProcessListResult {
+        processes,
+        truncated,
+    }
+}
+
 pub(crate) fn parse_monitor_output(output: &str) -> Result<ServerMonitorSnapshot, String> {
     let values = output
         .lines()
@@ -510,12 +594,27 @@ pub(crate) fn collect_trace_route(
     Ok(result)
 }
 
+pub(crate) fn collect_processes(session: &Session) -> Result<ServerProcessListResult, String> {
+    let (output, exit_status) = execute_remote_command(session, PROCESS_LIST_COMMAND, "进程采集")?;
+    if exit_status == 127 || output.contains("__FINESHELL_PS_MISSING__") {
+        return Err("远程服务器未安装 ps 命令".to_string());
+    }
+    if output.contains("__FINESHELL_PS_UNSUPPORTED__") {
+        return Err("远程服务器的 ps 命令不支持进程监控所需字段".to_string());
+    }
+    if exit_status != 0 {
+        return Err(format!("进程采集命令异常退出：{exit_status}"));
+    }
+    Ok(parse_process_list(&output))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_monitor_output, parse_network_connections, parse_ping_output, parse_trace_output,
-        validate_ping_target, NetworkConnection, NetworkConnectionsResult, NetworkPingResult,
-        NetworkRouteHop, NetworkTraceResult, ServerMonitorSnapshot,
+        parse_monitor_output, parse_network_connections, parse_ping_output, parse_process_list,
+        parse_trace_output, validate_ping_target, NetworkConnection, NetworkConnectionsResult,
+        NetworkPingResult, NetworkRouteHop, NetworkTraceResult, ServerMonitorSnapshot,
+        ServerProcess, ServerProcessListResult,
     };
 
     #[test]
@@ -711,5 +810,50 @@ rtt min/avg/max/mdev = 4.800/5.100/5.400/0.245 ms
         assert_eq!(result.hops[0].latency_ms, Some(0.224));
         assert_eq!(result.hops[1].address, None);
         assert_eq!(result.hops[2].latency_ms, Some(8.412));
+    }
+
+    #[test]
+    fn parses_process_list_and_preserves_command_arguments() {
+        let output = concat!(
+            "  812     1 root     Ssl  125.4 12.5 262144 86400 node node /opt/app/server.js --port 8080\n",
+            "  901   812 deploy   S      0.2  1.5  32768   125 worker worker --queue critical jobs\n",
+            "not a valid process line\n",
+            "__FINESHELL_TRUNCATED__\n",
+        );
+
+        assert_eq!(
+            parse_process_list(output),
+            ServerProcessListResult {
+                processes: vec![
+                    ServerProcess {
+                        id: "process-812".to_string(),
+                        pid: 812,
+                        parent_pid: 1,
+                        user: "root".to_string(),
+                        state: "Ssl".to_string(),
+                        cpu_usage_percent: 125.4,
+                        memory_usage_percent: 12.5,
+                        resident_memory_bytes: 268_435_456,
+                        elapsed_seconds: 86_400,
+                        name: "node".to_string(),
+                        command: "node /opt/app/server.js --port 8080".to_string(),
+                    },
+                    ServerProcess {
+                        id: "process-901".to_string(),
+                        pid: 901,
+                        parent_pid: 812,
+                        user: "deploy".to_string(),
+                        state: "S".to_string(),
+                        cpu_usage_percent: 0.2,
+                        memory_usage_percent: 1.5,
+                        resident_memory_bytes: 33_554_432,
+                        elapsed_seconds: 125,
+                        name: "worker".to_string(),
+                        command: "worker --queue critical jobs".to_string(),
+                    },
+                ],
+                truncated: true,
+            }
+        );
     }
 }

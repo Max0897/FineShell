@@ -143,6 +143,25 @@ export interface NetworkTraceResult {
   hops: NetworkRouteHop[];
 }
 
+export interface ServerProcess {
+  id: string;
+  pid: number;
+  parentPid: number;
+  user: string;
+  state: string;
+  cpuUsagePercent: number;
+  memoryUsagePercent: number;
+  residentMemoryBytes: number;
+  elapsedSeconds: number;
+  name: string;
+  command: string;
+}
+
+export interface ServerProcessListResult {
+  processes: ServerProcess[];
+  truncated: boolean;
+}
+
 export type SftpEntryKind = "directory" | "file" | "symlink" | "other";
 
 export interface SftpEntry {
