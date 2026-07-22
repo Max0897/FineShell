@@ -559,12 +559,6 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
           </div>
           <div className="manager-toolbar-actions">
             <Button
-              icon={<IconHistory />}
-              onClick={() => setHistoryVisible(true)}
-            >
-              连接历史
-            </Button>
-            <Button
               disabled={configurationLoading || configurationAction}
               icon={<IconPlus />}
               onClick={() => openHostEditor(null)}
@@ -572,6 +566,13 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
             >
               新增主机
             </Button>
+            <Tooltip content="连接历史">
+              <Button
+                aria-label="打开连接历史"
+                icon={<IconHistory />}
+                onClick={() => setHistoryVisible(true)}
+              />
+            </Tooltip>
           </div>
         </div>
         <Table
