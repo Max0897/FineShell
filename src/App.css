@@ -466,6 +466,28 @@ body,
   gap: 8px;
 }
 
+.manager-toolbar-filters {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 150px;
+  gap: 8px;
+}
+
+.host-sort-control {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+}
+
+.host-sort-control > .arco-icon {
+  color: #86909c;
+}
+
+.host-sort-control .arco-select {
+  width: 100%;
+}
+
 @media (max-width: 760px) {
   .hosts-manager-layout {
     grid-template-columns: 1fr;
@@ -476,6 +498,15 @@ body,
     overflow: auto;
     border-right: 0;
     border-bottom: 1px solid #e5e6eb;
+  }
+
+  .manager-toolbar,
+  .manager-toolbar-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .manager-toolbar-actions {
+    justify-content: flex-end;
   }
 }
 

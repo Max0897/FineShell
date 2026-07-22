@@ -24,7 +24,8 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(3);
+    expect(configuration.schemaVersion).toBe(4);
+    expect(configuration.hostSort).toBe("manual");
     expect(configuration.updatedAt).toBe("2026-07-22T00:00:00.000Z");
     expect(configuration.hosts).toEqual([
       {
@@ -131,11 +132,13 @@ describe("configuration import and export", () => {
           } as never,
         ],
         history: [],
+        hostSort: "manual",
       },
       "2026-07-22T00:00:00.000Z",
     );
 
     expect(contents).toContain('"format": "fineshell-config"');
+    expect(contents).toContain('"hostSort": "manual"');
     expect(contents).not.toContain("must-not-be-exported");
     expect(parseConfigurationExport(contents).hosts).toHaveLength(1);
   });
@@ -150,5 +153,18 @@ describe("configuration import and export", () => {
         '{"format":"fineshell-config","schemaVersion":99}',
       ),
     ).toThrow("版本不受支持");
+  });
+
+  test("loads version one exports with the default host order", () => {
+    const imported = parseConfigurationExport(
+      JSON.stringify({
+        format: "fineshell-config",
+        schemaVersion: 1,
+        hosts: [],
+        history: [],
+      }),
+    );
+
+    expect(imported.hostSort).toBe("manual");
   });
 });

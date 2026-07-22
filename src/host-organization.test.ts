@@ -6,6 +6,7 @@ import {
   filterHostsByGroup,
   hostGroupKey,
   normalizeGroupPath,
+  sortHosts,
   UNGROUPED_HOSTS_GROUP_KEY,
 } from "./host-organization";
 
@@ -78,5 +79,44 @@ describe("host group organization", () => {
     expect(filterHostsByGroup(hosts, UNGROUPED_HOSTS_GROUP_KEY)[0].id).toBe(
       "local",
     );
+  });
+});
+
+describe("host sorting", () => {
+  const hosts = [
+    { ...host("server-10"), name: "Server 10", address: "10.0.0.10" },
+    {
+      ...host("server-2"),
+      name: "Server 2",
+      address: "10.0.0.2",
+      lastConnectedAt: "2026-07-22T10:00:00.000Z",
+    },
+    { ...host("alpha"), name: "Alpha", address: "192.168.1.1" },
+  ];
+
+  test("keeps stored order in manual mode", () => {
+    expect(sortHosts(hosts, "manual")).toBe(hosts);
+  });
+
+  test("sorts names naturally in both directions", () => {
+    expect(sortHosts(hosts, "nameAsc").map((item) => item.name)).toEqual([
+      "Alpha",
+      "Server 2",
+      "Server 10",
+    ]);
+    expect(sortHosts(hosts, "nameDesc").map((item) => item.name)).toEqual([
+      "Server 10",
+      "Server 2",
+      "Alpha",
+    ]);
+  });
+
+  test("sorts addresses naturally and recent connections first", () => {
+    expect(sortHosts(hosts, "addressAsc").map((item) => item.id)).toEqual([
+      "server-2",
+      "server-10",
+      "alpha",
+    ]);
+    expect(sortHosts(hosts, "recentDesc")[0].id).toBe("server-2");
   });
 });

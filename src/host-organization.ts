@@ -1,4 +1,4 @@
-import type { HostRecord } from "./models";
+import type { HostRecord, HostSortMode } from "./models";
 
 export const ALL_HOSTS_GROUP_KEY = "all-hosts";
 export const UNGROUPED_HOSTS_GROUP_KEY = "ungrouped-hosts";
@@ -112,4 +112,35 @@ export function collectHostGroupKeys(nodes: HostGroupTreeNode[]): string[] {
     ...(node.key.startsWith(HOST_GROUP_KEY_PREFIX) ? [node.key] : []),
     ...collectHostGroupKeys(node.children ?? []),
   ]);
+}
+
+function compareHostNames(left: HostRecord, right: HostRecord) {
+  return (
+    left.name.localeCompare(right.name, "zh-CN", { numeric: true }) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+export function sortHosts(hosts: HostRecord[], mode: HostSortMode) {
+  if (mode === "manual") return hosts;
+
+  return [...hosts].sort((left, right) => {
+    if (mode === "nameAsc") return compareHostNames(left, right);
+    if (mode === "nameDesc") return compareHostNames(right, left);
+    if (mode === "addressAsc") {
+      return (
+        left.address.localeCompare(right.address, "en", { numeric: true }) ||
+        left.port - right.port ||
+        compareHostNames(left, right)
+      );
+    }
+
+    const leftTime = left.lastConnectedAt
+      ? Date.parse(left.lastConnectedAt)
+      : Number.NEGATIVE_INFINITY;
+    const rightTime = right.lastConnectedAt
+      ? Date.parse(right.lastConnectedAt)
+      : Number.NEGATIVE_INFINITY;
+    return rightTime - leftTime || compareHostNames(left, right);
+  });
 }

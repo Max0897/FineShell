@@ -1,4 +1,10 @@
 export type HostAuthMethod = "password" | "privateKey";
+export type HostSortMode =
+  | "manual"
+  | "nameAsc"
+  | "nameDesc"
+  | "addressAsc"
+  | "recentDesc";
 
 export interface HostRecord {
   id: string;

@@ -31,6 +31,7 @@ import {
   IconImport,
   IconLink,
   IconPlus,
+  IconSort,
   IconStorage,
   IconUndo,
 } from "@arco-design/web-react/icon";
@@ -39,6 +40,7 @@ import type {
   HostFormValues,
   HostAuthMethod,
   HostRecord,
+  HostSortMode,
   QuickTarget,
 } from "../models";
 import HostEditorModal from "./HostEditorModal";
@@ -48,6 +50,7 @@ import {
   buildHostGroupTree,
   collectHostGroupKeys,
   filterHostsByGroup,
+  sortHosts,
   type HostGroupTreeNode,
 } from "../host-organization";
 import {
@@ -63,6 +66,7 @@ import {
   restoreConfigurationBackup,
   restoreDeletedHost,
   serializeConfigurationExport,
+  updateHostSortMode,
 } from "../config-database";
 
 function createId(prefix: string) {
@@ -126,6 +130,7 @@ function HostManagerWindow() {
   const [history, setHistory] = useState<ConnectionHistoryRecord[]>([]);
   const [backups, setBackups] = useState<ConfigurationBackup[]>([]);
   const [trash, setTrash] = useState<DeletedHostRecord[]>([]);
+  const [hostSort, setHostSort] = useState<HostSortMode>("manual");
   const [configurationLoading, setConfigurationLoading] = useState(true);
   const [configurationAction, setConfigurationAction] = useState(false);
   const [keyword, setKeyword] = useState("");
@@ -160,6 +165,7 @@ function HostManagerWindow() {
         setHistory(configuration.history);
         setBackups(configuration.backups);
         setTrash(configuration.trash);
+        setHostSort(configuration.hostSort);
 
         const cleanup = await Promise.allSettled(
           expiredHostIds.flatMap((hostId) => [
@@ -254,10 +260,29 @@ function HostManagerWindow() {
         .some((value) => value?.toLowerCase().includes(normalized)),
     );
   }, [hosts, keyword, selectedGroupKey]);
+  const visibleHosts = useMemo(
+    () => sortHosts(filteredHosts, hostSort),
+    [filteredHosts, hostSort],
+  );
 
   function openHostEditor(host: HostRecord | null) {
     setEditingHost(host);
     setEditorVisible(true);
+  }
+
+  async function changeHostSort(nextSort: HostSortMode) {
+    const previousSort = hostSort;
+    setHostSort(nextSort);
+    setConfigurationAction(true);
+    try {
+      const next = await updateHostSortMode(nextSort);
+      setHostSort(next.hostSort);
+    } catch (error) {
+      setHostSort(previousSort);
+      Message.error(String(error));
+    } finally {
+      setConfigurationAction(false);
+    }
   }
 
   async function exportConfiguration() {
@@ -323,6 +348,7 @@ function HostManagerWindow() {
             setHistory(next.history);
             setBackups(next.backups);
             setTrash(next.trash);
+            setHostSort(next.hostSort);
             Message.success("配置导入完成");
           } catch (error) {
             Message.error(String(error));
@@ -348,6 +374,7 @@ function HostManagerWindow() {
       setHistory(next.history);
       setBackups(next.backups);
       setTrash(next.trash);
+      setHostSort(next.hostSort);
       Message.success("配置已恢复");
     } catch (error) {
       Message.error(String(error));
@@ -770,43 +797,63 @@ function HostManagerWindow() {
             </aside>
             <section className="manager-pane hosts-manager-content">
               <div className="manager-toolbar">
-              <Input.Search
-                allowClear
-                onChange={setKeyword}
-                placeholder="搜索名称、地址或分组"
-                value={keyword}
-              />
-              <div className="manager-toolbar-actions">
-                <Tooltip content="导入配置">
-                  <Button
-                    aria-label="导入配置"
-                    disabled={configurationLoading || configurationAction}
-                    icon={<IconImport />}
-                    onClick={() => void importConfigurationFile()}
+                <div className="manager-toolbar-filters">
+                  <Input.Search
+                    allowClear
+                    onChange={setKeyword}
+                    placeholder="搜索名称、地址或分组"
+                    value={keyword}
                   />
-                </Tooltip>
-                <Tooltip content="导出配置">
+                  <div className="host-sort-control">
+                    <IconSort />
+                    <Select
+                      aria-label="主机排序方式"
+                      disabled={configurationLoading || configurationAction}
+                      onChange={(value) =>
+                        void changeHostSort(value as HostSortMode)
+                      }
+                      options={[
+                        { label: "添加顺序", value: "manual" },
+                        { label: "名称升序", value: "nameAsc" },
+                        { label: "名称降序", value: "nameDesc" },
+                        { label: "地址升序", value: "addressAsc" },
+                        { label: "最近连接", value: "recentDesc" },
+                      ]}
+                      value={hostSort}
+                    />
+                  </div>
+                </div>
+                <div className="manager-toolbar-actions">
+                  <Tooltip content="导入配置">
+                    <Button
+                      aria-label="导入配置"
+                      disabled={configurationLoading || configurationAction}
+                      icon={<IconImport />}
+                      onClick={() => void importConfigurationFile()}
+                    />
+                  </Tooltip>
+                  <Tooltip content="导出配置">
+                    <Button
+                      aria-label="导出配置"
+                      disabled={configurationLoading || configurationAction}
+                      icon={<IconExport />}
+                      onClick={() => void exportConfiguration()}
+                    />
+                  </Tooltip>
                   <Button
-                    aria-label="导出配置"
                     disabled={configurationLoading || configurationAction}
-                    icon={<IconExport />}
-                    onClick={() => void exportConfiguration()}
-                  />
-                </Tooltip>
-                <Button
-                  disabled={configurationLoading || configurationAction}
-                  icon={<IconPlus />}
-                  onClick={() => openHostEditor(null)}
-                  type="primary"
-                >
-                  新增主机
-                </Button>
-              </div>
+                    icon={<IconPlus />}
+                    onClick={() => openHostEditor(null)}
+                    type="primary"
+                  >
+                    新增主机
+                  </Button>
+                </div>
               </div>
               <Table
                 border={false}
                 columns={hostColumns}
-                data={filteredHosts}
+                data={visibleHosts}
                 loading={configurationLoading}
                 noDataElement={
                   <Empty

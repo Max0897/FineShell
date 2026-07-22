@@ -1,5 +1,9 @@
 import { withHostDefaults } from "./host-storage";
-import type { ConnectionHistoryRecord, HostRecord } from "./models";
+import type {
+  ConnectionHistoryRecord,
+  HostRecord,
+  HostSortMode,
+} from "./models";
 
 const DATABASE_NAME = "fineshell.config";
 const DATABASE_VERSION = 1;
@@ -8,8 +12,8 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 3;
-export const CONFIGURATION_EXPORT_VERSION = 1;
+export const CONFIGURATION_SCHEMA_VERSION = 4;
+export const CONFIGURATION_EXPORT_VERSION = 2;
 export const MAX_CONFIGURATION_BACKUPS = 10;
 export const TRASH_RETENTION_DAYS = 30;
 
@@ -19,6 +23,7 @@ export interface ConfigurationBackup {
   reason: string;
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
+  hostSort: HostSortMode;
 }
 
 export interface DeletedHostRecord {
@@ -33,6 +38,7 @@ export interface FineShellConfiguration {
   schemaVersion: typeof CONFIGURATION_SCHEMA_VERSION;
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
+  hostSort: HostSortMode;
   backups: ConfigurationBackup[];
   trash: DeletedHostRecord[];
   updatedAt: string;
@@ -44,6 +50,7 @@ export interface FineShellConfigurationExport {
   exportedAt: string;
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
+  hostSort: HostSortMode;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -67,6 +74,15 @@ function numberValue(value: unknown, fallback: number, min: number, max: number)
 
 function optionalBoolean(value: unknown) {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function sanitizeHostSortMode(value: unknown): HostSortMode {
+  return value === "nameAsc" ||
+    value === "nameDesc" ||
+    value === "addressAsc" ||
+    value === "recentDesc"
+    ? value
+    : "manual";
 }
 
 function sanitizeHost(value: unknown): HostRecord | undefined {
@@ -154,6 +170,7 @@ function sanitizeBackup(value: unknown): ConfigurationBackup | undefined {
     reason,
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
+    hostSort: sanitizeHostSortMode(value.hostSort),
   };
 }
 
@@ -212,6 +229,7 @@ export function migrateLegacyConfiguration(
       parseLegacyList(storedHistory),
       sanitizeHistoryRecord,
     ).slice(0, 50),
+    hostSort: "manual",
     backups: [],
     trash: [],
     updatedAt: now,
@@ -232,6 +250,7 @@ function normalizeConfiguration(value: unknown): FineShellConfiguration {
     schemaVersion: CONFIGURATION_SCHEMA_VERSION,
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
+    hostSort: sanitizeHostSortMode(value.hostSort),
     backups: sanitizeList(value.backups, sanitizeBackup).slice(
       0,
       MAX_CONFIGURATION_BACKUPS,
@@ -252,11 +271,15 @@ function createBackup(
     reason,
     hosts: configuration.hosts,
     history: configuration.history,
+    hostSort: configuration.hostSort,
   };
 }
 
 export function serializeConfigurationExport(
-  configuration: Pick<FineShellConfiguration, "hosts" | "history">,
+  configuration: Pick<
+    FineShellConfiguration,
+    "hosts" | "history" | "hostSort"
+  >,
   now = new Date().toISOString(),
 ) {
   const exported: FineShellConfigurationExport = {
@@ -268,6 +291,7 @@ export function serializeConfigurationExport(
       configuration.history,
       sanitizeHistoryRecord,
     ).slice(0, 50),
+    hostSort: configuration.hostSort,
   };
   return `${JSON.stringify(exported, null, 2)}\n`;
 }
@@ -292,6 +316,7 @@ export function parseConfigurationExport(contents: string) {
   return {
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
+    hostSort: sanitizeHostSortMode(value.hostSort),
   };
 }
 
@@ -446,12 +471,16 @@ export function updateStoredHostFingerprint(
 }
 
 export function importConfiguration(
-  imported: Pick<FineShellConfiguration, "hosts" | "history">,
+  imported: Pick<
+    FineShellConfiguration,
+    "hosts" | "history" | "hostSort"
+  >,
 ) {
   return updateConfiguration((current) => ({
     ...current,
     hosts: imported.hosts,
     history: imported.history,
+    hostSort: imported.hostSort,
     backups: [
       createBackup(current, "导入配置前自动备份"),
       ...current.backups,
@@ -468,6 +497,7 @@ export function restoreConfigurationBackup(backupId: string) {
       ...current,
       hosts: backup.hosts,
       history: backup.history,
+      hostSort: backup.hostSort,
       backups: [
         createBackup(current, "恢复配置前自动备份"),
         ...current.backups,
@@ -557,4 +587,8 @@ export async function purgeExpiredDeletedHosts(now = new Date()) {
     }),
   }));
   return { configuration, expiredHostIds };
+}
+
+export function updateHostSortMode(hostSort: HostSortMode) {
+  return updateConfiguration((current) => ({ ...current, hostSort }));
 }
