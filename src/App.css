@@ -519,6 +519,11 @@ body,
   cursor: default;
 }
 
+.sftp-table tbody > .arco-table-tr:last-child > .arco-table-td,
+.sftp-table .arco-table-empty-row > .arco-table-td {
+  border-bottom: 0;
+}
+
 .sftp-name-cell {
   min-width: 0;
   display: flex;
