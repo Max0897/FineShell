@@ -21,6 +21,8 @@ import {
 import type { HostRecord, TerminalSession } from "./models";
 import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
+import { withHostDefaults } from "./host-storage";
+import { reconnectDelaySeconds } from "./terminal-utils";
 import "./App.css";
 
 interface BrowserConnectionMessage {
@@ -38,6 +40,7 @@ interface SshStatusPayload {
   sessionId: string;
   status: "disconnected";
   error?: string;
+  recoverable: boolean;
 }
 
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
@@ -228,6 +231,9 @@ function App() {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const sessionsRef = useRef<TerminalSession[]>([]);
+  const reconnectTimersRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  );
 
   const updateSession = useCallback(
     (sessionId: string, values: Partial<TerminalSession>) => {
@@ -242,8 +248,17 @@ function App() {
     [],
   );
 
+  const clearReconnectTimer = useCallback((sessionId: string) => {
+    const timer = reconnectTimersRef.current.get(sessionId);
+    if (timer) clearTimeout(timer);
+    reconnectTimersRef.current.delete(sessionId);
+  }, []);
+
   const connectSession = useCallback(
-    async function connect(session: TerminalSession) {
+    async function connect(
+      session: TerminalSession,
+      reconnectAttempt = 0,
+    ) {
       try {
         const result = await invoke<SshConnectResult>("ssh_connect", {
           request: {
@@ -255,6 +270,8 @@ function App() {
             authMethod: session.host.authMethod,
             privateKeyPath: session.host.privateKeyPath,
             connectTimeoutSeconds: session.host.connectTimeoutSeconds,
+            keepAliveIntervalSeconds:
+              session.host.keepAliveIntervalSeconds,
             expectedFingerprint: session.host.hostFingerprint,
             cols: 80,
             rows: 24,
@@ -289,9 +306,10 @@ function App() {
             error: undefined,
             host: trustedHost,
           });
-          await connect({ ...session, host: trustedHost });
+          await connect({ ...session, host: trustedHost }, reconnectAttempt);
           return;
         }
+        clearReconnectTimer(session.id);
         updateSession(session.id, {
           status: "connected",
           fingerprint: result.fingerprint,
@@ -300,20 +318,53 @@ function App() {
             ...session.host,
             hostFingerprint: result.fingerprint,
           },
+          reconnectAttempt: 0,
         });
         persistHostFingerprint(session.host, result.fingerprint);
       } catch (error) {
+        if (!sessionsRef.current.some((item) => item.id === session.id)) {
+          return;
+        }
+        const message = String(error);
+        if (
+          reconnectAttempt > 0 &&
+          session.host.autoReconnect &&
+          reconnectAttempt < session.host.maxReconnectAttempts
+        ) {
+          const nextAttempt = reconnectAttempt + 1;
+          const delaySeconds = reconnectDelaySeconds(nextAttempt);
+          updateSession(session.id, {
+            status: "reconnecting",
+            error: `第 ${reconnectAttempt} 次重连失败，${delaySeconds} 秒后重试：${message}`,
+            reconnectAttempt,
+          });
+          clearReconnectTimer(session.id);
+          const timer = setTimeout(() => {
+            reconnectTimersRef.current.delete(session.id);
+            const latest = sessionsRef.current.find(
+              (item) => item.id === session.id,
+            );
+            if (latest) void connect(latest, nextAttempt);
+          }, delaySeconds * 1000);
+          reconnectTimersRef.current.set(session.id, timer);
+          return;
+        }
         updateSession(session.id, {
           status: "failed",
-          error: String(error),
+          error:
+            reconnectAttempt > 0
+              ? `自动重连失败（已尝试 ${reconnectAttempt} 次）：${message}`
+              : message,
+          reconnectAttempt,
         });
       }
     },
-    [updateSession],
+    [clearReconnectTimer, updateSession],
   );
 
   const openSession = useCallback((host: HostRecord) => {
-    const identity = targetKey(host);
+    const normalizedHost = withHostDefaults(host);
+    const identity = targetKey(normalizedHost);
     const existing = sessionsRef.current.find(
       (session) => targetKey(session.host) === identity,
     );
@@ -324,7 +375,7 @@ function App() {
 
     const session: TerminalSession = {
       id: createId("session"),
-      host,
+      host: normalizedHost,
       openedAt: new Date().toISOString(),
       status: "connecting",
     };
@@ -337,14 +388,23 @@ function App() {
 
   const reconnectSession = useCallback(
     (session: TerminalSession) => {
-      updateSession(session.id, { status: "reconnecting", error: undefined });
-      void connectSession({
-        ...session,
+      clearReconnectTimer(session.id);
+      updateSession(session.id, {
         status: "reconnecting",
         error: undefined,
+        reconnectAttempt: 0,
       });
+      void connectSession(
+        {
+          ...session,
+          status: "reconnecting",
+          error: undefined,
+          reconnectAttempt: 0,
+        },
+        0,
+      );
     },
-    [connectSession, updateSession],
+    [clearReconnectTimer, connectSession, updateSession],
   );
 
   useEffect(() => {
@@ -374,9 +434,33 @@ function App() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<SshStatusPayload>("ssh-status", ({ payload }) => {
+      const session = sessionsRef.current.find(
+        (item) => item.id === payload.sessionId,
+      );
+      if (!session) return;
+      if (payload.recoverable && session.host.autoReconnect) {
+        const attempt = 1;
+        const delaySeconds = reconnectDelaySeconds(attempt);
+        clearReconnectTimer(session.id);
+        updateSession(session.id, {
+          status: "reconnecting",
+          error: `${payload.error || "SSH 连接中断"}，${delaySeconds} 秒后自动重连`,
+          reconnectAttempt: attempt,
+        });
+        const timer = setTimeout(() => {
+          reconnectTimersRef.current.delete(session.id);
+          const latest = sessionsRef.current.find(
+            (item) => item.id === session.id,
+          );
+          if (latest) void connectSession(latest, attempt);
+        }, delaySeconds * 1000);
+        reconnectTimersRef.current.set(session.id, timer);
+        return;
+      }
       updateSession(payload.sessionId, {
         status: payload.status,
         error: payload.error,
+        reconnectAttempt: 0,
       });
     }).then((stopListening) => {
       if (disposed) {
@@ -390,10 +474,12 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [updateSession]);
+  }, [clearReconnectTimer, connectSession, updateSession]);
 
   useEffect(
     () => () => {
+      reconnectTimersRef.current.forEach((timer) => clearTimeout(timer));
+      reconnectTimersRef.current.clear();
       sessionsRef.current.forEach((session) => {
         void invoke("ssh_disconnect", { sessionId: session.id }).catch(
           () => undefined,
@@ -426,6 +512,7 @@ function App() {
     sessions.find((session) => session.id === activeSessionId) ?? null;
 
   function closeSession(sessionId: string) {
+    clearReconnectTimer(sessionId);
     const currentIndex = sessions.findIndex(
       (session) => session.id === sessionId,
     );
@@ -480,6 +567,16 @@ function App() {
               },
               { label: "用户名", value: activeSession.host.username },
               { label: "端口", value: activeSession.host.port },
+              {
+                label: "保活",
+                value: `${activeSession.host.keepAliveIntervalSeconds} 秒`,
+              },
+              {
+                label: "自动重连",
+                value: activeSession.host.autoReconnect
+                  ? `最多 ${activeSession.host.maxReconnectAttempts} 次`
+                  : "关闭",
+              },
               {
                 label: "分组",
                 value: activeSession.host.group || "未分组",

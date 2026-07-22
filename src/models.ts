@@ -9,6 +9,9 @@ export interface HostRecord {
   authMethod: HostAuthMethod;
   privateKeyPath?: string;
   connectTimeoutSeconds: number;
+  keepAliveIntervalSeconds: number;
+  autoReconnect: boolean;
+  maxReconnectAttempts: number;
   group?: string;
   hostFingerprint?: string;
   lastConnectedAt?: string;
@@ -23,6 +26,9 @@ export interface HostFormValues {
   privateKeyPath?: string;
   privateKeyPassphrase?: string;
   connectTimeoutSeconds: number;
+  keepAliveIntervalSeconds: number;
+  autoReconnect: boolean;
+  maxReconnectAttempts: number;
   password?: string;
   group?: string;
   hostFingerprint?: string;
@@ -41,6 +47,9 @@ export interface ConnectionHistoryRecord extends QuickTarget {
   authMethod?: HostAuthMethod;
   privateKeyPath?: string;
   hostFingerprint?: string;
+  keepAliveIntervalSeconds?: number;
+  autoReconnect?: boolean;
+  maxReconnectAttempts?: number;
   connectedAt: string;
 }
 
@@ -58,6 +67,7 @@ export interface TerminalSession {
   status: TerminalSessionStatus;
   error?: string;
   fingerprint?: string;
+  reconnectAttempt?: number;
 }
 
 export type SftpEntryKind = "directory" | "file" | "symlink" | "other";

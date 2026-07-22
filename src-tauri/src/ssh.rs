@@ -9,7 +9,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
@@ -33,6 +33,7 @@ pub(crate) struct SshConnectRequest {
     auth_method: SshAuthMethod,
     private_key_path: Option<String>,
     connect_timeout_seconds: u64,
+    keep_alive_interval_seconds: u32,
     expected_fingerprint: Option<String>,
     cols: u32,
     rows: u32,
@@ -53,6 +54,7 @@ pub(crate) struct SshAuthConfig {
     pub(crate) auth_method: SshAuthMethod,
     pub(crate) private_key_path: Option<String>,
     pub(crate) connect_timeout_seconds: u64,
+    pub(crate) keep_alive_interval_seconds: u32,
     pub(crate) expected_fingerprint: Option<String>,
 }
 
@@ -91,6 +93,7 @@ struct SshStatusPayload {
     session_id: String,
     status: &'static str,
     error: Option<String>,
+    recoverable: bool,
 }
 
 enum SessionCommand {
@@ -247,6 +250,12 @@ fn resolve_private_key_path(path: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(path))
 }
 
+fn configure_keepalive(session: &Session, interval_seconds: u32) {
+    if interval_seconds > 0 {
+        session.set_keepalive(true, interval_seconds.clamp(5, 300));
+    }
+}
+
 fn connect_handshaken_session(
     config: &SshAuthConfig,
     cancelled: &AtomicBool,
@@ -313,6 +322,7 @@ pub(crate) fn connect_authenticated_session(
     let (session, fingerprint) = connect_handshaken_session(config, cancelled)?;
     validate_fingerprint(config.expected_fingerprint.as_deref(), &fingerprint)?;
     authenticate_session(&session, config)?;
+    configure_keepalive(&session, config.keep_alive_interval_seconds);
     if cancelled.load(Ordering::Acquire) {
         return Err("SSH 连接已取消".to_string());
     }
@@ -334,7 +344,13 @@ fn emit_output(app: &AppHandle, session_id: &str, bytes: &[u8]) {
     );
 }
 
-fn emit_status(app: &AppHandle, session_id: &str, status: &'static str, error: Option<String>) {
+fn emit_status(
+    app: &AppHandle,
+    session_id: &str,
+    status: &'static str,
+    error: Option<String>,
+    recoverable: bool,
+) {
     let _ = app.emit_to(
         "main",
         SSH_STATUS_EVENT,
@@ -342,6 +358,7 @@ fn emit_status(app: &AppHandle, session_id: &str, status: &'static str, error: O
             session_id: session_id.to_string(),
             status,
             error,
+            recoverable,
         },
     );
 }
@@ -382,6 +399,16 @@ fn read_output<R: Read>(reader: &mut R, app: &AppHandle, session_id: &str) -> Re
     Ok(read_data)
 }
 
+fn disconnect_status(closing: bool, terminal_error: Option<String>) -> (Option<String>, bool) {
+    let recoverable = !closing && terminal_error.is_some();
+    let error = if !closing && terminal_error.is_none() {
+        Some("远程 Shell 已结束".to_string())
+    } else {
+        terminal_error
+    };
+    (error, recoverable)
+}
+
 fn run_session(
     app: AppHandle,
     manager: SshSessionManager,
@@ -389,6 +416,7 @@ fn run_session(
     session: Session,
     mut channel: Channel,
     receiver: Receiver<SessionCommand>,
+    keep_alive_interval_seconds: u32,
 ) {
     session.set_blocking(false);
     let mut stderr = channel.stderr();
@@ -396,6 +424,7 @@ fn run_session(
     let mut pending_resize = None;
     let mut terminal_error = None;
     let mut closing = false;
+    let mut next_keepalive_at = Instant::now() + Duration::from_secs(1);
 
     while !closing && !channel.eof() {
         let mut active = false;
@@ -456,6 +485,25 @@ fn run_session(
             }
         }
 
+        if keep_alive_interval_seconds > 0 && Instant::now() >= next_keepalive_at {
+            match session.keepalive_send() {
+                Ok(next_seconds) => {
+                    next_keepalive_at =
+                        Instant::now() + Duration::from_secs(u64::from(next_seconds.max(1)));
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let io_error: io::Error = error.into();
+                    if io_error.kind() == io::ErrorKind::WouldBlock {
+                        next_keepalive_at = Instant::now() + Duration::from_millis(100);
+                    } else {
+                        terminal_error = Some(format!("SSH 保活失败：{message}"));
+                        break;
+                    }
+                }
+            }
+        }
+
         if !active {
             thread::sleep(Duration::from_millis(8));
         }
@@ -463,7 +511,8 @@ fn run_session(
 
     let _ = channel.close();
     manager.remove(&session_id);
-    emit_status(&app, &session_id, "disconnected", terminal_error);
+    let (error, recoverable) = disconnect_status(closing, terminal_error);
+    emit_status(&app, &session_id, "disconnected", error, recoverable);
 }
 
 fn connect_session(
@@ -480,6 +529,7 @@ fn connect_session(
         auth_method: request.auth_method,
         private_key_path: request.private_key_path.clone(),
         connect_timeout_seconds: request.connect_timeout_seconds,
+        keep_alive_interval_seconds: request.keep_alive_interval_seconds,
         expected_fingerprint: request.expected_fingerprint.clone(),
     };
     let (session, fingerprint) = connect_handshaken_session(&auth, &cancelled)?;
@@ -501,6 +551,7 @@ fn connect_session(
         }
     }
     authenticate_session(&session, &auth)?;
+    configure_keepalive(&session, auth.keep_alive_interval_seconds);
     if cancelled.load(Ordering::Acquire) {
         return Err("SSH 连接已取消".to_string());
     }
@@ -536,6 +587,7 @@ fn connect_session(
                 session,
                 channel,
                 receiver,
+                auth.keep_alive_interval_seconds,
             )
         })
     {
@@ -621,9 +673,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
-        connect_authenticated_session, connect_handshaken_session, validate_fingerprint,
-        verify_fingerprint, FingerprintVerification, SessionCommand, SshAuthConfig, SshAuthMethod,
-        SshSessionManager,
+        connect_authenticated_session, connect_handshaken_session, disconnect_status,
+        validate_fingerprint, verify_fingerprint, FingerprintVerification, SessionCommand,
+        SshAuthConfig, SshAuthMethod, SshSessionManager,
     };
 
     #[test]
@@ -649,6 +701,18 @@ mod tests {
             verify_fingerprint(Some("expected"), "SHA256:actual"),
             FingerprintVerification::Changed("SHA256:expected".to_string())
         );
+    }
+
+    #[test]
+    fn only_marks_transport_failures_as_recoverable() {
+        let (clean_error, clean_recoverable) = disconnect_status(false, None);
+        assert_eq!(clean_error.as_deref(), Some("远程 Shell 已结束"));
+        assert!(!clean_recoverable);
+
+        let (transport_error, transport_recoverable) =
+            disconnect_status(false, Some("socket closed".to_string()));
+        assert_eq!(transport_error.as_deref(), Some("socket closed"));
+        assert!(transport_recoverable);
     }
 
     #[test]
@@ -701,6 +765,7 @@ mod tests {
             auth_method: SshAuthMethod::PrivateKey,
             private_key_path: Some(private_key_path),
             connect_timeout_seconds: 10,
+            keep_alive_interval_seconds: 5,
             expected_fingerprint: std::env::var("FINESHELL_LIVE_FINGERPRINT").ok(),
         };
 
@@ -709,6 +774,10 @@ mod tests {
         if !session.authenticated() || !fingerprint.starts_with("SHA256:") {
             return Err("私钥认证结果无效".to_string());
         }
+        std::thread::sleep(std::time::Duration::from_secs(6));
+        session
+            .keepalive_send()
+            .map_err(|error| format!("SSH 保活测试失败：{error}"))?;
         Ok(())
     }
 
@@ -728,6 +797,7 @@ mod tests {
             auth_method: SshAuthMethod::Password,
             private_key_path: None,
             connect_timeout_seconds: 10,
+            keep_alive_interval_seconds: 15,
             expected_fingerprint: None,
         };
 

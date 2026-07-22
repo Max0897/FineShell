@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeHostForm } from "./host-storage";
+import { normalizeHostForm, withHostDefaults } from "./host-storage";
 
 describe("normalizeHostForm", () => {
   test("trims metadata without putting the password in the stored host", () => {
@@ -10,6 +10,9 @@ describe("normalizeHostForm", () => {
       username: " root ",
       authMethod: "password",
       connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
       password: "secret",
       group: "  Linux  ",
       hostFingerprint: " SHA256:abc123 ",
@@ -24,6 +27,9 @@ describe("normalizeHostForm", () => {
       authMethod: "password",
       privateKeyPath: undefined,
       connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
       group: "Linux",
       hostFingerprint: "SHA256:abc123",
     });
@@ -41,6 +47,9 @@ describe("normalizeHostForm", () => {
       privateKeyPath: "  /Users/demo/.ssh/id_ed25519  ",
       privateKeyPassphrase: "key-secret",
       connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
     });
 
     expect(result.privateKeyPassphrase).toBe("key-secret");
@@ -56,6 +65,9 @@ describe("normalizeHostForm", () => {
       username: "root",
       authMethod: "password",
       connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
       group: "   ",
       hostFingerprint: "",
     });
@@ -75,9 +87,30 @@ describe("normalizeHostForm", () => {
       privateKeyPath: "/tmp/old-key",
       privateKeyPassphrase: "old-secret",
       connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
     });
 
     expect(result.host.privateKeyPath).toBeUndefined();
     expect(result.privateKeyPassphrase).toBeUndefined();
+  });
+});
+
+describe("withHostDefaults", () => {
+  test("migrates hosts saved before reliability settings existed", () => {
+    const host = withHostDefaults({
+      id: "legacy",
+      name: "Legacy",
+      address: "127.0.0.1",
+      port: 22,
+      username: "root",
+      authMethod: "password",
+      connectTimeoutSeconds: 10,
+    });
+
+    expect(host.keepAliveIntervalSeconds).toBe(15);
+    expect(host.autoReconnect).toBe(true);
+    expect(host.maxReconnectAttempts).toBe(3);
   });
 });

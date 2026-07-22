@@ -7,6 +7,7 @@ import {
   Modal,
   Select,
   Space,
+  Switch,
   Tooltip,
 } from "@arco-design/web-react";
 import { IconFolder } from "@arco-design/web-react/icon";
@@ -41,6 +42,9 @@ function HostEditorModal({
         privateKeyPath: host.privateKeyPath,
         privateKeyPassphrase: "",
         connectTimeoutSeconds: host.connectTimeoutSeconds,
+        keepAliveIntervalSeconds: host.keepAliveIntervalSeconds,
+        autoReconnect: host.autoReconnect,
+        maxReconnectAttempts: host.maxReconnectAttempts,
         password: "",
         group: host.group,
         hostFingerprint: host.hostFingerprint,
@@ -54,6 +58,9 @@ function HostEditorModal({
         privateKeyPath: "",
         privateKeyPassphrase: "",
         connectTimeoutSeconds: 10,
+        keepAliveIntervalSeconds: 15,
+        autoReconnect: true,
+        maxReconnectAttempts: 3,
         password: "",
         group: "",
         hostFingerprint: "",
@@ -160,13 +167,38 @@ function HostEditorModal({
             </Form.Item>
           </>
         )}
-        <Form.Item
-          field="connectTimeoutSeconds"
-          label="连接超时（秒）"
-          rules={[{ required: true, message: "请输入连接超时时间" }]}
-        >
-          <InputNumber max={120} min={3} mode="button" />
-        </Form.Item>
+        <div className="host-form-row">
+          <Form.Item
+            field="connectTimeoutSeconds"
+            label="连接超时（秒）"
+            rules={[{ required: true, message: "请输入连接超时时间" }]}
+          >
+            <InputNumber max={120} min={3} mode="button" />
+          </Form.Item>
+          <Form.Item
+            field="keepAliveIntervalSeconds"
+            label="保活间隔（秒）"
+            rules={[{ required: true, message: "请输入保活间隔" }]}
+          >
+            <InputNumber max={300} min={5} mode="button" />
+          </Form.Item>
+        </div>
+        <div className="host-form-row">
+          <Form.Item
+            field="autoReconnect"
+            label="自动重连"
+            triggerPropName="checked"
+          >
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            field="maxReconnectAttempts"
+            label="最大重连次数"
+            rules={[{ required: true, message: "请输入最大重连次数" }]}
+          >
+            <InputNumber max={10} min={1} mode="button" />
+          </Form.Item>
+        </div>
         <Form.Item field="hostFingerprint" label="主机指纹">
           <Input placeholder="首次连接后自动记录，也可预先填写 SHA256 指纹" />
         </Form.Item>

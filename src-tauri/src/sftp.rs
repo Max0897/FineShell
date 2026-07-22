@@ -5,10 +5,11 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
         Arc, Mutex,
     },
     thread,
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,7 @@ pub(crate) struct SftpConnectRequest {
     auth_method: SshAuthMethod,
     private_key_path: Option<String>,
     connect_timeout_seconds: u64,
+    keep_alive_interval_seconds: u32,
     expected_fingerprint: Option<String>,
 }
 
@@ -422,11 +424,22 @@ fn run_session(
     app: AppHandle,
     manager: SftpSessionManager,
     session_id: String,
-    _session: Session,
+    session: Session,
     mut sftp: Sftp,
     receiver: Receiver<SftpCommand>,
+    keep_alive_interval_seconds: u32,
 ) {
-    while let Ok(command) = receiver.recv() {
+    loop {
+        let command = match receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(command) => command,
+            Err(RecvTimeoutError::Timeout) => {
+                if keep_alive_interval_seconds > 0 && session.keepalive_send().is_err() {
+                    break;
+                }
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         match command {
             SftpCommand::List { path, reply } => {
                 let _ = reply.send(list_directory(&sftp, &path));
@@ -552,6 +565,7 @@ fn connect_session(
         auth_method: request.auth_method,
         private_key_path: request.private_key_path,
         connect_timeout_seconds: request.connect_timeout_seconds,
+        keep_alive_interval_seconds: request.keep_alive_interval_seconds,
         expected_fingerprint: request.expected_fingerprint,
     };
     let (session, fingerprint) = connect_authenticated_session(&auth, &cancelled)?;
@@ -580,6 +594,7 @@ fn connect_session(
                 session,
                 sftp,
                 receiver,
+                auth.keep_alive_interval_seconds,
             )
         })
     {
@@ -837,6 +852,7 @@ mod tests {
             },
             private_key_path,
             connect_timeout_seconds: 10,
+            keep_alive_interval_seconds: 15,
             expected_fingerprint,
         };
         let (session, _) = connect_authenticated_session(&config, &AtomicBool::new(false))?;

@@ -35,7 +35,7 @@ import type {
   QuickTarget,
 } from "../models";
 import HostEditorModal from "./HostEditorModal";
-import { normalizeHostForm } from "../host-storage";
+import { normalizeHostForm, withHostDefaults } from "../host-storage";
 
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
@@ -54,11 +54,7 @@ function loadStoredList<T>(key: string): T[] {
 }
 
 function loadHosts() {
-  return loadStoredList<HostRecord>(HOSTS_STORAGE_KEY).map((host) => ({
-    ...host,
-    authMethod: host.authMethod ?? "password",
-    connectTimeoutSeconds: host.connectTimeoutSeconds ?? 10,
-  }));
+  return loadStoredList<HostRecord>(HOSTS_STORAGE_KEY).map(withHostDefaults);
 }
 
 async function storeHostPassword(hostId: string, password: string) {
@@ -242,6 +238,9 @@ function HostManagerWindow() {
       authMethod: host.authMethod,
       privateKeyPath: host.privateKeyPath,
       hostFingerprint: host.hostFingerprint,
+      keepAliveIntervalSeconds: host.keepAliveIntervalSeconds,
+      autoReconnect: host.autoReconnect,
+      maxReconnectAttempts: host.maxReconnectAttempts,
       connectedAt: now,
     };
 
@@ -291,6 +290,9 @@ function HostManagerWindow() {
           ? quickPrivateKeyPath.trim()
           : undefined,
       connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
       ...normalized,
     };
 
@@ -323,6 +325,9 @@ function HostManagerWindow() {
         privateKeyPath: record.privateKeyPath,
         hostFingerprint: record.hostFingerprint,
         connectTimeoutSeconds: 10,
+        keepAliveIntervalSeconds: record.keepAliveIntervalSeconds ?? 15,
+        autoReconnect: record.autoReconnect ?? true,
+        maxReconnectAttempts: record.maxReconnectAttempts ?? 3,
       },
     );
   }

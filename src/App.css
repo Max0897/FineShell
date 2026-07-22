@@ -460,6 +460,11 @@ body,
   width: 100%;
 }
 
+.host-editor-modal .arco-modal-content {
+  max-height: calc(100vh - 128px);
+  overflow: auto;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

@@ -191,6 +191,8 @@ function SftpPanel({ session }: SftpPanelProps) {
               privateKeyPath: currentSession.host.privateKeyPath,
               connectTimeoutSeconds:
                 currentSession.host.connectTimeoutSeconds,
+              keepAliveIntervalSeconds:
+                currentSession.host.keepAliveIntervalSeconds,
               expectedFingerprint:
                 currentSession.fingerprint ??
                 currentSession.host.hostFingerprint,
