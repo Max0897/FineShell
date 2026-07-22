@@ -122,25 +122,11 @@ body,
   gap: 12px;
 }
 
-.server-info-content {
+.server-monitor-content {
   flex: 1;
   min-height: 0;
   padding: 16px;
   overflow: auto;
-}
-
-.server-info-descriptions {
-  width: 100%;
-  margin-bottom: 16px;
-}
-
-.server-info-descriptions .arco-descriptions-item-label {
-  width: 64px;
-  color: #86909c;
-}
-
-.server-info-descriptions .arco-typography {
-  margin: 0;
 }
 
 .server-actions {

@@ -113,7 +113,6 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
     <section className="server-monitor">
       <div className="server-monitor-heading">
         <Typography.Text bold>服务器监控</Typography.Text>
-        <Typography.Text type="secondary">5 秒</Typography.Text>
       </div>
       {error && <Alert content={error} showIcon type="warning" />}
       {loading && !snapshot && (

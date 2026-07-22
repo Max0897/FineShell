@@ -8,7 +8,6 @@ import {
 } from "react";
 import {
   Button,
-  Descriptions,
   Empty,
   Message,
   Modal,
@@ -492,48 +491,10 @@ function App() {
     }
   }
 
-  const serverInfoPanel = (
-    <aside className="panel server-info-panel">
-      <div className="panel-toolbar">
-        <Typography.Text bold>服务器信息</Typography.Text>
-      </div>
+  const serverMonitorPanel = (
+    <aside className="panel server-monitor-sidebar">
       {activeSession ? (
-        <div className="server-info-content">
-          <Descriptions
-            border
-            className="server-info-descriptions"
-            column={1}
-            data={[
-              {
-                label: "IP",
-                value: (
-                  <Typography.Text
-                    copyable={{
-                      text: activeSession.host.address,
-                      tooltips: ["复制 IP", "已复制"],
-                    }}
-                  >
-                    {activeSession.host.address}
-                  </Typography.Text>
-                ),
-              },
-              {
-                label: "端口",
-                value: (
-                  <Typography.Text
-                    copyable={{
-                      text: String(activeSession.host.port),
-                      tooltips: ["复制端口", "已复制"],
-                    }}
-                  >
-                    {activeSession.host.port}
-                  </Typography.Text>
-                ),
-              },
-            ]}
-            size="small"
-            tableLayout="fixed"
-          />
+        <div className="server-monitor-content">
           <Suspense
             fallback={
               <div className="server-monitor-loading">
@@ -637,7 +598,7 @@ function App() {
         direction="horizontal"
         panes={[
           {
-            content: serverInfoPanel,
+            content: serverMonitorPanel,
             size: "280px",
             min: "220px",
             max: "400px",
