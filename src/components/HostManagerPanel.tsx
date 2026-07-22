@@ -687,6 +687,7 @@ function HostManagerPanel({
         </div>
         <Table
           border={false}
+          className="host-tree-table"
           columns={hostColumns}
           data={hostTableRows}
           defaultExpandAllRows

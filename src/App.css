@@ -797,6 +797,11 @@ body,
   background: #f7f8fa;
 }
 
+.host-tree-table tbody > .arco-table-tr:last-child > .arco-table-td,
+.host-tree-table .arco-table-empty-row > .arco-table-td {
+  border-bottom: 0;
+}
+
 .host-table-group-cell {
   min-width: 0;
   display: flex;
