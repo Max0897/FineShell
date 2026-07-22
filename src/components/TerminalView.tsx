@@ -5,6 +5,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import type { TerminalSession } from "../models";
+import { decodeSshOutput } from "../terminal-utils";
 
 interface TerminalViewProps {
   active: boolean;
@@ -14,12 +15,6 @@ interface TerminalViewProps {
 interface SshOutputPayload {
   sessionId: string;
   data: string;
-}
-
-function decodeBase64(value: string) {
-  const padding = (4 - (value.length % 4)) % 4;
-  const binary = window.atob(value.padEnd(value.length + padding, "="));
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
 function TerminalView({ active, session }: TerminalViewProps) {
@@ -76,18 +71,20 @@ function TerminalView({ active, session }: TerminalViewProps) {
       void invoke("ssh_write", {
         sessionId: session.id,
         data: Array.from(new TextEncoder().encode(data)),
-      });
+      }).catch(() => undefined);
     });
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
       if (!connectedRef.current) return;
-      void invoke("ssh_resize", { sessionId: session.id, cols, rows });
+      void invoke("ssh_resize", { sessionId: session.id, cols, rows }).catch(
+        () => undefined,
+      );
     });
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<SshOutputPayload>("ssh-output", ({ payload }) => {
       if (payload.sessionId === session.id) {
-        terminal.write(decodeBase64(payload.data));
+        terminal.write(decodeSshOutput(payload.data));
       }
     }).then((stopListening) => {
       if (disposed) {
@@ -128,7 +125,7 @@ function TerminalView({ active, session }: TerminalViewProps) {
           sessionId: session.id,
           cols: terminal.cols,
           rows: terminal.rows,
-        });
+        }).catch(() => undefined);
       }
     });
   }, [active, session.id, session.status]);

@@ -266,6 +266,7 @@ fn run_session(
     session.set_blocking(false);
     let mut stderr = channel.stderr();
     let mut pending = VecDeque::new();
+    let mut pending_resize = None;
     let mut terminal_error = None;
     let mut closing = false;
 
@@ -275,12 +276,7 @@ fn run_session(
             match receiver.try_recv() {
                 Ok(SessionCommand::Write(data)) => pending.push_back(data),
                 Ok(SessionCommand::Resize { cols, rows }) => {
-                    if let Err(error) = channel.request_pty_size(cols, rows, None, None) {
-                        terminal_error = Some(format!("调整终端尺寸失败：{error}"));
-                        closing = true;
-                        break;
-                    }
-                    active = true;
+                    pending_resize = Some((cols, rows));
                 }
                 Ok(SessionCommand::Close) | Err(TryRecvError::Disconnected) => {
                     closing = true;
@@ -292,6 +288,23 @@ fn run_session(
 
         if closing {
             break;
+        }
+
+        if let Some((cols, rows)) = pending_resize {
+            match channel.request_pty_size(cols, rows, None, None) {
+                Ok(()) => {
+                    pending_resize = None;
+                    active = true;
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let io_error: io::Error = error.into();
+                    if io_error.kind() != io::ErrorKind::WouldBlock {
+                        terminal_error = Some(format!("调整终端尺寸失败：{message}"));
+                        break;
+                    }
+                }
+            }
         }
 
         match write_pending(&mut channel, &mut pending) {
@@ -471,7 +484,9 @@ pub(crate) fn ssh_disconnect(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_fingerprint;
+    use std::sync::atomic::Ordering;
+
+    use super::{validate_fingerprint, SessionCommand, SshSessionManager};
 
     #[test]
     fn accepts_fingerprint_with_or_without_prefix() {
@@ -484,5 +499,34 @@ mod tests {
     #[test]
     fn rejects_changed_fingerprint() {
         assert!(validate_fingerprint(Some("SHA256:expected"), "SHA256:actual").is_err());
+    }
+
+    #[test]
+    fn cancels_a_connection_before_it_becomes_active() {
+        let manager = SshSessionManager::default();
+        let cancelled = manager.begin_connect("session-1").unwrap();
+
+        manager.disconnect("session-1").unwrap();
+
+        assert!(cancelled.load(Ordering::Acquire));
+        let (sender, _) = std::sync::mpsc::channel();
+        assert!(manager.activate("session-1", sender).is_err());
+    }
+
+    #[test]
+    fn forwards_commands_to_an_active_session() {
+        let manager = SshSessionManager::default();
+        manager.begin_connect("session-1").unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        manager.activate("session-1", sender).unwrap();
+
+        manager
+            .send("session-1", SessionCommand::Write(vec![1, 2, 3]))
+            .unwrap();
+
+        assert!(matches!(
+            receiver.recv().unwrap(),
+            SessionCommand::Write(data) if data == vec![1, 2, 3]
+        ));
     }
 }

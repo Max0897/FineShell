@@ -30,6 +30,7 @@ import type {
   QuickTarget,
 } from "../models";
 import HostEditorModal from "./HostEditorModal";
+import { normalizeHostForm } from "../host-storage";
 
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
@@ -152,15 +153,7 @@ function HostManagerWindow() {
   }
 
   async function saveHost(values: HostFormValues) {
-    const { password, ...hostValues } = values;
-    const normalized = {
-      ...hostValues,
-      name: values.name.trim(),
-      address: values.address.trim(),
-      username: values.username.trim(),
-      group: values.group?.trim() || undefined,
-      hostFingerprint: values.hostFingerprint?.trim() || undefined,
-    };
+    const { password, host: normalized } = normalizeHostForm(values);
     const hostId = editingHost?.id ?? createId("host");
 
     try {
@@ -213,15 +206,17 @@ function HostManagerWindow() {
       connectedAt: now,
     };
 
-    setHosts((current) =>
-      current.map((item) =>
-        item.id === host.id ? connectedHost : item,
-      ),
+    const nextHosts = hosts.map((item) =>
+      item.id === host.id ? connectedHost : item,
     );
-    setHistory((current) => [
+    const nextHistory = [
       historyRecord,
-      ...current.filter((item) => targetKey(item) !== identity),
-    ].slice(0, 50));
+      ...history.filter((item) => targetKey(item) !== identity),
+    ].slice(0, 50);
+    setHosts(nextHosts);
+    setHistory(nextHistory);
+    localStorage.setItem(HOSTS_STORAGE_KEY, JSON.stringify(nextHosts));
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(nextHistory));
 
     if (isTauri()) {
       await emitTo("main", "host-connect", connectedHost);
