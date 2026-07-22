@@ -394,8 +394,8 @@ body,
 }
 
 .terminal-tabs > .arco-tabs-header-nav {
-  flex: 0 0 48px;
-  height: 48px;
+  flex: 0 0 40px;
+  height: 40px;
   margin: 0;
   padding: 0 8px;
   background: #f7f8fa;
@@ -406,7 +406,7 @@ body,
 }
 
 .terminal-tabs > .arco-tabs-header-nav .arco-tabs-header-scroll {
-  height: 48px;
+  height: 40px;
 }
 
 .terminal-tabs .arco-tabs-header-wrapper,
@@ -418,7 +418,7 @@ body,
   position: relative;
   box-sizing: border-box;
   max-width: 220px;
-  height: 48px;
+  height: 40px;
   margin: 0 !important;
   padding: 0 14px !important;
   border: 0 !important;
@@ -490,7 +490,7 @@ body,
 
 .terminal-tabs .arco-tabs-add-icon {
   width: 40px;
-  height: 48px !important;
+  height: 40px !important;
   padding: 0 !important;
   color: #4e5969;
   cursor: pointer;
