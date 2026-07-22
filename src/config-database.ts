@@ -1,4 +1,9 @@
 import { withHostDefaults } from "./host-storage";
+import {
+  DEFAULT_APP_SETTINGS,
+  sanitizeAppSettings,
+  type AppSettings,
+} from "./app-settings";
 import type {
   ConnectionHistoryRecord,
   HostRecord,
@@ -12,8 +17,8 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 4;
-export const CONFIGURATION_EXPORT_VERSION = 2;
+export const CONFIGURATION_SCHEMA_VERSION = 5;
+export const CONFIGURATION_EXPORT_VERSION = 3;
 export const MAX_CONFIGURATION_BACKUPS = 10;
 export const TRASH_RETENTION_DAYS = 30;
 
@@ -39,6 +44,7 @@ export interface FineShellConfiguration {
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
   hostSort: HostSortMode;
+  settings: AppSettings;
   backups: ConfigurationBackup[];
   trash: DeletedHostRecord[];
   updatedAt: string;
@@ -51,6 +57,7 @@ export interface FineShellConfigurationExport {
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
   hostSort: HostSortMode;
+  settings: AppSettings;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -230,6 +237,7 @@ export function migrateLegacyConfiguration(
       sanitizeHistoryRecord,
     ).slice(0, 50),
     hostSort: "manual",
+    settings: { ...DEFAULT_APP_SETTINGS },
     backups: [],
     trash: [],
     updatedAt: now,
@@ -251,6 +259,7 @@ function normalizeConfiguration(value: unknown): FineShellConfiguration {
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
     hostSort: sanitizeHostSortMode(value.hostSort),
+    settings: sanitizeAppSettings(value.settings),
     backups: sanitizeList(value.backups, sanitizeBackup).slice(
       0,
       MAX_CONFIGURATION_BACKUPS,
@@ -278,7 +287,7 @@ function createBackup(
 export function serializeConfigurationExport(
   configuration: Pick<
     FineShellConfiguration,
-    "hosts" | "history" | "hostSort"
+    "hosts" | "history" | "hostSort" | "settings"
   >,
   now = new Date().toISOString(),
 ) {
@@ -292,6 +301,7 @@ export function serializeConfigurationExport(
       sanitizeHistoryRecord,
     ).slice(0, 50),
     hostSort: configuration.hostSort,
+    settings: sanitizeAppSettings(configuration.settings),
   };
   return `${JSON.stringify(exported, null, 2)}\n`;
 }
@@ -317,6 +327,7 @@ export function parseConfigurationExport(contents: string) {
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
     hostSort: sanitizeHostSortMode(value.hostSort),
+    settings: sanitizeAppSettings(value.settings),
   };
 }
 
@@ -473,7 +484,7 @@ export function updateStoredHostFingerprint(
 export function importConfiguration(
   imported: Pick<
     FineShellConfiguration,
-    "hosts" | "history" | "hostSort"
+    "hosts" | "history" | "hostSort" | "settings"
   >,
 ) {
   return updateConfiguration((current) => ({
@@ -481,6 +492,7 @@ export function importConfiguration(
     hosts: imported.hosts,
     history: imported.history,
     hostSort: imported.hostSort,
+    settings: imported.settings,
     backups: [
       createBackup(current, "导入配置前自动备份"),
       ...current.backups,
@@ -591,4 +603,11 @@ export async function purgeExpiredDeletedHosts(now = new Date()) {
 
 export function updateHostSortMode(hostSort: HostSortMode) {
   return updateConfiguration((current) => ({ ...current, hostSort }));
+}
+
+export function updateAppSettings(settings: AppSettings) {
+  return updateConfiguration((current) => ({
+    ...current,
+    settings: sanitizeAppSettings(settings),
+  }));
 }

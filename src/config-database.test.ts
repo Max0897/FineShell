@@ -6,6 +6,7 @@ import {
   parseConfigurationExport,
   serializeConfigurationExport,
 } from "./config-database";
+import { DEFAULT_APP_SETTINGS } from "./app-settings";
 
 describe("migrateLegacyConfiguration", () => {
   test("migrates valid hosts and applies connection defaults", () => {
@@ -24,8 +25,9 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(4);
+    expect(configuration.schemaVersion).toBe(5);
     expect(configuration.hostSort).toBe("manual");
+    expect(configuration.settings).toEqual(DEFAULT_APP_SETTINGS);
     expect(configuration.updatedAt).toBe("2026-07-22T00:00:00.000Z");
     expect(configuration.hosts).toEqual([
       {
@@ -133,12 +135,14 @@ describe("configuration import and export", () => {
         ],
         history: [],
         hostSort: "manual",
+        settings: DEFAULT_APP_SETTINGS,
       },
       "2026-07-22T00:00:00.000Z",
     );
 
     expect(contents).toContain('"format": "fineshell-config"');
     expect(contents).toContain('"hostSort": "manual"');
+    expect(contents).toContain('"settings"');
     expect(contents).not.toContain("must-not-be-exported");
     expect(parseConfigurationExport(contents).hosts).toHaveLength(1);
   });
@@ -166,5 +170,6 @@ describe("configuration import and export", () => {
     );
 
     expect(imported.hostSort).toBe("manual");
+    expect(imported.settings).toEqual(DEFAULT_APP_SETTINGS);
   });
 });
