@@ -1,14 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { HostRecord } from "./models";
 import {
-  ALL_HOSTS_GROUP_KEY,
-  buildHostGroupTree,
+  buildHostTableTree,
   createHostCopy,
-  filterHostsByGroup,
   hostGroupKey,
   normalizeGroupPath,
   sortHosts,
-  UNGROUPED_HOSTS_GROUP_KEY,
 } from "./host-organization";
 
 function host(id: string, group?: string): HostRecord {
@@ -40,46 +37,69 @@ describe("host group organization", () => {
     expect(normalizeGroupPath(" / / ")).toBeUndefined();
   });
 
-  test("builds a counted hierarchy", () => {
-    expect(buildHostGroupTree(hosts)).toEqual([
-      { key: ALL_HOSTS_GROUP_KEY, title: "全部主机", count: 4 },
-      { key: UNGROUPED_HOSTS_GROUP_KEY, title: "未分组", count: 1 },
+  test("builds grouped table rows and keeps ungrouped hosts at root", () => {
+    expect(buildHostTableTree(hosts)).toEqual([
       {
-        key: hostGroupKey("测试"),
-        title: "测试",
+        id: hostGroupKey("测试"),
+        type: "group",
+        name: "测试",
+        path: "测试",
         count: 1,
-        children: undefined,
-      },
-      {
-        key: hostGroupKey("生产"),
-        title: "生产",
-        count: 2,
         children: [
           {
-            key: hostGroupKey("生产/华东"),
-            title: "华东",
-            count: 1,
-            children: undefined,
-          },
-          {
-            key: hostGroupKey("生产/华西"),
-            title: "华西",
-            count: 1,
-            children: undefined,
+            id: "host:test",
+            type: "host",
+            name: "test",
+            host: hosts[2],
           },
         ],
       },
+      {
+        id: hostGroupKey("生产"),
+        type: "group",
+        name: "生产",
+        path: "生产",
+        count: 2,
+        children: [
+          {
+            id: hostGroupKey("生产/华东"),
+            type: "group",
+            name: "华东",
+            path: "生产/华东",
+            count: 1,
+            children: [
+              {
+                id: "host:prod-east",
+                type: "host",
+                name: "prod-east",
+                host: hosts[0],
+              },
+            ],
+          },
+          {
+            id: hostGroupKey("生产/华西"),
+            type: "group",
+            name: "华西",
+            path: "生产/华西",
+            count: 1,
+            children: [
+              {
+                id: "host:prod-west",
+                type: "host",
+                name: "prod-west",
+                host: hosts[1],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: "host:local",
+        type: "host",
+        name: "local",
+        host: hosts[3],
+      },
     ]);
-  });
-
-  test("filters parent groups with their descendants", () => {
-    expect(filterHostsByGroup(hosts, hostGroupKey("生产"))).toHaveLength(2);
-    expect(filterHostsByGroup(hosts, hostGroupKey("生产/华东"))[0].id).toBe(
-      "prod-east",
-    );
-    expect(filterHostsByGroup(hosts, UNGROUPED_HOSTS_GROUP_KEY)[0].id).toBe(
-      "local",
-    );
   });
 });
 

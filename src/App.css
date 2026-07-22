@@ -722,55 +722,8 @@ body,
   padding: 16px 20px 24px;
 }
 
-.hosts-manager-layout {
-  height: 100%;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
-}
-
-.host-group-sidebar {
-  min-width: 0;
-  min-height: 0;
-  padding: 18px 12px 24px;
-  overflow: auto;
-  border-right: 1px solid #e5e6eb;
-  background: #f7f8fa;
-}
-
-.host-group-sidebar > .arco-typography {
-  display: block;
-  margin: 0 8px 10px;
-}
-
-.host-group-sidebar .arco-tree {
-  min-width: 0;
-}
-
-.host-group-tree-title {
-  width: 100%;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.host-group-tree-title > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.host-group-tree-count {
-  flex: 0 0 auto;
-  color: #86909c;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
 .hosts-manager-content {
+  height: 100%;
   min-width: 0;
   min-height: 0;
   overflow: auto;
@@ -812,17 +765,6 @@ body,
 }
 
 @media (max-width: 760px) {
-  .hosts-manager-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .host-group-sidebar {
-    max-height: 180px;
-    overflow: auto;
-    border-right: 0;
-    border-bottom: 1px solid #e5e6eb;
-  }
-
   .manager-toolbar,
   .manager-toolbar-filters {
     grid-template-columns: 1fr;
@@ -846,6 +788,33 @@ body,
 
 .host-name-cell .arco-typography {
   max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-table-group-row .arco-table-td {
+  background: #f7f8fa;
+}
+
+.host-table-group-cell {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.host-table-group-cell > .arco-icon {
+  flex: 0 0 auto;
+  color: #4e5969;
+}
+
+.host-table-group-cell > .arco-typography {
+  margin: 0;
+}
+
+.host-table-group-cell > .arco-typography:nth-child(2) {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

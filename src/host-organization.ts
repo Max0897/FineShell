@@ -1,21 +1,32 @@
 import type { HostRecord, HostSortMode } from "./models";
 
-export const ALL_HOSTS_GROUP_KEY = "all-hosts";
-export const UNGROUPED_HOSTS_GROUP_KEY = "ungrouped-hosts";
 const HOST_GROUP_KEY_PREFIX = "host-group:";
 
-export interface HostGroupTreeNode {
-  key: string;
-  title: string;
+export interface HostTableGroupRow {
+  id: string;
+  type: "group";
+  name: string;
+  path: string;
   count: number;
-  children?: HostGroupTreeNode[];
+  children: HostTableRow[];
 }
 
-interface MutableHostGroupNode {
-  key: string;
-  title: string;
+export interface HostTableHostRow {
+  id: string;
+  type: "host";
+  name: string;
+  host: HostRecord;
+}
+
+export type HostTableRow = HostTableGroupRow | HostTableHostRow;
+
+interface MutableHostGroupRow {
+  id: string;
+  name: string;
+  path: string;
   count: number;
-  children: Map<string, MutableHostGroupNode>;
+  groups: Map<string, MutableHostGroupRow>;
+  hosts: HostRecord[];
 }
 
 export function normalizeGroupPath(group?: string) {
@@ -31,87 +42,74 @@ export function hostGroupKey(path: string) {
   return `${HOST_GROUP_KEY_PREFIX}${path}`;
 }
 
-function finalizeGroupNodes(
-  nodes: Iterable<MutableHostGroupNode>,
-): HostGroupTreeNode[] {
-  return Array.from(nodes)
-    .sort((left, right) =>
-      left.title.localeCompare(right.title, "zh-CN", { numeric: true }),
-    )
-    .map((node) => {
-      const children = finalizeGroupNodes(node.children.values());
-      return {
-        key: node.key,
-        title: node.title,
-        count: node.count,
-        children: children.length ? children : undefined,
-      };
-    });
+function hostTableRow(host: HostRecord): HostTableHostRow {
+  return {
+    id: `host:${host.id}`,
+    type: "host",
+    name: host.name,
+    host,
+  };
 }
 
-export function buildHostGroupTree(hosts: HostRecord[]): HostGroupTreeNode[] {
-  const roots = new Map<string, MutableHostGroupNode>();
-  let ungroupedCount = 0;
+function finalizeGroupRows(
+  groups: Iterable<MutableHostGroupRow>,
+): HostTableGroupRow[] {
+  return Array.from(groups)
+    .sort((left, right) =>
+      left.name.localeCompare(right.name, "zh-CN", { numeric: true }),
+    )
+    .map((group) => ({
+      id: group.id,
+      type: "group",
+      name: group.name,
+      path: group.path,
+      count: group.count,
+      children: [
+        ...finalizeGroupRows(group.groups.values()),
+        ...group.hosts.map(hostTableRow),
+      ],
+    }));
+}
+
+export function buildHostTableTree(hosts: HostRecord[]): HostTableRow[] {
+  const rootGroups = new Map<string, MutableHostGroupRow>();
+  const rootHosts: HostRecord[] = [];
 
   for (const host of hosts) {
     const group = normalizeGroupPath(host.group);
     if (!group) {
-      ungroupedCount += 1;
+      rootHosts.push(host);
       continue;
     }
 
-    let currentLevel = roots;
+    let currentLevel = rootGroups;
+    let currentGroup: MutableHostGroupRow | undefined;
     let currentPath = "";
     for (const segment of group.split("/")) {
       currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-      let node = currentLevel.get(segment);
-      if (!node) {
-        node = {
-          key: hostGroupKey(currentPath),
-          title: segment,
+      let groupRow = currentLevel.get(segment);
+      if (!groupRow) {
+        groupRow = {
+          id: hostGroupKey(currentPath),
+          name: segment,
+          path: currentPath,
           count: 0,
-          children: new Map(),
+          groups: new Map(),
+          hosts: [],
         };
-        currentLevel.set(segment, node);
+        currentLevel.set(segment, groupRow);
       }
-      node.count += 1;
-      currentLevel = node.children;
+      groupRow.count += 1;
+      currentGroup = groupRow;
+      currentLevel = groupRow.groups;
     }
+    currentGroup?.hosts.push(host);
   }
 
   return [
-    { key: ALL_HOSTS_GROUP_KEY, title: "全部主机", count: hosts.length },
-    {
-      key: UNGROUPED_HOSTS_GROUP_KEY,
-      title: "未分组",
-      count: ungroupedCount,
-    },
-    ...finalizeGroupNodes(roots.values()),
+    ...finalizeGroupRows(rootGroups.values()),
+    ...rootHosts.map(hostTableRow),
   ];
-}
-
-export function filterHostsByGroup(
-  hosts: HostRecord[],
-  selectedGroupKey: string,
-) {
-  if (selectedGroupKey === ALL_HOSTS_GROUP_KEY) return hosts;
-  if (selectedGroupKey === UNGROUPED_HOSTS_GROUP_KEY) {
-    return hosts.filter((host) => !normalizeGroupPath(host.group));
-  }
-  if (!selectedGroupKey.startsWith(HOST_GROUP_KEY_PREFIX)) return hosts;
-
-  const selectedPath = selectedGroupKey.slice(HOST_GROUP_KEY_PREFIX.length);
-  return hosts.filter((host) => {
-    const group = normalizeGroupPath(host.group);
-    return group === selectedPath || group?.startsWith(`${selectedPath}/`);
-  });
-}
-
-export function collectHostGroupKeys(nodes: HostGroupTreeNode[]): string[] {
-  return nodes.flatMap((node) => [
-    ...(node.key.startsWith(HOST_GROUP_KEY_PREFIX) ? [node.key] : []),
-    ...collectHostGroupKeys(node.children ?? []),
-  ]);
 }
 
 function compareHostNames(left: HostRecord, right: HostRecord) {

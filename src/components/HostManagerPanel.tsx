@@ -10,13 +10,10 @@ import {
   Select,
   Space,
   Table,
-  Tag,
   Tooltip,
-  Tree,
   Typography,
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
-import type { TreeDataType } from "@arco-design/web-react/es/Tree/interface";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -43,13 +40,10 @@ import type {
 import HostEditorModal from "./HostEditorModal";
 import { normalizeHostForm } from "../host-storage";
 import {
-  ALL_HOSTS_GROUP_KEY,
-  buildHostGroupTree,
-  collectHostGroupKeys,
+  buildHostTableTree,
   createHostCopy,
-  filterHostsByGroup,
   sortHosts,
-  type HostGroupTreeNode,
+  type HostTableRow,
 } from "../host-organization";
 import {
   importConfiguration,
@@ -129,8 +123,6 @@ function HostManagerPanel({
   const [configurationLoading, setConfigurationLoading] = useState(true);
   const [configurationAction, setConfigurationAction] = useState(false);
   const [keyword, setKeyword] = useState("");
-  const [selectedGroupKey, setSelectedGroupKey] = useState(ALL_HOSTS_GROUP_KEY);
-  const [expandedGroupKeys, setExpandedGroupKeys] = useState<string[]>([]);
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingHost, setEditingHost] = useState<HostRecord | null>(null);
   const [historyVisible, setHistoryVisible] = useState(false);
@@ -208,59 +200,23 @@ function HostManagerPanel({
     };
   }, []);
 
-  const hostGroupTree = useMemo(() => buildHostGroupTree(hosts), [hosts]);
-  const hostGroupKeys = useMemo(
-    () => collectHostGroupKeys(hostGroupTree),
-    [hostGroupTree],
-  );
-  const hostGroupTreeData = useMemo<TreeDataType[]>(() => {
-    const toTreeData = (nodes: HostGroupTreeNode[]): TreeDataType[] =>
-      nodes.map((node) => ({
-        children: node.children ? toTreeData(node.children) : undefined,
-        icon: node.key.startsWith("host-group:") ? <IconFolder /> : undefined,
-        key: node.key,
-        title: (
-          <span className="host-group-tree-title">
-            <span>{node.title}</span>
-            <span className="host-group-tree-count">{node.count}</span>
-          </span>
-        ),
-      }));
-    return toTreeData(hostGroupTree);
-  }, [hostGroupTree]);
-
-  useEffect(() => {
-    setExpandedGroupKeys((current) => [
-      ...new Set([...current, ...hostGroupKeys]),
-    ]);
-  }, [hostGroupKeys]);
-
-  useEffect(() => {
-    const availableKeys = new Set(
-      hostGroupTree.flatMap((node) => [
-        node.key,
-        ...collectHostGroupKeys([node]),
-      ]),
-    );
-    if (!availableKeys.has(selectedGroupKey)) {
-      setSelectedGroupKey(ALL_HOSTS_GROUP_KEY);
-    }
-  }, [hostGroupTree, selectedGroupKey]);
-
   const filteredHosts = useMemo(() => {
-    const groupedHosts = filterHostsByGroup(hosts, selectedGroupKey);
     const normalized = keyword.trim().toLowerCase();
-    if (!normalized) return groupedHosts;
+    if (!normalized) return hosts;
 
-    return groupedHosts.filter((host) =>
+    return hosts.filter((host) =>
       [host.name, host.address, host.username, host.group]
         .filter(Boolean)
         .some((value) => value?.toLowerCase().includes(normalized)),
     );
-  }, [hosts, keyword, selectedGroupKey]);
+  }, [hosts, keyword]);
   const visibleHosts = useMemo(
     () => sortHosts(filteredHosts, hostSort),
     [filteredHosts, hostSort],
+  );
+  const hostTableRows = useMemo(
+    () => buildHostTableTree(visibleHosts),
+    [visibleHosts],
   );
 
   function openHostEditor(host: HostRecord | null) {
@@ -558,76 +514,77 @@ function HostManagerPanel({
     );
   }
 
-  const hostColumns: TableColumnProps<HostRecord>[] = [
+  const hostColumns: TableColumnProps<HostTableRow>[] = [
     {
       title: "主机",
       dataIndex: "name",
-      render: (_, host) => (
-        <div className="host-name-cell">
-          <Typography.Text bold>{host.name}</Typography.Text>
-          <Typography.Text type="secondary">
-            {host.username}@{host.address}:{host.port}
-          </Typography.Text>
-        </div>
-      ),
-    },
-    {
-      title: "分组",
-      dataIndex: "group",
-      width: 120,
-      render: (value) =>
-        value ? <Tag color="arcoblue">{value}</Tag> : <span>-</span>,
+      render: (_, row) =>
+        row.type === "group" ? (
+          <div className="host-table-group-cell">
+            <IconFolder />
+            <Typography.Text bold>{row.name}</Typography.Text>
+            <Typography.Text type="secondary">{row.count} 台</Typography.Text>
+          </div>
+        ) : (
+          <div className="host-name-cell">
+            <Typography.Text bold>{row.host.name}</Typography.Text>
+            <Typography.Text type="secondary">
+              {row.host.username}@{row.host.address}:{row.host.port}
+            </Typography.Text>
+          </div>
+        ),
     },
     {
       title: "最近连接",
-      dataIndex: "lastConnectedAt",
       width: 150,
-      render: (value) => formatTime(value),
+      render: (_, row) =>
+        row.type === "host" ? formatTime(row.host.lastConnectedAt) : null,
     },
     {
       title: "操作",
       width: 228,
-      render: (_, host) => (
-        <Space size="mini">
-          <Button
-            disabled={configurationAction}
-            icon={<IconLink />}
-            onClick={() => void sendConnection(host)}
-            size="mini"
-            type="primary"
-          >
-            连接
-          </Button>
-          <Button
-            aria-label={`编辑 ${host.name}`}
-            disabled={configurationAction}
-            icon={<IconEdit />}
-            onClick={() => openHostEditor(host)}
-            size="mini"
-          />
-          <Tooltip content="复制主机">
+      render: (_, row) =>
+        row.type === "host" ? (
+          <Space size="mini">
             <Button
-              aria-label={`复制 ${host.name}`}
               disabled={configurationAction}
-              icon={<IconCopy />}
-              onClick={() => void copyHost(host)}
+              icon={<IconLink />}
+              onClick={() => void sendConnection(row.host)}
+              size="mini"
+              type="primary"
+            >
+              连接
+            </Button>
+            <Button
+              aria-label={`编辑 ${row.host.name}`}
+              disabled={configurationAction}
+              icon={<IconEdit />}
+              onClick={() => openHostEditor(row.host)}
               size="mini"
             />
-          </Tooltip>
-          <Popconfirm
-            content={`删除主机“${host.name}”？`}
-            onOk={() => void deleteHost(host)}
-          >
-            <Button
-              aria-label={`删除 ${host.name}`}
-              disabled={configurationAction}
-              icon={<IconDelete />}
-              size="mini"
-              status="danger"
-            />
-          </Popconfirm>
-        </Space>
-      ),
+            <Tooltip content="复制主机">
+              <Button
+                aria-label={`复制 ${row.host.name}`}
+                disabled={configurationAction}
+                icon={<IconCopy />}
+                onClick={() => void copyHost(row.host)}
+                size="mini"
+              />
+            </Tooltip>
+            <Popconfirm
+              content={`删除主机“${row.host.name}”？`}
+              onOk={() => void deleteHost(row.host)}
+            >
+              <Button
+                aria-label={`删除 ${row.host.name}`}
+                disabled={configurationAction}
+                icon={<IconDelete />}
+                size="mini"
+                status="danger"
+              />
+            </Popconfirm>
+          </Space>
+        ) : null,
     },
   ];
 
@@ -669,98 +626,84 @@ function HostManagerPanel({
 
   return (
     <main className="host-manager-panel">
-      <div className="hosts-manager-layout">
-        <aside className="host-group-sidebar">
-          <Typography.Text bold>分组</Typography.Text>
-          <Tree
-            blockNode
-            expandedKeys={expandedGroupKeys}
-            onExpand={setExpandedGroupKeys}
-            onSelect={(keys) => {
-              if (keys[0]) setSelectedGroupKey(keys[0]);
-            }}
-            selectedKeys={[selectedGroupKey]}
-            size="small"
-            treeData={hostGroupTreeData}
-          />
-        </aside>
-        <section className="manager-pane hosts-manager-content">
-          <div className="manager-toolbar">
-            <div className="manager-toolbar-filters">
-              <Input.Search
-                allowClear
-                onChange={setKeyword}
-                placeholder="搜索名称、地址或分组"
-                value={keyword}
-              />
-              <div className="host-sort-control">
-                <IconSort />
-                <Select
-                  aria-label="主机排序方式"
-                  disabled={configurationLoading || configurationAction}
-                  onChange={(value) =>
-                    void changeHostSort(value as HostSortMode)
-                  }
-                  options={[
-                    { label: "添加顺序", value: "manual" },
-                    { label: "名称升序", value: "nameAsc" },
-                    { label: "名称降序", value: "nameDesc" },
-                    { label: "地址升序", value: "addressAsc" },
-                    { label: "最近连接", value: "recentDesc" },
-                  ]}
-                  value={hostSort}
-                />
-              </div>
-            </div>
-            <div className="manager-toolbar-actions">
-              <Button
-                icon={<IconHistory />}
-                onClick={() => setHistoryVisible(true)}
-              >
-                连接历史
-              </Button>
-              <Tooltip content="导入配置">
-                <Button
-                  aria-label="导入配置"
-                  disabled={configurationLoading || configurationAction}
-                  icon={<IconImport />}
-                  onClick={() => void importConfigurationFile()}
-                />
-              </Tooltip>
-              <Tooltip content="导出配置">
-                <Button
-                  aria-label="导出配置"
-                  disabled={configurationLoading || configurationAction}
-                  icon={<IconExport />}
-                  onClick={() => void exportConfiguration()}
-                />
-              </Tooltip>
-              <Button
+      <section className="manager-pane hosts-manager-content">
+        <div className="manager-toolbar">
+          <div className="manager-toolbar-filters">
+            <Input.Search
+              allowClear
+              onChange={setKeyword}
+              placeholder="搜索名称、地址或分组"
+              value={keyword}
+            />
+            <div className="host-sort-control">
+              <IconSort />
+              <Select
+                aria-label="主机排序方式"
                 disabled={configurationLoading || configurationAction}
-                icon={<IconPlus />}
-                onClick={() => openHostEditor(null)}
-                type="primary"
-              >
-                新增主机
-              </Button>
+                onChange={(value) => void changeHostSort(value as HostSortMode)}
+                options={[
+                  { label: "添加顺序", value: "manual" },
+                  { label: "名称升序", value: "nameAsc" },
+                  { label: "名称降序", value: "nameDesc" },
+                  { label: "地址升序", value: "addressAsc" },
+                  { label: "最近连接", value: "recentDesc" },
+                ]}
+                value={hostSort}
+              />
             </div>
           </div>
-          <Table
-            border={false}
-            columns={hostColumns}
-            data={visibleHosts}
-            loading={configurationLoading}
-            noDataElement={
-              <Empty
-                description={keyword ? "没有匹配的主机" : "该分组暂无主机"}
+          <div className="manager-toolbar-actions">
+            <Button
+              icon={<IconHistory />}
+              onClick={() => setHistoryVisible(true)}
+            >
+              连接历史
+            </Button>
+            <Tooltip content="导入配置">
+              <Button
+                aria-label="导入配置"
+                disabled={configurationLoading || configurationAction}
+                icon={<IconImport />}
+                onClick={() => void importConfigurationFile()}
               />
-            }
-            pagination={false}
-            rowKey="id"
-            size="small"
-          />
-        </section>
-      </div>
+            </Tooltip>
+            <Tooltip content="导出配置">
+              <Button
+                aria-label="导出配置"
+                disabled={configurationLoading || configurationAction}
+                icon={<IconExport />}
+                onClick={() => void exportConfiguration()}
+              />
+            </Tooltip>
+            <Button
+              disabled={configurationLoading || configurationAction}
+              icon={<IconPlus />}
+              onClick={() => openHostEditor(null)}
+              type="primary"
+            >
+              新增主机
+            </Button>
+          </div>
+        </div>
+        <Table
+          border={false}
+          columns={hostColumns}
+          data={hostTableRows}
+          defaultExpandAllRows
+          expandProps={{ expandRowByClick: true }}
+          indentSize={20}
+          loading={configurationLoading}
+          noDataElement={
+            <Empty description={keyword ? "没有匹配的主机" : "暂无主机"} />
+          }
+          pagination={false}
+          rowClassName={(row) =>
+            row.type === "group" ? "host-table-group-row" : ""
+          }
+          rowKey="id"
+          size="small"
+        />
+      </section>
 
       <Modal
         className="connection-history-modal"
