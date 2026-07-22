@@ -1,16 +1,23 @@
 mod config_files;
 mod credentials;
 mod monitor;
+#[cfg(desktop)]
+mod native_menu;
 mod sftp;
 mod ssh;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(sftp::SftpSessionManager::default())
         .manage(ssh::SshSessionManager::default())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init());
+
+    #[cfg(desktop)]
+    let builder = builder.menu(native_menu::build_chinese_menu);
+
+    builder
         .invoke_handler(tauri::generate_handler![
             config_files::read_config_file,
             config_files::write_config_file,
