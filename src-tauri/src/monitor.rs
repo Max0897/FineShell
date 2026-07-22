@@ -41,6 +41,15 @@ awk -F '[: ]+' 'NR > 2 { interface=$2; if (interface != "lo") { received += $3; 
 printf '\n'
 "#;
 
+const NETWORK_CONNECTIONS_COMMAND: &str = r#"
+LC_ALL=C
+if ! command -v ss >/dev/null 2>&1; then
+  printf '__FINESHELL_SS_MISSING__\n'
+  exit 127
+fi
+ss -H -tunap 2>/dev/null | awk 'BEGIN { OFS="\t" } NR <= 500 { process=""; for (i=7; i<=NF; i++) process=process (i == 7 ? "" : " ") $i; print $1, $2, $5, $6, process } END { if (NR > 500) print "__FINESHELL_TRUNCATED__" }'
+"#;
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ServerMonitorSnapshot {
@@ -71,6 +80,26 @@ pub(crate) struct NetworkPingResult {
     minimum_latency_ms: Option<f64>,
     average_latency_ms: Option<f64>,
     maximum_latency_ms: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NetworkConnection {
+    id: String,
+    protocol: String,
+    state: String,
+    local_address: String,
+    local_port: String,
+    remote_address: String,
+    remote_port: String,
+    process: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NetworkConnectionsResult {
+    connections: Vec<NetworkConnection>,
+    truncated: bool,
 }
 
 fn parse_number<T: std::str::FromStr>(value: Option<&str>, field: &str) -> Result<T, String> {
@@ -186,6 +215,80 @@ pub(crate) fn parse_ping_output(target: &str, output: &str) -> Result<NetworkPin
     })
 }
 
+fn parse_network_endpoint(endpoint: &str) -> (String, String) {
+    let Some((address, port)) = endpoint.rsplit_once(':') else {
+        return (endpoint.to_string(), String::new());
+    };
+    (
+        address
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+            .unwrap_or(address)
+            .to_string(),
+        port.to_string(),
+    )
+}
+
+fn parse_process_label(value: &str) -> Option<String> {
+    if value.is_empty() {
+        return None;
+    }
+    let name = value.split('"').nth(1);
+    let process_id = value
+        .split("pid=")
+        .nth(1)
+        .and_then(|value| value.split([',', ')']).next());
+    match (name, process_id) {
+        (Some(name), Some(process_id)) => Some(format!("{name} (PID {process_id})")),
+        (Some(name), None) => Some(name.to_string()),
+        _ => Some(value.to_string()),
+    }
+}
+
+pub(crate) fn parse_network_connections(output: &str) -> NetworkConnectionsResult {
+    let mut truncated = false;
+    let connections = output
+        .lines()
+        .filter_map(|line| {
+            if line == "__FINESHELL_TRUNCATED__" {
+                truncated = true;
+                return None;
+            }
+            let mut fields = line.splitn(5, '\t');
+            let protocol = fields.next()?.trim();
+            let state = fields.next()?.trim();
+            let local_endpoint = fields.next()?.trim();
+            let remote_endpoint = fields.next()?.trim();
+            let process = fields.next().unwrap_or_default().trim();
+            if protocol.is_empty() || local_endpoint.is_empty() {
+                return None;
+            }
+            let (local_address, local_port) = parse_network_endpoint(local_endpoint);
+            let (remote_address, remote_port) = parse_network_endpoint(remote_endpoint);
+            Some(NetworkConnection {
+                id: String::new(),
+                protocol: protocol.to_uppercase(),
+                state: state.to_uppercase(),
+                local_address,
+                local_port,
+                remote_address,
+                remote_port,
+                process: parse_process_label(process),
+            })
+        })
+        .enumerate()
+        .map(|(index, mut connection)| {
+            connection.id = format!("network-connection-{index}");
+            connection
+        })
+        .collect();
+
+    NetworkConnectionsResult {
+        connections,
+        truncated,
+    }
+}
+
 pub(crate) fn parse_monitor_output(output: &str) -> Result<ServerMonitorSnapshot, String> {
     let values = output
         .lines()
@@ -288,11 +391,25 @@ pub(crate) fn collect_ping(session: &Session, target: &str) -> Result<NetworkPin
     parse_ping_output(target, &output)
 }
 
+pub(crate) fn collect_network_connections(
+    session: &Session,
+) -> Result<NetworkConnectionsResult, String> {
+    let (output, exit_status) =
+        execute_remote_command(session, NETWORK_CONNECTIONS_COMMAND, "网络连接采集")?;
+    if exit_status == 127 || output.contains("__FINESHELL_SS_MISSING__") {
+        return Err("远程服务器未安装 ss 命令".to_string());
+    }
+    if exit_status != 0 {
+        return Err(format!("网络连接采集命令异常退出：{exit_status}"));
+    }
+    Ok(parse_network_connections(&output))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_monitor_output, parse_ping_output, validate_ping_target, NetworkPingResult,
-        ServerMonitorSnapshot,
+        parse_monitor_output, parse_network_connections, parse_ping_output, validate_ping_target,
+        NetworkConnection, NetworkConnectionsResult, NetworkPingResult, ServerMonitorSnapshot,
     };
 
     #[test]
@@ -379,5 +496,54 @@ rtt min/avg/max/mdev = 4.800/5.100/5.400/0.245 ms
         assert!(validate_ping_target("2001:db8::1").is_ok());
         assert!(validate_ping_target("-c 100").is_err());
         assert!(validate_ping_target("example.com; reboot").is_err());
+    }
+
+    #[test]
+    fn parses_network_connections_and_ipv6_endpoints() {
+        let output = concat!(
+            "tcp\tLISTEN\t0.0.0.0:22\t0.0.0.0:*\tusers:((\"sshd\",pid=801,fd=3))\n",
+            "tcp\tESTAB\t[2001:db8::1]:22\t[2001:db8::2]:51820\tusers:((\"sshd\",pid=901,fd=4))\n",
+            "udp\tUNCONN\t*:5353\t*:*\t\n",
+            "__FINESHELL_TRUNCATED__\n",
+        );
+
+        assert_eq!(
+            parse_network_connections(output),
+            NetworkConnectionsResult {
+                connections: vec![
+                    NetworkConnection {
+                        id: "network-connection-0".to_string(),
+                        protocol: "TCP".to_string(),
+                        state: "LISTEN".to_string(),
+                        local_address: "0.0.0.0".to_string(),
+                        local_port: "22".to_string(),
+                        remote_address: "0.0.0.0".to_string(),
+                        remote_port: "*".to_string(),
+                        process: Some("sshd (PID 801)".to_string()),
+                    },
+                    NetworkConnection {
+                        id: "network-connection-1".to_string(),
+                        protocol: "TCP".to_string(),
+                        state: "ESTAB".to_string(),
+                        local_address: "2001:db8::1".to_string(),
+                        local_port: "22".to_string(),
+                        remote_address: "2001:db8::2".to_string(),
+                        remote_port: "51820".to_string(),
+                        process: Some("sshd (PID 901)".to_string()),
+                    },
+                    NetworkConnection {
+                        id: "network-connection-2".to_string(),
+                        protocol: "UDP".to_string(),
+                        state: "UNCONN".to_string(),
+                        local_address: "*".to_string(),
+                        local_port: "5353".to_string(),
+                        remote_address: "*".to_string(),
+                        remote_port: "*".to_string(),
+                        process: None,
+                    },
+                ],
+                truncated: true,
+            }
+        );
     }
 }

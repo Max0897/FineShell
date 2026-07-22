@@ -6,6 +6,7 @@ import {
   formatMonitorBytes,
   formatMonitorPercent,
   formatMonitorRate,
+  formatNetworkEndpoint,
   formatUptime,
 } from "./monitor-utils";
 
@@ -36,6 +37,10 @@ describe("server monitor display helpers", () => {
     expect(formatLatency(5.123)).toBe("5.12 ms");
     expect(formatLatency(15.123)).toBe("15.1 ms");
     expect(formatLatency()).toBe("--");
+    expect(formatNetworkEndpoint("0.0.0.0", "22")).toBe("0.0.0.0:22");
+    expect(formatNetworkEndpoint("2001:db8::1", "443")).toBe(
+      "[2001:db8::1]:443",
+    );
     expect(formatUptime(90_000)).toBe("1 天 1 小时");
     expect(formatUptime(7_500)).toBe("2 小时 5 分钟");
   });

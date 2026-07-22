@@ -18,7 +18,7 @@ use ssh2::{Channel, HashType, Session};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::credentials;
-use crate::monitor::{self, NetworkPingResult, ServerMonitorSnapshot};
+use crate::monitor::{self, NetworkConnectionsResult, NetworkPingResult, ServerMonitorSnapshot};
 
 const SSH_OUTPUT_EVENT: &str = "ssh-output";
 const SSH_STATUS_EVENT: &str = "ssh-status";
@@ -108,6 +108,7 @@ enum SessionCommand {
         target: String,
         response: SyncSender<Result<NetworkPingResult, String>>,
     },
+    NetworkConnections(SyncSender<Result<NetworkConnectionsResult, String>>),
     Close,
 }
 
@@ -451,6 +452,10 @@ fn run_session(
                     let _ = response.send(monitor::collect_ping(&session, &target));
                     active = true;
                 }
+                Ok(SessionCommand::NetworkConnections(response)) => {
+                    let _ = response.send(monitor::collect_network_connections(&session));
+                    active = true;
+                }
                 Ok(SessionCommand::Close) | Err(TryRecvError::Disconnected) => {
                     closing = true;
                     break;
@@ -714,6 +719,25 @@ pub(crate) async fn ssh_ping(
     })
     .await
     .map_err(|error| format!("Ping 任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn ssh_network_connections(
+    manager: State<'_, SshSessionManager>,
+    session_id: String,
+) -> Result<NetworkConnectionsResult, String> {
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    manager.send(
+        &session_id,
+        SessionCommand::NetworkConnections(response_sender),
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        response_receiver
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| format!("等待网络连接数据失败：{error}"))?
+    })
+    .await
+    .map_err(|error| format!("网络连接采集任务异常结束：{error}"))?
 }
 
 #[tauri::command]

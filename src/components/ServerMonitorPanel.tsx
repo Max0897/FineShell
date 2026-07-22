@@ -4,19 +4,25 @@ import {
   Button,
   Descriptions,
   Drawer,
+  Empty,
   Input,
+  Radio,
   Skeleton,
+  Table,
   Tag,
   Tooltip,
   Typography,
 } from "@arco-design/web-react";
-import { IconWifi } from "@arco-design/web-react/icon";
+import type { TableColumnProps } from "@arco-design/web-react";
+import { IconRefresh, IconWifi } from "@arco-design/web-react/icon";
 import { invoke } from "@tauri-apps/api/core";
 import { AreaChart, BarChart } from "@visactor/react-vchart";
 import type {
   ServerMonitorHistoryPoint,
   ServerMonitorSnapshot,
   TerminalSession,
+  NetworkConnection,
+  NetworkConnectionsResult,
   NetworkPingResult,
 } from "../models";
 import {
@@ -25,6 +31,7 @@ import {
   formatMonitorBytes,
   formatMonitorPercent,
   formatMonitorRate,
+  formatNetworkEndpoint,
   formatUptime,
 } from "../monitor-utils";
 
@@ -33,6 +40,34 @@ interface ServerMonitorPanelProps {
 }
 
 const POLL_INTERVAL_MS = 5_000;
+
+type ConnectionFilter = "all" | "listening" | "connected";
+
+const CONNECTION_STATE_LABELS: Record<string, string> = {
+  CLOSED: "已关闭",
+  CLOSING: "正在关闭",
+  "CLOSE-WAIT": "等待关闭",
+  ESTAB: "已连接",
+  "FIN-WAIT-1": "等待关闭",
+  "FIN-WAIT-2": "等待关闭",
+  "LAST-ACK": "最终确认",
+  LISTEN: "监听",
+  "SYN-RECV": "接收连接",
+  "SYN-SENT": "正在连接",
+  "TIME-WAIT": "等待回收",
+  UNCONN: "无连接",
+};
+
+function isListeningConnection(connection: NetworkConnection) {
+  return connection.state === "LISTEN" || connection.state === "UNCONN";
+}
+
+function connectionStateColor(state: string) {
+  if (state === "ESTAB") return "green";
+  if (state === "LISTEN" || state === "UNCONN") return "blue";
+  if (state.includes("WAIT")) return "orange";
+  return "gray";
+}
 
 function tooltipMetric(datum?: Record<string, unknown>) {
   return String(datum?.metric ?? "占用率");
@@ -56,6 +91,12 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
   const [pingResult, setPingResult] = useState<NetworkPingResult | null>(null);
   const [pingLoading, setPingLoading] = useState(false);
   const [pingError, setPingError] = useState<string>();
+  const [connectionsResult, setConnectionsResult] =
+    useState<NetworkConnectionsResult | null>(null);
+  const [connectionsLoading, setConnectionsLoading] = useState(false);
+  const [connectionsError, setConnectionsError] = useState<string>();
+  const [connectionFilter, setConnectionFilter] =
+    useState<ConnectionFilter>("all");
 
   useEffect(() => {
     setSnapshot(null);
@@ -63,6 +104,9 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
     setError(undefined);
     setPingResult(null);
     setPingError(undefined);
+    setConnectionsResult(null);
+    setConnectionsError(undefined);
+    setConnectionFilter("all");
     setDiagnosticsVisible(false);
     if (session.status !== "connected") {
       setLoading(false);
@@ -118,6 +162,23 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
     }
   };
 
+  const loadNetworkConnections = async () => {
+    setConnectionsLoading(true);
+    setConnectionsError(undefined);
+    try {
+      const result = await invoke<NetworkConnectionsResult>(
+        "ssh_network_connections",
+        { sessionId: session.id },
+      );
+      setConnectionsResult(result);
+    } catch (connectionFailure) {
+      setConnectionsResult(null);
+      setConnectionsError(String(connectionFailure));
+    } finally {
+      setConnectionsLoading(false);
+    }
+  };
+
   const utilizationData = useMemo(
     () =>
       snapshot
@@ -160,6 +221,68 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
     [history],
   );
   const latestHistoryPoint = history[history.length - 1];
+  const filteredConnections = useMemo(() => {
+    const connections = connectionsResult?.connections ?? [];
+    if (connectionFilter === "listening") {
+      return connections.filter(isListeningConnection);
+    }
+    if (connectionFilter === "connected") {
+      return connections.filter((connection) => connection.state === "ESTAB");
+    }
+    return connections;
+  }, [connectionFilter, connectionsResult]);
+  const connectionColumns = useMemo<TableColumnProps<NetworkConnection>[]>(
+    () => [
+      {
+        dataIndex: "protocol",
+        title: "协议",
+        width: 68,
+      },
+      {
+        dataIndex: "state",
+        title: "状态",
+        width: 96,
+        render: (state: string) => (
+          <Tag color={connectionStateColor(state)}>
+            {CONNECTION_STATE_LABELS[state] ?? state}
+          </Tag>
+        ),
+      },
+      {
+        title: "本地地址",
+        render: (_, connection) => (
+          <Typography.Text ellipsis={{ showTooltip: true }}>
+            {formatNetworkEndpoint(
+              connection.localAddress,
+              connection.localPort,
+            )}
+          </Typography.Text>
+        ),
+      },
+      {
+        title: "远端地址",
+        render: (_, connection) => (
+          <Typography.Text ellipsis={{ showTooltip: true }}>
+            {formatNetworkEndpoint(
+              connection.remoteAddress,
+              connection.remotePort,
+            )}
+          </Typography.Text>
+        ),
+      },
+      {
+        dataIndex: "process",
+        title: "进程",
+        width: 150,
+        render: (process?: string) => (
+          <Typography.Text ellipsis={{ showTooltip: true }}>
+            {process || "-"}
+          </Typography.Text>
+        ),
+      },
+    ],
+    [],
+  );
 
   if (session.status !== "connected") {
     return (
@@ -180,6 +303,9 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
             onClick={() => {
               setDiagnosticsVisible(true);
               if (!pingResult && !pingLoading) void runPing();
+              if (!connectionsResult && !connectionsLoading) {
+                void loadNetworkConnections();
+              }
             }}
             size="mini"
             type="text"
@@ -398,7 +524,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
         onCancel={() => setDiagnosticsVisible(false)}
         title="网络诊断"
         visible={diagnosticsVisible}
-        width={480}
+        width={720}
       >
         <section className="network-diagnostics-section">
           <Typography.Text bold>Ping</Typography.Text>
@@ -451,6 +577,57 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
               size="small"
             />
           )}
+        </section>
+        <section className="network-diagnostics-section">
+          <div className="network-diagnostics-section-heading">
+            <span>
+              <Typography.Text bold>网络连接</Typography.Text>
+              {connectionsResult && (
+                <Typography.Text type="secondary">
+                  {connectionsResult.connections.length} 条
+                </Typography.Text>
+              )}
+            </span>
+            <Tooltip content="刷新网络连接">
+              <Button
+                aria-label="刷新网络连接"
+                icon={<IconRefresh />}
+                loading={connectionsLoading}
+                onClick={() => void loadNetworkConnections()}
+                size="mini"
+                type="text"
+              />
+            </Tooltip>
+          </div>
+          <Radio.Group
+            mode="fill"
+            onChange={setConnectionFilter}
+            options={[
+              { label: "全部", value: "all" },
+              { label: "监听", value: "listening" },
+              { label: "已连接", value: "connected" },
+            ]}
+            size="small"
+            type="button"
+            value={connectionFilter}
+          />
+          {connectionsError && (
+            <Alert content={connectionsError} showIcon type="error" />
+          )}
+          {connectionsResult?.truncated && (
+            <Alert content="连接数量较多，仅显示前 500 条" showIcon type="warning" />
+          )}
+          <Table
+            border={false}
+            columns={connectionColumns}
+            data={filteredConnections}
+            loading={connectionsLoading}
+            noDataElement={<Empty description="暂无网络连接" />}
+            pagination={false}
+            rowKey="id"
+            scroll={{ y: 320 }}
+            size="small"
+          />
         </section>
       </Drawer>
     </section>

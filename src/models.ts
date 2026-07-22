@@ -114,6 +114,22 @@ export interface NetworkPingResult {
   maximumLatencyMs?: number;
 }
 
+export interface NetworkConnection {
+  id: string;
+  protocol: string;
+  state: string;
+  localAddress: string;
+  localPort: string;
+  remoteAddress: string;
+  remotePort: string;
+  process?: string;
+}
+
+export interface NetworkConnectionsResult {
+  connections: NetworkConnection[];
+  truncated: boolean;
+}
+
 export type SftpEntryKind = "directory" | "file" | "symlink" | "other";
 
 export interface SftpEntry {

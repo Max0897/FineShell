@@ -283,6 +283,30 @@ body,
   gap: 12px;
 }
 
+.network-diagnostics-section + .network-diagnostics-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #e5e6eb;
+}
+
+.network-diagnostics-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.network-diagnostics-section-heading > span {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.network-diagnostics-section .arco-table-cell {
+  white-space: nowrap;
+}
+
 .network-diagnostics-section > .arco-typography {
   margin: 0;
 }

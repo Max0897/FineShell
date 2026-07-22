@@ -64,6 +64,12 @@ export function formatLatency(milliseconds?: number) {
   return `${milliseconds.toFixed(milliseconds >= 10 ? 1 : 2)} ms`;
 }
 
+export function formatNetworkEndpoint(address: string, port: string) {
+  if (!port) return address;
+  const displayAddress = address.includes(":") ? `[${address}]` : address;
+  return `${displayAddress}:${port}`;
+}
+
 export function formatMonitorPercent(value: number) {
   if (!Number.isFinite(value)) return "0%";
   return `${Math.round(value)}%`;
