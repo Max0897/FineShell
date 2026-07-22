@@ -315,21 +315,17 @@ function ServerProcessDrawer({
           </Tooltip>
         </Space>
       </div>
-      {error && (
-        <Alert
-          className="server-process-alert"
-          content={error}
-          showIcon
-          type="error"
-        />
-      )}
-      {result?.truncated && (
-        <Alert
-          className="server-process-alert"
-          content="进程数量较多，仅显示 CPU 占用最高的前 500 条"
-          showIcon
-          type="warning"
-        />
+      {(error || result?.truncated) && (
+        <div className="server-process-alerts">
+          {error && <Alert content={error} showIcon type="error" />}
+          {result?.truncated && (
+            <Alert
+              content="进程数量较多，仅显示 CPU 占用最高的前 500 条"
+              showIcon
+              type="warning"
+            />
+          )}
+        </div>
       )}
       <Table
         border={false}
@@ -339,7 +335,7 @@ function ServerProcessDrawer({
         noDataElement={<Empty description={query ? "没有匹配的进程" : "暂无进程"} />}
         pagination={false}
         rowKey="id"
-        scroll={{ x: 1024, y: "calc(100vh - 180px)" }}
+        scroll={{ y: "calc(100vh - 180px)" }}
         size="small"
       />
     </Drawer>
