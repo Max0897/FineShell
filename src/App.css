@@ -397,8 +397,8 @@ body,
   flex: 0 0 48px;
   height: 48px;
   margin: 0;
-  padding: 8px 8px 0;
-  background: #ffffff;
+  padding: 0 8px;
+  background: #f7f8fa;
 }
 
 .terminal-tabs > .arco-tabs-header-nav::before {
@@ -406,16 +406,102 @@ body,
 }
 
 .terminal-tabs > .arco-tabs-header-nav .arco-tabs-header-scroll {
-  height: 39px;
+  height: 48px;
+}
+
+.terminal-tabs .arco-tabs-header-wrapper,
+.terminal-tabs .arco-tabs-header {
+  height: 100%;
 }
 
 .terminal-tabs .arco-tabs-header-title {
-  max-width: 200px;
+  position: relative;
+  box-sizing: border-box;
+  max-width: 220px;
+  height: 48px;
+  margin: 0 !important;
+  padding: 0 14px !important;
+  border: 0 !important;
+  border-right: 1px solid #e5e6eb !important;
+  border-radius: 0 !important;
+  color: #4e5969;
+  background: transparent !important;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.terminal-tabs .arco-tabs-header-title:first-child {
+  border-left: 1px solid #e5e6eb !important;
+}
+
+.terminal-tabs .arco-tabs-header-title:hover {
+  color: #1d2129;
+  background: #f2f3f5 !important;
+}
+
+.terminal-tabs .arco-tabs-header-title-active,
+.terminal-tabs .arco-tabs-header-title-active:hover {
+  color: #1d2129;
+  background: #ffffff !important;
+}
+
+.terminal-tabs .arco-tabs-header-title-active::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: #165dff;
 }
 
 .terminal-tabs .arco-tabs-header-title-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.terminal-tabs .arco-tabs-close-icon {
+  width: 20px;
+  height: 20px;
+  margin-left: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #86909c;
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    color 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.terminal-tabs .arco-tabs-header-title:hover .arco-tabs-close-icon,
+.terminal-tabs .arco-tabs-header-title-active .arco-tabs-close-icon,
+.terminal-tabs .arco-tabs-close-icon:focus-visible {
+  visibility: visible;
+  opacity: 1;
+}
+
+.terminal-tabs .arco-tabs-close-icon:hover {
+  color: #1d2129;
+}
+
+.terminal-tabs .arco-tabs-add-icon {
+  width: 40px;
+  height: 48px !important;
+  padding: 0 !important;
+  color: #4e5969;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.terminal-tabs .arco-tabs-add-icon:hover {
+  color: #165dff;
+  background: #f2f3f5;
 }
 
 .terminal-tab-title {
