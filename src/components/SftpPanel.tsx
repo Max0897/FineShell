@@ -763,24 +763,24 @@ function SftpPanel({ session }: SftpPanelProps) {
         visible={transferDrawerVisible}
         width={440}
       >
-        <div className="sftp-transfer-drawer-toolbar">
-          <Typography.Text type="secondary">
-            {currentTransfers.length > 0
-              ? `共 ${currentTransfers.length} 条`
-              : "暂无记录"}
-          </Typography.Text>
-          {currentTransfers.some((item) => item.status !== "running") && (
-            <Tooltip content="清除已结束任务">
-              <Button
-                aria-label="清除已结束传输任务"
-                icon={<IconDelete />}
-                onClick={clearFinishedTransfers}
-                size="mini"
-                type="text"
-              />
-            </Tooltip>
-          )}
-        </div>
+        {currentTransfers.length > 0 && (
+          <div className="sftp-transfer-drawer-toolbar">
+            <Typography.Text type="secondary">
+              共 {currentTransfers.length} 条
+            </Typography.Text>
+            {currentTransfers.some((item) => item.status !== "running") && (
+              <Tooltip content="清除已结束任务">
+                <Button
+                  aria-label="清除已结束传输任务"
+                  icon={<IconDelete />}
+                  onClick={clearFinishedTransfers}
+                  size="mini"
+                  type="text"
+                />
+              </Tooltip>
+            )}
+          </div>
+        )}
         {currentTransfers.length === 0 ? (
           <div className="sftp-transfer-empty">
             <Empty description="暂无传输记录" />
