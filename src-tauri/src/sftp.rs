@@ -739,11 +739,17 @@ pub(crate) fn sftp_disconnect(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use std::{
+        io::{Read, Write},
+        path::Path,
+        sync::atomic::{AtomicBool, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
-    use ssh2::FileStat;
+    use ssh2::{FileStat, RenameFlags};
 
     use super::{entry_kind, SftpCommand, SftpSessionManager};
+    use crate::ssh::{connect_authenticated_session, SshAuthConfig};
 
     #[test]
     fn classifies_common_remote_entry_types() {
@@ -798,5 +804,88 @@ mod tests {
             receiver.recv().unwrap(),
             SftpCommand::List { path, .. } if path == "/tmp"
         ));
+    }
+
+    #[test]
+    #[ignore = "requires FINESHELL_LIVE_* environment variables and a stored host password"]
+    fn completes_a_live_sftp_round_trip() -> Result<(), String> {
+        let host_id = std::env::var("FINESHELL_LIVE_HOST_ID")
+            .map_err(|_| "缺少 FINESHELL_LIVE_HOST_ID".to_string())?;
+        let address = std::env::var("FINESHELL_LIVE_ADDRESS")
+            .map_err(|_| "缺少 FINESHELL_LIVE_ADDRESS".to_string())?;
+        let port = std::env::var("FINESHELL_LIVE_PORT")
+            .unwrap_or_else(|_| "22".to_string())
+            .parse::<u16>()
+            .map_err(|error| format!("FINESHELL_LIVE_PORT 无效：{error}"))?;
+        let username =
+            std::env::var("FINESHELL_LIVE_USERNAME").unwrap_or_else(|_| "root".to_string());
+        let expected_fingerprint = std::env::var("FINESHELL_LIVE_FINGERPRINT").ok();
+        let config = SshAuthConfig {
+            host_id,
+            address,
+            port,
+            username,
+            connect_timeout_seconds: 10,
+            expected_fingerprint,
+        };
+        let (session, _) = connect_authenticated_session(&config, &AtomicBool::new(false))?;
+        let sftp = session
+            .sftp()
+            .map_err(|error| format!("无法建立 SFTP 会话：{error}"))?;
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_millis();
+        let directory = format!("/tmp/fineshell-live-{}-{suffix}", std::process::id());
+        let source_path = format!("{directory}/source.txt");
+        let renamed_path = format!("{directory}/renamed.txt");
+        let content = b"FineShell live SFTP test\n";
+
+        sftp.mkdir(Path::new(&directory), 0o755)
+            .map_err(|error| format!("创建测试目录失败：{error}"))?;
+        let result = (|| -> Result<(), String> {
+            let mut remote = sftp
+                .create(Path::new(&source_path))
+                .map_err(|error| format!("创建测试文件失败：{error}"))?;
+            remote
+                .write_all(content)
+                .map_err(|error| format!("写入测试文件失败：{error}"))?;
+            remote
+                .flush()
+                .map_err(|error| format!("刷新测试文件失败：{error}"))?;
+            drop(remote);
+
+            let entries = super::list_directory(&sftp, &directory)?;
+            if !entries
+                .entries
+                .iter()
+                .any(|entry| entry.name == "source.txt")
+            {
+                return Err("目录列表没有返回测试文件".to_string());
+            }
+
+            sftp.rename(
+                Path::new(&source_path),
+                Path::new(&renamed_path),
+                Some(RenameFlags::empty()),
+            )
+            .map_err(|error| format!("重命名测试文件失败：{error}"))?;
+            let mut remote = sftp
+                .open(Path::new(&renamed_path))
+                .map_err(|error| format!("打开测试文件失败：{error}"))?;
+            let mut downloaded = Vec::new();
+            remote
+                .read_to_end(&mut downloaded)
+                .map_err(|error| format!("读取测试文件失败：{error}"))?;
+            if downloaded != content {
+                return Err("下载内容与上传内容不一致".to_string());
+            }
+            Ok(())
+        })();
+
+        let _ = sftp.unlink(Path::new(&source_path));
+        let _ = sftp.unlink(Path::new(&renamed_path));
+        let _ = sftp.rmdir(Path::new(&directory));
+        result
     }
 }
