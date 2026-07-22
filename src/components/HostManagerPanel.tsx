@@ -10,7 +10,6 @@ import {
   Select,
   Space,
   Table,
-  Tabs,
   Tag,
   Tooltip,
   Tree,
@@ -20,7 +19,6 @@ import type { TableColumnProps } from "@arco-design/web-react";
 import type { TreeDataType } from "@arco-design/web-react/es/Tree/interface";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   IconDelete,
@@ -63,11 +61,7 @@ import {
   serializeConfigurationExport,
   updateHostSortMode,
 } from "../config-database";
-import {
-  DEFAULT_APP_SETTINGS,
-  sanitizeAppSettings,
-  type AppSettings,
-} from "../app-settings";
+import type { AppSettings } from "../app-settings";
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -103,9 +97,7 @@ async function choosePrivateKeyPath() {
   return typeof selected === "string" ? selected : undefined;
 }
 
-function targetKey(
-  target: Pick<HostRecord, "address" | "port" | "username">,
-) {
+function targetKey(target: Pick<HostRecord, "address" | "port" | "username">) {
   return `${target.username}@${target.address}:${target.port}`;
 }
 
@@ -120,26 +112,28 @@ function formatTime(value?: string) {
   }).format(new Date(value));
 }
 
-function HostManagerWindow() {
-  const initialTab =
-    new URLSearchParams(window.location.search).get("tab") === "history"
-      ? "history"
-      : "hosts";
-  const [activeTab, setActiveTab] = useState(initialTab);
+interface HostManagerPanelProps {
+  onConnect: (host: HostRecord) => void;
+  onSettingsChange: (settings: AppSettings) => void;
+  settings: AppSettings;
+}
+
+function HostManagerPanel({
+  onConnect,
+  onSettingsChange,
+  settings,
+}: HostManagerPanelProps) {
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [history, setHistory] = useState<ConnectionHistoryRecord[]>([]);
   const [hostSort, setHostSort] = useState<HostSortMode>("manual");
-  const [appSettings, setAppSettings] =
-    useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [configurationLoading, setConfigurationLoading] = useState(true);
   const [configurationAction, setConfigurationAction] = useState(false);
   const [keyword, setKeyword] = useState("");
-  const [selectedGroupKey, setSelectedGroupKey] = useState(
-    ALL_HOSTS_GROUP_KEY,
-  );
+  const [selectedGroupKey, setSelectedGroupKey] = useState(ALL_HOSTS_GROUP_KEY);
   const [expandedGroupKeys, setExpandedGroupKeys] = useState<string[]>([]);
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingHost, setEditingHost] = useState<HostRecord | null>(null);
+  const [historyVisible, setHistoryVisible] = useState(false);
   const [quickTarget, setQuickTarget] = useState<QuickTarget>({
     address: "",
     port: 22,
@@ -153,10 +147,6 @@ function HostManagerWindow() {
     useState("");
 
   useEffect(() => {
-    document.title = "主机管理";
-  }, []);
-
-  useEffect(() => {
     let disposed = false;
     void purgeExpiredDeletedHosts()
       .then(async ({ configuration, expiredHostIds }) => {
@@ -164,7 +154,6 @@ function HostManagerWindow() {
         setHosts(configuration.hosts);
         setHistory(configuration.history);
         setHostSort(configuration.hostSort);
-        setAppSettings(configuration.settings);
 
         const cleanup = await Promise.allSettled(
           expiredHostIds.flatMap((hostId) => [
@@ -202,7 +191,6 @@ function HostManagerWindow() {
           setHosts(configuration.hosts);
           setHistory(configuration.history);
           setHostSort(configuration.hostSort);
-          setAppSettings(configuration.settings);
         })
         .catch((error) => {
           if (!disposed) Message.error(String(error));
@@ -214,46 +202,6 @@ function HostManagerWindow() {
         unlisten = stopListening;
       }
     });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isTauri()) return;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listen<AppSettings>("settings:changed", ({ payload }) => {
-      setAppSettings(sanitizeAppSettings(payload));
-    }).then((stopListening) => {
-      if (disposed) {
-        stopListening();
-      } else {
-        unlisten = stopListening;
-      }
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isTauri()) return;
-
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listen<string>("host-manager:show-tab", ({ payload }) => {
-      setActiveTab(payload === "history" ? "history" : "hosts");
-    }).then((stopListening) => {
-      if (disposed) {
-        stopListening();
-      } else {
-        unlisten = stopListening;
-      }
-    });
-
     return () => {
       disposed = true;
       unlisten?.();
@@ -289,7 +237,10 @@ function HostManagerWindow() {
 
   useEffect(() => {
     const availableKeys = new Set(
-      hostGroupTree.flatMap((node) => [node.key, ...collectHostGroupKeys([node])]),
+      hostGroupTree.flatMap((node) => [
+        node.key,
+        ...collectHostGroupKeys([node]),
+      ]),
     );
     if (!availableKeys.has(selectedGroupKey)) {
       setSelectedGroupKey(ALL_HOSTS_GROUP_KEY);
@@ -394,9 +345,8 @@ function HostManagerWindow() {
             setHosts(next.hosts);
             setHistory(next.history);
             setHostSort(next.hostSort);
-            setAppSettings(next.settings);
+            onSettingsChange(next.settings);
             if (isTauri()) {
-              await emitTo("main", "settings:changed", next.settings);
               await emitTo("settings", "configuration:changed").catch(
                 () => undefined,
               );
@@ -419,8 +369,11 @@ function HostManagerWindow() {
   }
 
   async function saveHost(values: HostFormValues) {
-    const { password, privateKeyPassphrase, host: normalized } =
-      normalizeHostForm(values);
+    const {
+      password,
+      privateKeyPassphrase,
+      host: normalized,
+    } = normalizeHostForm(values);
     const hostId = editingHost?.id ?? createId("host");
 
     try {
@@ -535,17 +488,8 @@ function HostManagerWindow() {
       Message.warning("连接记录保存失败，本次连接仍将继续");
     }
 
-    if (isTauri()) {
-      await emitTo("main", "host-connect", connectedHost);
-      await getCurrentWindow().close();
-      return;
-    }
-
-    window.opener?.postMessage(
-      { type: "fineshell:host-connect", host: connectedHost },
-      window.location.origin,
-    );
-    window.close();
+    setHistoryVisible(false);
+    onConnect(connectedHost);
   }
 
   async function quickConnect() {
@@ -568,11 +512,10 @@ function HostManagerWindow() {
         quickAuthMethod === "privateKey"
           ? quickPrivateKeyPath.trim()
           : undefined,
-      connectTimeoutSeconds: appSettings.defaultConnectTimeoutSeconds,
-      keepAliveIntervalSeconds:
-        appSettings.defaultKeepAliveIntervalSeconds,
-      autoReconnect: appSettings.defaultAutoReconnect,
-      maxReconnectAttempts: appSettings.defaultMaxReconnectAttempts,
+      connectTimeoutSeconds: settings.defaultConnectTimeoutSeconds,
+      keepAliveIntervalSeconds: settings.defaultKeepAliveIntervalSeconds,
+      autoReconnect: settings.defaultAutoReconnect,
+      maxReconnectAttempts: settings.defaultMaxReconnectAttempts,
       ...normalized,
     };
 
@@ -604,15 +547,13 @@ function HostManagerWindow() {
         authMethod: record.authMethod ?? "password",
         privateKeyPath: record.privateKeyPath,
         hostFingerprint: record.hostFingerprint,
-        connectTimeoutSeconds: appSettings.defaultConnectTimeoutSeconds,
+        connectTimeoutSeconds: settings.defaultConnectTimeoutSeconds,
         keepAliveIntervalSeconds:
           record.keepAliveIntervalSeconds ??
-          appSettings.defaultKeepAliveIntervalSeconds,
-        autoReconnect:
-          record.autoReconnect ?? appSettings.defaultAutoReconnect,
+          settings.defaultKeepAliveIntervalSeconds,
+        autoReconnect: record.autoReconnect ?? settings.defaultAutoReconnect,
         maxReconnectAttempts:
-          record.maxReconnectAttempts ??
-          appSettings.defaultMaxReconnectAttempts,
+          record.maxReconnectAttempts ?? settings.defaultMaxReconnectAttempts,
       },
     );
   }
@@ -727,207 +668,208 @@ function HostManagerWindow() {
   ];
 
   return (
-    <main className="host-manager-window">
-      <Tabs activeTab={activeTab} justify onChange={setActiveTab} type="line">
-        <Tabs.TabPane className="hosts-tab-pane" key="hosts" title="主机">
-          <div className="hosts-manager-layout">
-            <aside className="host-group-sidebar">
-              <Typography.Text bold>分组</Typography.Text>
-              <Tree
-                blockNode
-                expandedKeys={expandedGroupKeys}
-                onExpand={setExpandedGroupKeys}
-                onSelect={(keys) => {
-                  if (keys[0]) setSelectedGroupKey(keys[0]);
-                }}
-                selectedKeys={[selectedGroupKey]}
-                size="small"
-                treeData={hostGroupTreeData}
+    <main className="host-manager-panel">
+      <div className="hosts-manager-layout">
+        <aside className="host-group-sidebar">
+          <Typography.Text bold>分组</Typography.Text>
+          <Tree
+            blockNode
+            expandedKeys={expandedGroupKeys}
+            onExpand={setExpandedGroupKeys}
+            onSelect={(keys) => {
+              if (keys[0]) setSelectedGroupKey(keys[0]);
+            }}
+            selectedKeys={[selectedGroupKey]}
+            size="small"
+            treeData={hostGroupTreeData}
+          />
+        </aside>
+        <section className="manager-pane hosts-manager-content">
+          <div className="manager-toolbar">
+            <div className="manager-toolbar-filters">
+              <Input.Search
+                allowClear
+                onChange={setKeyword}
+                placeholder="搜索名称、地址或分组"
+                value={keyword}
               />
-            </aside>
-            <section className="manager-pane hosts-manager-content">
-              <div className="manager-toolbar">
-                <div className="manager-toolbar-filters">
-                  <Input.Search
-                    allowClear
-                    onChange={setKeyword}
-                    placeholder="搜索名称、地址或分组"
-                    value={keyword}
-                  />
-                  <div className="host-sort-control">
-                    <IconSort />
-                    <Select
-                      aria-label="主机排序方式"
-                      disabled={configurationLoading || configurationAction}
-                      onChange={(value) =>
-                        void changeHostSort(value as HostSortMode)
-                      }
-                      options={[
-                        { label: "添加顺序", value: "manual" },
-                        { label: "名称升序", value: "nameAsc" },
-                        { label: "名称降序", value: "nameDesc" },
-                        { label: "地址升序", value: "addressAsc" },
-                        { label: "最近连接", value: "recentDesc" },
-                      ]}
-                      value={hostSort}
-                    />
-                  </div>
-                </div>
-                <div className="manager-toolbar-actions">
-                  <Tooltip content="导入配置">
-                    <Button
-                      aria-label="导入配置"
-                      disabled={configurationLoading || configurationAction}
-                      icon={<IconImport />}
-                      onClick={() => void importConfigurationFile()}
-                    />
-                  </Tooltip>
-                  <Tooltip content="导出配置">
-                    <Button
-                      aria-label="导出配置"
-                      disabled={configurationLoading || configurationAction}
-                      icon={<IconExport />}
-                      onClick={() => void exportConfiguration()}
-                    />
-                  </Tooltip>
-                  <Button
-                    disabled={configurationLoading || configurationAction}
-                    icon={<IconPlus />}
-                    onClick={() => openHostEditor(null)}
-                    type="primary"
-                  >
-                    新增主机
-                  </Button>
-                </div>
-              </div>
-              <Table
-                border={false}
-                columns={hostColumns}
-                data={visibleHosts}
-                loading={configurationLoading}
-                noDataElement={
-                  <Empty
-                    description={keyword ? "没有匹配的主机" : "该分组暂无主机"}
-                  />
-                }
-                pagination={false}
-                rowKey="id"
-                size="small"
-              />
-            </section>
-          </div>
-        </Tabs.TabPane>
-        <Tabs.TabPane
-          key="history"
-          title={
-            <Space size="mini">
-              <IconHistory />
-              连接历史
-            </Space>
-          }
-        >
-          <div className="manager-pane">
-            <div className="quick-connect">
-              <Typography.Text bold>快速连接</Typography.Text>
-              <div className="quick-connect-fields">
-                <Input
-                  onChange={(address) =>
-                    setQuickTarget((current) => ({ ...current, address }))
-                  }
-                  placeholder="主机地址"
-                  value={quickTarget.address}
-                />
-                <Input
-                  onChange={(username) =>
-                    setQuickTarget((current) => ({ ...current, username }))
-                  }
-                  placeholder="用户名"
-                  value={quickTarget.username}
-                />
+              <div className="host-sort-control">
+                <IconSort />
                 <Select
-                  onChange={setQuickAuthMethod}
+                  aria-label="主机排序方式"
+                  disabled={configurationLoading || configurationAction}
+                  onChange={(value) =>
+                    void changeHostSort(value as HostSortMode)
+                  }
                   options={[
-                    { label: "密码认证", value: "password" },
-                    { label: "私钥认证", value: "privateKey" },
+                    { label: "添加顺序", value: "manual" },
+                    { label: "名称升序", value: "nameAsc" },
+                    { label: "名称降序", value: "nameDesc" },
+                    { label: "地址升序", value: "addressAsc" },
+                    { label: "最近连接", value: "recentDesc" },
                   ]}
-                  value={quickAuthMethod}
+                  value={hostSort}
                 />
-                {quickAuthMethod === "password" ? (
-                  <Input.Password
-                    onChange={setQuickPassword}
-                    placeholder="密码"
-                    value={quickPassword}
-                  />
-                ) : (
-                  <div className="quick-key-credentials">
-                    <Input.Search
-                      onChange={setQuickPrivateKeyPath}
-                      onSearch={() =>
-                        void choosePrivateKeyPath().then((path) => {
-                          if (path) setQuickPrivateKeyPath(path);
-                        })
-                      }
-                      placeholder="私钥文件"
-                      searchButton={
-                        <Tooltip content="选择私钥文件">
-                          <IconFolder />
-                        </Tooltip>
-                      }
-                      value={quickPrivateKeyPath}
-                    />
-                    <Input.Password
-                      onChange={setQuickPrivateKeyPassphrase}
-                      placeholder="私钥口令（可选）"
-                      value={quickPrivateKeyPassphrase}
-                    />
-                  </div>
-                )}
-                <InputNumber
-                  max={65535}
-                  min={1}
-                  onChange={(port) =>
-                    setQuickTarget((current) => ({ ...current, port }))
-                  }
-                  placeholder="端口"
-                  value={quickTarget.port}
-                />
-                <Button
-                  disabled={
-                    configurationLoading ||
-                    configurationAction ||
-                    !quickTarget.address.trim() ||
-                    (quickAuthMethod === "password"
-                      ? !quickPassword
-                      : !quickPrivateKeyPath.trim())
-                  }
-                  icon={<IconLink />}
-                  onClick={() => void quickConnect()}
-                  type="primary"
-                >
-                  连接
-                </Button>
               </div>
             </div>
-            <div className="history-heading">
-              <Typography.Text bold>最近连接</Typography.Text>
+            <div className="manager-toolbar-actions">
+              <Button
+                icon={<IconHistory />}
+                onClick={() => setHistoryVisible(true)}
+              >
+                连接历史
+              </Button>
+              <Tooltip content="导入配置">
+                <Button
+                  aria-label="导入配置"
+                  disabled={configurationLoading || configurationAction}
+                  icon={<IconImport />}
+                  onClick={() => void importConfigurationFile()}
+                />
+              </Tooltip>
+              <Tooltip content="导出配置">
+                <Button
+                  aria-label="导出配置"
+                  disabled={configurationLoading || configurationAction}
+                  icon={<IconExport />}
+                  onClick={() => void exportConfiguration()}
+                />
+              </Tooltip>
+              <Button
+                disabled={configurationLoading || configurationAction}
+                icon={<IconPlus />}
+                onClick={() => openHostEditor(null)}
+                type="primary"
+              >
+                新增主机
+              </Button>
             </div>
-            <Table
-              border={false}
-              columns={historyColumns}
-              data={history}
-              loading={configurationLoading}
-              noDataElement={<Empty description="暂无连接历史" />}
-              pagination={false}
-              rowKey="id"
-              size="small"
-            />
           </div>
-        </Tabs.TabPane>
-      </Tabs>
+          <Table
+            border={false}
+            columns={hostColumns}
+            data={visibleHosts}
+            loading={configurationLoading}
+            noDataElement={
+              <Empty
+                description={keyword ? "没有匹配的主机" : "该分组暂无主机"}
+              />
+            }
+            pagination={false}
+            rowKey="id"
+            size="small"
+          />
+        </section>
+      </div>
+
+      <Modal
+        className="connection-history-modal"
+        footer={null}
+        onCancel={() => setHistoryVisible(false)}
+        title="连接历史"
+        visible={historyVisible}
+      >
+        <div className="connection-history-content">
+          <div className="quick-connect">
+            <Typography.Text bold>快速连接</Typography.Text>
+            <div className="quick-connect-fields">
+              <Input
+                onChange={(address) =>
+                  setQuickTarget((current) => ({ ...current, address }))
+                }
+                placeholder="主机地址"
+                value={quickTarget.address}
+              />
+              <Input
+                onChange={(username) =>
+                  setQuickTarget((current) => ({ ...current, username }))
+                }
+                placeholder="用户名"
+                value={quickTarget.username}
+              />
+              <Select
+                onChange={setQuickAuthMethod}
+                options={[
+                  { label: "密码认证", value: "password" },
+                  { label: "私钥认证", value: "privateKey" },
+                ]}
+                value={quickAuthMethod}
+              />
+              {quickAuthMethod === "password" ? (
+                <Input.Password
+                  onChange={setQuickPassword}
+                  placeholder="密码"
+                  value={quickPassword}
+                />
+              ) : (
+                <div className="quick-key-credentials">
+                  <Input.Search
+                    onChange={setQuickPrivateKeyPath}
+                    onSearch={() =>
+                      void choosePrivateKeyPath().then((path) => {
+                        if (path) setQuickPrivateKeyPath(path);
+                      })
+                    }
+                    placeholder="私钥文件"
+                    searchButton={
+                      <Tooltip content="选择私钥文件">
+                        <IconFolder />
+                      </Tooltip>
+                    }
+                    value={quickPrivateKeyPath}
+                  />
+                  <Input.Password
+                    onChange={setQuickPrivateKeyPassphrase}
+                    placeholder="私钥口令（可选）"
+                    value={quickPrivateKeyPassphrase}
+                  />
+                </div>
+              )}
+              <InputNumber
+                max={65535}
+                min={1}
+                onChange={(port) =>
+                  setQuickTarget((current) => ({ ...current, port }))
+                }
+                placeholder="端口"
+                value={quickTarget.port}
+              />
+              <Button
+                disabled={
+                  configurationLoading ||
+                  configurationAction ||
+                  !quickTarget.address.trim() ||
+                  (quickAuthMethod === "password"
+                    ? !quickPassword
+                    : !quickPrivateKeyPath.trim())
+                }
+                icon={<IconLink />}
+                onClick={() => void quickConnect()}
+                type="primary"
+              >
+                连接
+              </Button>
+            </div>
+          </div>
+          <div className="history-heading">
+            <Typography.Text bold>最近连接</Typography.Text>
+          </div>
+          <Table
+            border={false}
+            columns={historyColumns}
+            data={history}
+            loading={configurationLoading}
+            noDataElement={<Empty description="暂无连接历史" />}
+            pagination={false}
+            rowKey="id"
+            size="small"
+          />
+        </div>
+      </Modal>
 
       {editorVisible && (
         <HostEditorModal
-          connectionDefaults={appSettings}
+          connectionDefaults={settings}
           host={editingHost}
           onCancel={() => {
             setEditorVisible(false);
@@ -942,4 +884,4 @@ function HostManagerWindow() {
   );
 }
 
-export default HostManagerWindow;
+export default HostManagerPanel;

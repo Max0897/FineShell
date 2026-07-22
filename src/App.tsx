@@ -8,7 +8,6 @@ import {
 } from "react";
 import {
   Button,
-  Empty,
   Message,
   Modal,
   ResizeBox,
@@ -17,12 +16,10 @@ import {
   Typography,
 } from "@arco-design/web-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import {
-  IconRefresh,
-} from "@arco-design/web-react/icon";
+import { listen } from "@tauri-apps/api/event";
+import { IconHome, IconRefresh } from "@arco-design/web-react/icon";
 import type { HostRecord, TerminalSession } from "./models";
+import HostManagerPanel from "./components/HostManagerPanel";
 import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
 import { withHostDefaults } from "./host-storage";
@@ -41,11 +38,6 @@ import "./App.css";
 const ServerMonitorPanel = lazy(
   () => import("./components/ServerMonitorPanel"),
 );
-
-interface BrowserConnectionMessage {
-  type: "fineshell:host-connect";
-  host: HostRecord;
-}
 
 interface SshConnectResult {
   status: "connected" | "hostKeyVerificationRequired";
@@ -129,7 +121,7 @@ function sessionStatusLabel(session: TerminalSession) {
     : labels[session.status];
 }
 
-let hostManagerOpening = false;
+const HOME_TAB_ID = "home";
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -139,69 +131,10 @@ function targetKey(target: Pick<HostRecord, "address" | "port" | "username">) {
   return `${target.username}@${target.address}:${target.port}`;
 }
 
-function isBrowserConnectionMessage(value: unknown): value is BrowserConnectionMessage {
-  if (!value || typeof value !== "object") return false;
-
-  const message = value as Partial<BrowserConnectionMessage>;
-  return (
-    message.type === "fineshell:host-connect" &&
-    typeof message.host?.id === "string" &&
-    typeof message.host.address === "string"
-  );
-}
-
-async function openHostManager(tab: "hosts" | "history" = "hosts") {
-  if (!isTauri()) {
-    const popup = window.open(
-      `/?view=host-manager&tab=${tab}`,
-      "host-manager",
-      "popup,width=880,height=640",
-    );
-    if (!popup) Message.warning("浏览器阻止了主机管理窗口");
-    return;
-  }
-
-  if (hostManagerOpening) return;
-  hostManagerOpening = true;
-
-  try {
-    const existingWindow = await WebviewWindow.getByLabel("host-manager");
-    if (existingWindow) {
-      await emitTo("host-manager", "host-manager:show-tab", tab);
-      await existingWindow.setFocus();
-      hostManagerOpening = false;
-      return;
-    }
-
-    const managerWindow = new WebviewWindow("host-manager", {
-      url: `/?view=host-manager&tab=${tab}`,
-      title: "主机管理",
-      width: 880,
-      height: 640,
-      minWidth: 720,
-      minHeight: 520,
-      center: true,
-      focus: true,
-      resizable: true,
-    });
-    managerWindow.once("tauri://created", () => {
-      hostManagerOpening = false;
-    });
-    managerWindow.once("tauri://error", () => {
-      hostManagerOpening = false;
-      Message.error("无法打开主机管理窗口");
-    });
-  } catch {
-    hostManagerOpening = false;
-    Message.error("无法打开主机管理窗口");
-  }
-}
-
 function App() {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const sessionsRef = useRef<TerminalSession[]>([]);
   const reconnectTimersRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
@@ -227,10 +160,7 @@ function App() {
   }, []);
 
   const connectSession = useCallback(
-    async function connect(
-      session: TerminalSession,
-      reconnectAttempt = 0,
-    ) {
+    async function connect(session: TerminalSession, reconnectAttempt = 0) {
       try {
         const result = await invoke<SshConnectResult>("ssh_connect", {
           request: {
@@ -242,8 +172,7 @@ function App() {
             authMethod: session.host.authMethod,
             privateKeyPath: session.host.privateKeyPath,
             connectTimeoutSeconds: session.host.connectTimeoutSeconds,
-            keepAliveIntervalSeconds:
-              session.host.keepAliveIntervalSeconds,
+            keepAliveIntervalSeconds: session.host.keepAliveIntervalSeconds,
             expectedFingerprint: session.host.hostFingerprint,
             cols: 80,
             rows: 24,
@@ -334,29 +263,32 @@ function App() {
     [clearReconnectTimer, updateSession],
   );
 
-  const openSession = useCallback((host: HostRecord) => {
-    const normalizedHost = withHostDefaults(host);
-    const identity = targetKey(normalizedHost);
-    const existing = sessionsRef.current.find(
-      (session) => targetKey(session.host) === identity,
-    );
-    if (existing) {
-      setActiveSessionId(existing.id);
-      return;
-    }
+  const openSession = useCallback(
+    (host: HostRecord) => {
+      const normalizedHost = withHostDefaults(host);
+      const identity = targetKey(normalizedHost);
+      const existing = sessionsRef.current.find(
+        (session) => targetKey(session.host) === identity,
+      );
+      if (existing) {
+        setActiveSessionId(existing.id);
+        return;
+      }
 
-    const session: TerminalSession = {
-      id: createId("session"),
-      host: normalizedHost,
-      openedAt: new Date().toISOString(),
-      status: "connecting",
-    };
-    const next = [...sessionsRef.current, session];
-    sessionsRef.current = next;
-    setSessions(next);
-    setActiveSessionId(session.id);
-    void connectSession(session);
-  }, [connectSession]);
+      const session: TerminalSession = {
+        id: createId("session"),
+        host: normalizedHost,
+        openedAt: new Date().toISOString(),
+        status: "connecting",
+      };
+      const next = [...sessionsRef.current, session];
+      sessionsRef.current = next;
+      setSessions(next);
+      setActiveSessionId(session.id);
+      void connectSession(session);
+    },
+    [connectSession],
+  );
 
   const reconnectSession = useCallback(
     (session: TerminalSession) => {
@@ -378,27 +310,6 @@ function App() {
     },
     [clearReconnectTimer, connectSession, updateSession],
   );
-
-  useEffect(() => {
-    if (!isTauri()) return;
-
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listen<HostRecord>("host-connect", ({ payload }) => {
-      openSession(payload);
-    }).then((stopListening) => {
-      if (disposed) {
-        stopListening();
-      } else {
-        unlisten = stopListening;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [openSession]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -465,18 +376,6 @@ function App() {
   );
 
   useEffect(() => {
-    function handleWindowMessage(event: MessageEvent<unknown>) {
-      if (event.origin !== window.location.origin) return;
-      if (isBrowserConnectionMessage(event.data)) {
-        openSession(event.data.host);
-      }
-    }
-
-    window.addEventListener("message", handleWindowMessage);
-    return () => window.removeEventListener("message", handleWindowMessage);
-  }, [openSession]);
-
-  useEffect(() => {
     let disposed = false;
     void loadConfiguration()
       .then((configuration) => {
@@ -484,9 +383,6 @@ function App() {
       })
       .catch(() => {
         if (!disposed) Message.warning("设置读取失败，已使用默认值");
-      })
-      .finally(() => {
-        if (!disposed) setSettingsLoaded(true);
       });
     return () => {
       disposed = true;
@@ -511,16 +407,6 @@ function App() {
       unlisten?.();
     };
   }, []);
-
-  useEffect(() => {
-    if (
-      isTauri() &&
-      settingsLoaded &&
-      settings.openHostManagerOnStartup
-    ) {
-      void openHostManager();
-    }
-  }, [settingsLoaded]);
 
   const activeSession =
     sessions.find((session) => session.id === activeSessionId) ?? null;
@@ -548,9 +434,7 @@ function App() {
         <Suspense
           fallback={
             <div className="server-monitor-loading">
-              <Typography.Text type="secondary">
-                正在加载监控…
-              </Typography.Text>
+              <Typography.Text type="secondary">正在加载监控…</Typography.Text>
             </div>
           }
         >
@@ -578,16 +462,34 @@ function App() {
   const terminalPanel = (
     <section className="panel terminal-panel">
       <Tabs
-        activeTab={activeSessionId ?? undefined}
-        className={`terminal-tabs${sessions.length === 0 ? " terminal-tabs-empty-state" : ""}`}
+        activeTab={activeSessionId ?? HOME_TAB_ID}
+        className="terminal-tabs"
         editable
-        onAddTab={() => void openHostManager()}
-        onChange={setActiveSessionId}
+        onAddTab={() => setActiveSessionId(null)}
+        onChange={(tabId) =>
+          setActiveSessionId(tabId === HOME_TAB_ID ? null : tabId)
+        }
         onDeleteTab={closeSession}
         showAddButton
         size="small"
         type="card-gutter"
       >
+        <Tabs.TabPane
+          closable={false}
+          key={HOME_TAB_ID}
+          title={
+            <span className="terminal-tab-title">
+              <IconHome />
+              <span className="terminal-tab-name">首页</span>
+            </span>
+          }
+        >
+          <HostManagerPanel
+            onConnect={openSession}
+            onSettingsChange={setSettings}
+            settings={settings}
+          />
+        </Tabs.TabPane>
         {sessions.map((session) => (
           <Tabs.TabPane
             closable
@@ -611,11 +513,6 @@ function App() {
           </Tabs.TabPane>
         ))}
       </Tabs>
-      {sessions.length === 0 && (
-        <div className="panel-empty terminal-empty">
-          <Empty description="暂无终端会话" />
-        </div>
-      )}
     </section>
   );
 

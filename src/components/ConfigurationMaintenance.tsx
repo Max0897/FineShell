@@ -43,14 +43,12 @@ async function removeHostCredentials(hostId: string) {
   ]);
 }
 
-async function notifyHostManager() {
+async function notifyMainWindow() {
   if (!isTauri()) return;
-  await emitTo("host-manager", "configuration:changed").catch(() => undefined);
+  await emitTo("main", "configuration:changed").catch(() => undefined);
 }
 
-function ConfigurationMaintenance({
-  section,
-}: ConfigurationMaintenanceProps) {
+function ConfigurationMaintenance({ section }: ConfigurationMaintenanceProps) {
   const [backups, setBackups] = useState<ConfigurationBackup[]>([]);
   const [trash, setTrash] = useState<DeletedHostRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -119,7 +117,7 @@ function ConfigurationMaintenance({
       const configuration = await restoreConfigurationBackup(backup.id);
       setBackups(configuration.backups);
       setTrash(configuration.trash);
-      await notifyHostManager();
+      await notifyMainWindow();
       Message.success("配置已恢复");
     } catch (error) {
       Message.error(String(error));
@@ -135,7 +133,7 @@ function ConfigurationMaintenance({
       const configuration = await restoreDeletedHost(deletedHost.id);
       setBackups(configuration.backups);
       setTrash(configuration.trash);
-      await notifyHostManager();
+      await notifyMainWindow();
       Message.success(`已恢复 ${deletedHost.host.name}`);
     } catch (error) {
       Message.error(String(error));
@@ -194,11 +192,7 @@ function ConfigurationMaintenance({
           title="恢复后当前配置会自动备份，是否继续？"
           unmountOnExit={false}
         >
-          <Button
-            disabled={acting}
-            icon={<IconUndo />}
-            size="mini"
-          >
+          <Button disabled={acting} icon={<IconUndo />} size="mini">
             恢复
           </Button>
         </Popconfirm>
