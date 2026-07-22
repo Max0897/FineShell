@@ -285,38 +285,71 @@ body,
   margin: 0;
 }
 
-.sftp-transfers {
-  flex: 0 0 auto;
-  max-height: 118px;
-  padding: 5px 10px 7px;
-  overflow: auto;
-  background: #fafbfc;
-  border-bottom: 1px solid #e5e6eb;
-}
-
-.sftp-transfers-heading {
-  height: 24px;
+.sftp-transfer-drawer-toolbar {
+  min-height: 42px;
+  padding: 0 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  border-bottom: 1px solid #e5e6eb;
+}
+
+.sftp-transfer-empty {
+  min-height: 240px;
+  display: grid;
+  place-items: center;
+}
+
+.sftp-transfer-list {
+  overflow: auto;
 }
 
 .sftp-transfer-row {
-  min-height: 28px;
+  min-height: 76px;
+  padding: 10px 16px;
   display: grid;
-  grid-template-columns: 18px minmax(120px, 1fr) minmax(120px, 220px) 28px;
-  align-items: center;
-  gap: 8px;
+  grid-template-columns: 20px minmax(0, 1fr) 28px;
+  align-items: start;
+  gap: 10px;
+  border-bottom: 1px solid #f2f3f5;
 }
 
 .sftp-transfer-direction {
   display: inline-flex;
+  padding-top: 2px;
   color: #4e5969;
 }
 
-.sftp-transfer-row > .arco-typography {
+.sftp-transfer-content,
+.sftp-transfer-meta {
   min-width: 0;
+}
+
+.sftp-transfer-content {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.sftp-transfer-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sftp-transfer-meta .arco-typography,
+.sftp-transfer-error {
   margin: 0;
+}
+
+.sftp-transfer-meta .arco-typography:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.sftp-transfer-meta .arco-typography:last-child {
+  flex: 0 0 auto;
 }
 
 .sftp-transfer-row .arco-progress {

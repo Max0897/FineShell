@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Badge,
   Button,
+  Drawer,
   Empty,
   Input,
   Message,
@@ -24,6 +26,7 @@ import {
   IconFile,
   IconFolder,
   IconFolderAdd,
+  IconHistory,
   IconRefresh,
   IconUpload,
 } from "@arco-design/web-react/icon";
@@ -96,6 +99,7 @@ function SftpPanel({ session }: SftpPanelProps) {
   const [transfers, setTransfers] = useState<Record<string, TransferRecord>>(
     {},
   );
+  const [transferDrawerVisible, setTransferDrawerVisible] = useState(false);
   const [newDirectoryVisible, setNewDirectoryVisible] = useState(false);
   const [newDirectoryName, setNewDirectoryName] = useState("");
   const [renamingEntry, setRenamingEntry] = useState<SftpEntry | null>(null);
@@ -662,66 +666,18 @@ function SftpPanel({ session }: SftpPanelProps) {
           >
             上传
           </Button>
+          <Tooltip content="传输记录">
+            <Badge count={currentTransfers.length} maxCount={99}>
+              <Button
+                aria-label="打开传输记录"
+                icon={<IconHistory />}
+                onClick={() => setTransferDrawerVisible(true)}
+                size="mini"
+              />
+            </Badge>
+          </Tooltip>
         </Space>
       </div>
-      {currentTransfers.length > 0 && (
-        <div className="sftp-transfers">
-          <div className="sftp-transfers-heading">
-            <Typography.Text type="secondary">传输任务</Typography.Text>
-            {currentTransfers.some((item) => item.status !== "running") && (
-              <Tooltip content="清除已完成任务">
-                <Button
-                  aria-label="清除已完成传输任务"
-                  icon={<IconDelete />}
-                  onClick={clearFinishedTransfers}
-                  size="mini"
-                  type="text"
-                />
-              </Tooltip>
-            )}
-          </div>
-          {currentTransfers.slice(0, 3).map((transfer) => {
-            const percent = transfer.totalBytes
-              ? Math.min(
-                  100,
-                  Math.round(
-                    (transfer.transferredBytes / transfer.totalBytes) * 100,
-                  ),
-                )
-              : transfer.status === "completed"
-                ? 100
-                : 0;
-            return (
-              <div className="sftp-transfer-row" key={transfer.transferId}>
-                <span className="sftp-transfer-direction">
-                  {transfer.direction === "upload" ? (
-                    <IconUpload />
-                  ) : (
-                    <IconDownload />
-                  )}
-                </span>
-                <Typography.Text ellipsis>{transfer.fileName}</Typography.Text>
-                <Progress
-                  percent={percent}
-                  showText
-                  size="small"
-                  status={transfer.status === "failed" ? "error" : "normal"}
-                />
-                {transfer.status === "failed" && (
-                  <Tooltip content="重试">
-                    <Button
-                      aria-label={`重试 ${transfer.fileName}`}
-                      icon={<IconRefresh />}
-                      onClick={() => void retryTransfer(transfer)}
-                      size="mini"
-                    />
-                  </Tooltip>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
       {!session ? (
         <div className="panel-empty">
           <Empty description="SFTP 未连接" />
@@ -755,6 +711,111 @@ function SftpPanel({ session }: SftpPanelProps) {
           size="small"
         />
       )}
+      <Drawer
+        bodyStyle={{ padding: 0 }}
+        className="sftp-transfer-drawer"
+        footer={null}
+        onCancel={() => setTransferDrawerVisible(false)}
+        title="传输记录"
+        visible={transferDrawerVisible}
+        width={440}
+      >
+        <div className="sftp-transfer-drawer-toolbar">
+          <Typography.Text type="secondary">
+            {currentTransfers.length > 0
+              ? `共 ${currentTransfers.length} 条`
+              : "暂无记录"}
+          </Typography.Text>
+          {currentTransfers.some((item) => item.status !== "running") && (
+            <Tooltip content="清除已结束任务">
+              <Button
+                aria-label="清除已结束传输任务"
+                icon={<IconDelete />}
+                onClick={clearFinishedTransfers}
+                size="mini"
+                type="text"
+              />
+            </Tooltip>
+          )}
+        </div>
+        {currentTransfers.length === 0 ? (
+          <div className="sftp-transfer-empty">
+            <Empty description="暂无传输记录" />
+          </div>
+        ) : (
+          <div className="sftp-transfer-list">
+            {currentTransfers.map((transfer) => {
+              const percent = transfer.totalBytes
+                ? Math.min(
+                    100,
+                    Math.round(
+                      (transfer.transferredBytes / transfer.totalBytes) * 100,
+                    ),
+                  )
+                : transfer.status === "completed"
+                  ? 100
+                  : 0;
+              const statusText =
+                transfer.status === "completed"
+                  ? "已完成"
+                  : transfer.status === "failed"
+                    ? "传输失败"
+                    : transfer.totalBytes > 0
+                      ? `${formatFileSize(transfer.transferredBytes)} / ${formatFileSize(transfer.totalBytes)}`
+                      : "正在传输";
+
+              return (
+                <div className="sftp-transfer-row" key={transfer.transferId}>
+                  <span className="sftp-transfer-direction">
+                    {transfer.direction === "upload" ? (
+                      <IconUpload />
+                    ) : (
+                      <IconDownload />
+                    )}
+                  </span>
+                  <div className="sftp-transfer-content">
+                    <div className="sftp-transfer-meta">
+                      <Typography.Text ellipsis>
+                        {transfer.fileName}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        {statusText}
+                      </Typography.Text>
+                    </div>
+                    <Progress
+                      percent={percent}
+                      showText
+                      size="small"
+                      status={
+                        transfer.status === "failed" ? "error" : "normal"
+                      }
+                    />
+                    {transfer.status === "failed" && transfer.error && (
+                      <Typography.Text
+                        className="sftp-transfer-error"
+                        ellipsis={{ showTooltip: true }}
+                        type="error"
+                      >
+                        {transfer.error}
+                      </Typography.Text>
+                    )}
+                  </div>
+                  {transfer.status === "failed" && (
+                    <Tooltip content="重试">
+                      <Button
+                        aria-label={`重试 ${transfer.fileName}`}
+                        icon={<IconRefresh />}
+                        onClick={() => void retryTransfer(transfer)}
+                        size="mini"
+                      />
+                    </Tooltip>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Drawer>
       <Modal
         confirmLoading={operationLoading}
         maskClosable={false}
