@@ -8,7 +8,6 @@ import {
 } from "react";
 import {
   Button,
-  Descriptions,
   Empty,
   Message,
   Modal,
@@ -21,7 +20,6 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
-  IconPoweroff,
   IconRefresh,
   IconStorage,
 } from "@arco-design/web-react/icon";
@@ -132,18 +130,6 @@ function createId(prefix: string) {
 
 function targetKey(target: Pick<HostRecord, "address" | "port" | "username">) {
   return `${target.username}@${target.address}:${target.port}`;
-}
-
-function formatTime(value?: string) {
-  if (!value) return "-";
-
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
 }
 
 function isBrowserConnectionMessage(value: unknown): value is BrowserConnectionMessage {
@@ -508,7 +494,7 @@ function App() {
   const serverInfoPanel = (
     <aside className="panel server-info-panel">
       <div className="panel-toolbar">
-        <Typography.Text bold>服务器信息</Typography.Text>
+        <Typography.Text bold>服务器监控</Typography.Text>
         <Tooltip content="主机管理">
           <Button
             aria-label="打开主机管理"
@@ -530,42 +516,6 @@ function App() {
               </Typography.Text>
             </div>
           </div>
-          <Descriptions
-            column={1}
-            data={[
-              { label: "协议", value: "SSH" },
-              { label: "状态", value: sessionStatusLabel(activeSession) },
-              {
-                label: "认证",
-                value:
-                  activeSession.host.authMethod === "privateKey"
-                    ? "私钥"
-                    : "密码",
-              },
-              { label: "用户名", value: activeSession.host.username },
-              { label: "端口", value: activeSession.host.port },
-              {
-                label: "保活",
-                value: `${activeSession.host.keepAliveIntervalSeconds} 秒`,
-              },
-              {
-                label: "自动重连",
-                value: activeSession.host.autoReconnect
-                  ? `最多 ${activeSession.host.maxReconnectAttempts} 次`
-                  : "关闭",
-              },
-              {
-                label: "分组",
-                value: activeSession.host.group || "未分组",
-              },
-              {
-                label: "打开时间",
-                value: formatTime(activeSession?.openedAt),
-              },
-            ]}
-            layout="inline-horizontal"
-            size="small"
-          />
           <Suspense
             fallback={
               <div className="server-monitor-loading">
@@ -577,24 +527,17 @@ function App() {
           >
             <ServerMonitorPanel session={activeSession} />
           </Suspense>
-          <div className="server-actions">
-            {(activeSession.status === "failed" ||
-              activeSession.status === "disconnected") && (
+          {(activeSession.status === "failed" ||
+            activeSession.status === "disconnected") && (
+            <div className="server-actions">
               <Button
                 icon={<IconRefresh />}
                 onClick={() => reconnectSession(activeSession)}
               >
                 重新连接
               </Button>
-            )}
-            <Button
-              icon={<IconPoweroff />}
-              onClick={() => activeSession && closeSession(activeSession.id)}
-              status="danger"
-            >
-              关闭会话
-            </Button>
-          </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="panel-empty">

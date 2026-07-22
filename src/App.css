@@ -130,7 +130,7 @@ body,
 }
 
 .server-title-row {
-  margin-bottom: 20px;
+  margin-bottom: 14px;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -139,15 +139,6 @@ body,
 
 .server-title-row .arco-typography {
   margin: 0;
-}
-
-.server-info-content .arco-descriptions {
-  width: 100%;
-}
-
-.server-info-content .arco-descriptions-item-label {
-  width: 76px;
-  color: #86909c;
 }
 
 .server-actions {
@@ -160,18 +151,13 @@ body,
 }
 
 .server-monitor {
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid #e5e6eb;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
 .server-monitor-loading {
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid #e5e6eb;
+  padding-top: 4px;
 }
 
 .server-monitor-heading,
