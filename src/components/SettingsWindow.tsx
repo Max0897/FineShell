@@ -386,8 +386,10 @@ function SettingsWindow() {
         )}
         <footer className="settings-footer">
           <Popconfirm
-            content="将所有设置恢复为默认值？"
             onOk={() => setSettings({ ...DEFAULT_APP_SETTINGS })}
+            position="top"
+            title="将所有设置恢复为默认值？"
+            unmountOnExit={false}
           >
             <Button disabled={loading || saving}>恢复默认</Button>
           </Popconfirm>
