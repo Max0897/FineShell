@@ -114,29 +114,20 @@ function HostEditorModal({
         layout="vertical"
         onSubmit={submitHost}
       >
-        <div className="host-form-row host-form-primary-row">
-          <Form.Item
-            field="name"
-            label="名称"
-            rules={[{ required: true, message: "请输入主机名称" }]}
-          >
-            <Input autoFocus placeholder="例如：生产服务器" />
-          </Form.Item>
+        <Form.Item
+          field="name"
+          label="名称"
+          rules={[{ required: true, message: "请输入主机名称" }]}
+        >
+          <Input autoFocus placeholder="例如：生产服务器" />
+        </Form.Item>
+        <div className="host-form-row">
           <Form.Item
             field="address"
             label="主机地址"
             rules={[{ required: true, message: "请输入 IP 地址或域名" }]}
           >
             <Input placeholder="192.168.1.10 或 server.example.com" />
-          </Form.Item>
-        </div>
-        <div className="host-form-row">
-          <Form.Item
-            field="username"
-            label="用户名"
-            rules={[{ required: true, message: "请输入用户名" }]}
-          >
-            <Input placeholder="root" />
           </Form.Item>
           <Form.Item
             field="port"
@@ -146,6 +137,13 @@ function HostEditorModal({
             <InputNumber max={65535} min={1} mode="button" />
           </Form.Item>
         </div>
+        <Form.Item
+          field="username"
+          label="用户名"
+          rules={[{ required: true, message: "请输入用户名" }]}
+        >
+          <Input placeholder="root" />
+        </Form.Item>
         <Form.Item field="authMethod" label="认证方式">
           <Select
             onChange={setAuthMethod}
