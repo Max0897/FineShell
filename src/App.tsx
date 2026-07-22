@@ -496,14 +496,6 @@ function App() {
     <aside className="panel server-info-panel">
       <div className="panel-toolbar">
         <Typography.Text bold>服务器信息</Typography.Text>
-        <Tooltip content="主机管理">
-          <Button
-            aria-label="打开主机管理"
-            icon={<IconStorage />}
-            onClick={() => void openHostManager()}
-            size="small"
-          />
-        </Tooltip>
       </div>
       {activeSession ? (
         <div className="server-info-content">
