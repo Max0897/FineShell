@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Button,
   Descriptions,
@@ -13,7 +13,7 @@ import {
   Typography,
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
@@ -25,6 +25,7 @@ import {
   IconUpload,
 } from "@arco-design/web-react/icon";
 import type { HostRecord, TerminalSession } from "./models";
+import TerminalView from "./components/TerminalView";
 import "./App.css";
 
 interface FileEntry {
@@ -37,6 +38,10 @@ interface FileEntry {
 interface BrowserConnectionMessage {
   type: "fineshell:host-connect";
   host: HostRecord;
+}
+
+interface SshConnectResult {
+  fingerprint: string;
 }
 
 let hostManagerOpening = false;
@@ -128,27 +133,73 @@ async function openHostManager(tab: "hosts" | "history" = "hosts") {
 function App() {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const sessionsRef = useRef<TerminalSession[]>([]);
+
+  const updateSession = useCallback(
+    (sessionId: string, values: Partial<TerminalSession>) => {
+      setSessions((current) => {
+        const next = current.map((session) =>
+          session.id === sessionId ? { ...session, ...values } : session,
+        );
+        sessionsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const connectSession = useCallback(
+    async (session: TerminalSession) => {
+      try {
+        const result = await invoke<SshConnectResult>("ssh_connect", {
+          request: {
+            sessionId: session.id,
+            hostId: session.host.id,
+            address: session.host.address,
+            port: session.host.port,
+            username: session.host.username,
+            connectTimeoutSeconds: session.host.connectTimeoutSeconds,
+            expectedFingerprint: session.host.hostFingerprint,
+            cols: 80,
+            rows: 24,
+          },
+        });
+        updateSession(session.id, {
+          status: "connected",
+          fingerprint: result.fingerprint,
+        });
+      } catch (error) {
+        updateSession(session.id, {
+          status: "failed",
+          error: String(error),
+        });
+      }
+    },
+    [updateSession],
+  );
 
   const openSession = useCallback((host: HostRecord) => {
-    setSessions((current) => {
-      const identity = targetKey(host);
-      const existing = current.find(
-        (session) => targetKey(session.host) === identity,
-      );
-      if (existing) {
-        setActiveSessionId(existing.id);
-        return current;
-      }
+    const identity = targetKey(host);
+    const existing = sessionsRef.current.find(
+      (session) => targetKey(session.host) === identity,
+    );
+    if (existing) {
+      setActiveSessionId(existing.id);
+      return;
+    }
 
-      const session: TerminalSession = {
-        id: createId("session"),
-        host,
-        openedAt: new Date().toISOString(),
-      };
-      setActiveSessionId(session.id);
-      return [...current, session];
-    });
-  }, []);
+    const session: TerminalSession = {
+      id: createId("session"),
+      host,
+      openedAt: new Date().toISOString(),
+      status: "connecting",
+    };
+    const next = [...sessionsRef.current, session];
+    sessionsRef.current = next;
+    setSessions(next);
+    setActiveSessionId(session.id);
+    void connectSession(session);
+  }, [connectSession]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -196,7 +247,9 @@ function App() {
       (session) => session.id === sessionId,
     );
     const remaining = sessions.filter((session) => session.id !== sessionId);
+    sessionsRef.current = remaining;
     setSessions(remaining);
+    void invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
 
     if (activeSessionId === sessionId) {
       const nextIndex = Math.max(0, currentIndex - 1);
@@ -288,15 +341,10 @@ function App() {
             key={session.id}
             title={session.host.name}
           >
-            <div className="terminal-screen">
-              <div className="terminal-session-meta">
-                {session.host.username}@{session.host.address} · SSH
-              </div>
-              <div className="terminal-prompt" aria-label="终端输入区域">
-                <span>$</span>
-                <span className="terminal-cursor" />
-              </div>
-            </div>
+            <TerminalView
+              active={session.id === activeSessionId}
+              session={session}
+            />
           </Tabs.TabPane>
         ))}
       </Tabs>

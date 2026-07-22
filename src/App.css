@@ -191,33 +191,22 @@ body,
   height: 100%;
 }
 
-.terminal-screen {
+.terminal-view {
   height: 100%;
-  padding: 14px 16px;
-  overflow: auto;
-  color: #d7dae0;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 0 0 8px;
+  overflow: hidden;
   background: #191b20;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 13px;
-  line-height: 1.7;
 }
 
-.terminal-session-meta {
-  margin-bottom: 14px;
-  color: #8d94a3;
+.terminal-view .xterm {
+  height: 100%;
 }
 
-.terminal-prompt {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #ffffff;
-}
-
-.terminal-cursor {
-  width: 7px;
-  height: 16px;
-  background: #23c343;
+.terminal-view .xterm-viewport {
+  scrollbar-color: #4e5969 #191b20;
+  scrollbar-width: thin;
 }
 
 .sftp-toolbar {

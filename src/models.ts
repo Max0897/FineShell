@@ -38,8 +38,18 @@ export interface ConnectionHistoryRecord extends QuickTarget {
   connectedAt: string;
 }
 
+export type TerminalSessionStatus =
+  | "connecting"
+  | "connected"
+  | "failed"
+  | "disconnected"
+  | "reconnecting";
+
 export interface TerminalSession {
   id: string;
   host: HostRecord;
   openedAt: string;
+  status: TerminalSessionStatus;
+  error?: string;
+  fingerprint?: string;
 }
