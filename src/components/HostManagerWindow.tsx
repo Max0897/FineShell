@@ -819,8 +819,8 @@ function HostManagerWindow() {
 
   return (
     <main className="host-manager-window">
-      <Tabs activeTab={activeTab} onChange={setActiveTab} type="line">
-        <Tabs.TabPane key="hosts" title="主机">
+      <Tabs activeTab={activeTab} justify onChange={setActiveTab} type="line">
+        <Tabs.TabPane className="hosts-tab-pane" key="hosts" title="主机">
           <div className="hosts-manager-layout">
             <aside className="host-group-sidebar">
               <Typography.Text bold>分组</Typography.Text>
