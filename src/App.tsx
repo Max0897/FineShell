@@ -22,6 +22,7 @@ import type { HostRecord, TerminalSession } from "./models";
 import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
 import { withHostDefaults } from "./host-storage";
+import { updateStoredHostFingerprint } from "./config-database";
 import { reconnectDelaySeconds } from "./terminal-utils";
 import "./App.css";
 
@@ -43,46 +44,11 @@ interface SshStatusPayload {
   recoverable: boolean;
 }
 
-const HOSTS_STORAGE_KEY = "fineshell.hosts";
-const HISTORY_STORAGE_KEY = "fineshell.connection-history";
-
-function persistHostFingerprint(host: HostRecord, fingerprint: string) {
+async function persistHostFingerprint(host: HostRecord, fingerprint: string) {
   try {
-    if (!host.id.startsWith("quick-")) {
-      const hosts = JSON.parse(localStorage.getItem(HOSTS_STORAGE_KEY) ?? "[]");
-      if (Array.isArray(hosts)) {
-        localStorage.setItem(
-          HOSTS_STORAGE_KEY,
-          JSON.stringify(
-            hosts.map((item) =>
-              item?.id === host.id
-                ? { ...item, hostFingerprint: fingerprint }
-                : item,
-            ),
-          ),
-        );
-      }
-    }
-
-    const history = JSON.parse(
-      localStorage.getItem(HISTORY_STORAGE_KEY) ?? "[]",
-    );
-    if (Array.isArray(history)) {
-      localStorage.setItem(
-        HISTORY_STORAGE_KEY,
-        JSON.stringify(
-          history.map((item) =>
-            item?.username === host.username &&
-            item?.address === host.address &&
-            item?.port === host.port
-              ? { ...item, hostFingerprint: fingerprint }
-              : item,
-          ),
-        ),
-      );
-    }
+    await updateStoredHostFingerprint(host, fingerprint);
   } catch {
-    // A malformed local cache must not interrupt an active SSH connection.
+    // Configuration persistence must not interrupt an active SSH connection.
   }
 }
 
@@ -300,7 +266,7 @@ function App() {
             ...session.host,
             hostFingerprint: result.fingerprint,
           };
-          persistHostFingerprint(trustedHost, result.fingerprint);
+          await persistHostFingerprint(trustedHost, result.fingerprint);
           updateSession(session.id, {
             status: "connecting",
             error: undefined,
@@ -320,7 +286,7 @@ function App() {
           },
           reconnectAttempt: 0,
         });
-        persistHostFingerprint(session.host, result.fingerprint);
+        await persistHostFingerprint(session.host, result.fingerprint);
       } catch (error) {
         if (!sessionsRef.current.some((item) => item.id === session.id)) {
           return;

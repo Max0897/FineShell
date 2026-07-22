@@ -35,26 +35,14 @@ import type {
   QuickTarget,
 } from "../models";
 import HostEditorModal from "./HostEditorModal";
-import { normalizeHostForm, withHostDefaults } from "../host-storage";
-
-const HOSTS_STORAGE_KEY = "fineshell.hosts";
-const HISTORY_STORAGE_KEY = "fineshell.connection-history";
+import { normalizeHostForm } from "../host-storage";
+import {
+  loadConfiguration,
+  replaceConfigurationContent,
+} from "../config-database";
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function loadStoredList<T>(key: string): T[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(key) ?? "[]");
-    return Array.isArray(value) ? (value as T[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function loadHosts() {
-  return loadStoredList<HostRecord>(HOSTS_STORAGE_KEY).map(withHostDefaults);
 }
 
 async function storeHostPassword(hostId: string, password: string) {
@@ -110,10 +98,9 @@ function HostManagerWindow() {
       ? "history"
       : "hosts";
   const [activeTab, setActiveTab] = useState(initialTab);
-  const [hosts, setHosts] = useState<HostRecord[]>(loadHosts);
-  const [history, setHistory] = useState<ConnectionHistoryRecord[]>(() =>
-    loadStoredList<ConnectionHistoryRecord>(HISTORY_STORAGE_KEY),
-  );
+  const [hosts, setHosts] = useState<HostRecord[]>([]);
+  const [history, setHistory] = useState<ConnectionHistoryRecord[]>([]);
+  const [configurationLoading, setConfigurationLoading] = useState(true);
   const [keyword, setKeyword] = useState("");
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingHost, setEditingHost] = useState<HostRecord | null>(null);
@@ -134,12 +121,24 @@ function HostManagerWindow() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(HOSTS_STORAGE_KEY, JSON.stringify(hosts));
-  }, [hosts]);
+    let disposed = false;
+    void loadConfiguration()
+      .then((configuration) => {
+        if (disposed) return;
+        setHosts(configuration.hosts);
+        setHistory(configuration.history);
+      })
+      .catch(() => {
+        if (!disposed) Message.error("本地配置读取失败");
+      })
+      .finally(() => {
+        if (!disposed) setConfigurationLoading(false);
+      });
 
-  useEffect(() => {
-    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
-  }, [history]);
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -193,26 +192,35 @@ function HostManagerWindow() {
       return;
     }
 
-    if (editingHost) {
-      setHosts((current) =>
-        current.map((host) =>
+    const nextHosts = editingHost
+      ? hosts.map((host) =>
           host.id === editingHost.id ? { ...host, ...normalized } : host,
-        ),
-      );
-      Message.success("主机信息已更新");
-    } else {
-      setHosts((current) => [
-        ...current,
-        { id: hostId, ...normalized },
-      ]);
-      Message.success("主机已添加");
+        )
+      : [...hosts, { id: hostId, ...normalized }];
+    try {
+      await replaceConfigurationContent(nextHosts, history);
+      setHosts(nextHosts);
+    } catch {
+      Message.error("主机配置保存失败");
+      return;
     }
+
+    Message.success(editingHost ? "主机信息已更新" : "主机已添加");
 
     setEditorVisible(false);
     setEditingHost(null);
   }
 
   async function deleteHost(host: HostRecord) {
+    const nextHosts = hosts.filter((item) => item.id !== host.id);
+    try {
+      await replaceConfigurationContent(nextHosts, history);
+      setHosts(nextHosts);
+    } catch {
+      Message.error("主机删除失败");
+      return;
+    }
+
     const credentialCleanup = await Promise.allSettled([
       removeHostPassword(host.id),
       removePrivateKeyPassphrase(host.id),
@@ -220,7 +228,6 @@ function HostManagerWindow() {
     if (credentialCleanup.some((result) => result.status === "rejected")) {
       Message.warning("主机已删除，但系统凭据清理失败");
     }
-    setHosts((current) => current.filter((item) => item.id !== host.id));
     Message.success(`已删除 ${host.name}`);
   }
 
@@ -251,10 +258,13 @@ function HostManagerWindow() {
       historyRecord,
       ...history.filter((item) => targetKey(item) !== identity),
     ].slice(0, 50);
-    setHosts(nextHosts);
-    setHistory(nextHistory);
-    localStorage.setItem(HOSTS_STORAGE_KEY, JSON.stringify(nextHosts));
-    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(nextHistory));
+    try {
+      await replaceConfigurationContent(nextHosts, nextHistory);
+      setHosts(nextHosts);
+      setHistory(nextHistory);
+    } catch {
+      Message.warning("连接记录保存失败，本次连接仍将继续");
+    }
 
     if (isTauri()) {
       await emitTo("main", "host-connect", connectedHost);
@@ -441,6 +451,7 @@ function HostManagerWindow() {
                 value={keyword}
               />
               <Button
+                disabled={configurationLoading}
                 icon={<IconPlus />}
                 onClick={() => openHostEditor(null)}
                 type="primary"
@@ -452,6 +463,7 @@ function HostManagerWindow() {
               border={false}
               columns={hostColumns}
               data={filteredHosts}
+              loading={configurationLoading}
               noDataElement={
                 <Empty description={keyword ? "没有匹配的主机" : "暂无主机"} />
               }
@@ -537,6 +549,7 @@ function HostManagerWindow() {
                 />
                 <Button
                   disabled={
+                    configurationLoading ||
                     !quickTarget.address.trim() ||
                     (quickAuthMethod === "password"
                       ? !quickPassword
@@ -557,6 +570,7 @@ function HostManagerWindow() {
               border={false}
               columns={historyColumns}
               data={history}
+              loading={configurationLoading}
               noDataElement={<Empty description="暂无连接历史" />}
               pagination={false}
               rowKey="id"
