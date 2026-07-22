@@ -30,6 +30,11 @@ export function formatMonitorBytes(bytes: number) {
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
+export function formatMonitorPercent(value: number) {
+  if (!Number.isFinite(value)) return "0%";
+  return `${Math.round(value)}%`;
+}
+
 export function formatUptime(seconds: number) {
   const wholeSeconds = Math.max(0, Math.floor(seconds));
   const days = Math.floor(wholeSeconds / 86_400);

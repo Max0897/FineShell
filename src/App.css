@@ -213,9 +213,15 @@ body,
 }
 
 .monitor-chart-section {
+  width: 100%;
   min-width: 0;
   padding-top: 12px;
   border-top: 1px solid #f2f3f5;
+}
+
+.monitor-chart {
+  width: 100% !important;
+  min-width: 0;
 }
 
 .monitor-current-values {

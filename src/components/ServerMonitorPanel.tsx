@@ -10,6 +10,7 @@ import type {
 import {
   appendMonitorHistory,
   formatMonitorBytes,
+  formatMonitorPercent,
   formatUptime,
 } from "../monitor-utils";
 
@@ -19,8 +20,12 @@ interface ServerMonitorPanelProps {
 
 const POLL_INTERVAL_MS = 5_000;
 
-function percentLabel(value: number) {
-  return `${Math.round(value)}%`;
+function tooltipMetric(datum?: Record<string, unknown>) {
+  return String(datum?.metric ?? "占用率");
+}
+
+function tooltipPercent(datum?: Record<string, unknown>) {
+  return formatMonitorPercent(Number(datum?.value));
 }
 
 function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
@@ -150,7 +155,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
               {utilizationData.map((item) => (
                 <span key={item.metric}>
                   <span>{item.metric}</span>
-                  <strong>{percentLabel(item.value)}</strong>
+                  <strong>{formatMonitorPercent(item.value)}</strong>
                 </span>
               ))}
             </div>
@@ -173,12 +178,20 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
                 },
               ]}
               bar={{ style: { cornerRadius: 2 } }}
+              className="monitor-chart"
               color={["#165dff", "#00b42a", "#f7ba1e"]}
               data={[{ id: "utilization", values: utilizationData }]}
               direction="horizontal"
               height={105}
-              padding={{ bottom: 8, left: 38, right: 8, top: 4 }}
+              padding={{ bottom: 8, left: 0, right: 0, top: 4 }}
               seriesField="metric"
+              tooltip={{
+                mark: {
+                  content: [
+                    { key: tooltipMetric, value: tooltipPercent },
+                  ],
+                },
+              }}
               xField="value"
               yField="metric"
             />
@@ -206,10 +219,14 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
                   min: 0,
                   orient: "left",
                   type: "linear",
-                  label: { style: { fill: "#86909c", fontSize: 10 } },
+                  label: {
+                    formatMethod: (value) => `${value}%`,
+                    style: { fill: "#86909c", fontSize: 10 },
+                  },
                   tick: { visible: false },
                 },
               ]}
+              className="monitor-chart"
               color={["#165dff", "#00b42a"]}
               data={[{ id: "resource-trend", values: trendData }]}
               height={128}
@@ -219,9 +236,21 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
                 item: { label: { style: { fill: "#4e5969", fontSize: 10 } } },
               }}
               line={{ style: { lineWidth: 2 } }}
-              padding={{ bottom: 6, left: 30, right: 8, top: 22 }}
+              padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
               point={{ style: { size: 2 }, visible: history.length < 2 }}
               seriesField="metric"
+              tooltip={{
+                dimension: {
+                  content: [
+                    { key: tooltipMetric, value: tooltipPercent },
+                  ],
+                },
+                mark: {
+                  content: [
+                    { key: tooltipMetric, value: tooltipPercent },
+                  ],
+                },
+              }}
               xField="time"
               yField="value"
             />
