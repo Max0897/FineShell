@@ -7,7 +7,6 @@ import {
   Modal,
   Select,
   Space,
-  Switch,
   Tooltip,
 } from "@arco-design/web-react";
 import { IconFolder } from "@arco-design/web-react/icon";
@@ -20,6 +19,15 @@ type ConnectionDefaults = Pick<
   | "defaultKeepAliveIntervalSeconds"
   | "defaultAutoReconnect"
   | "defaultMaxReconnectAttempts"
+>;
+
+type HostEditorValues = Omit<
+  HostFormValues,
+  | "connectTimeoutSeconds"
+  | "keepAliveIntervalSeconds"
+  | "autoReconnect"
+  | "maxReconnectAttempts"
+  | "hostFingerprint"
 >;
 
 interface HostEditorModalProps {
@@ -39,11 +47,11 @@ function HostEditorModal({
   onChoosePrivateKey,
   onSubmit,
 }: HostEditorModalProps) {
-  const [form] = Form.useForm<HostFormValues>();
+  const [form] = Form.useForm<HostEditorValues>();
   const [authMethod, setAuthMethod] = useState(
     host?.authMethod ?? "password",
   );
-  const initialValues: HostFormValues = host
+  const initialValues: HostEditorValues = host
     ? {
         name: host.name,
         address: host.address,
@@ -52,13 +60,8 @@ function HostEditorModal({
         authMethod: host.authMethod,
         privateKeyPath: host.privateKeyPath,
         privateKeyPassphrase: "",
-        connectTimeoutSeconds: host.connectTimeoutSeconds,
-        keepAliveIntervalSeconds: host.keepAliveIntervalSeconds,
-        autoReconnect: host.autoReconnect,
-        maxReconnectAttempts: host.maxReconnectAttempts,
         password: "",
         group: host.group,
-        hostFingerprint: host.hostFingerprint,
       }
     : {
         name: "",
@@ -68,16 +71,32 @@ function HostEditorModal({
         authMethod: "password",
         privateKeyPath: "",
         privateKeyPassphrase: "",
-        connectTimeoutSeconds: connectionDefaults.defaultConnectTimeoutSeconds,
-        keepAliveIntervalSeconds:
-          connectionDefaults.defaultKeepAliveIntervalSeconds,
-        autoReconnect: connectionDefaults.defaultAutoReconnect,
-        maxReconnectAttempts:
-          connectionDefaults.defaultMaxReconnectAttempts,
         password: "",
         group: "",
-        hostFingerprint: "",
       };
+
+  const submitHost = (values: HostEditorValues) => {
+    const targetUnchanged =
+      host &&
+      host.address === values.address.trim() &&
+      host.port === values.port &&
+      host.username === values.username.trim();
+    onSubmit({
+      ...values,
+      connectTimeoutSeconds:
+        host?.connectTimeoutSeconds ??
+        connectionDefaults.defaultConnectTimeoutSeconds,
+      keepAliveIntervalSeconds:
+        host?.keepAliveIntervalSeconds ??
+        connectionDefaults.defaultKeepAliveIntervalSeconds,
+      autoReconnect:
+        host?.autoReconnect ?? connectionDefaults.defaultAutoReconnect,
+      maxReconnectAttempts:
+        host?.maxReconnectAttempts ??
+        connectionDefaults.defaultMaxReconnectAttempts,
+      hostFingerprint: targetUnchanged ? host.hostFingerprint : undefined,
+    });
+  };
 
   return (
     <Modal
@@ -89,11 +108,11 @@ function HostEditorModal({
       title={host ? "编辑主机" : "新增主机"}
       visible={visible}
     >
-      <Form<HostFormValues>
+      <Form<HostEditorValues>
         form={form}
         initialValues={initialValues}
         layout="vertical"
-        onSubmit={onSubmit}
+        onSubmit={submitHost}
       >
         <Form.Item
           field="name"
@@ -180,41 +199,6 @@ function HostEditorModal({
             </Form.Item>
           </>
         )}
-        <div className="host-form-row">
-          <Form.Item
-            field="connectTimeoutSeconds"
-            label="连接超时（秒）"
-            rules={[{ required: true, message: "请输入连接超时时间" }]}
-          >
-            <InputNumber max={120} min={3} mode="button" />
-          </Form.Item>
-          <Form.Item
-            field="keepAliveIntervalSeconds"
-            label="保活间隔（秒）"
-            rules={[{ required: true, message: "请输入保活间隔" }]}
-          >
-            <InputNumber max={300} min={5} mode="button" />
-          </Form.Item>
-        </div>
-        <div className="host-form-row">
-          <Form.Item
-            field="autoReconnect"
-            label="自动重连"
-            triggerPropName="checked"
-          >
-            <Switch />
-          </Form.Item>
-          <Form.Item
-            field="maxReconnectAttempts"
-            label="最大重连次数"
-            rules={[{ required: true, message: "请输入最大重连次数" }]}
-          >
-            <InputNumber max={10} min={1} mode="button" />
-          </Form.Item>
-        </div>
-        <Form.Item field="hostFingerprint" label="主机指纹">
-          <Input placeholder="首次连接后自动记录，也可预先填写 SHA256 指纹" />
-        </Form.Item>
         <Form.Item field="group" label="分组">
           <Input placeholder="可选" />
         </Form.Item>
