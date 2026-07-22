@@ -411,6 +411,12 @@ body,
   gap: 12px;
 }
 
+.manager-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .host-name-cell {
   min-width: 0;
   display: flex;

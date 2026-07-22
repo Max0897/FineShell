@@ -8,14 +8,33 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 1;
+export const CONFIGURATION_SCHEMA_VERSION = 2;
+export const CONFIGURATION_EXPORT_VERSION = 1;
+export const MAX_CONFIGURATION_BACKUPS = 10;
+
+export interface ConfigurationBackup {
+  id: string;
+  createdAt: string;
+  reason: string;
+  hosts: HostRecord[];
+  history: ConnectionHistoryRecord[];
+}
 
 export interface FineShellConfiguration {
   id: typeof CONFIGURATION_ID;
   schemaVersion: typeof CONFIGURATION_SCHEMA_VERSION;
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
+  backups: ConfigurationBackup[];
   updatedAt: string;
+}
+
+export interface FineShellConfigurationExport {
+  format: "fineshell-config";
+  schemaVersion: typeof CONFIGURATION_EXPORT_VERSION;
+  exportedAt: string;
+  hosts: HostRecord[];
+  history: ConnectionHistoryRecord[];
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -112,6 +131,23 @@ function sanitizeHistoryRecord(
   };
 }
 
+function sanitizeBackup(value: unknown): ConfigurationBackup | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const id = stringValue(value.id);
+  const createdAt = stringValue(value.createdAt);
+  const reason = stringValue(value.reason);
+  if (!id || !createdAt || !reason) return undefined;
+
+  return {
+    id,
+    createdAt,
+    reason,
+    hosts: sanitizeList(value.hosts, sanitizeHost),
+    history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
+  };
+}
+
 function sanitizeList<T>(
   value: unknown,
   sanitize: (item: unknown) => T | undefined,
@@ -146,6 +182,7 @@ export function migrateLegacyConfiguration(
       parseLegacyList(storedHistory),
       sanitizeHistoryRecord,
     ).slice(0, 50),
+    backups: [],
     updatedAt: now,
   };
 }
@@ -164,7 +201,65 @@ function normalizeConfiguration(value: unknown): FineShellConfiguration {
     schemaVersion: CONFIGURATION_SCHEMA_VERSION,
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
+    backups: sanitizeList(value.backups, sanitizeBackup).slice(
+      0,
+      MAX_CONFIGURATION_BACKUPS,
+    ),
     updatedAt: stringValue(value.updatedAt) ?? new Date().toISOString(),
+  };
+}
+
+function createBackup(
+  configuration: FineShellConfiguration,
+  reason: string,
+  now = new Date().toISOString(),
+): ConfigurationBackup {
+  return {
+    id: `backup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: now,
+    reason,
+    hosts: configuration.hosts,
+    history: configuration.history,
+  };
+}
+
+export function serializeConfigurationExport(
+  configuration: Pick<FineShellConfiguration, "hosts" | "history">,
+  now = new Date().toISOString(),
+) {
+  const exported: FineShellConfigurationExport = {
+    format: "fineshell-config",
+    schemaVersion: CONFIGURATION_EXPORT_VERSION,
+    exportedAt: now,
+    hosts: sanitizeList(configuration.hosts, sanitizeHost),
+    history: sanitizeList(
+      configuration.history,
+      sanitizeHistoryRecord,
+    ).slice(0, 50),
+  };
+  return `${JSON.stringify(exported, null, 2)}\n`;
+}
+
+export function parseConfigurationExport(contents: string) {
+  let value: unknown;
+  try {
+    value = JSON.parse(contents);
+  } catch {
+    throw new Error("配置文件不是有效的 JSON");
+  }
+  if (!isRecord(value) || value.format !== "fineshell-config") {
+    throw new Error("不是 FineShell 配置文件");
+  }
+  if (
+    typeof value.schemaVersion !== "number" ||
+    value.schemaVersion > CONFIGURATION_EXPORT_VERSION
+  ) {
+    throw new Error("配置文件版本不受支持");
+  }
+
+  return {
+    hosts: sanitizeList(value.hosts, sanitizeHost),
+    history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
   };
 }
 
@@ -316,4 +411,35 @@ export function updateStoredHostFingerprint(
         : item,
     ),
   }));
+}
+
+export function importConfiguration(
+  imported: Pick<FineShellConfiguration, "hosts" | "history">,
+) {
+  return updateConfiguration((current) => ({
+    ...current,
+    hosts: imported.hosts,
+    history: imported.history,
+    backups: [
+      createBackup(current, "导入配置前自动备份"),
+      ...current.backups,
+    ].slice(0, MAX_CONFIGURATION_BACKUPS),
+  }));
+}
+
+export function restoreConfigurationBackup(backupId: string) {
+  return updateConfiguration((current) => {
+    const backup = current.backups.find((item) => item.id === backupId);
+    if (!backup) throw new Error("备份不存在或已被清理");
+
+    return {
+      ...current,
+      hosts: backup.hosts,
+      history: backup.history,
+      backups: [
+        createBackup(current, "恢复配置前自动备份"),
+        ...current.backups,
+      ].slice(0, MAX_CONFIGURATION_BACKUPS),
+    };
+  });
 }

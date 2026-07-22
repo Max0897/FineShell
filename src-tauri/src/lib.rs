@@ -1,3 +1,4 @@
+mod config_files;
 mod credentials;
 mod sftp;
 mod ssh;
@@ -10,6 +11,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            config_files::read_config_file,
+            config_files::write_config_file,
             credentials::store_host_password,
             credentials::delete_host_password,
             credentials::store_private_key_passphrase,

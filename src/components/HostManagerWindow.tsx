@@ -5,6 +5,7 @@ import {
   Input,
   InputNumber,
   Message,
+  Modal,
   Popconfirm,
   Select,
   Space,
@@ -18,14 +19,18 @@ import type { TableColumnProps } from "@arco-design/web-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   IconDelete,
   IconEdit,
+  IconExport,
   IconFolder,
   IconHistory,
+  IconImport,
   IconLink,
   IconPlus,
+  IconStorage,
+  IconUndo,
 } from "@arco-design/web-react/icon";
 import type {
   ConnectionHistoryRecord,
@@ -37,8 +42,13 @@ import type {
 import HostEditorModal from "./HostEditorModal";
 import { normalizeHostForm } from "../host-storage";
 import {
+  type ConfigurationBackup,
+  importConfiguration,
   loadConfiguration,
+  parseConfigurationExport,
   replaceConfigurationContent,
+  restoreConfigurationBackup,
+  serializeConfigurationExport,
 } from "../config-database";
 
 function createId(prefix: string) {
@@ -100,7 +110,9 @@ function HostManagerWindow() {
   const [activeTab, setActiveTab] = useState(initialTab);
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [history, setHistory] = useState<ConnectionHistoryRecord[]>([]);
+  const [backups, setBackups] = useState<ConfigurationBackup[]>([]);
   const [configurationLoading, setConfigurationLoading] = useState(true);
+  const [configurationAction, setConfigurationAction] = useState(false);
   const [keyword, setKeyword] = useState("");
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingHost, setEditingHost] = useState<HostRecord | null>(null);
@@ -127,6 +139,7 @@ function HostManagerWindow() {
         if (disposed) return;
         setHosts(configuration.hosts);
         setHistory(configuration.history);
+        setBackups(configuration.backups);
       })
       .catch(() => {
         if (!disposed) Message.error("本地配置读取失败");
@@ -175,6 +188,100 @@ function HostManagerWindow() {
   function openHostEditor(host: HostRecord | null) {
     setEditingHost(host);
     setEditorVisible(true);
+  }
+
+  async function exportConfiguration() {
+    if (!isTauri()) {
+      Message.warning("配置导出仅支持桌面应用");
+      return;
+    }
+
+    setConfigurationAction(true);
+    try {
+      const path = await saveDialog({
+        defaultPath: `fineshell-config-${new Date().toISOString().slice(0, 10)}.json`,
+        filters: [{ name: "FineShell 配置", extensions: ["json"] }],
+        title: "导出 FineShell 配置",
+      });
+      if (!path) return;
+
+      const configuration = await loadConfiguration();
+      await invoke("write_config_file", {
+        path,
+        contents: serializeConfigurationExport(configuration),
+      });
+      Message.success("配置已导出");
+    } catch (error) {
+      Message.error(String(error));
+    } finally {
+      setConfigurationAction(false);
+    }
+  }
+
+  async function importConfigurationFile() {
+    if (!isTauri()) {
+      Message.warning("配置导入仅支持桌面应用");
+      return;
+    }
+
+    setConfigurationAction(true);
+    try {
+      const path = await open({
+        directory: false,
+        filters: [{ name: "FineShell 配置", extensions: ["json"] }],
+        multiple: false,
+        title: "导入 FineShell 配置",
+      });
+      if (typeof path !== "string") return;
+
+      const contents = await invoke<string>("read_config_file", { path });
+      const imported = parseConfigurationExport(contents);
+      Modal.confirm({
+        cancelText: "取消",
+        content: (
+          <Typography.Paragraph>
+            将导入 {imported.hosts.length} 台主机和 {imported.history.length}
+            条连接记录。当前配置会先自动备份，认证凭据不会被导入或覆盖。
+          </Typography.Paragraph>
+        ),
+        okText: "确认导入",
+        onOk: async () => {
+          setConfigurationAction(true);
+          try {
+            const next = await importConfiguration(imported);
+            setHosts(next.hosts);
+            setHistory(next.history);
+            setBackups(next.backups);
+            Message.success("配置导入完成");
+          } catch (error) {
+            Message.error(String(error));
+            throw error;
+          } finally {
+            setConfigurationAction(false);
+          }
+        },
+        title: "确认导入配置",
+      });
+    } catch (error) {
+      Message.error(String(error));
+    } finally {
+      setConfigurationAction(false);
+    }
+  }
+
+  async function restoreBackup(backup: ConfigurationBackup) {
+    setConfigurationAction(true);
+    try {
+      const next = await restoreConfigurationBackup(backup.id);
+      setHosts(next.hosts);
+      setHistory(next.history);
+      setBackups(next.backups);
+      Message.success("配置已恢复");
+    } catch (error) {
+      Message.error(String(error));
+    } finally {
+      setConfigurationAction(false);
+    }
   }
 
   async function saveHost(values: HostFormValues) {
@@ -438,6 +545,39 @@ function HostManagerWindow() {
     },
   ];
 
+  const backupColumns: TableColumnProps<ConfigurationBackup>[] = [
+    {
+      title: "备份时间",
+      dataIndex: "createdAt",
+      width: 180,
+      render: (value) => formatTime(value),
+    },
+    {
+      title: "原因",
+      dataIndex: "reason",
+    },
+    {
+      title: "内容",
+      width: 180,
+      render: (_, backup) =>
+        `${backup.hosts.length} 台主机，${backup.history.length} 条记录`,
+    },
+    {
+      title: "操作",
+      width: 100,
+      render: (_, backup) => (
+        <Popconfirm
+          content="恢复后当前配置会自动备份，是否继续？"
+          onOk={() => void restoreBackup(backup)}
+        >
+          <Button icon={<IconUndo />} size="mini">
+            恢复
+          </Button>
+        </Popconfirm>
+      ),
+    },
+  ];
+
   return (
     <main className="host-manager-window">
       <Tabs activeTab={activeTab} onChange={setActiveTab} type="line">
@@ -450,14 +590,32 @@ function HostManagerWindow() {
                 placeholder="搜索名称、地址或分组"
                 value={keyword}
               />
-              <Button
-                disabled={configurationLoading}
-                icon={<IconPlus />}
-                onClick={() => openHostEditor(null)}
-                type="primary"
-              >
-                新增主机
-              </Button>
+              <div className="manager-toolbar-actions">
+                <Tooltip content="导入配置">
+                  <Button
+                    aria-label="导入配置"
+                    disabled={configurationLoading || configurationAction}
+                    icon={<IconImport />}
+                    onClick={() => void importConfigurationFile()}
+                  />
+                </Tooltip>
+                <Tooltip content="导出配置">
+                  <Button
+                    aria-label="导出配置"
+                    disabled={configurationLoading || configurationAction}
+                    icon={<IconExport />}
+                    onClick={() => void exportConfiguration()}
+                  />
+                </Tooltip>
+                <Button
+                  disabled={configurationLoading || configurationAction}
+                  icon={<IconPlus />}
+                  onClick={() => openHostEditor(null)}
+                  type="primary"
+                >
+                  新增主机
+                </Button>
+              </div>
             </div>
             <Table
               border={false}
@@ -572,6 +730,28 @@ function HostManagerWindow() {
               data={history}
               loading={configurationLoading}
               noDataElement={<Empty description="暂无连接历史" />}
+              pagination={false}
+              rowKey="id"
+              size="small"
+            />
+          </div>
+        </Tabs.TabPane>
+        <Tabs.TabPane
+          key="backups"
+          title={
+            <Space size="mini">
+              <IconStorage />
+              备份与恢复
+            </Space>
+          }
+        >
+          <div className="manager-pane">
+            <Table
+              border={false}
+              columns={backupColumns}
+              data={backups}
+              loading={configurationLoading || configurationAction}
+              noDataElement={<Empty description="暂无自动备份" />}
               pagination={false}
               rowKey="id"
               size="small"

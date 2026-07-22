@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { migrateLegacyConfiguration } from "./config-database";
+import {
+  migrateLegacyConfiguration,
+  parseConfigurationExport,
+  serializeConfigurationExport,
+} from "./config-database";
 
 describe("migrateLegacyConfiguration", () => {
   test("migrates valid hosts and applies connection defaults", () => {
@@ -18,7 +22,7 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(1);
+    expect(configuration.schemaVersion).toBe(2);
     expect(configuration.updatedAt).toBe("2026-07-22T00:00:00.000Z");
     expect(configuration.hosts).toEqual([
       {
@@ -66,5 +70,47 @@ describe("migrateLegacyConfiguration", () => {
 
     expect(configuration.hosts).toEqual([]);
     expect(configuration.history).toEqual([]);
+  });
+});
+
+describe("configuration import and export", () => {
+  test("exports a versioned document without unknown credential fields", () => {
+    const contents = serializeConfigurationExport(
+      {
+        hosts: [
+          {
+            id: "host-1",
+            name: "Server",
+            address: "server.example.com",
+            port: 22,
+            username: "root",
+            authMethod: "password",
+            connectTimeoutSeconds: 10,
+            keepAliveIntervalSeconds: 15,
+            autoReconnect: true,
+            maxReconnectAttempts: 3,
+            password: "must-not-be-exported",
+          } as never,
+        ],
+        history: [],
+      },
+      "2026-07-22T00:00:00.000Z",
+    );
+
+    expect(contents).toContain('"format": "fineshell-config"');
+    expect(contents).not.toContain("must-not-be-exported");
+    expect(parseConfigurationExport(contents).hosts).toHaveLength(1);
+  });
+
+  test("rejects unrelated and newer configuration documents", () => {
+    expect(() => parseConfigurationExport("not-json")).toThrow("有效的 JSON");
+    expect(() => parseConfigurationExport('{"format":"other"}')).toThrow(
+      "不是 FineShell 配置文件",
+    );
+    expect(() =>
+      parseConfigurationExport(
+        '{"format":"fineshell-config","schemaVersion":99}',
+      ),
+    ).toThrow("版本不受支持");
   });
 });
