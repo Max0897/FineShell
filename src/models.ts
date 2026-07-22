@@ -76,6 +76,27 @@ export interface TerminalSession {
   reconnectAttempt?: number;
 }
 
+export interface ServerMonitorSnapshot {
+  hostname: string;
+  operatingSystem: string;
+  kernel: string;
+  uptimeSeconds: number;
+  cpuUsagePercent: number;
+  memoryTotalBytes: number;
+  memoryUsedBytes: number;
+  memoryUsagePercent: number;
+  diskTotalBytes: number;
+  diskUsedBytes: number;
+  diskUsagePercent: number;
+  loadAverage: [number, number, number];
+}
+
+export interface ServerMonitorHistoryPoint {
+  collectedAt: number;
+  cpuUsagePercent: number;
+  memoryUsagePercent: number;
+}
+
 export type SftpEntryKind = "directory" | "file" | "symlink" | "other";
 
 export interface SftpEntry {

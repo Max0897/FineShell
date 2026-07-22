@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   Button,
   Descriptions,
@@ -25,6 +32,10 @@ import { withHostDefaults } from "./host-storage";
 import { updateStoredHostFingerprint } from "./config-database";
 import { reconnectDelaySeconds } from "./terminal-utils";
 import "./App.css";
+
+const ServerMonitorPanel = lazy(
+  () => import("./components/ServerMonitorPanel"),
+);
 
 interface BrowserConnectionMessage {
   type: "fineshell:host-connect";
@@ -555,6 +566,17 @@ function App() {
             layout="inline-horizontal"
             size="small"
           />
+          <Suspense
+            fallback={
+              <div className="server-monitor-loading">
+                <Typography.Text type="secondary">
+                  正在加载监控…
+                </Typography.Text>
+              </div>
+            }
+          >
+            <ServerMonitorPanel session={activeSession} />
+          </Suspense>
           <div className="server-actions">
             {(activeSession.status === "failed" ||
               activeSession.status === "disconnected") && (
