@@ -754,6 +754,10 @@ body,
   gap: 8px;
 }
 
+.manager-toolbar-filters .arco-input:focus-visible {
+  outline: none;
+}
+
 .host-sort-control {
   min-width: 0;
   display: grid;
