@@ -53,3 +53,25 @@ export interface TerminalSession {
   error?: string;
   fingerprint?: string;
 }
+
+export type SftpEntryKind = "directory" | "file" | "symlink" | "other";
+
+export interface SftpEntry {
+  id: string;
+  name: string;
+  path: string;
+  kind: SftpEntryKind;
+  size: number;
+  modifiedAt?: number;
+  permissions?: number;
+}
+
+export interface SftpListResult {
+  path: string;
+  entries: SftpEntry[];
+}
+
+export interface SftpConnectResult {
+  fingerprint: string;
+  homeDir: string;
+}

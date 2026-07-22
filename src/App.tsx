@@ -3,37 +3,24 @@ import {
   Button,
   Descriptions,
   Empty,
-  Input,
   Message,
   ResizeBox,
-  Space,
-  Table,
   Tabs,
   Tooltip,
   Typography,
 } from "@arco-design/web-react";
-import type { TableColumnProps } from "@arco-design/web-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
-  IconArrowUp,
-  IconFolderAdd,
   IconPoweroff,
   IconRefresh,
   IconStorage,
-  IconUpload,
 } from "@arco-design/web-react/icon";
 import type { HostRecord, TerminalSession } from "./models";
+import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
 import "./App.css";
-
-interface FileEntry {
-  id: string;
-  name: string;
-  size: string;
-  modifiedAt: string;
-}
 
 interface BrowserConnectionMessage {
   type: "fineshell:host-connect";
@@ -85,12 +72,6 @@ function sessionStatusLabel(session: TerminalSession) {
 }
 
 let hostManagerOpening = false;
-
-const fileColumns: TableColumnProps<FileEntry>[] = [
-  { title: "名称", dataIndex: "name" },
-  { title: "大小", dataIndex: "size", width: 120 },
-  { title: "修改时间", dataIndex: "modifiedAt", width: 180 },
-];
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -310,6 +291,9 @@ function App() {
         void invoke("ssh_disconnect", { sessionId: session.id }).catch(
           () => undefined,
         );
+        void invoke("sftp_disconnect", { sessionId: session.id }).catch(
+          () => undefined,
+        );
       });
     },
     [],
@@ -342,6 +326,7 @@ function App() {
     sessionsRef.current = remaining;
     setSessions(remaining);
     void invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
+    void invoke("sftp_disconnect", { sessionId }).catch(() => undefined);
 
     if (activeSessionId === sessionId) {
       const nextIndex = Math.max(0, currentIndex - 1);
@@ -472,69 +457,7 @@ function App() {
     </section>
   );
 
-  const sftpPanel = (
-    <section className="panel sftp-panel">
-      <div className="panel-toolbar sftp-toolbar">
-        <Space size="mini">
-          <Tooltip content="返回上级目录">
-            <Button
-              aria-label="返回上级目录"
-              disabled={!activeSession}
-              icon={<IconArrowUp />}
-              size="mini"
-            />
-          </Tooltip>
-          <Tooltip content="刷新">
-            <Button
-              aria-label="刷新目录"
-              disabled={!activeSession}
-              icon={<IconRefresh />}
-              size="mini"
-            />
-          </Tooltip>
-        </Space>
-        <Input
-          className="sftp-path"
-          readOnly
-          size="small"
-          value={activeSession ? "/" : "未连接"}
-        />
-        <Space size="mini">
-          <Button
-            disabled={!activeSession}
-            icon={<IconFolderAdd />}
-            size="mini"
-          >
-            新建目录
-          </Button>
-          <Button
-            disabled={!activeSession}
-            icon={<IconUpload />}
-            size="mini"
-            type="primary"
-          >
-            上传
-          </Button>
-        </Space>
-      </div>
-      {activeSession ? (
-        <Table
-          border={false}
-          className="sftp-table"
-          columns={fileColumns}
-          data={[]}
-          noDataElement={<Empty description="等待 SFTP 目录数据" />}
-          pagination={false}
-          rowKey="id"
-          size="small"
-        />
-      ) : (
-        <div className="panel-empty">
-          <Empty description="SFTP 未连接" />
-        </div>
-      )}
-    </section>
-  );
+  const sftpPanel = <SftpPanel session={activeSession} />;
 
   const rightPanels = (
     <ResizeBox.SplitGroup
