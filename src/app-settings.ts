@@ -2,7 +2,6 @@ export type TerminalFontFamily = "system" | "menlo" | "consolas";
 export type TerminalCursorStyle = "block" | "underline" | "bar";
 
 export interface AppSettings {
-  openHostManagerOnStartup: boolean;
   terminalFontFamily: TerminalFontFamily;
   terminalFontSize: number;
   terminalCursorStyle: TerminalCursorStyle;
@@ -18,7 +17,6 @@ export interface AppSettings {
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  openHostManagerOnStartup: true,
   terminalFontFamily: "system",
   terminalFontSize: 13,
   terminalCursorStyle: "block",
@@ -49,7 +47,12 @@ function booleanValue(value: unknown, fallback: boolean) {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function numberValue(value: unknown, fallback: number, min: number, max: number) {
+function numberValue(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+) {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.min(max, Math.max(min, Math.round(value)))
     : fallback;
@@ -58,10 +61,6 @@ function numberValue(value: unknown, fallback: number, min: number, max: number)
 export function sanitizeAppSettings(value: unknown): AppSettings {
   const settings = isRecord(value) ? value : {};
   return {
-    openHostManagerOnStartup: booleanValue(
-      settings.openHostManagerOnStartup,
-      DEFAULT_APP_SETTINGS.openHostManagerOnStartup,
-    ),
     terminalFontFamily:
       settings.terminalFontFamily === "menlo" ||
       settings.terminalFontFamily === "consolas"

@@ -11,14 +11,12 @@ describe("app settings", () => {
       sanitizeAppSettings({
         terminalFontFamily: "comic-sans",
         terminalCursorStyle: "circle",
-        openHostManagerOnStartup: "yes",
       }),
     ).toEqual(DEFAULT_APP_SETTINGS);
   });
 
   test("bounds numeric values and preserves supported preferences", () => {
     const settings = sanitizeAppSettings({
-      openHostManagerOnStartup: false,
       terminalFontFamily: "menlo",
       terminalFontSize: 99,
       terminalCursorStyle: "bar",
@@ -34,7 +32,6 @@ describe("app settings", () => {
     });
 
     expect(settings).toMatchObject({
-      openHostManagerOnStartup: false,
       terminalFontFamily: "menlo",
       terminalFontSize: 24,
       terminalCursorStyle: "bar",

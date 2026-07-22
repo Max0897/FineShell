@@ -14,7 +14,6 @@ import {
 } from "@arco-design/web-react";
 import {
   IconCode,
-  IconCommon,
   IconDashboard,
   IconDelete,
   IconSave,
@@ -32,7 +31,6 @@ import { loadConfiguration, updateAppSettings } from "../config-database";
 import ConfigurationMaintenance from "./ConfigurationMaintenance";
 
 type SettingsSection =
-  | "general"
   | "terminal"
   | "files"
   | "monitor"
@@ -56,7 +54,7 @@ function SettingRow({ control, label }: SettingRowProps) {
 
 function SettingsWindow() {
   const [activeSection, setActiveSection] =
-    useState<SettingsSection>("general");
+    useState<SettingsSection>("terminal");
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [savedSettings, setSavedSettings] =
     useState<AppSettings>(DEFAULT_APP_SETTINGS);
@@ -97,10 +95,7 @@ function SettingsWindow() {
       setSettings(configuration.settings);
       setSavedSettings(configuration.settings);
       if (isTauri()) {
-        await Promise.allSettled([
-          emitTo("main", "settings:changed", configuration.settings),
-          emitTo("host-manager", "settings:changed", configuration.settings),
-        ]);
+        await emitTo("main", "settings:changed", configuration.settings);
       }
       Message.success("设置已保存");
     } catch (error) {
@@ -335,24 +330,7 @@ function SettingsWindow() {
       case "trash":
         return <ConfigurationMaintenance section="trash" />;
       default:
-        return (
-          <>
-            <Typography.Title heading={5}>通用</Typography.Title>
-            <div className="settings-group">
-              <SettingRow
-                control={
-                  <Switch
-                    checked={settings.openHostManagerOnStartup}
-                    onChange={(value) =>
-                      updateSetting("openHostManagerOnStartup", value)
-                    }
-                  />
-                }
-                label="启动时打开主机管理"
-              />
-            </div>
-          </>
-        );
+        return null;
     }
   })();
 
@@ -363,10 +341,6 @@ function SettingsWindow() {
           onClickMenuItem={(key) => setActiveSection(key as SettingsSection)}
           selectedKeys={[activeSection]}
         >
-          <Menu.Item key="general">
-            <IconCommon />
-            通用
-          </Menu.Item>
           <Menu.Item key="terminal">
             <IconCode />
             终端
@@ -413,17 +387,13 @@ function SettingsWindow() {
             </Popconfirm>
             <Space>
               <Button
-                disabled={
-                  loading || appSettingsEqual(settings, savedSettings)
-                }
+                disabled={loading || appSettingsEqual(settings, savedSettings)}
                 onClick={() => setSettings(savedSettings)}
               >
                 撤销更改
               </Button>
               <Button
-                disabled={
-                  loading || appSettingsEqual(settings, savedSettings)
-                }
+                disabled={loading || appSettingsEqual(settings, savedSettings)}
                 loading={saving}
                 onClick={() => void saveSettings()}
                 type="primary"
