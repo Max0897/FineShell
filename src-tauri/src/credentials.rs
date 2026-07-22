@@ -5,6 +5,15 @@ fn password_entry(host_id: &str) -> Result<keyring::Entry, String> {
         .map_err(|error| format!("无法访问系统凭据库：{error}"))
 }
 
+pub(crate) fn get_host_password(host_id: &str) -> Result<String, String> {
+    password_entry(host_id)?
+        .get_password()
+        .map_err(|error| match error {
+            keyring::Error::NoEntry => "未找到该主机的登录密码".to_string(),
+            _ => format!("读取登录密码失败：{error}"),
+        })
+}
+
 #[tauri::command]
 pub(crate) fn store_host_password(host_id: String, password: String) -> Result<(), String> {
     if host_id.trim().is_empty() || password.is_empty() {
