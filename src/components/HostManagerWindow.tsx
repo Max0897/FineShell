@@ -43,11 +43,16 @@ import HostEditorModal from "./HostEditorModal";
 import { normalizeHostForm } from "../host-storage";
 import {
   type ConfigurationBackup,
+  type DeletedHostRecord,
   importConfiguration,
   loadConfiguration,
+  moveHostToTrash,
   parseConfigurationExport,
+  permanentlyDeleteHost,
+  purgeExpiredDeletedHosts,
   replaceConfigurationContent,
   restoreConfigurationBackup,
+  restoreDeletedHost,
   serializeConfigurationExport,
 } from "../config-database";
 
@@ -111,6 +116,7 @@ function HostManagerWindow() {
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [history, setHistory] = useState<ConnectionHistoryRecord[]>([]);
   const [backups, setBackups] = useState<ConfigurationBackup[]>([]);
+  const [trash, setTrash] = useState<DeletedHostRecord[]>([]);
   const [configurationLoading, setConfigurationLoading] = useState(true);
   const [configurationAction, setConfigurationAction] = useState(false);
   const [keyword, setKeyword] = useState("");
@@ -134,12 +140,26 @@ function HostManagerWindow() {
 
   useEffect(() => {
     let disposed = false;
-    void loadConfiguration()
-      .then((configuration) => {
+    void purgeExpiredDeletedHosts()
+      .then(async ({ configuration, expiredHostIds }) => {
         if (disposed) return;
         setHosts(configuration.hosts);
         setHistory(configuration.history);
         setBackups(configuration.backups);
+        setTrash(configuration.trash);
+
+        const cleanup = await Promise.allSettled(
+          expiredHostIds.flatMap((hostId) => [
+            removeHostPassword(hostId),
+            removePrivateKeyPassphrase(hostId),
+          ]),
+        );
+        if (
+          !disposed &&
+          cleanup.some((result) => result.status === "rejected")
+        ) {
+          Message.warning("过期主机已清理，但部分系统凭据删除失败");
+        }
       })
       .catch(() => {
         if (!disposed) Message.error("本地配置读取失败");
@@ -252,6 +272,7 @@ function HostManagerWindow() {
             setHosts(next.hosts);
             setHistory(next.history);
             setBackups(next.backups);
+            setTrash(next.trash);
             Message.success("配置导入完成");
           } catch (error) {
             Message.error(String(error));
@@ -276,6 +297,7 @@ function HostManagerWindow() {
       setHosts(next.hosts);
       setHistory(next.history);
       setBackups(next.backups);
+      setTrash(next.trash);
       Message.success("配置已恢复");
     } catch (error) {
       Message.error(String(error));
@@ -319,23 +341,60 @@ function HostManagerWindow() {
   }
 
   async function deleteHost(host: HostRecord) {
-    const nextHosts = hosts.filter((item) => item.id !== host.id);
+    setConfigurationAction(true);
     try {
-      await replaceConfigurationContent(nextHosts, history);
-      setHosts(nextHosts);
-    } catch {
-      Message.error("主机删除失败");
-      return;
+      const next = await moveHostToTrash(host.id);
+      setHosts(next.hosts);
+      setBackups(next.backups);
+      setTrash(next.trash);
+      Message.success(`已将 ${host.name} 移至回收站`);
+    } catch (error) {
+      Message.error(String(error));
+    } finally {
+      setConfigurationAction(false);
     }
+  }
 
-    const credentialCleanup = await Promise.allSettled([
-      removeHostPassword(host.id),
-      removePrivateKeyPassphrase(host.id),
-    ]);
-    if (credentialCleanup.some((result) => result.status === "rejected")) {
-      Message.warning("主机已删除，但系统凭据清理失败");
+  async function restoreTrashedHost(deletedHost: DeletedHostRecord) {
+    setConfigurationAction(true);
+    try {
+      const next = await restoreDeletedHost(deletedHost.id);
+      setHosts(next.hosts);
+      setTrash(next.trash);
+      Message.success(`已恢复 ${deletedHost.host.name}`);
+    } catch (error) {
+      Message.error(String(error));
+    } finally {
+      setConfigurationAction(false);
     }
-    Message.success(`已删除 ${host.name}`);
+  }
+
+  async function permanentlyDeleteTrashedHost(
+    deletedHost: DeletedHostRecord,
+  ) {
+    setConfigurationAction(true);
+    try {
+      const next = await permanentlyDeleteHost(deletedHost.id);
+      setTrash(next.trash);
+      const hostIdIsActive = next.hosts.some(
+        (host) => host.id === deletedHost.host.id,
+      );
+      const credentialCleanup = hostIdIsActive
+        ? []
+        : await Promise.allSettled([
+            removeHostPassword(deletedHost.host.id),
+            removePrivateKeyPassphrase(deletedHost.host.id),
+          ]);
+      if (credentialCleanup.some((result) => result.status === "rejected")) {
+        Message.warning("主机已永久删除，但部分系统凭据清理失败");
+      } else {
+        Message.success(`已永久删除 ${deletedHost.host.name}`);
+      }
+    } catch (error) {
+      Message.error(String(error));
+    } finally {
+      setConfigurationAction(false);
+    }
   }
 
   async function sendConnection(host: HostRecord) {
@@ -481,6 +540,7 @@ function HostManagerWindow() {
       render: (_, host) => (
         <Space size="mini">
           <Button
+            disabled={configurationAction}
             icon={<IconLink />}
             onClick={() => void sendConnection(host)}
             size="mini"
@@ -490,6 +550,7 @@ function HostManagerWindow() {
           </Button>
           <Button
             aria-label={`编辑 ${host.name}`}
+            disabled={configurationAction}
             icon={<IconEdit />}
             onClick={() => openHostEditor(host)}
             size="mini"
@@ -500,6 +561,7 @@ function HostManagerWindow() {
           >
             <Button
               aria-label={`删除 ${host.name}`}
+              disabled={configurationAction}
               icon={<IconDelete />}
               size="mini"
               status="danger"
@@ -534,6 +596,7 @@ function HostManagerWindow() {
       width: 100,
       render: (_, record) => (
         <Button
+          disabled={configurationAction}
           icon={<IconLink />}
           onClick={() => reconnectFromHistory(record)}
           size="mini"
@@ -570,10 +633,68 @@ function HostManagerWindow() {
           content="恢复后当前配置会自动备份，是否继续？"
           onOk={() => void restoreBackup(backup)}
         >
-          <Button icon={<IconUndo />} size="mini">
+          <Button
+            disabled={configurationAction}
+            icon={<IconUndo />}
+            size="mini"
+          >
             恢复
           </Button>
         </Popconfirm>
+      ),
+    },
+  ];
+
+  const trashColumns: TableColumnProps<DeletedHostRecord>[] = [
+    {
+      title: "主机",
+      render: (_, deletedHost) => (
+        <div className="host-name-cell">
+          <Typography.Text bold>{deletedHost.host.name}</Typography.Text>
+          <Typography.Text type="secondary">
+            {deletedHost.host.username}@{deletedHost.host.address}:
+            {deletedHost.host.port}
+          </Typography.Text>
+        </div>
+      ),
+    },
+    {
+      title: "删除时间",
+      dataIndex: "deletedAt",
+      width: 170,
+      render: (value) => formatTime(value),
+    },
+    {
+      title: "自动清理时间",
+      dataIndex: "expiresAt",
+      width: 170,
+      render: (value) => formatTime(value),
+    },
+    {
+      title: "操作",
+      width: 150,
+      render: (_, deletedHost) => (
+        <Space size="mini">
+          <Button
+            aria-label={`恢复 ${deletedHost.host.name}`}
+            disabled={configurationAction}
+            icon={<IconUndo />}
+            onClick={() => void restoreTrashedHost(deletedHost)}
+            size="mini"
+          />
+          <Popconfirm
+            content={`永久删除“${deletedHost.host.name}”及其系统凭据？`}
+            onOk={() => void permanentlyDeleteTrashedHost(deletedHost)}
+          >
+            <Button
+              aria-label={`永久删除 ${deletedHost.host.name}`}
+              disabled={configurationAction}
+              icon={<IconDelete />}
+              size="mini"
+              status="danger"
+            />
+          </Popconfirm>
+        </Space>
       ),
     },
   ];
@@ -708,6 +829,7 @@ function HostManagerWindow() {
                 <Button
                   disabled={
                     configurationLoading ||
+                    configurationAction ||
                     !quickTarget.address.trim() ||
                     (quickAuthMethod === "password"
                       ? !quickPassword
@@ -752,6 +874,28 @@ function HostManagerWindow() {
               data={backups}
               loading={configurationLoading || configurationAction}
               noDataElement={<Empty description="暂无自动备份" />}
+              pagination={false}
+              rowKey="id"
+              size="small"
+            />
+          </div>
+        </Tabs.TabPane>
+        <Tabs.TabPane
+          key="trash"
+          title={
+            <Space size="mini">
+              <IconDelete />
+              回收站
+            </Space>
+          }
+        >
+          <div className="manager-pane">
+            <Table
+              border={false}
+              columns={trashColumns}
+              data={trash}
+              loading={configurationLoading || configurationAction}
+              noDataElement={<Empty description="回收站为空" />}
               pagination={false}
               rowKey="id"
               size="small"

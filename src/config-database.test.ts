@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  createDeletedHostRecord,
+  isDeletedHostExpired,
   migrateLegacyConfiguration,
   parseConfigurationExport,
   serializeConfigurationExport,
@@ -22,7 +24,7 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(2);
+    expect(configuration.schemaVersion).toBe(3);
     expect(configuration.updatedAt).toBe("2026-07-22T00:00:00.000Z");
     expect(configuration.hosts).toEqual([
       {
@@ -70,6 +72,42 @@ describe("migrateLegacyConfiguration", () => {
 
     expect(configuration.hosts).toEqual([]);
     expect(configuration.history).toEqual([]);
+  });
+});
+
+describe("deleted host retention", () => {
+  const host = {
+    id: "host-1",
+    name: "Server",
+    address: "server.example.com",
+    port: 22,
+    username: "root",
+    authMethod: "password" as const,
+    connectTimeoutSeconds: 10,
+    keepAliveIntervalSeconds: 15,
+    autoReconnect: true,
+    maxReconnectAttempts: 3,
+  };
+
+  test("keeps deleted hosts recoverable for thirty days", () => {
+    const deletedHost = createDeletedHostRecord(
+      host,
+      new Date("2026-07-01T00:00:00.000Z"),
+    );
+
+    expect(deletedHost.expiresAt).toBe("2026-07-31T00:00:00.000Z");
+    expect(
+      isDeletedHostExpired(
+        deletedHost,
+        new Date("2026-07-30T23:59:59.999Z"),
+      ),
+    ).toBe(false);
+    expect(
+      isDeletedHostExpired(
+        deletedHost,
+        new Date("2026-07-31T00:00:00.000Z"),
+      ),
+    ).toBe(true);
   });
 });
 

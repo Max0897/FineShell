@@ -8,9 +8,10 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 2;
+export const CONFIGURATION_SCHEMA_VERSION = 3;
 export const CONFIGURATION_EXPORT_VERSION = 1;
 export const MAX_CONFIGURATION_BACKUPS = 10;
+export const TRASH_RETENTION_DAYS = 30;
 
 export interface ConfigurationBackup {
   id: string;
@@ -20,12 +21,20 @@ export interface ConfigurationBackup {
   history: ConnectionHistoryRecord[];
 }
 
+export interface DeletedHostRecord {
+  id: string;
+  host: HostRecord;
+  deletedAt: string;
+  expiresAt: string;
+}
+
 export interface FineShellConfiguration {
   id: typeof CONFIGURATION_ID;
   schemaVersion: typeof CONFIGURATION_SCHEMA_VERSION;
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
   backups: ConfigurationBackup[];
+  trash: DeletedHostRecord[];
   updatedAt: string;
 }
 
@@ -148,6 +157,27 @@ function sanitizeBackup(value: unknown): ConfigurationBackup | undefined {
   };
 }
 
+function sanitizeDeletedHost(value: unknown): DeletedHostRecord | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const id = stringValue(value.id);
+  const host = sanitizeHost(value.host);
+  const deletedAt = stringValue(value.deletedAt);
+  const expiresAt = stringValue(value.expiresAt);
+  if (
+    !id ||
+    !host ||
+    !deletedAt ||
+    !expiresAt ||
+    !Number.isFinite(Date.parse(deletedAt)) ||
+    !Number.isFinite(Date.parse(expiresAt))
+  ) {
+    return undefined;
+  }
+
+  return { id, host, deletedAt, expiresAt };
+}
+
 function sanitizeList<T>(
   value: unknown,
   sanitize: (item: unknown) => T | undefined,
@@ -183,6 +213,7 @@ export function migrateLegacyConfiguration(
       sanitizeHistoryRecord,
     ).slice(0, 50),
     backups: [],
+    trash: [],
     updatedAt: now,
   };
 }
@@ -205,6 +236,7 @@ function normalizeConfiguration(value: unknown): FineShellConfiguration {
       0,
       MAX_CONFIGURATION_BACKUPS,
     ),
+    trash: sanitizeList(value.trash, sanitizeDeletedHost),
     updatedAt: stringValue(value.updatedAt) ?? new Date().toISOString(),
   };
 }
@@ -442,4 +474,87 @@ export function restoreConfigurationBackup(backupId: string) {
       ].slice(0, MAX_CONFIGURATION_BACKUPS),
     };
   });
+}
+
+export function createDeletedHostRecord(
+  host: HostRecord,
+  now = new Date(),
+): DeletedHostRecord {
+  const deletedAt = now.toISOString();
+  const expiresAt = new Date(
+    now.getTime() + TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  return {
+    id: `trash-${host.id}-${now.getTime()}`,
+    host,
+    deletedAt,
+    expiresAt,
+  };
+}
+
+export function isDeletedHostExpired(
+  deletedHost: Pick<DeletedHostRecord, "expiresAt">,
+  now = new Date(),
+) {
+  return Date.parse(deletedHost.expiresAt) <= now.getTime();
+}
+
+export function moveHostToTrash(hostId: string) {
+  return updateConfiguration((current) => {
+    const host = current.hosts.find((item) => item.id === hostId);
+    if (!host) throw new Error("主机不存在或已被删除");
+
+    return {
+      ...current,
+      hosts: current.hosts.filter((item) => item.id !== hostId),
+      backups: [
+        createBackup(current, "删除主机前自动备份"),
+        ...current.backups,
+      ].slice(0, MAX_CONFIGURATION_BACKUPS),
+      trash: [
+        createDeletedHostRecord(host),
+        ...current.trash.filter((item) => item.host.id !== hostId),
+      ],
+    };
+  });
+}
+
+export function restoreDeletedHost(deletedHostId: string) {
+  return updateConfiguration((current) => {
+    const deletedHost = current.trash.find(
+      (item) => item.id === deletedHostId,
+    );
+    if (!deletedHost) throw new Error("回收站记录不存在或已过期");
+    if (current.hosts.some((item) => item.id === deletedHost.host.id)) {
+      throw new Error("当前主机列表中已存在同一主机，无法恢复");
+    }
+
+    return {
+      ...current,
+      hosts: [...current.hosts, deletedHost.host],
+      trash: current.trash.filter((item) => item.id !== deletedHostId),
+    };
+  });
+}
+
+export function permanentlyDeleteHost(deletedHostId: string) {
+  return updateConfiguration((current) => ({
+    ...current,
+    trash: current.trash.filter((item) => item.id !== deletedHostId),
+  }));
+}
+
+export async function purgeExpiredDeletedHosts(now = new Date()) {
+  const expiredHostIds: string[] = [];
+  const configuration = await updateConfiguration((current) => ({
+    ...current,
+    trash: current.trash.filter((item) => {
+      if (!isDeletedHostExpired(item, now)) return true;
+      if (!current.hosts.some((host) => host.id === item.host.id)) {
+        expiredHostIds.push(item.host.id);
+      }
+      return false;
+    }),
+  }));
+  return { configuration, expiredHostIds };
 }
