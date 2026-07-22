@@ -70,6 +70,11 @@ import {
   serializeConfigurationExport,
   updateHostSortMode,
 } from "../config-database";
+import {
+  DEFAULT_APP_SETTINGS,
+  sanitizeAppSettings,
+  type AppSettings,
+} from "../app-settings";
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -133,6 +138,8 @@ function HostManagerWindow() {
   const [backups, setBackups] = useState<ConfigurationBackup[]>([]);
   const [trash, setTrash] = useState<DeletedHostRecord[]>([]);
   const [hostSort, setHostSort] = useState<HostSortMode>("manual");
+  const [appSettings, setAppSettings] =
+    useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [configurationLoading, setConfigurationLoading] = useState(true);
   const [configurationAction, setConfigurationAction] = useState(false);
   const [keyword, setKeyword] = useState("");
@@ -168,6 +175,7 @@ function HostManagerWindow() {
         setBackups(configuration.backups);
         setTrash(configuration.trash);
         setHostSort(configuration.hostSort);
+        setAppSettings(configuration.settings);
 
         const cleanup = await Promise.allSettled(
           expiredHostIds.flatMap((hostId) => [
@@ -191,6 +199,25 @@ function HostManagerWindow() {
 
     return () => {
       disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<AppSettings>("settings:changed", ({ payload }) => {
+      setAppSettings(sanitizeAppSettings(payload));
+    }).then((stopListening) => {
+      if (disposed) {
+        stopListening();
+      } else {
+        unlisten = stopListening;
+      }
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
     };
   }, []);
 
@@ -351,6 +378,10 @@ function HostManagerWindow() {
             setBackups(next.backups);
             setTrash(next.trash);
             setHostSort(next.hostSort);
+            setAppSettings(next.settings);
+            if (isTauri()) {
+              await emitTo("main", "settings:changed", next.settings);
+            }
             Message.success("配置导入完成");
           } catch (error) {
             Message.error(String(error));
@@ -574,10 +605,11 @@ function HostManagerWindow() {
         quickAuthMethod === "privateKey"
           ? quickPrivateKeyPath.trim()
           : undefined,
-      connectTimeoutSeconds: 10,
-      keepAliveIntervalSeconds: 15,
-      autoReconnect: true,
-      maxReconnectAttempts: 3,
+      connectTimeoutSeconds: appSettings.defaultConnectTimeoutSeconds,
+      keepAliveIntervalSeconds:
+        appSettings.defaultKeepAliveIntervalSeconds,
+      autoReconnect: appSettings.defaultAutoReconnect,
+      maxReconnectAttempts: appSettings.defaultMaxReconnectAttempts,
       ...normalized,
     };
 
@@ -609,10 +641,15 @@ function HostManagerWindow() {
         authMethod: record.authMethod ?? "password",
         privateKeyPath: record.privateKeyPath,
         hostFingerprint: record.hostFingerprint,
-        connectTimeoutSeconds: 10,
-        keepAliveIntervalSeconds: record.keepAliveIntervalSeconds ?? 15,
-        autoReconnect: record.autoReconnect ?? true,
-        maxReconnectAttempts: record.maxReconnectAttempts ?? 3,
+        connectTimeoutSeconds: appSettings.defaultConnectTimeoutSeconds,
+        keepAliveIntervalSeconds:
+          record.keepAliveIntervalSeconds ??
+          appSettings.defaultKeepAliveIntervalSeconds,
+        autoReconnect:
+          record.autoReconnect ?? appSettings.defaultAutoReconnect,
+        maxReconnectAttempts:
+          record.maxReconnectAttempts ??
+          appSettings.defaultMaxReconnectAttempts,
       },
     );
   }
@@ -1062,6 +1099,7 @@ function HostManagerWindow() {
 
       {editorVisible && (
         <HostEditorModal
+          connectionDefaults={appSettings}
           host={editingHost}
           onCancel={() => {
             setEditorVisible(false);

@@ -12,8 +12,18 @@ import {
 } from "@arco-design/web-react";
 import { IconFolder } from "@arco-design/web-react/icon";
 import type { HostFormValues, HostRecord } from "../models";
+import type { AppSettings } from "../app-settings";
+
+type ConnectionDefaults = Pick<
+  AppSettings,
+  | "defaultConnectTimeoutSeconds"
+  | "defaultKeepAliveIntervalSeconds"
+  | "defaultAutoReconnect"
+  | "defaultMaxReconnectAttempts"
+>;
 
 interface HostEditorModalProps {
+  connectionDefaults: ConnectionDefaults;
   host: HostRecord | null;
   visible: boolean;
   onCancel: () => void;
@@ -22,6 +32,7 @@ interface HostEditorModalProps {
 }
 
 function HostEditorModal({
+  connectionDefaults,
   host,
   visible,
   onCancel,
@@ -57,10 +68,12 @@ function HostEditorModal({
         authMethod: "password",
         privateKeyPath: "",
         privateKeyPassphrase: "",
-        connectTimeoutSeconds: 10,
-        keepAliveIntervalSeconds: 15,
-        autoReconnect: true,
-        maxReconnectAttempts: 3,
+        connectTimeoutSeconds: connectionDefaults.defaultConnectTimeoutSeconds,
+        keepAliveIntervalSeconds:
+          connectionDefaults.defaultKeepAliveIntervalSeconds,
+        autoReconnect: connectionDefaults.defaultAutoReconnect,
+        maxReconnectAttempts:
+          connectionDefaults.defaultMaxReconnectAttempts,
         password: "",
         group: "",
         hostFingerprint: "",

@@ -5,10 +5,15 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import type { TerminalSession } from "../models";
+import {
+  TERMINAL_FONT_FAMILIES,
+  type AppSettings,
+} from "../app-settings";
 import { decodeSshOutput } from "../terminal-utils";
 
 interface TerminalViewProps {
   active: boolean;
+  settings: AppSettings;
   session: TerminalSession;
 }
 
@@ -17,7 +22,7 @@ interface SshOutputPayload {
   data: string;
 }
 
-function TerminalView({ active, session }: TerminalViewProps) {
+function TerminalView({ active, settings, session }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -34,12 +39,12 @@ function TerminalView({ active, session }: TerminalViewProps) {
     const terminal = new Terminal({
       allowProposedApi: false,
       convertEol: false,
-      cursorBlink: true,
-      cursorStyle: "block",
-      fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-      fontSize: 13,
+      cursorBlink: settings.terminalCursorBlink,
+      cursorStyle: settings.terminalCursorStyle,
+      fontFamily: TERMINAL_FONT_FAMILIES[settings.terminalFontFamily],
+      fontSize: settings.terminalFontSize,
       lineHeight: 1.2,
-      scrollback: 5000,
+      scrollback: settings.terminalScrollback,
       theme: {
         background: "#191b20",
         foreground: "#d7dae0",
@@ -105,6 +110,32 @@ function TerminalView({ active, session }: TerminalViewProps) {
       fitAddonRef.current = null;
     };
   }, [session.id]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) return;
+
+    terminal.options.cursorBlink = settings.terminalCursorBlink;
+    terminal.options.cursorStyle = settings.terminalCursorStyle;
+    terminal.options.fontFamily =
+      TERMINAL_FONT_FAMILIES[settings.terminalFontFamily];
+    terminal.options.fontSize = settings.terminalFontSize;
+    terminal.options.scrollback = settings.terminalScrollback;
+    requestAnimationFrame(() => {
+      try {
+        fitAddon.fit();
+      } catch {
+        // The terminal can be hidden while another tab is active.
+      }
+    });
+  }, [
+    settings.terminalCursorBlink,
+    settings.terminalCursorStyle,
+    settings.terminalFontFamily,
+    settings.terminalFontSize,
+    settings.terminalScrollback,
+  ]);
 
   useEffect(() => {
     if (!active) return;

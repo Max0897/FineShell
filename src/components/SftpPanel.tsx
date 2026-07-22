@@ -59,7 +59,9 @@ interface BrowserState {
 }
 
 interface SftpPanelProps {
+  confirmFileDelete: boolean;
   session: TerminalSession | null;
+  showHiddenFiles: boolean;
 }
 
 interface SftpTransferPayload {
@@ -129,7 +131,11 @@ function isSftpSessionFailure(message: string) {
   );
 }
 
-function SftpPanel({ session }: SftpPanelProps) {
+function SftpPanel({
+  confirmFileDelete,
+  session,
+  showHiddenFiles,
+}: SftpPanelProps) {
   const [browsers, setBrowsers] = useState<Record<string, BrowserState>>({});
   const [transfers, setTransfers] = useState<Record<string, TransferRecord>>(
     {},
@@ -324,6 +330,13 @@ function SftpPanel({ session }: SftpPanelProps) {
         .reverse(),
     [session?.id, transfers],
   );
+  const visibleEntries = useMemo(
+    () =>
+      (browser?.entries ?? []).filter(
+        (entry) => showHiddenFiles || !entry.name.startsWith("."),
+      ),
+    [browser?.entries, showHiddenFiles],
+  );
 
   const columns = useMemo<TableColumnProps<SftpEntry>[]>(
     () => [
@@ -381,25 +394,38 @@ function SftpPanel({ session }: SftpPanelProps) {
                 size="mini"
               />
             </Tooltip>
-            <Popconfirm
-              content={`删除“${entry.name}”？${entry.kind === "directory" ? "目录必须为空。" : ""}`}
-              onOk={() => deleteEntry(entry)}
-            >
+            {confirmFileDelete ? (
+              <Popconfirm
+                content={`删除“${entry.name}”？${entry.kind === "directory" ? "目录必须为空。" : ""}`}
+                onOk={() => deleteEntry(entry)}
+              >
+                <Tooltip content="删除">
+                  <Button
+                    aria-label={`删除 ${entry.name}`}
+                    disabled={!ready}
+                    icon={<IconDelete />}
+                    size="mini"
+                    status="danger"
+                  />
+                </Tooltip>
+              </Popconfirm>
+            ) : (
               <Tooltip content="删除">
                 <Button
                   aria-label={`删除 ${entry.name}`}
                   disabled={!ready}
                   icon={<IconDelete />}
+                  onClick={() => void deleteEntry(entry).catch(() => undefined)}
                   size="mini"
                   status="danger"
                 />
               </Tooltip>
-            </Popconfirm>
+            )}
           </Space>
         ),
       },
     ],
-    [ready, session, browser],
+    [browser, confirmFileDelete, ready, session],
   );
 
   async function runTransfer(
@@ -741,7 +767,7 @@ function SftpPanel({ session }: SftpPanelProps) {
             className="sftp-table"
             columns={columns}
             components={SFTP_TABLE_COMPONENTS}
-            data={browser?.entries ?? []}
+            data={visibleEntries}
             loading={busy}
             noDataElement={<Empty description="目录为空" />}
             onRow={(entry) => ({

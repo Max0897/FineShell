@@ -27,7 +27,15 @@ import type { HostRecord, TerminalSession } from "./models";
 import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
 import { withHostDefaults } from "./host-storage";
-import { updateStoredHostFingerprint } from "./config-database";
+import {
+  loadConfiguration,
+  updateStoredHostFingerprint,
+} from "./config-database";
+import {
+  DEFAULT_APP_SETTINGS,
+  sanitizeAppSettings,
+  type AppSettings,
+} from "./app-settings";
 import { reconnectDelaySeconds } from "./terminal-utils";
 import "./App.css";
 
@@ -193,6 +201,8 @@ async function openHostManager(tab: "hosts" | "history" = "hosts") {
 function App() {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const sessionsRef = useRef<TerminalSession[]>([]);
   const reconnectTimersRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
@@ -468,8 +478,50 @@ function App() {
   }, [openSession]);
 
   useEffect(() => {
-    if (isTauri()) void openHostManager();
+    let disposed = false;
+    void loadConfiguration()
+      .then((configuration) => {
+        if (!disposed) setSettings(configuration.settings);
+      })
+      .catch(() => {
+        if (!disposed) Message.warning("设置读取失败，已使用默认值");
+      })
+      .finally(() => {
+        if (!disposed) setSettingsLoaded(true);
+      });
+    return () => {
+      disposed = true;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<AppSettings>("settings:changed", ({ payload }) => {
+      setSettings(sanitizeAppSettings(payload));
+    }).then((stopListening) => {
+      if (disposed) {
+        stopListening();
+      } else {
+        unlisten = stopListening;
+      }
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      isTauri() &&
+      settingsLoaded &&
+      settings.openHostManagerOnStartup
+    ) {
+      void openHostManager();
+    }
+  }, [settingsLoaded]);
 
   const activeSession =
     sessions.find((session) => session.id === activeSessionId) ?? null;
@@ -504,7 +556,10 @@ function App() {
               </div>
             }
           >
-            <ServerMonitorPanel session={activeSession} />
+            <ServerMonitorPanel
+              refreshIntervalSeconds={settings.monitorRefreshIntervalSeconds}
+              session={activeSession}
+            />
           </Suspense>
           {(activeSession.status === "failed" ||
             activeSession.status === "disconnected") && (
@@ -565,6 +620,7 @@ function App() {
           >
             <TerminalView
               active={session.id === activeSessionId}
+              settings={settings}
               session={session}
             />
           </Tabs.TabPane>
@@ -578,7 +634,13 @@ function App() {
     </section>
   );
 
-  const sftpPanel = <SftpPanel session={activeSession} />;
+  const sftpPanel = (
+    <SftpPanel
+      confirmFileDelete={settings.confirmFileDelete}
+      session={activeSession}
+      showHiddenFiles={settings.showHiddenFiles}
+    />
+  );
 
   const rightPanels = (
     <ResizeBox.SplitGroup

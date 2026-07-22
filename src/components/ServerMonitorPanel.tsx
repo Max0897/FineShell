@@ -47,10 +47,9 @@ import {
 import ServerProcessDrawer from "./ServerProcessDrawer";
 
 interface ServerMonitorPanelProps {
+  refreshIntervalSeconds: number;
   session: TerminalSession;
 }
-
-const POLL_INTERVAL_MS = 5_000;
 
 function enforcePercentTooltipContent(content?: ITooltipLineActual[]) {
   return content?.map((line) => {
@@ -113,7 +112,10 @@ function tooltipRate(datum?: Record<string, unknown>) {
   return formatMonitorRate(Number(datum?.value));
 }
 
-function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
+function ServerMonitorPanel({
+  refreshIntervalSeconds,
+  session,
+}: ServerMonitorPanelProps) {
   const [snapshot, setSnapshot] = useState<ServerMonitorSnapshot | null>(null);
   const [history, setHistory] = useState<ServerMonitorHistoryPoint[]>([]);
   const [loading, setLoading] = useState(false);
@@ -170,7 +172,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
       } finally {
         if (!disposed) {
           setLoading(false);
-          timer = setTimeout(collect, POLL_INTERVAL_MS);
+          timer = setTimeout(collect, refreshIntervalSeconds * 1_000);
         }
       }
     };
@@ -180,7 +182,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
       disposed = true;
       if (timer) clearTimeout(timer);
     };
-  }, [session.id, session.status]);
+  }, [refreshIntervalSeconds, session.id, session.status]);
 
   const runPing = async (target = pingTarget) => {
     const nextTarget = target.trim();
