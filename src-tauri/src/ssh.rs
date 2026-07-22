@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender, TryRecvError},
+        mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
         Arc, Mutex,
     },
     thread,
@@ -18,6 +18,7 @@ use ssh2::{Channel, HashType, Session};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::credentials;
+use crate::monitor::{self, ServerMonitorSnapshot};
 
 const SSH_OUTPUT_EVENT: &str = "ssh-output";
 const SSH_STATUS_EVENT: &str = "ssh-status";
@@ -99,6 +100,7 @@ struct SshStatusPayload {
 enum SessionCommand {
     Write(Vec<u8>),
     Resize { cols: u32, rows: u32 },
+    Monitor(SyncSender<Result<ServerMonitorSnapshot, String>>),
     Close,
 }
 
@@ -434,6 +436,10 @@ fn run_session(
                 Ok(SessionCommand::Resize { cols, rows }) => {
                     pending_resize = Some((cols, rows));
                 }
+                Ok(SessionCommand::Monitor(response)) => {
+                    let _ = response.send(monitor::collect_server_snapshot(&session));
+                    active = true;
+                }
                 Ok(SessionCommand::Close) | Err(TryRecvError::Disconnected) => {
                     closing = true;
                     break;
@@ -658,6 +664,22 @@ pub(crate) fn ssh_resize(
             rows: rows.max(1),
         },
     )
+}
+
+#[tauri::command]
+pub(crate) async fn ssh_monitor_snapshot(
+    manager: State<'_, SshSessionManager>,
+    session_id: String,
+) -> Result<ServerMonitorSnapshot, String> {
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    manager.send(&session_id, SessionCommand::Monitor(response_sender))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        response_receiver
+            .recv_timeout(Duration::from_secs(15))
+            .map_err(|error| format!("等待服务器监控数据失败：{error}"))?
+    })
+    .await
+    .map_err(|error| format!("服务器监控任务异常结束：{error}"))?
 }
 
 #[tauri::command]

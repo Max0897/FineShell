@@ -1,5 +1,6 @@
 mod config_files;
 mod credentials;
+mod monitor;
 mod sftp;
 mod ssh;
 
@@ -21,6 +22,7 @@ pub fn run() {
             ssh::ssh_connect,
             ssh::ssh_write,
             ssh::ssh_resize,
+            ssh::ssh_monitor_snapshot,
             ssh::ssh_disconnect,
             sftp::sftp_connect,
             sftp::sftp_list,
