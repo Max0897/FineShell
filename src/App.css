@@ -10,6 +10,37 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-color: #c9cdd4 transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: #c9cdd4;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #86909c;
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: #4e5969;
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .app-shell,
@@ -343,6 +374,23 @@ body,
 .terminal-view .xterm-viewport {
   scrollbar-color: #4e5969 #191b20;
   scrollbar-width: thin;
+}
+
+.terminal-view .xterm-viewport::-webkit-scrollbar-track,
+.terminal-view .xterm-viewport::-webkit-scrollbar-corner {
+  background: #191b20;
+}
+
+.terminal-view .xterm-viewport::-webkit-scrollbar-thumb {
+  background: #4e5969;
+}
+
+.terminal-view .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: #6b7785;
+}
+
+.terminal-view .xterm-viewport::-webkit-scrollbar-thumb:active {
+  background: #86909c;
 }
 
 .sftp-toolbar {
