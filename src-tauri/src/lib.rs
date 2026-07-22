@@ -15,7 +15,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init());
 
     #[cfg(desktop)]
-    let builder = builder.menu(native_menu::build_chinese_menu);
+    let builder = builder
+        .menu(native_menu::build_chinese_menu)
+        .on_menu_event(native_menu::handle_menu_event);
 
     builder
         .invoke_handler(tauri::generate_handler![

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the application windows",
-  "windows": ["main", "host-manager"],
+  "windows": ["main", "host-manager", "settings"],
   "permissions": [
     "core:default",
     "core:webview:allow-create-webview-window",

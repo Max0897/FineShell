@@ -1,7 +1,41 @@
 use tauri::{
-    menu::{AboutMetadata, Menu, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID},
-    AppHandle, Runtime,
+    menu::{
+        AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
+        HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
+    },
+    AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder,
 };
+
+const SETTINGS_MENU_ID: &str = "settings";
+
+pub fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
+    if event.id() != SETTINGS_MENU_ID {
+        return;
+    }
+
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
+    }
+
+    let result = WebviewWindowBuilder::new(
+        app,
+        "settings",
+        WebviewUrl::App("index.html?view=settings".into()),
+    )
+    .title("设置")
+    .inner_size(860.0, 620.0)
+    .min_inner_size(720.0, 520.0)
+    .resizable(true)
+    .focused(true)
+    .center()
+    .build();
+
+    if let Err(error) = result {
+        eprintln!("无法打开设置窗口: {error}");
+    }
+}
 
 pub fn build_chinese_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let package = app.package_info();
@@ -58,6 +92,14 @@ pub fn build_chinese_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<
                         Some(about_metadata.clone()),
                     )?,
                     &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(
+                        app,
+                        SETTINGS_MENU_ID,
+                        "设置…",
+                        true,
+                        Some("CmdOrCtrl+,"),
+                    )?,
+                    &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::services(app, Some("服务"))?,
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::hide(app, Some("隐藏 FineShell"))?,
@@ -89,6 +131,16 @@ pub fn build_chinese_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<
                 "编辑",
                 true,
                 &[
+                    #[cfg(not(target_os = "macos"))]
+                    &MenuItem::with_id(
+                        app,
+                        SETTINGS_MENU_ID,
+                        "设置…",
+                        true,
+                        Some("CmdOrCtrl+,"),
+                    )?,
+                    #[cfg(not(target_os = "macos"))]
+                    &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::undo(app, Some("撤销"))?,
                     &PredefinedMenuItem::redo(app, Some("重做"))?,
                     &PredefinedMenuItem::separator(app)?,
