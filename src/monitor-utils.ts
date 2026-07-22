@@ -75,6 +75,16 @@ export function formatMonitorPercent(value: number) {
   return `${Math.round(value)}%`;
 }
 
+export function normalizeMonitorPercent(value: unknown) {
+  if (typeof value === "string" && value.trim().endsWith("%")) {
+    return value;
+  }
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue)
+    ? formatMonitorPercent(numericValue)
+    : undefined;
+}
+
 export function formatUptime(seconds: number) {
   const wholeSeconds = Math.max(0, Math.floor(seconds));
   const days = Math.floor(wholeSeconds / 86_400);

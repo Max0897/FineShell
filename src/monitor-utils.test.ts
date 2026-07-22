@@ -8,6 +8,7 @@ import {
   formatMonitorRate,
   formatNetworkEndpoint,
   formatUptime,
+  normalizeMonitorPercent,
 } from "./monitor-utils";
 
 const snapshot: ServerMonitorSnapshot = {
@@ -33,6 +34,10 @@ describe("server monitor display helpers", () => {
     expect(formatMonitorBytes(8 * 1024 ** 3)).toBe("8.0 GB");
     expect(formatMonitorPercent(49.876)).toBe("50%");
     expect(formatMonitorPercent(Number.NaN)).toBe("0%");
+    expect(normalizeMonitorPercent(49.876)).toBe("50%");
+    expect(normalizeMonitorPercent("50")).toBe("50%");
+    expect(normalizeMonitorPercent("50%")).toBe("50%");
+    expect(normalizeMonitorPercent({ value: 50 })).toBeUndefined();
     expect(formatMonitorRate(1536)).toBe("1.5 KB/s");
     expect(formatLatency(5.123)).toBe("5.12 ms");
     expect(formatLatency(15.123)).toBe("15.1 ms");

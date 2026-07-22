@@ -21,6 +21,7 @@ import {
   IconWifi,
 } from "@arco-design/web-react/icon";
 import { invoke } from "@tauri-apps/api/core";
+import type { ITooltipLineActual } from "@visactor/vchart";
 import { AreaChart, BarChart } from "@visactor/react-vchart";
 import type {
   ServerMonitorHistoryPoint,
@@ -39,6 +40,7 @@ import {
   formatMonitorRate,
   formatNetworkEndpoint,
   formatUptime,
+  normalizeMonitorPercent,
 } from "../monitor-utils";
 
 interface ServerMonitorPanelProps {
@@ -47,11 +49,25 @@ interface ServerMonitorPanelProps {
 
 const POLL_INTERVAL_MS = 5_000;
 
+function enforcePercentTooltipContent(content?: ITooltipLineActual[]) {
+  return content?.map((line) => {
+    const value = normalizeMonitorPercent(line.value as unknown);
+    if (value === undefined || value === line.value) {
+      return line;
+    }
+    return {
+      ...line,
+      value,
+    };
+  });
+}
+
 const PERCENT_MARK_TOOLTIP = {
   mark: {
     content: [
       { key: { field: "metric" }, value: { field: "displayValue" } },
     ],
+    updateContent: enforcePercentTooltipContent,
   },
 };
 
@@ -60,6 +76,7 @@ const PERCENT_TREND_TOOLTIP = {
     content: [
       { key: { field: "metric" }, value: { field: "displayValue" } },
     ],
+    updateContent: enforcePercentTooltipContent,
   },
   mark: PERCENT_MARK_TOOLTIP.mark,
 };
