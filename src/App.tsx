@@ -44,6 +44,46 @@ interface SshConnectResult {
   fingerprint: string;
 }
 
+interface SshStatusPayload {
+  sessionId: string;
+  status: "disconnected";
+  error?: string;
+}
+
+const HOSTS_STORAGE_KEY = "fineshell.hosts";
+
+function persistHostFingerprint(hostId: string, fingerprint: string) {
+  if (hostId.startsWith("quick-")) return;
+
+  try {
+    const hosts = JSON.parse(localStorage.getItem(HOSTS_STORAGE_KEY) ?? "[]");
+    if (!Array.isArray(hosts)) return;
+    localStorage.setItem(
+      HOSTS_STORAGE_KEY,
+      JSON.stringify(
+        hosts.map((host) =>
+          host?.id === hostId ? { ...host, hostFingerprint: fingerprint } : host,
+        ),
+      ),
+    );
+  } catch {
+    // A malformed local cache must not interrupt an active SSH connection.
+  }
+}
+
+function sessionStatusLabel(session: TerminalSession) {
+  const labels = {
+    connecting: "连接中",
+    connected: "已连接",
+    failed: "连接失败",
+    disconnected: "已断开",
+    reconnecting: "重连中",
+  };
+  return session.error
+    ? `${labels[session.status]}：${session.error}`
+    : labels[session.status];
+}
+
 let hostManagerOpening = false;
 
 const fileColumns: TableColumnProps<FileEntry>[] = [
@@ -167,7 +207,13 @@ function App() {
         updateSession(session.id, {
           status: "connected",
           fingerprint: result.fingerprint,
+          error: undefined,
+          host: {
+            ...session.host,
+            hostFingerprint: result.fingerprint,
+          },
         });
+        persistHostFingerprint(session.host.id, result.fingerprint);
       } catch (error) {
         updateSession(session.id, {
           status: "failed",
@@ -201,6 +247,18 @@ function App() {
     void connectSession(session);
   }, [connectSession]);
 
+  const reconnectSession = useCallback(
+    (session: TerminalSession) => {
+      updateSession(session.id, { status: "reconnecting", error: undefined });
+      void connectSession({
+        ...session,
+        status: "reconnecting",
+        error: undefined,
+      });
+    },
+    [connectSession, updateSession],
+  );
+
   useEffect(() => {
     if (!isTauri()) return;
 
@@ -223,6 +281,41 @@ function App() {
   }, [openSession]);
 
   useEffect(() => {
+    if (!isTauri()) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<SshStatusPayload>("ssh-status", ({ payload }) => {
+      updateSession(payload.sessionId, {
+        status: payload.status,
+        error: payload.error,
+      });
+    }).then((stopListening) => {
+      if (disposed) {
+        stopListening();
+      } else {
+        unlisten = stopListening;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [updateSession]);
+
+  useEffect(
+    () => () => {
+      sessionsRef.current.forEach((session) => {
+        void invoke("ssh_disconnect", { sessionId: session.id }).catch(
+          () => undefined,
+        );
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
     function handleWindowMessage(event: MessageEvent<unknown>) {
       if (event.origin !== window.location.origin) return;
       if (isBrowserConnectionMessage(event.data)) {
@@ -240,7 +333,6 @@ function App() {
 
   const activeSession =
     sessions.find((session) => session.id === activeSessionId) ?? null;
-  const activeHost = activeSession?.host ?? null;
 
   function closeSession(sessionId: string) {
     const currentIndex = sessions.findIndex(
@@ -270,13 +362,15 @@ function App() {
           />
         </Tooltip>
       </div>
-      {activeHost ? (
+      {activeSession ? (
         <div className="server-info-content">
           <div className="server-title-row">
             <div>
-              <Typography.Title heading={6}>{activeHost.name}</Typography.Title>
+              <Typography.Title heading={6}>
+                {activeSession.host.name}
+              </Typography.Title>
               <Typography.Text type="secondary">
-                {activeHost.address}
+                {activeSession.host.address}
               </Typography.Text>
             </div>
           </div>
@@ -284,9 +378,13 @@ function App() {
             column={1}
             data={[
               { label: "协议", value: "SSH" },
-              { label: "用户名", value: activeHost.username },
-              { label: "端口", value: activeHost.port },
-              { label: "分组", value: activeHost.group || "未分组" },
+              { label: "状态", value: sessionStatusLabel(activeSession) },
+              { label: "用户名", value: activeSession.host.username },
+              { label: "端口", value: activeSession.host.port },
+              {
+                label: "分组",
+                value: activeSession.host.group || "未分组",
+              },
               {
                 label: "打开时间",
                 value: formatTime(activeSession?.openedAt),
@@ -296,6 +394,15 @@ function App() {
             size="small"
           />
           <div className="server-actions">
+            {(activeSession.status === "failed" ||
+              activeSession.status === "disconnected") && (
+              <Button
+                icon={<IconRefresh />}
+                onClick={() => reconnectSession(activeSession)}
+              >
+                重新连接
+              </Button>
+            )}
             <Button
               icon={<IconPoweroff />}
               onClick={() => activeSession && closeSession(activeSession.id)}
@@ -339,7 +446,16 @@ function App() {
           <Tabs.TabPane
             closable
             key={session.id}
-            title={session.host.name}
+            title={
+              <Tooltip content={sessionStatusLabel(session)}>
+                <span className="terminal-tab-title">
+                  <span
+                    className={`terminal-status-dot terminal-status-${session.status}`}
+                  />
+                  <span className="terminal-tab-name">{session.host.name}</span>
+                </span>
+              </Tooltip>
+            }
           >
             <TerminalView
               active={session.id === activeSessionId}

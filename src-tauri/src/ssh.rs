@@ -3,6 +3,7 @@ use std::{
     io::{self, Read, Write},
     net::{TcpStream, ToSocketAddrs},
     sync::{
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender, TryRecvError},
         Arc, Mutex,
     },
@@ -61,42 +62,81 @@ enum SessionCommand {
     Close,
 }
 
+#[derive(Clone)]
+enum SessionHandle {
+    Connecting(Arc<AtomicBool>),
+    Connected(Sender<SessionCommand>),
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct SshSessionManager {
-    sessions: Arc<Mutex<HashMap<String, Sender<SessionCommand>>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionHandle>>>,
 }
 
 impl SshSessionManager {
-    fn contains(&self, session_id: &str) -> Result<bool, String> {
-        self.sessions
-            .lock()
-            .map(|sessions| sessions.contains_key(session_id))
-            .map_err(|_| "SSH 会话状态不可用".to_string())
-    }
-
-    fn insert(&self, session_id: String, sender: Sender<SessionCommand>) -> Result<(), String> {
+    fn begin_connect(&self, session_id: &str) -> Result<Arc<AtomicBool>, String> {
         let mut sessions = self
             .sessions
             .lock()
             .map_err(|_| "SSH 会话状态不可用".to_string())?;
-        if sessions.contains_key(&session_id) {
+        if sessions.contains_key(session_id) {
             return Err("该终端会话已存在".to_string());
         }
-        sessions.insert(session_id, sender);
-        Ok(())
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        sessions.insert(
+            session_id.to_string(),
+            SessionHandle::Connecting(cancelled.clone()),
+        );
+        Ok(cancelled)
+    }
+
+    fn activate(&self, session_id: &str, sender: Sender<SessionCommand>) -> Result<(), String> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "SSH 会话状态不可用".to_string())?;
+        match sessions.get(session_id) {
+            Some(SessionHandle::Connecting(cancelled)) if !cancelled.load(Ordering::Acquire) => {
+                sessions.insert(session_id.to_string(), SessionHandle::Connected(sender));
+                Ok(())
+            }
+            _ => Err("SSH 连接已取消".to_string()),
+        }
     }
 
     fn send(&self, session_id: &str, command: SessionCommand) -> Result<(), String> {
-        let sender = self
+        let handle = self
             .sessions
             .lock()
             .map_err(|_| "SSH 会话状态不可用".to_string())?
             .get(session_id)
             .cloned()
             .ok_or_else(|| "SSH 会话不存在或已关闭".to_string())?;
-        sender
-            .send(command)
-            .map_err(|_| "SSH 会话已停止".to_string())
+        match handle {
+            SessionHandle::Connected(sender) => sender
+                .send(command)
+                .map_err(|_| "SSH 会话已停止".to_string()),
+            SessionHandle::Connecting(_) => Err("SSH 会话仍在连接".to_string()),
+        }
+    }
+
+    fn disconnect(&self, session_id: &str) -> Result<(), String> {
+        let handle = self
+            .sessions
+            .lock()
+            .map_err(|_| "SSH 会话状态不可用".to_string())?
+            .remove(session_id)
+            .ok_or_else(|| "SSH 会话不存在或已关闭".to_string())?;
+        match handle {
+            SessionHandle::Connecting(cancelled) => {
+                cancelled.store(true, Ordering::Release);
+                Ok(())
+            }
+            SessionHandle::Connected(sender) => sender
+                .send(SessionCommand::Close)
+                .map_err(|_| "SSH 会话已停止".to_string()),
+        }
     }
 
     fn remove(&self, session_id: &str) {
@@ -290,12 +330,12 @@ fn connect_session(
     app: AppHandle,
     manager: SshSessionManager,
     request: SshConnectRequest,
+    cancelled: Arc<AtomicBool>,
 ) -> Result<SshConnectResult, String> {
-    if manager.contains(&request.session_id)? {
-        return Err("该终端会话已存在".to_string());
-    }
-
     let tcp = connect_tcp(&request)?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err("SSH 连接已取消".to_string());
+    }
     let mut session = Session::new().map_err(|error| format!("SSH 初始化失败：{error}"))?;
     session.set_timeout(
         request
@@ -307,6 +347,9 @@ fn connect_session(
     session
         .handshake()
         .map_err(|error| format!("SSH 握手失败：{error}"))?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err("SSH 连接已取消".to_string());
+    }
 
     let fingerprint = host_fingerprint(&session)?;
     validate_fingerprint(request.expected_fingerprint.as_deref(), &fingerprint)?;
@@ -317,6 +360,9 @@ fn connect_session(
         .map_err(|error| format!("SSH 密码认证失败：{error}"))?;
     if !session.authenticated() {
         return Err("SSH 认证未通过".to_string());
+    }
+    if cancelled.load(Ordering::Acquire) {
+        return Err("SSH 连接已取消".to_string());
     }
 
     let mut channel = session
@@ -332,9 +378,12 @@ fn connect_session(
     channel
         .shell()
         .map_err(|error| format!("无法启动远程 Shell：{error}"))?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err("SSH 连接已取消".to_string());
+    }
 
     let (sender, receiver) = mpsc::channel();
-    manager.insert(request.session_id.clone(), sender)?;
+    manager.activate(&request.session_id, sender)?;
     let worker_manager = manager.clone();
     let worker_session_id = request.session_id.clone();
     if let Err(error) = thread::Builder::new()
@@ -364,9 +413,24 @@ pub(crate) async fn ssh_connect(
     request: SshConnectRequest,
 ) -> Result<SshConnectResult, String> {
     let manager = manager.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || connect_session(app, manager, request))
-        .await
-        .map_err(|error| format!("SSH 连接任务异常结束：{error}"))?
+    let session_id = request.session_id.clone();
+    let cancelled = manager.begin_connect(&session_id)?;
+    let worker_manager = manager.clone();
+    let result = match tauri::async_runtime::spawn_blocking(move || {
+        connect_session(app, worker_manager, request, cancelled)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            manager.remove(&session_id);
+            return Err(format!("SSH 连接任务异常结束：{error}"));
+        }
+    };
+    if result.is_err() {
+        manager.remove(&session_id);
+    }
+    result
 }
 
 #[tauri::command]
@@ -402,7 +466,7 @@ pub(crate) fn ssh_disconnect(
     manager: State<'_, SshSessionManager>,
     session_id: String,
 ) -> Result<(), String> {
-    manager.send(&session_id, SessionCommand::Close)
+    manager.disconnect(&session_id)
 }
 
 #[cfg(test)]

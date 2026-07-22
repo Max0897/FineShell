@@ -137,6 +137,9 @@ body,
   margin-top: 20px;
   padding-top: 16px;
   border-top: 1px solid #e5e6eb;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .terminal-tabs {
@@ -169,6 +172,39 @@ body,
 .terminal-tabs .arco-tabs-header-title-text {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.terminal-tab-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.terminal-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: #86909c;
+}
+
+.terminal-status-connecting,
+.terminal-status-reconnecting {
+  background: #ff7d00;
+}
+
+.terminal-status-connected {
+  background: #00b42a;
+}
+
+.terminal-status-failed {
+  background: #f53f3f;
 }
 
 .terminal-tabs > .arco-tabs-content {

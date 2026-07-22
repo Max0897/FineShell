@@ -17,7 +17,8 @@ interface SshOutputPayload {
 }
 
 function decodeBase64(value: string) {
-  const binary = window.atob(value);
+  const padding = (4 - (value.length % 4)) % 4;
+  const binary = window.atob(value.padEnd(value.length + padding, "="));
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
@@ -133,12 +134,28 @@ function TerminalView({ active, session }: TerminalViewProps) {
   }, [active, session.id, session.status]);
 
   useEffect(() => {
-    if (session.status === "failed" && session.error) {
-      terminalRef.current?.writeln(
-        `\r\n\x1b[31m连接失败：${session.error}\x1b[0m`,
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+
+    if (session.status === "connecting") {
+      terminal.writeln(
+        `\x1b[90m正在连接 ${session.host.username}@${session.host.address}:${session.host.port}...\x1b[0m`,
       );
+    } else if (session.status === "reconnecting") {
+      terminal.writeln("\r\n\x1b[90m正在重新连接...\x1b[0m");
+    } else if (session.status === "failed" && session.error) {
+      terminal.writeln(`\r\n\x1b[31m连接失败：${session.error}\x1b[0m`);
+    } else if (session.status === "disconnected") {
+      const detail = session.error ? `：${session.error}` : "";
+      terminal.writeln(`\r\n\x1b[33m连接已断开${detail}\x1b[0m`);
     }
-  }, [session.error, session.status]);
+  }, [
+    session.error,
+    session.host.address,
+    session.host.port,
+    session.host.username,
+    session.status,
+  ]);
 
   return <div className="terminal-view" ref={containerRef} />;
 }
