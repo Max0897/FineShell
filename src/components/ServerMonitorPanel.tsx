@@ -104,7 +104,6 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
     return (
       <section className="server-monitor">
         <Typography.Text bold>服务器监控</Typography.Text>
-        <Typography.Text type="secondary">连接后开始采集</Typography.Text>
       </section>
     );
   }
