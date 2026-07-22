@@ -471,7 +471,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
 
           <div className="monitor-chart-section">
             <div className="monitor-chart-heading">
-              <Typography.Text bold>最近 2 分钟</Typography.Text>
+              <Typography.Text bold>资源趋势</Typography.Text>
               <Typography.Text type="secondary">
                 磁盘 {formatMonitorBytes(snapshot.diskUsedBytes)} / {formatMonitorBytes(snapshot.diskTotalBytes)}
               </Typography.Text>
