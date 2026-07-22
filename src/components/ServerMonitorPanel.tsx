@@ -8,6 +8,7 @@ import {
   Input,
   Radio,
   Skeleton,
+  Space,
   Table,
   Tag,
   Timeline,
@@ -17,6 +18,7 @@ import {
 import type { TableColumnProps } from "@arco-design/web-react";
 import {
   IconBranch,
+  IconApps,
   IconRefresh,
   IconWifi,
 } from "@arco-design/web-react/icon";
@@ -42,6 +44,7 @@ import {
   formatUptime,
   normalizeMonitorPercent,
 } from "../monitor-utils";
+import ServerProcessDrawer from "./ServerProcessDrawer";
 
 interface ServerMonitorPanelProps {
   session: TerminalSession;
@@ -116,6 +119,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [diagnosticsVisible, setDiagnosticsVisible] = useState(false);
+  const [processDrawerVisible, setProcessDrawerVisible] = useState(false);
   const [pingTarget, setPingTarget] = useState("1.1.1.1");
   const [pingResult, setPingResult] = useState<NetworkPingResult | null>(null);
   const [pingLoading, setPingLoading] = useState(false);
@@ -142,6 +146,7 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
     setTraceResult(null);
     setTraceError(undefined);
     setDiagnosticsVisible(false);
+    setProcessDrawerVisible(false);
     if (session.status !== "connected") {
       setLoading(false);
       return;
@@ -370,21 +375,32 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
     <section className="server-monitor">
       <div className="server-monitor-heading">
         <Typography.Text bold>服务器监控</Typography.Text>
-        <Tooltip content="网络诊断">
-          <Button
-            aria-label="打开网络诊断"
-            icon={<IconWifi />}
-            onClick={() => {
-              setDiagnosticsVisible(true);
-              if (!pingResult && !pingLoading) void runPing();
-              if (!connectionsResult && !connectionsLoading) {
-                void loadNetworkConnections();
-              }
-            }}
-            size="mini"
-            type="text"
-          />
-        </Tooltip>
+        <Space size="mini">
+          <Tooltip content="进程管理">
+            <Button
+              aria-label="打开进程管理"
+              icon={<IconApps />}
+              onClick={() => setProcessDrawerVisible(true)}
+              size="mini"
+              type="text"
+            />
+          </Tooltip>
+          <Tooltip content="网络诊断">
+            <Button
+              aria-label="打开网络诊断"
+              icon={<IconWifi />}
+              onClick={() => {
+                setDiagnosticsVisible(true);
+                if (!pingResult && !pingLoading) void runPing();
+                if (!connectionsResult && !connectionsLoading) {
+                  void loadNetworkConnections();
+                }
+              }}
+              size="mini"
+              type="text"
+            />
+          </Tooltip>
+        </Space>
       </div>
       {error && <Alert content={error} showIcon type="warning" />}
       {loading && !snapshot && (
@@ -748,6 +764,11 @@ function ServerMonitorPanel({ session }: ServerMonitorPanelProps) {
           />
         </section>
       </Drawer>
+      <ServerProcessDrawer
+        onCancel={() => setProcessDrawerVisible(false)}
+        session={session}
+        visible={processDrawerVisible}
+      />
     </section>
   );
 }
