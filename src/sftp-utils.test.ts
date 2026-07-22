@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   formatFileSize,
   formatPermissions,
+  isValidRemoteName,
   localFileName,
   remoteJoinPath,
   remoteParentPath,
@@ -22,6 +23,14 @@ describe("SFTP path helpers", () => {
   test("extracts file names from Unix and Windows paths", () => {
     expect(localFileName("/Users/test/report.txt")).toBe("report.txt");
     expect(localFileName("C:\\Users\\test\\report.txt")).toBe("report.txt");
+  });
+
+  test("rejects names that escape the current directory", () => {
+    expect(isValidRemoteName("reports")).toBe(true);
+    expect(isValidRemoteName("../reports")).toBe(false);
+    expect(isValidRemoteName("reports\\archive")).toBe(false);
+    expect(isValidRemoteName("..")).toBe(false);
+    expect(isValidRemoteName(" ")).toBe(false);
   });
 });
 

@@ -14,6 +14,18 @@ export function localFileName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
+export function isValidRemoteName(name: string) {
+  const trimmed = name.trim();
+  return (
+    trimmed.length > 0 &&
+    trimmed !== "." &&
+    trimmed !== ".." &&
+    !trimmed.includes("/") &&
+    !trimmed.includes("\\") &&
+    !trimmed.includes("\0")
+  );
+}
+
 export function formatFileSize(size: number) {
   if (!Number.isFinite(size) || size < 0) return "-";
   if (size < 1024) return `${size} B`;

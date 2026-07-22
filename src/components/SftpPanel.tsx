@@ -5,6 +5,7 @@ import {
   Input,
   Message,
   Modal,
+  Popconfirm,
   Progress,
   Space,
   Table,
@@ -19,6 +20,7 @@ import {
   IconArrowUp,
   IconDelete,
   IconDownload,
+  IconEdit,
   IconFile,
   IconFolder,
   IconFolderAdd,
@@ -35,6 +37,7 @@ import {
   formatFileSize,
   formatPermissions,
   formatRemoteTime,
+  isValidRemoteName,
   localFileName,
   remoteJoinPath,
   remoteParentPath,
@@ -82,11 +85,22 @@ function createTransferId() {
   return `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function isSftpSessionFailure(message: string) {
+  return /会话不存在|会话已停止|连接已关闭|connection|disconnect|socket/i.test(
+    message,
+  );
+}
+
 function SftpPanel({ session }: SftpPanelProps) {
   const [browsers, setBrowsers] = useState<Record<string, BrowserState>>({});
   const [transfers, setTransfers] = useState<Record<string, TransferRecord>>(
     {},
   );
+  const [newDirectoryVisible, setNewDirectoryVisible] = useState(false);
+  const [newDirectoryName, setNewDirectoryName] = useState("");
+  const [renamingEntry, setRenamingEntry] = useState<SftpEntry | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [operationLoading, setOperationLoading] = useState(false);
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
 
@@ -301,19 +315,45 @@ function SftpPanel({ session }: SftpPanelProps) {
       },
       {
         title: "操作",
-        width: 62,
-        render: (_, entry) =>
-          entry.kind === "directory" ? null : (
-            <Tooltip content="下载">
+        width: 126,
+        render: (_, entry) => (
+          <Space size="mini">
+            {entry.kind !== "directory" && (
+              <Tooltip content="下载">
+                <Button
+                  aria-label={`下载 ${entry.name}`}
+                  disabled={!ready}
+                  icon={<IconDownload />}
+                  onClick={() => void downloadEntry(entry)}
+                  size="mini"
+                />
+              </Tooltip>
+            )}
+            <Tooltip content="重命名">
               <Button
-                aria-label={`下载 ${entry.name}`}
+                aria-label={`重命名 ${entry.name}`}
                 disabled={!ready}
-                icon={<IconDownload />}
-                onClick={() => void downloadEntry(entry)}
+                icon={<IconEdit />}
+                onClick={() => openRenameDialog(entry)}
                 size="mini"
               />
             </Tooltip>
-          ),
+            <Popconfirm
+              content={`删除“${entry.name}”？${entry.kind === "directory" ? "目录必须为空。" : ""}`}
+              onOk={() => deleteEntry(entry)}
+            >
+              <Tooltip content="删除">
+                <Button
+                  aria-label={`删除 ${entry.name}`}
+                  disabled={!ready}
+                  icon={<IconDelete />}
+                  size="mini"
+                  status="danger"
+                />
+              </Tooltip>
+            </Popconfirm>
+          </Space>
+        ),
       },
     ],
     [ready, session, browser],
@@ -359,6 +399,10 @@ function SftpPanel({ session }: SftpPanelProps) {
       }
     } catch (error) {
       const message = String(error);
+      if (isSftpSessionFailure(message)) {
+        connectedHomesRef.current.delete(session.id);
+        updateBrowser(session.id, { status: "failed", error: message });
+      }
       setTransfers((current) => {
         const previous = current[transferId] ?? record;
         return {
@@ -432,6 +476,106 @@ function SftpPanel({ session }: SftpPanelProps) {
     );
   }
 
+  function handleOperationError(error: unknown) {
+    const message = String(error);
+    if (session && isSftpSessionFailure(message)) {
+      connectedHomesRef.current.delete(session.id);
+      updateBrowser(session.id, { status: "failed", error: message });
+    }
+    Message.error(message);
+  }
+
+  async function createDirectory() {
+    if (!session || !browser) return;
+    const name = newDirectoryName.trim();
+    if (!isValidRemoteName(name)) {
+      Message.warning("目录名称不能为空，且不能包含路径分隔符");
+      return;
+    }
+
+    setOperationLoading(true);
+    try {
+      await invoke("sftp_create_directory", {
+        sessionId: session.id,
+        path: remoteJoinPath(browser.path, name),
+      });
+      setNewDirectoryVisible(false);
+      setNewDirectoryName("");
+      Message.success(`已新建目录 ${name}`);
+      await loadDirectory(session.id, browser.path);
+    } catch (error) {
+      handleOperationError(error);
+    } finally {
+      setOperationLoading(false);
+    }
+  }
+
+  function openRenameDialog(entry: SftpEntry) {
+    setRenamingEntry(entry);
+    setRenameName(entry.name);
+  }
+
+  async function renameEntry(overwrite = false) {
+    if (!session || !browser || !renamingEntry) return;
+    const name = renameName.trim();
+    if (!isValidRemoteName(name)) {
+      Message.warning("名称不能为空，且不能包含路径分隔符");
+      return;
+    }
+    if (name === renamingEntry.name) {
+      setRenamingEntry(null);
+      return;
+    }
+
+    const targetPath = remoteJoinPath(browser.path, name);
+    const targetExists = browser.entries.some(
+      (entry) => entry.id !== renamingEntry.id && entry.name === name,
+    );
+    if (targetExists && !overwrite) {
+      Modal.confirm({
+        title: "覆盖远程项目？",
+        content: `“${name}”已存在，继续将尝试覆盖目标。`,
+        okText: "覆盖",
+        cancelText: "取消",
+        onOk: () => renameEntry(true),
+      });
+      return;
+    }
+
+    setOperationLoading(true);
+    try {
+      await invoke("sftp_rename", {
+        sessionId: session.id,
+        sourcePath: renamingEntry.path,
+        targetPath,
+        overwrite,
+      });
+      setRenamingEntry(null);
+      setRenameName("");
+      Message.success(`已重命名为 ${name}`);
+      await loadDirectory(session.id, browser.path);
+    } catch (error) {
+      handleOperationError(error);
+    } finally {
+      setOperationLoading(false);
+    }
+  }
+
+  async function deleteEntry(entry: SftpEntry) {
+    if (!session || !browser) return;
+    try {
+      await invoke("sftp_delete", {
+        sessionId: session.id,
+        path: entry.path,
+      });
+      Message.success(`已删除 ${entry.name}`);
+      await loadDirectory(session.id, browser.path);
+    } catch (error) {
+      handleOperationError(error);
+      throw error;
+    }
+  }
+
   async function retryConnection() {
     if (!session) return;
     connectedHomesRef.current.delete(session.id);
@@ -501,7 +645,12 @@ function SftpPanel({ session }: SftpPanelProps) {
           }
         />
         <Space size="mini">
-          <Button disabled icon={<IconFolderAdd />} size="mini">
+          <Button
+            disabled={!ready}
+            icon={<IconFolderAdd />}
+            onClick={() => setNewDirectoryVisible(true)}
+            size="mini"
+          >
             新建目录
           </Button>
           <Button
@@ -606,6 +755,44 @@ function SftpPanel({ session }: SftpPanelProps) {
           size="small"
         />
       )}
+      <Modal
+        confirmLoading={operationLoading}
+        maskClosable={false}
+        onCancel={() => {
+          setNewDirectoryVisible(false);
+          setNewDirectoryName("");
+        }}
+        onOk={() => void createDirectory()}
+        title="新建目录"
+        visible={newDirectoryVisible}
+      >
+        <Input
+          autoFocus
+          onChange={setNewDirectoryName}
+          onPressEnter={() => void createDirectory()}
+          placeholder="目录名称"
+          value={newDirectoryName}
+        />
+      </Modal>
+      <Modal
+        confirmLoading={operationLoading}
+        maskClosable={false}
+        onCancel={() => {
+          setRenamingEntry(null);
+          setRenameName("");
+        }}
+        onOk={() => void renameEntry()}
+        title="重命名"
+        visible={Boolean(renamingEntry)}
+      >
+        <Input
+          autoFocus
+          onChange={setRenameName}
+          onPressEnter={() => void renameEntry()}
+          placeholder="新名称"
+          value={renameName}
+        />
+      </Modal>
     </section>
   );
 }
