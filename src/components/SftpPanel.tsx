@@ -759,7 +759,7 @@ function SftpPanel({
             data={ready ? visibleEntries : []}
             loading={Boolean(connected && busy)}
             noDataElement={
-              ready ? <Empty description="目录为空" /> : <span aria-hidden />
+              <Empty description={ready ? "目录为空" : "暂无文件"} />
             }
             onRow={(entry) => ({
               onDoubleClick: () => openDirectory(entry),
