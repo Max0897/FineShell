@@ -932,6 +932,10 @@ body,
   gap: 12px;
 }
 
+.host-form-primary-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .host-form-row .arco-input-number {
   width: 100%;
 }

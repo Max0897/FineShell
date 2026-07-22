@@ -114,20 +114,22 @@ function HostEditorModal({
         layout="vertical"
         onSubmit={submitHost}
       >
-        <Form.Item
-          field="name"
-          label="名称"
-          rules={[{ required: true, message: "请输入主机名称" }]}
-        >
-          <Input autoFocus placeholder="例如：生产服务器" />
-        </Form.Item>
-        <Form.Item
-          field="address"
-          label="主机地址"
-          rules={[{ required: true, message: "请输入 IP 地址或域名" }]}
-        >
-          <Input placeholder="192.168.1.10 或 server.example.com" />
-        </Form.Item>
+        <div className="host-form-row host-form-primary-row">
+          <Form.Item
+            field="name"
+            label="名称"
+            rules={[{ required: true, message: "请输入主机名称" }]}
+          >
+            <Input autoFocus placeholder="例如：生产服务器" />
+          </Form.Item>
+          <Form.Item
+            field="address"
+            label="主机地址"
+            rules={[{ required: true, message: "请输入 IP 地址或域名" }]}
+          >
+            <Input placeholder="192.168.1.10 或 server.example.com" />
+          </Form.Item>
+        </div>
         <div className="host-form-row">
           <Form.Item
             field="username"
