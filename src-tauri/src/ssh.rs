@@ -35,6 +35,15 @@ pub(crate) struct SshConnectRequest {
     rows: u32,
 }
 
+pub(crate) struct SshAuthConfig {
+    pub(crate) host_id: String,
+    pub(crate) address: String,
+    pub(crate) port: u16,
+    pub(crate) username: String,
+    pub(crate) connect_timeout_seconds: u64,
+    pub(crate) expected_fingerprint: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SshConnectResult {
@@ -146,9 +155,9 @@ impl SshSessionManager {
     }
 }
 
-fn connect_tcp(request: &SshConnectRequest) -> Result<TcpStream, String> {
-    let timeout = Duration::from_secs(request.connect_timeout_seconds.clamp(3, 120));
-    let addresses = (request.address.as_str(), request.port)
+fn connect_tcp(config: &SshAuthConfig) -> Result<TcpStream, String> {
+    let timeout = Duration::from_secs(config.connect_timeout_seconds.clamp(3, 120));
+    let addresses = (config.address.as_str(), config.port)
         .to_socket_addrs()
         .map_err(|error| format!("无法解析主机地址：{error}"))?;
     let mut last_error = None;
@@ -191,6 +200,47 @@ fn validate_fingerprint(expected: Option<&str>, actual: &str) -> Result<(), Stri
     } else {
         Err(format!("主机指纹不匹配，期望 {normalized}，实际 {actual}"))
     }
+}
+
+pub(crate) fn connect_authenticated_session(
+    config: &SshAuthConfig,
+    cancelled: &AtomicBool,
+) -> Result<(Session, String), String> {
+    let tcp = connect_tcp(config)?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err("SSH 连接已取消".to_string());
+    }
+
+    let mut session = Session::new().map_err(|error| format!("SSH 初始化失败：{error}"))?;
+    session.set_timeout(
+        config
+            .connect_timeout_seconds
+            .clamp(3, 120)
+            .saturating_mul(1000) as u32,
+    );
+    session.set_tcp_stream(tcp);
+    session
+        .handshake()
+        .map_err(|error| format!("SSH 握手失败：{error}"))?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err("SSH 连接已取消".to_string());
+    }
+
+    let fingerprint = host_fingerprint(&session)?;
+    validate_fingerprint(config.expected_fingerprint.as_deref(), &fingerprint)?;
+
+    let password = credentials::get_host_password(&config.host_id)?;
+    session
+        .userauth_password(&config.username, &password)
+        .map_err(|error| format!("SSH 密码认证失败：{error}"))?;
+    if !session.authenticated() {
+        return Err("SSH 认证未通过".to_string());
+    }
+    if cancelled.load(Ordering::Acquire) {
+        return Err("SSH 连接已取消".to_string());
+    }
+
+    Ok((session, fingerprint))
 }
 
 fn emit_output(app: &AppHandle, session_id: &str, bytes: &[u8]) {
@@ -345,38 +395,15 @@ fn connect_session(
     request: SshConnectRequest,
     cancelled: Arc<AtomicBool>,
 ) -> Result<SshConnectResult, String> {
-    let tcp = connect_tcp(&request)?;
-    if cancelled.load(Ordering::Acquire) {
-        return Err("SSH 连接已取消".to_string());
-    }
-    let mut session = Session::new().map_err(|error| format!("SSH 初始化失败：{error}"))?;
-    session.set_timeout(
-        request
-            .connect_timeout_seconds
-            .clamp(3, 120)
-            .saturating_mul(1000) as u32,
-    );
-    session.set_tcp_stream(tcp);
-    session
-        .handshake()
-        .map_err(|error| format!("SSH 握手失败：{error}"))?;
-    if cancelled.load(Ordering::Acquire) {
-        return Err("SSH 连接已取消".to_string());
-    }
-
-    let fingerprint = host_fingerprint(&session)?;
-    validate_fingerprint(request.expected_fingerprint.as_deref(), &fingerprint)?;
-
-    let password = credentials::get_host_password(&request.host_id)?;
-    session
-        .userauth_password(&request.username, &password)
-        .map_err(|error| format!("SSH 密码认证失败：{error}"))?;
-    if !session.authenticated() {
-        return Err("SSH 认证未通过".to_string());
-    }
-    if cancelled.load(Ordering::Acquire) {
-        return Err("SSH 连接已取消".to_string());
-    }
+    let auth = SshAuthConfig {
+        host_id: request.host_id.clone(),
+        address: request.address.clone(),
+        port: request.port,
+        username: request.username.clone(),
+        connect_timeout_seconds: request.connect_timeout_seconds,
+        expected_fingerprint: request.expected_fingerprint.clone(),
+    };
+    let (session, fingerprint) = connect_authenticated_session(&auth, &cancelled)?;
 
     let mut channel = session
         .channel_session()
