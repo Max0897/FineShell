@@ -40,6 +40,7 @@ export interface ConnectionHistoryRecord extends QuickTarget {
   name: string;
   authMethod?: HostAuthMethod;
   privateKeyPath?: string;
+  hostFingerprint?: string;
   connectedAt: string;
 }
 

@@ -4,6 +4,7 @@ import {
   Descriptions,
   Empty,
   Message,
+  Modal,
   ResizeBox,
   Tabs,
   Tooltip,
@@ -28,7 +29,9 @@ interface BrowserConnectionMessage {
 }
 
 interface SshConnectResult {
+  status: "connected" | "hostKeyVerificationRequired";
   fingerprint: string;
+  expectedFingerprint: string | null;
 }
 
 interface SshStatusPayload {
@@ -38,24 +41,94 @@ interface SshStatusPayload {
 }
 
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
+const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-function persistHostFingerprint(hostId: string, fingerprint: string) {
-  if (hostId.startsWith("quick-")) return;
-
+function persistHostFingerprint(host: HostRecord, fingerprint: string) {
   try {
-    const hosts = JSON.parse(localStorage.getItem(HOSTS_STORAGE_KEY) ?? "[]");
-    if (!Array.isArray(hosts)) return;
-    localStorage.setItem(
-      HOSTS_STORAGE_KEY,
-      JSON.stringify(
-        hosts.map((host) =>
-          host?.id === hostId ? { ...host, hostFingerprint: fingerprint } : host,
-        ),
-      ),
+    if (!host.id.startsWith("quick-")) {
+      const hosts = JSON.parse(localStorage.getItem(HOSTS_STORAGE_KEY) ?? "[]");
+      if (Array.isArray(hosts)) {
+        localStorage.setItem(
+          HOSTS_STORAGE_KEY,
+          JSON.stringify(
+            hosts.map((item) =>
+              item?.id === host.id
+                ? { ...item, hostFingerprint: fingerprint }
+                : item,
+            ),
+          ),
+        );
+      }
+    }
+
+    const history = JSON.parse(
+      localStorage.getItem(HISTORY_STORAGE_KEY) ?? "[]",
     );
+    if (Array.isArray(history)) {
+      localStorage.setItem(
+        HISTORY_STORAGE_KEY,
+        JSON.stringify(
+          history.map((item) =>
+            item?.username === host.username &&
+            item?.address === host.address &&
+            item?.port === host.port
+              ? { ...item, hostFingerprint: fingerprint }
+              : item,
+          ),
+        ),
+      );
+    }
   } catch {
     // A malformed local cache must not interrupt an active SSH connection.
   }
+}
+
+function confirmHostFingerprint(host: HostRecord, result: SshConnectResult) {
+  const changed = Boolean(result.expectedFingerprint);
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const settle = (accepted: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(accepted);
+    };
+
+    Modal.confirm({
+      cancelText: "取消连接",
+      className: "fingerprint-confirm-modal",
+      content: (
+        <div className="fingerprint-confirm-content">
+          <Typography.Text>
+            {changed
+              ? `服务器 ${host.name} 返回的主机指纹与已保存值不同。`
+              : `首次连接 ${host.name}，请核对服务器主机指纹。`}
+          </Typography.Text>
+          {result.expectedFingerprint && (
+            <div className="fingerprint-row">
+              <Typography.Text type="secondary">已保存</Typography.Text>
+              <Typography.Text className="fingerprint-value">
+                {result.expectedFingerprint}
+              </Typography.Text>
+            </div>
+          )}
+          <div className="fingerprint-row">
+            <Typography.Text type="secondary">
+              {changed ? "服务器返回" : "SHA256"}
+            </Typography.Text>
+            <Typography.Text className="fingerprint-value">
+              {result.fingerprint}
+            </Typography.Text>
+          </div>
+        </div>
+      ),
+      maskClosable: false,
+      okButtonProps: changed ? { status: "danger" } : undefined,
+      okText: changed ? "接受新指纹" : "信任并连接",
+      onCancel: () => settle(false),
+      onOk: () => settle(true),
+      title: changed ? "主机指纹已变更" : "确认主机指纹",
+    });
+  });
 }
 
 function sessionStatusLabel(session: TerminalSession) {
@@ -170,7 +243,7 @@ function App() {
   );
 
   const connectSession = useCallback(
-    async (session: TerminalSession) => {
+    async function connect(session: TerminalSession) {
       try {
         const result = await invoke<SshConnectResult>("ssh_connect", {
           request: {
@@ -187,6 +260,38 @@ function App() {
             rows: 24,
           },
         });
+        if (result.status === "hostKeyVerificationRequired") {
+          updateSession(session.id, {
+            status: "connecting",
+            error: "等待确认主机指纹",
+          });
+          const accepted = await confirmHostFingerprint(session.host, result);
+          if (!sessionsRef.current.some((item) => item.id === session.id)) {
+            return;
+          }
+          if (!accepted) {
+            updateSession(session.id, {
+              status: "failed",
+              error: result.expectedFingerprint
+                ? "主机指纹已变更，连接已取消"
+                : "未信任主机指纹，连接已取消",
+            });
+            return;
+          }
+
+          const trustedHost = {
+            ...session.host,
+            hostFingerprint: result.fingerprint,
+          };
+          persistHostFingerprint(trustedHost, result.fingerprint);
+          updateSession(session.id, {
+            status: "connecting",
+            error: undefined,
+            host: trustedHost,
+          });
+          await connect({ ...session, host: trustedHost });
+          return;
+        }
         updateSession(session.id, {
           status: "connected",
           fingerprint: result.fingerprint,
@@ -196,7 +301,7 @@ function App() {
             hostFingerprint: result.fingerprint,
           },
         });
-        persistHostFingerprint(session.host.id, result.fingerprint);
+        persistHostFingerprint(session.host, result.fingerprint);
       } catch (error) {
         updateSession(session.id, {
           status: "failed",

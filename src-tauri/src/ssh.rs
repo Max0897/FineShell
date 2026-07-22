@@ -56,10 +56,26 @@ pub(crate) struct SshAuthConfig {
     pub(crate) expected_fingerprint: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum SshConnectStatus {
+    Connected,
+    HostKeyVerificationRequired,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SshConnectResult {
+    status: SshConnectStatus,
     fingerprint: String,
+    expected_fingerprint: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+enum FingerprintVerification {
+    Trusted,
+    Unknown,
+    Changed(String),
 }
 
 #[derive(Clone, Serialize)]
@@ -196,21 +212,28 @@ fn host_fingerprint(session: &Session) -> Result<String, String> {
     Ok(format!("SHA256:{}", STANDARD_NO_PAD.encode(hash)))
 }
 
-fn validate_fingerprint(expected: Option<&str>, actual: &str) -> Result<(), String> {
+fn verify_fingerprint(expected: Option<&str>, actual: &str) -> FingerprintVerification {
     let Some(expected) = expected.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(());
+        return FingerprintVerification::Unknown;
     };
-
     let normalized = if expected.starts_with("SHA256:") {
         expected.to_string()
     } else {
         format!("SHA256:{expected}")
     };
-
     if normalized == actual {
-        Ok(())
+        FingerprintVerification::Trusted
     } else {
-        Err(format!("主机指纹不匹配，期望 {normalized}，实际 {actual}"))
+        FingerprintVerification::Changed(normalized)
+    }
+}
+
+fn validate_fingerprint(expected: Option<&str>, actual: &str) -> Result<(), String> {
+    match verify_fingerprint(expected, actual) {
+        FingerprintVerification::Trusted | FingerprintVerification::Unknown => Ok(()),
+        FingerprintVerification::Changed(expected) => {
+            Err(format!("主机指纹不匹配，期望 {expected}，实际 {actual}"))
+        }
     }
 }
 
@@ -224,7 +247,7 @@ fn resolve_private_key_path(path: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(path))
 }
 
-pub(crate) fn connect_authenticated_session(
+fn connect_handshaken_session(
     config: &SshAuthConfig,
     cancelled: &AtomicBool,
 ) -> Result<(Session, String), String> {
@@ -249,8 +272,10 @@ pub(crate) fn connect_authenticated_session(
     }
 
     let fingerprint = host_fingerprint(&session)?;
-    validate_fingerprint(config.expected_fingerprint.as_deref(), &fingerprint)?;
+    Ok((session, fingerprint))
+}
 
+fn authenticate_session(session: &Session, config: &SshAuthConfig) -> Result<(), String> {
     match config.auth_method {
         SshAuthMethod::Password => {
             let password = credentials::get_host_password(&config.host_id)?;
@@ -278,6 +303,16 @@ pub(crate) fn connect_authenticated_session(
     if !session.authenticated() {
         return Err("SSH 认证未通过".to_string());
     }
+    Ok(())
+}
+
+pub(crate) fn connect_authenticated_session(
+    config: &SshAuthConfig,
+    cancelled: &AtomicBool,
+) -> Result<(Session, String), String> {
+    let (session, fingerprint) = connect_handshaken_session(config, cancelled)?;
+    validate_fingerprint(config.expected_fingerprint.as_deref(), &fingerprint)?;
+    authenticate_session(&session, config)?;
     if cancelled.load(Ordering::Acquire) {
         return Err("SSH 连接已取消".to_string());
     }
@@ -447,7 +482,28 @@ fn connect_session(
         connect_timeout_seconds: request.connect_timeout_seconds,
         expected_fingerprint: request.expected_fingerprint.clone(),
     };
-    let (session, fingerprint) = connect_authenticated_session(&auth, &cancelled)?;
+    let (session, fingerprint) = connect_handshaken_session(&auth, &cancelled)?;
+    match verify_fingerprint(auth.expected_fingerprint.as_deref(), &fingerprint) {
+        FingerprintVerification::Trusted => {}
+        FingerprintVerification::Unknown => {
+            return Ok(SshConnectResult {
+                status: SshConnectStatus::HostKeyVerificationRequired,
+                fingerprint,
+                expected_fingerprint: None,
+            });
+        }
+        FingerprintVerification::Changed(expected_fingerprint) => {
+            return Ok(SshConnectResult {
+                status: SshConnectStatus::HostKeyVerificationRequired,
+                fingerprint,
+                expected_fingerprint: Some(expected_fingerprint),
+            });
+        }
+    }
+    authenticate_session(&session, &auth)?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err("SSH 连接已取消".to_string());
+    }
 
     let mut channel = session
         .channel_session()
@@ -487,7 +543,11 @@ fn connect_session(
         return Err(format!("无法启动 SSH 会话线程：{error}"));
     }
 
-    Ok(SshConnectResult { fingerprint })
+    Ok(SshConnectResult {
+        status: SshConnectStatus::Connected,
+        fingerprint,
+        expected_fingerprint: None,
+    })
 }
 
 #[tauri::command]
@@ -511,7 +571,10 @@ pub(crate) async fn ssh_connect(
             return Err(format!("SSH 连接任务异常结束：{error}"));
         }
     };
-    if result.is_err() {
+    if !matches!(
+        result,
+        Ok(ref value) if value.status == SshConnectStatus::Connected
+    ) {
         manager.remove(&session_id);
     }
     result
@@ -558,8 +621,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
-        connect_authenticated_session, validate_fingerprint, SessionCommand, SshAuthConfig,
-        SshAuthMethod, SshSessionManager,
+        connect_authenticated_session, connect_handshaken_session, validate_fingerprint,
+        verify_fingerprint, FingerprintVerification, SessionCommand, SshAuthConfig, SshAuthMethod,
+        SshSessionManager,
     };
 
     #[test]
@@ -573,6 +637,18 @@ mod tests {
     #[test]
     fn rejects_changed_fingerprint() {
         assert!(validate_fingerprint(Some("SHA256:expected"), "SHA256:actual").is_err());
+    }
+
+    #[test]
+    fn classifies_unknown_and_changed_fingerprints() {
+        assert_eq!(
+            verify_fingerprint(None, "SHA256:actual"),
+            FingerprintVerification::Unknown
+        );
+        assert_eq!(
+            verify_fingerprint(Some("expected"), "SHA256:actual"),
+            FingerprintVerification::Changed("SHA256:expected".to_string())
+        );
     }
 
     #[test]
@@ -632,6 +708,34 @@ mod tests {
             connect_authenticated_session(&config, &AtomicBool::new(false))?;
         if !session.authenticated() || !fingerprint.starts_with("SHA256:") {
             return Err("私钥认证结果无效".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires FINESHELL_LIVE_ADDRESS and optional connection settings"]
+    fn detects_a_live_unknown_host_before_authentication() -> Result<(), String> {
+        let config = SshAuthConfig {
+            host_id: "credential-must-not-be-read".to_string(),
+            address: std::env::var("FINESHELL_LIVE_ADDRESS")
+                .map_err(|_| "缺少 FINESHELL_LIVE_ADDRESS".to_string())?,
+            port: std::env::var("FINESHELL_LIVE_PORT")
+                .unwrap_or_else(|_| "22".to_string())
+                .parse::<u16>()
+                .map_err(|error| format!("FINESHELL_LIVE_PORT 无效：{error}"))?,
+            username: std::env::var("FINESHELL_LIVE_USERNAME")
+                .unwrap_or_else(|_| "root".to_string()),
+            auth_method: SshAuthMethod::Password,
+            private_key_path: None,
+            connect_timeout_seconds: 10,
+            expected_fingerprint: None,
+        };
+
+        let (session, fingerprint) = connect_handshaken_session(&config, &AtomicBool::new(false))?;
+        if session.authenticated()
+            || verify_fingerprint(None, &fingerprint) != FingerprintVerification::Unknown
+        {
+            return Err("未知主机在认证前的状态无效".to_string());
         }
         Ok(())
     }

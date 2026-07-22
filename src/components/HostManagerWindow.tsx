@@ -241,6 +241,7 @@ function HostManagerWindow() {
       username: host.username,
       authMethod: host.authMethod,
       privateKeyPath: host.privateKeyPath,
+      hostFingerprint: host.hostFingerprint,
       connectedAt: now,
     };
 
@@ -320,6 +321,7 @@ function HostManagerWindow() {
         username: record.username,
         authMethod: record.authMethod ?? "password",
         privateKeyPath: record.privateKeyPath,
+        hostFingerprint: record.hostFingerprint,
         connectTimeoutSeconds: 10,
       },
     );
