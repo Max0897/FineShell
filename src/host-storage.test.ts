@@ -41,6 +41,15 @@ describe("normalizeHostForm", () => {
           enabled: false,
         },
       ],
+      dynamicPortForwards: [
+        {
+          id: "dynamic-forward-1",
+          name: "  Browser proxy  ",
+          bindAddress: " 127.0.0.1 ",
+          bindPort: 1080,
+          enabled: true,
+        },
+      ],
       password: "secret",
       group: "  Linux  ",
       hostFingerprint: " SHA256:abc123 ",
@@ -80,6 +89,15 @@ describe("normalizeHostForm", () => {
           targetAddress: "localhost",
           targetPort: 3000,
           enabled: false,
+        },
+      ],
+      dynamicPortForwards: [
+        {
+          id: "dynamic-forward-1",
+          name: "Browser proxy",
+          bindAddress: "127.0.0.1",
+          bindPort: 1080,
+          enabled: true,
         },
       ],
       group: "Linux",

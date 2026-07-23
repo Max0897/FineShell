@@ -6,6 +6,7 @@ import {
 } from "./app-settings";
 import type {
   ConnectionHistoryRecord,
+  DynamicPortForwardRule,
   HostRecord,
   HostSortMode,
   LocalPortForwardRule,
@@ -20,8 +21,8 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 9;
-export const CONFIGURATION_EXPORT_VERSION = 7;
+export const CONFIGURATION_SCHEMA_VERSION = 10;
+export const CONFIGURATION_EXPORT_VERSION = 8;
 export const MAX_CONFIGURATION_BACKUPS = 10;
 export const TRASH_RETENTION_DAYS = 30;
 
@@ -163,6 +164,24 @@ function sanitizeRemotePortForward(
   };
 }
 
+function sanitizeDynamicPortForward(
+  value: unknown,
+): DynamicPortForwardRule | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = stringValue(value.id);
+  const name = stringValue(value.name);
+  const bindAddress = stringValue(value.bindAddress);
+  if (!id || !name || !bindAddress) return undefined;
+
+  return {
+    id,
+    name: name.trim(),
+    bindAddress: bindAddress.trim(),
+    bindPort: numberValue(value.bindPort, 1080, 1, 65_535),
+    enabled: optionalBoolean(value.enabled) ?? true,
+  };
+}
+
 function sanitizeHost(value: unknown): HostRecord | undefined {
   if (!isRecord(value)) return undefined;
 
@@ -203,6 +222,10 @@ function sanitizeHost(value: unknown): HostRecord | undefined {
     remotePortForwards: sanitizeList(
       value.remotePortForwards,
       sanitizeRemotePortForward,
+    ),
+    dynamicPortForwards: sanitizeList(
+      value.dynamicPortForwards,
+      sanitizeDynamicPortForward,
     ),
     group: stringValue(value.group),
     hostFingerprint: stringValue(value.hostFingerprint),
@@ -249,6 +272,10 @@ function sanitizeHistoryRecord(
     remotePortForwards: sanitizeList(
       value.remotePortForwards,
       sanitizeRemotePortForward,
+    ),
+    dynamicPortForwards: sanitizeList(
+      value.dynamicPortForwards,
+      sanitizeDynamicPortForward,
     ),
     connectedAt,
   };

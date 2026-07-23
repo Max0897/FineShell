@@ -408,6 +408,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       jumpHostId: host.jumpHostId,
       localPortForwards: host.localPortForwards,
       remotePortForwards: host.remotePortForwards,
+      dynamicPortForwards: host.dynamicPortForwards,
       connectedAt: now,
     };
 
@@ -501,6 +502,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         jumpHostId: record.jumpHostId,
         localPortForwards: record.localPortForwards,
         remotePortForwards: record.remotePortForwards,
+        dynamicPortForwards: record.dynamicPortForwards,
       },
     );
   }

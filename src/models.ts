@@ -41,6 +41,14 @@ export interface RemotePortForwardRule {
   enabled: boolean;
 }
 
+export interface DynamicPortForwardRule {
+  id: string;
+  name: string;
+  bindAddress: string;
+  bindPort: number;
+  enabled: boolean;
+}
+
 export interface PortForwardStatus {
   ruleId: string;
   kind: "local" | "remote";
@@ -66,6 +74,7 @@ export interface HostRecord {
   jumpHostId?: string;
   localPortForwards?: LocalPortForwardRule[];
   remotePortForwards?: RemotePortForwardRule[];
+  dynamicPortForwards?: DynamicPortForwardRule[];
   group?: string;
   hostFingerprint?: string;
   lastConnectedAt?: string;
@@ -87,6 +96,7 @@ export interface HostFormValues {
   jumpHostId?: string;
   localPortForwards?: LocalPortForwardRule[];
   remotePortForwards?: RemotePortForwardRule[];
+  dynamicPortForwards?: DynamicPortForwardRule[];
   password?: string;
   group?: string;
   hostFingerprint?: string;
@@ -112,6 +122,7 @@ export interface ConnectionHistoryRecord extends QuickTarget {
   jumpHostId?: string;
   localPortForwards?: LocalPortForwardRule[];
   remotePortForwards?: RemotePortForwardRule[];
+  dynamicPortForwards?: DynamicPortForwardRule[];
   connectedAt: string;
 }
 

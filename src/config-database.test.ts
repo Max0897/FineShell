@@ -25,7 +25,7 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(9);
+    expect(configuration.schemaVersion).toBe(10);
     expect(configuration.proxies).toEqual([]);
     expect(configuration.hostSort).toBe("manual");
     expect(configuration.settings).toEqual(DEFAULT_APP_SETTINGS);
@@ -47,6 +47,7 @@ describe("migrateLegacyConfiguration", () => {
         jumpHostId: undefined,
         localPortForwards: [],
         remotePortForwards: [],
+        dynamicPortForwards: [],
         group: undefined,
         hostFingerprint: undefined,
         lastConnectedAt: undefined,
@@ -158,6 +159,15 @@ describe("configuration import and export", () => {
                 enabled: true,
               },
             ],
+            dynamicPortForwards: [
+              {
+                id: "dynamic-forward-1",
+                name: "Browser proxy",
+                bindAddress: "127.0.0.1",
+                bindPort: 1080,
+                enabled: true,
+              },
+            ],
             password: "must-not-be-exported",
           } as never,
         ],
@@ -189,6 +199,7 @@ describe("configuration import and export", () => {
     expect(imported.hosts[0].jumpHostId).toBe("jump-1");
     expect(imported.hosts[0].localPortForwards).toHaveLength(1);
     expect(imported.hosts[0].remotePortForwards).toHaveLength(1);
+    expect(imported.hosts[0].dynamicPortForwards).toHaveLength(1);
     expect(imported.proxies).toEqual([
       {
         id: "proxy-1",
