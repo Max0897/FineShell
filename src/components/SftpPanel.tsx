@@ -1912,7 +1912,7 @@ function SftpPanel({
             disabled={!ready}
             inputProps={{
               "aria-label": "远程目录路径",
-              size: "small",
+              size: "mini",
             }}
             onChange={(value) =>
               session && updateBrowser(session.id, { inputPath: value })
