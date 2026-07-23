@@ -649,13 +649,63 @@ body,
   gap: 10px;
 }
 
-.sftp-path {
+.sftp-path-controls {
   min-width: 120px;
   flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sftp-path-autocomplete {
+  min-width: 0;
+  flex: 1;
+}
+
+.sftp-path-autocomplete .arco-input-wrapper {
+  width: 100%;
+}
+
+.sftp-path-controls > .arco-btn.is-active {
+  color: #165dff;
 }
 
 .sftp-path:focus-visible {
   outline: none;
+}
+
+.sftp-location-menu {
+  width: min(360px, calc(100vw - 32px));
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.sftp-location-menu-item {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sftp-location-menu-item > svg {
+  flex: none;
+}
+
+.sftp-location-path {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-location-menu-item .arco-btn {
+  flex: none;
+  margin-right: -8px;
+}
+
+.sftp-location-menu-action {
+  color: #4e5969;
 }
 
 .sftp-table-container {

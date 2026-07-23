@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AutoComplete,
   Badge,
   Button,
   Drawer,
@@ -27,7 +28,9 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import {
   IconApps,
   IconArrowUp,
+  IconBook,
   IconCode,
+  IconClose,
   IconDelete,
   IconDown,
   IconDownload,
@@ -43,6 +46,8 @@ import {
   IconPause,
   IconPlayArrow,
   IconRefresh,
+  IconStar,
+  IconStarFill,
   IconStop,
   IconSync,
   IconThunderbolt,
@@ -52,20 +57,30 @@ import type {
   SftpConnectResult,
   SftpEntry,
   SftpListResult,
+  SftpLocationRecord,
   TerminalSession,
 } from "../models";
+import {
+  loadConfiguration,
+  MAX_SFTP_BOOKMARKS,
+  MAX_SFTP_PATH_HISTORY,
+  upsertSftpLocation,
+} from "../config-database";
 import ContextMenu from "./ContextMenu";
 import type { ContextMenuItem } from "./ContextMenu";
 import {
   formatFileSize,
   formatPermissions,
   formatRemoteTime,
+  addRemotePathHistory,
   isActiveSftpTransfer,
   isValidRemoteName,
   localFileName,
+  matchRemoteDirectoryPaths,
   parsePermissions,
   remoteJoinPath,
   remoteParentPath,
+  setRemotePathBookmark,
 } from "../sftp-utils";
 import type { SftpTransferStatus } from "../sftp-utils";
 import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
@@ -166,6 +181,18 @@ const INITIAL_BROWSER: BrowserState = {
 const MAX_CONCURRENT_TRANSFERS = 2;
 const REMOTE_TEXT_MAX_BYTES = 2 * 1024 * 1024;
 const REMOTE_TEXT_CONFLICT_ERROR = "远程文件已被其他程序修改";
+const EMPTY_SFTP_LOCATION: SftpLocationRecord = {
+  hostId: "",
+  bookmarks: [],
+  history: [],
+};
+
+function samePaths(left: string[], right: string[]) {
+  return (
+    left.length === right.length &&
+    left.every((path, index) => path === right[index])
+  );
+}
 
 function createTransferId() {
   return `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -257,6 +284,9 @@ function SftpPanel({
     useState(false);
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
   const [fileDropActive, setFileDropActive] = useState(false);
+  const [sftpLocations, setSftpLocations] = useState<
+    Record<string, SftpLocationRecord>
+  >({});
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
   const startingTransfersRef = useRef(new Set<string>());
@@ -265,6 +295,9 @@ function SftpPanel({
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const textEditorRequestRef = useRef(0);
   const sessionIdRef = useRef(session?.id);
+  const sessionHostIdsRef = useRef(new Map<string, string>());
+  const sftpLocationsRef = useRef(sftpLocations);
+  const locationPersistenceErrorRef = useRef(false);
   const readyRef = useRef(false);
   const queueUploadPathsRef = useRef<(paths: string[]) => Promise<void>>(
     async () => undefined,
@@ -279,6 +312,80 @@ function SftpPanel({
   }, [transfers]);
 
   sessionIdRef.current = session?.id;
+  if (session) {
+    sessionHostIdsRef.current.set(session.id, session.host.id);
+  }
+
+  useEffect(() => {
+    let disposed = false;
+    void loadConfiguration()
+      .then((configuration) => {
+        if (disposed) return;
+        const persisted = Object.fromEntries(
+          configuration.sftpLocations.map((location) => [
+            location.hostId,
+            location,
+          ]),
+        );
+        const merged = { ...persisted, ...sftpLocationsRef.current };
+        sftpLocationsRef.current = merged;
+        setSftpLocations(merged);
+      })
+      .catch(() => {
+        if (!disposed) Message.warning("无法读取 SFTP 目录记录");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  const commitSftpLocation = useCallback(
+    (
+      hostId: string,
+      update: (current: SftpLocationRecord) => SftpLocationRecord,
+    ) => {
+      const current = sftpLocationsRef.current[hostId] ?? {
+        ...EMPTY_SFTP_LOCATION,
+        hostId,
+      };
+      const next = update(current);
+      if (
+        samePaths(current.bookmarks, next.bookmarks) &&
+        samePaths(current.history, next.history)
+      ) {
+        return;
+      }
+      const locations = { ...sftpLocationsRef.current, [hostId]: next };
+      sftpLocationsRef.current = locations;
+      setSftpLocations(locations);
+      void upsertSftpLocation(next)
+        .then(() => {
+          locationPersistenceErrorRef.current = false;
+        })
+        .catch(() => {
+          if (locationPersistenceErrorRef.current) return;
+          locationPersistenceErrorRef.current = true;
+          Message.warning("SFTP 目录记录保存失败");
+        });
+    },
+    [],
+  );
+
+  const recordVisitedPath = useCallback(
+    (sessionId: string, path: string) => {
+      const hostId = sessionHostIdsRef.current.get(sessionId);
+      if (!hostId) return;
+      commitSftpLocation(hostId, (current) => ({
+        ...current,
+        history: addRemotePathHistory(
+          current.history,
+          path,
+          MAX_SFTP_PATH_HISTORY,
+        ),
+      }));
+    },
+    [commitSftpLocation],
+  );
 
   const updateBrowser = useCallback(
     (sessionId: string, values: Partial<BrowserState>) => {
@@ -312,6 +419,7 @@ function SftpPanel({
           entries: result.entries,
           error: undefined,
         });
+        recordVisitedPath(sessionId, result.path);
       } catch (error) {
         const message = String(error);
         if (initial) {
@@ -333,7 +441,7 @@ function SftpPanel({
         }
       }
     },
-    [updateBrowser],
+    [recordVisitedPath, updateBrowser],
   );
 
   const connectAndLoad = useCallback(
@@ -565,6 +673,24 @@ function SftpPanel({
   readyRef.current = ready;
   const busy =
     browser?.status === "connecting" || browser?.status === "loading";
+  const currentLocation = session
+    ? sftpLocations[session.host.id] ?? {
+        ...EMPTY_SFTP_LOCATION,
+        hostId: session.host.id,
+      }
+    : EMPTY_SFTP_LOCATION;
+  const currentPathBookmarked = Boolean(
+    browser?.path && currentLocation.bookmarks.includes(browser.path),
+  );
+  const pathSuggestions = useMemo(
+    () =>
+      matchRemoteDirectoryPaths(
+        currentLocation.bookmarks,
+        currentLocation.history,
+        browser?.inputPath ?? "",
+      ),
+    [browser?.inputPath, currentLocation.bookmarks, currentLocation.history],
+  );
   const currentTransfers = useMemo(
     () =>
       Object.values(transfers)
@@ -615,6 +741,45 @@ function SftpPanel({
       return next.length === current.length ? current : next;
     });
   }, [visibleEntries]);
+
+  function navigateToPath(path: string) {
+    if (!session || !path.trim()) return;
+    void loadDirectory(session.id, path.trim());
+  }
+
+  function toggleCurrentPathBookmark() {
+    if (!session || !browser?.path) return;
+    commitSftpLocation(session.host.id, (current) => ({
+      ...current,
+      bookmarks: setRemotePathBookmark(
+        current.bookmarks,
+        browser.path,
+        !current.bookmarks.includes(browser.path),
+        MAX_SFTP_BOOKMARKS,
+      ),
+    }));
+  }
+
+  function removePathBookmark(path: string) {
+    if (!session) return;
+    commitSftpLocation(session.host.id, (current) => ({
+      ...current,
+      bookmarks: setRemotePathBookmark(
+        current.bookmarks,
+        path,
+        false,
+        MAX_SFTP_BOOKMARKS,
+      ),
+    }));
+  }
+
+  function clearPathHistory() {
+    if (!session) return;
+    commitSftpLocation(session.host.id, (current) => ({
+      ...current,
+      history: [],
+    }));
+  }
 
   const columns = useMemo<TableColumnProps<SftpEntry>[]>(
     () => [
@@ -1740,20 +1905,116 @@ function SftpPanel({
             />
           </Tooltip>
         </Space>
-        <Input
-          className="sftp-path"
-          disabled={!ready}
-          onChange={(value) =>
-            session && updateBrowser(session.id, { inputPath: value })
-          }
-          onPressEnter={() =>
-            session &&
-            browser?.inputPath.trim() &&
-            void loadDirectory(session.id, browser.inputPath.trim())
-          }
-          size="small"
-          value={connected ? browser?.inputPath ?? "/" : ""}
-        />
+        <div className="sftp-path-controls">
+          <AutoComplete
+            className="sftp-path-autocomplete"
+            data={pathSuggestions}
+            disabled={!ready}
+            inputProps={{
+              "aria-label": "远程目录路径",
+              className: "sftp-path",
+              size: "small",
+            }}
+            onChange={(value) =>
+              session && updateBrowser(session.id, { inputPath: value })
+            }
+            onPressEnter={(_, activeOption) => {
+              if (!activeOption && browser?.inputPath) {
+                navigateToPath(browser.inputPath);
+              }
+            }}
+            onSelect={navigateToPath}
+            value={connected ? browser?.inputPath ?? "/" : ""}
+          />
+          <Tooltip
+            content={currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"}
+          >
+            <Button
+              aria-label={
+                currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"
+              }
+              className={currentPathBookmarked ? "is-active" : undefined}
+              disabled={!ready}
+              icon={currentPathBookmarked ? <IconStarFill /> : <IconStar />}
+              onClick={toggleCurrentPathBookmark}
+              size="mini"
+            />
+          </Tooltip>
+          <Dropdown
+            disabled={!ready}
+            droplist={
+              <Menu className="sftp-location-menu" selectable={false}>
+                <Menu.ItemGroup title="快速目录">
+                  {currentLocation.bookmarks.length ? (
+                    currentLocation.bookmarks.map((path) => (
+                      <Menu.Item
+                        key={`bookmark:${path}`}
+                        onClick={() => navigateToPath(path)}
+                      >
+                        <span className="sftp-location-menu-item">
+                          <IconStarFill />
+                          <span className="sftp-location-path">{path}</span>
+                          <Button
+                            aria-label={`取消收藏 ${path}`}
+                            icon={<IconClose />}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              removePathBookmark(path);
+                            }}
+                            size="mini"
+                            type="text"
+                          />
+                        </span>
+                      </Menu.Item>
+                    ))
+                  ) : (
+                    <Menu.Item disabled key="empty-bookmarks">
+                      暂无收藏目录
+                    </Menu.Item>
+                  )}
+                </Menu.ItemGroup>
+                <Menu.ItemGroup title="最近访问">
+                  {currentLocation.history.length ? (
+                    currentLocation.history.map((path) => (
+                      <Menu.Item
+                        key={`history:${path}`}
+                        onClick={() => navigateToPath(path)}
+                      >
+                        <span className="sftp-location-menu-item">
+                          <IconHistory />
+                          <span className="sftp-location-path">{path}</span>
+                        </span>
+                      </Menu.Item>
+                    ))
+                  ) : (
+                    <Menu.Item disabled key="empty-history">
+                      暂无访问记录
+                    </Menu.Item>
+                  )}
+                </Menu.ItemGroup>
+                {currentLocation.history.length > 0 && (
+                  <Menu.Item key="clear-history" onClick={clearPathHistory}>
+                    <span className="sftp-location-menu-item sftp-location-menu-action">
+                      <IconDelete />
+                      <span>清空最近访问</span>
+                    </span>
+                  </Menu.Item>
+                )}
+              </Menu>
+            }
+            position="bl"
+            trigger="click"
+          >
+            <Tooltip content="快速目录和最近访问">
+              <Button
+                aria-label="打开快速目录和最近访问"
+                disabled={!ready}
+                icon={<IconBook />}
+                size="mini"
+              />
+            </Tooltip>
+          </Dropdown>
+        </div>
         <Space size="mini">
           <Dropdown.Button
             buttonProps={{ icon: <IconFolderAdd /> }}
