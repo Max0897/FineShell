@@ -1513,13 +1513,14 @@ mod tests {
         io::{Read, Write},
         net::{TcpListener, TcpStream},
         sync::atomic::{AtomicBool, Ordering},
+        time::{Duration, Instant},
     };
 
     use super::{
         connect_authenticated_session, connect_handshaken_session, disconnect_status,
-        loopback_pair, start_local_forward, validate_fingerprint, verify_fingerprint,
-        FingerprintVerification, JumpHostConfig, LocalPortForwardRule, SessionCommand,
-        SshAuthConfig, SshAuthMethod, SshSessionManager,
+        loopback_pair, open_local_forward_connection, start_local_forward, validate_fingerprint,
+        verify_fingerprint, FingerprintVerification, JumpHostConfig, LocalPortForwardRule,
+        SessionCommand, SshAuthConfig, SshAuthMethod, SshSessionManager,
     };
 
     #[test]
@@ -1586,6 +1587,98 @@ mod tests {
             start_local_forward(rule).err().unwrap(),
             "监听地址必须是有效的 IP 地址"
         );
+    }
+
+    #[test]
+    #[ignore = "requires FINESHELL_LIVE_* environment variables and a stored password"]
+    fn forwards_a_live_ssh_banner_through_a_local_listener() -> Result<(), String> {
+        let host_id = std::env::var("FINESHELL_LIVE_HOST_ID")
+            .map_err(|_| "缺少 FINESHELL_LIVE_HOST_ID".to_string())?;
+        let address = std::env::var("FINESHELL_LIVE_ADDRESS")
+            .map_err(|_| "缺少 FINESHELL_LIVE_ADDRESS".to_string())?;
+        let port = std::env::var("FINESHELL_LIVE_PORT")
+            .unwrap_or_else(|_| "22".to_string())
+            .parse::<u16>()
+            .map_err(|error| format!("FINESHELL_LIVE_PORT 无效：{error}"))?;
+        let username =
+            std::env::var("FINESHELL_LIVE_USERNAME").unwrap_or_else(|_| "root".to_string());
+        let config = SshAuthConfig {
+            host_id,
+            address: address.clone(),
+            port,
+            username,
+            auth_method: SshAuthMethod::Password,
+            private_key_path: None,
+            connect_timeout_seconds: 10,
+            keep_alive_interval_seconds: 5,
+            expected_fingerprint: std::env::var("FINESHELL_LIVE_FINGERPRINT").ok(),
+            proxy: None,
+            jump_host: None,
+        };
+        let (session, _) = connect_authenticated_session(&config, &AtomicBool::new(false))?;
+
+        let available = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|error| format!("查找本地测试端口失败：{error}"))?;
+        let bind_port = available
+            .local_addr()
+            .map_err(|error| format!("读取本地测试端口失败：{error}"))?
+            .port();
+        drop(available);
+        let (forward, _) = start_local_forward(LocalPortForwardRule {
+            id: "live-forward".to_string(),
+            name: "SSH banner".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port,
+            target_address: address,
+            target_port: port,
+            enabled: true,
+        })?;
+        let mut client = TcpStream::connect(
+            forward
+                .listener
+                .local_addr()
+                .map_err(|error| format!("读取转发监听地址失败：{error}"))?,
+        )
+        .map_err(|error| format!("连接本地转发监听失败：{error}"))?;
+        client
+            .set_nonblocking(true)
+            .map_err(|error| format!("设置测试连接非阻塞模式失败：{error}"))?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (socket, peer) = loop {
+            match forward.listener.accept() {
+                Ok(connection) => break connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err("等待本地转发连接超时".to_string());
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => return Err(format!("接受本地转发连接失败：{error}")),
+            }
+        };
+        let mut relay = open_local_forward_connection(&session, &forward, socket, peer)?;
+        let mut banner = Vec::new();
+        let mut buffer = [0_u8; 256];
+        while Instant::now() < deadline {
+            let _ = relay.poll()?;
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(size) => {
+                    banner.extend_from_slice(&buffer[..size]);
+                    if banner.starts_with(b"SSH-") && banner.contains(&b'\n') {
+                        return Ok(());
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(format!("读取转发后的 SSH 标识失败：{error}")),
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        Err(format!(
+            "未收到有效的 SSH 服务标识：{}",
+            String::from_utf8_lossy(&banner)
+        ))
     }
 
     #[test]
