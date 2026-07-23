@@ -51,16 +51,24 @@ ss -H -tunap 2>/dev/null | awk 'BEGIN { OFS="\t" } NR <= 500 { process=""; for (
 "#;
 
 const PROCESS_LIST_COMMAND: &str = r#"
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
 LC_ALL=C
-if ! command -v ps >/dev/null 2>&1; then
+export PATH LC_ALL
+ps_command=$(command -v ps 2>/dev/null)
+if [ -z "$ps_command" ]; then
   printf '__FINESHELL_PS_MISSING__\n'
   exit 127
 fi
-if ! ps -eo pid=,ppid=,user=,stat=,pcpu=,pmem=,rss=,etimes=,comm=,args= --sort=-pcpu >/dev/null 2>&1; then
+awk_command=$(command -v awk 2>/dev/null)
+if [ -z "$awk_command" ]; then
+  printf '__FINESHELL_AWK_MISSING__\n'
+  exit 127
+fi
+if ! "$ps_command" -eo pid=,ppid=,user=,stat=,pcpu=,pmem=,rss=,etimes=,comm=,args= --sort=-pcpu >/dev/null 2>&1; then
   printf '__FINESHELL_PS_UNSUPPORTED__\n'
   exit 2
 fi
-ps -eo pid=,ppid=,user=,stat=,pcpu=,pmem=,rss=,etimes=,comm=,args= --sort=-pcpu 2>/dev/null | awk 'NR <= 500 { print } END { if (NR > 500) print "__FINESHELL_TRUNCATED__" }'
+"$ps_command" -eo pid=,ppid=,user=,stat=,pcpu=,pmem=,rss=,etimes=,comm=,args= --sort=-pcpu 2>/dev/null | "$awk_command" 'NR <= 500 { print } END { if (NR > 500) print "__FINESHELL_TRUNCATED__" }'
 "#;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -595,16 +603,23 @@ pub(crate) fn collect_trace_route(
 
 pub(crate) fn collect_processes(session: &Session) -> Result<ServerProcessListResult, String> {
     let (output, exit_status) = execute_remote_command(session, PROCESS_LIST_COMMAND, "进程采集")?;
-    if exit_status == 127 || output.contains("__FINESHELL_PS_MISSING__") {
-        return Err("远程服务器未安装 ps 命令".to_string());
-    }
-    if output.contains("__FINESHELL_PS_UNSUPPORTED__") {
-        return Err("远程服务器的 ps 命令不支持进程监控所需字段".to_string());
-    }
-    if exit_status != 0 {
-        return Err(format!("进程采集命令异常退出：{exit_status}"));
+    if let Some(error) = process_list_error(&output, exit_status) {
+        return Err(error);
     }
     Ok(parse_process_list(&output))
+}
+
+fn process_list_error(output: &str, exit_status: i32) -> Option<String> {
+    if output.contains("__FINESHELL_PS_MISSING__") {
+        return Some("远程服务器未安装 ps 命令".to_string());
+    }
+    if output.contains("__FINESHELL_AWK_MISSING__") {
+        return Some("远程服务器未安装 awk 命令，无法解析进程数据".to_string());
+    }
+    if output.contains("__FINESHELL_PS_UNSUPPORTED__") {
+        return Some("远程服务器的 ps 命令不支持进程监控所需字段".to_string());
+    }
+    (exit_status != 0).then(|| format!("进程采集命令异常退出：{exit_status}"))
 }
 
 fn process_signal_command(pid: u32, force: bool) -> Result<String, String> {
@@ -634,9 +649,9 @@ pub(crate) fn signal_process(session: &Session, pid: u32, force: bool) -> Result
 mod tests {
     use super::{
         parse_monitor_output, parse_network_connections, parse_ping_output, parse_process_list,
-        parse_trace_output, process_signal_command, validate_ping_target, NetworkConnection,
-        NetworkConnectionsResult, NetworkPingResult, NetworkRouteHop, NetworkTraceResult,
-        ServerMonitorSnapshot, ServerProcess, ServerProcessListResult,
+        parse_trace_output, process_list_error, process_signal_command, validate_ping_target,
+        NetworkConnection, NetworkConnectionsResult, NetworkPingResult, NetworkRouteHop,
+        NetworkTraceResult, ServerMonitorSnapshot, ServerProcess, ServerProcessListResult,
     };
 
     #[test]
@@ -877,6 +892,23 @@ rtt min/avg/max/mdev = 4.800/5.100/5.400/0.245 ms
                 truncated: true,
             }
         );
+    }
+
+    #[test]
+    fn identifies_process_command_failures_without_treating_every_127_as_missing_ps() {
+        assert_eq!(
+            process_list_error("__FINESHELL_PS_MISSING__\n", 127),
+            Some("远程服务器未安装 ps 命令".to_string())
+        );
+        assert_eq!(
+            process_list_error("__FINESHELL_AWK_MISSING__\n", 127),
+            Some("远程服务器未安装 awk 命令，无法解析进程数据".to_string())
+        );
+        assert_eq!(
+            process_list_error("", 127),
+            Some("进程采集命令异常退出：127".to_string())
+        );
+        assert_eq!(process_list_error("", 0), None);
     }
 
     #[test]
