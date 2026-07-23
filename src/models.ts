@@ -6,6 +6,21 @@ export type HostSortMode =
   | "addressAsc"
   | "recentDesc";
 
+export type ProxyType = "socks5" | "http";
+
+export interface ProxyRecord {
+  id: string;
+  name: string;
+  type: ProxyType;
+  address: string;
+  port: number;
+  username?: string;
+}
+
+export interface ProxyFormValues extends Omit<ProxyRecord, "id"> {
+  password?: string;
+}
+
 export interface HostRecord {
   id: string;
   name: string;
@@ -18,6 +33,7 @@ export interface HostRecord {
   keepAliveIntervalSeconds: number;
   autoReconnect: boolean;
   maxReconnectAttempts: number;
+  proxyId?: string;
   group?: string;
   hostFingerprint?: string;
   lastConnectedAt?: string;
@@ -35,6 +51,7 @@ export interface HostFormValues {
   keepAliveIntervalSeconds: number;
   autoReconnect: boolean;
   maxReconnectAttempts: number;
+  proxyId?: string;
   password?: string;
   group?: string;
   hostFingerprint?: string;
@@ -56,6 +73,7 @@ export interface ConnectionHistoryRecord extends QuickTarget {
   keepAliveIntervalSeconds?: number;
   autoReconnect?: boolean;
   maxReconnectAttempts?: number;
+  proxyId?: string;
   connectedAt: string;
 }
 

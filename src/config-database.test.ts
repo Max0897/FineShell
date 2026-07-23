@@ -25,7 +25,8 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(5);
+    expect(configuration.schemaVersion).toBe(6);
+    expect(configuration.proxies).toEqual([]);
     expect(configuration.hostSort).toBe("manual");
     expect(configuration.settings).toEqual(DEFAULT_APP_SETTINGS);
     expect(configuration.updatedAt).toBe("2026-07-22T00:00:00.000Z");
@@ -42,6 +43,7 @@ describe("migrateLegacyConfiguration", () => {
         keepAliveIntervalSeconds: 15,
         autoReconnect: true,
         maxReconnectAttempts: 3,
+        proxyId: undefined,
         group: undefined,
         hostFingerprint: undefined,
         lastConnectedAt: undefined,
@@ -134,6 +136,17 @@ describe("configuration import and export", () => {
           } as never,
         ],
         history: [],
+        proxies: [
+          {
+            id: "proxy-1",
+            name: "Office Proxy",
+            type: "socks5",
+            address: "127.0.0.1",
+            port: 1080,
+            username: "proxy-user",
+            password: "must-not-be-exported",
+          } as never,
+        ],
         hostSort: "manual",
         settings: DEFAULT_APP_SETTINGS,
       },
@@ -143,8 +156,20 @@ describe("configuration import and export", () => {
     expect(contents).toContain('"format": "fineshell-config"');
     expect(contents).toContain('"hostSort": "manual"');
     expect(contents).toContain('"settings"');
+    expect(contents).toContain('"proxies"');
     expect(contents).not.toContain("must-not-be-exported");
-    expect(parseConfigurationExport(contents).hosts).toHaveLength(1);
+    const imported = parseConfigurationExport(contents);
+    expect(imported.hosts).toHaveLength(1);
+    expect(imported.proxies).toEqual([
+      {
+        id: "proxy-1",
+        name: "Office Proxy",
+        type: "socks5",
+        address: "127.0.0.1",
+        port: 1080,
+        username: "proxy-user",
+      },
+    ]);
   });
 
   test("rejects unrelated and newer configuration documents", () => {
@@ -170,6 +195,7 @@ describe("configuration import and export", () => {
     );
 
     expect(imported.hostSort).toBe("manual");
+    expect(imported.proxies).toEqual([]);
     expect(imported.settings).toEqual(DEFAULT_APP_SETTINGS);
   });
 });

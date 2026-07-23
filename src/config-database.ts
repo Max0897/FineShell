@@ -8,6 +8,7 @@ import type {
   ConnectionHistoryRecord,
   HostRecord,
   HostSortMode,
+  ProxyRecord,
 } from "./models";
 
 const DATABASE_NAME = "fineshell.config";
@@ -17,8 +18,8 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 5;
-export const CONFIGURATION_EXPORT_VERSION = 3;
+export const CONFIGURATION_SCHEMA_VERSION = 6;
+export const CONFIGURATION_EXPORT_VERSION = 4;
 export const MAX_CONFIGURATION_BACKUPS = 10;
 export const TRASH_RETENTION_DAYS = 30;
 
@@ -28,6 +29,7 @@ export interface ConfigurationBackup {
   reason: string;
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
+  proxies: ProxyRecord[];
   hostSort: HostSortMode;
 }
 
@@ -43,6 +45,7 @@ export interface FineShellConfiguration {
   schemaVersion: typeof CONFIGURATION_SCHEMA_VERSION;
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
+  proxies: ProxyRecord[];
   hostSort: HostSortMode;
   settings: AppSettings;
   backups: ConfigurationBackup[];
@@ -56,6 +59,7 @@ export interface FineShellConfigurationExport {
   exportedAt: string;
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
+  proxies: ProxyRecord[];
   hostSort: HostSortMode;
   settings: AppSettings;
 }
@@ -92,6 +96,29 @@ function sanitizeHostSortMode(value: unknown): HostSortMode {
     : "manual";
 }
 
+function sanitizeProxy(value: unknown): ProxyRecord | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const id = stringValue(value.id);
+  const name = stringValue(value.name);
+  const address = stringValue(value.address);
+  if (!id || !name || !address) return undefined;
+
+  return {
+    id,
+    name: name.trim(),
+    type: value.type === "http" ? "http" : "socks5",
+    address: address.trim(),
+    port: numberValue(
+      value.port,
+      value.type === "http" ? 8080 : 1080,
+      1,
+      65_535,
+    ),
+    username: stringValue(value.username)?.trim(),
+  };
+}
+
 function sanitizeHost(value: unknown): HostRecord | undefined {
   if (!isRecord(value)) return undefined;
 
@@ -123,6 +150,7 @@ function sanitizeHost(value: unknown): HostRecord | undefined {
     ),
     autoReconnect: optionalBoolean(value.autoReconnect) ?? true,
     maxReconnectAttempts: numberValue(value.maxReconnectAttempts, 3, 0, 10),
+    proxyId: stringValue(value.proxyId),
     group: stringValue(value.group),
     hostFingerprint: stringValue(value.hostFingerprint),
     lastConnectedAt: stringValue(value.lastConnectedAt),
@@ -159,6 +187,7 @@ function sanitizeHistoryRecord(
     ),
     autoReconnect: optionalBoolean(value.autoReconnect) ?? true,
     maxReconnectAttempts: numberValue(value.maxReconnectAttempts, 3, 0, 10),
+    proxyId: stringValue(value.proxyId),
     connectedAt,
   };
 }
@@ -177,6 +206,7 @@ function sanitizeBackup(value: unknown): ConfigurationBackup | undefined {
     reason,
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
+    proxies: sanitizeList(value.proxies, sanitizeProxy),
     hostSort: sanitizeHostSortMode(value.hostSort),
   };
 }
@@ -236,6 +266,7 @@ export function migrateLegacyConfiguration(
       parseLegacyList(storedHistory),
       sanitizeHistoryRecord,
     ).slice(0, 50),
+    proxies: [],
     hostSort: "manual",
     settings: { ...DEFAULT_APP_SETTINGS },
     backups: [],
@@ -258,6 +289,7 @@ function normalizeConfiguration(value: unknown): FineShellConfiguration {
     schemaVersion: CONFIGURATION_SCHEMA_VERSION,
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
+    proxies: sanitizeList(value.proxies, sanitizeProxy),
     hostSort: sanitizeHostSortMode(value.hostSort),
     settings: sanitizeAppSettings(value.settings),
     backups: sanitizeList(value.backups, sanitizeBackup).slice(
@@ -280,6 +312,7 @@ function createBackup(
     reason,
     hosts: configuration.hosts,
     history: configuration.history,
+    proxies: configuration.proxies,
     hostSort: configuration.hostSort,
   };
 }
@@ -287,7 +320,7 @@ function createBackup(
 export function serializeConfigurationExport(
   configuration: Pick<
     FineShellConfiguration,
-    "hosts" | "history" | "hostSort" | "settings"
+    "hosts" | "history" | "proxies" | "hostSort" | "settings"
   >,
   now = new Date().toISOString(),
 ) {
@@ -300,6 +333,7 @@ export function serializeConfigurationExport(
       configuration.history,
       sanitizeHistoryRecord,
     ).slice(0, 50),
+    proxies: sanitizeList(configuration.proxies, sanitizeProxy),
     hostSort: configuration.hostSort,
     settings: sanitizeAppSettings(configuration.settings),
   };
@@ -326,6 +360,7 @@ export function parseConfigurationExport(contents: string) {
   return {
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
+    proxies: sanitizeList(value.proxies, sanitizeProxy),
     hostSort: sanitizeHostSortMode(value.hostSort),
     settings: sanitizeAppSettings(value.settings),
   };
@@ -484,13 +519,14 @@ export function updateStoredHostFingerprint(
 export function importConfiguration(
   imported: Pick<
     FineShellConfiguration,
-    "hosts" | "history" | "hostSort" | "settings"
+    "hosts" | "history" | "proxies" | "hostSort" | "settings"
   >,
 ) {
   return updateConfiguration((current) => ({
     ...current,
     hosts: imported.hosts,
     history: imported.history,
+    proxies: imported.proxies,
     hostSort: imported.hostSort,
     settings: imported.settings,
     backups: [
@@ -509,6 +545,7 @@ export function restoreConfigurationBackup(backupId: string) {
       ...current,
       hosts: backup.hosts,
       history: backup.history,
+      proxies: backup.proxies,
       hostSort: backup.hostSort,
       backups: [
         createBackup(current, "恢复配置前自动备份"),
@@ -603,6 +640,30 @@ export async function purgeExpiredDeletedHosts(now = new Date()) {
 
 export function updateHostSortMode(hostSort: HostSortMode) {
   return updateConfiguration((current) => ({ ...current, hostSort }));
+}
+
+export function upsertProxy(proxy: ProxyRecord) {
+  return updateConfiguration((current) => ({
+    ...current,
+    proxies: current.proxies.some((item) => item.id === proxy.id)
+      ? current.proxies.map((item) => (item.id === proxy.id ? proxy : item))
+      : [...current.proxies, proxy],
+  }));
+}
+
+export function deleteProxy(proxyId: string) {
+  return updateConfiguration((current) => ({
+    ...current,
+    proxies: current.proxies.filter((item) => item.id !== proxyId),
+    hosts: current.hosts.map((host) =>
+      host.proxyId === proxyId ? { ...host, proxyId: undefined } : host,
+    ),
+    history: current.history.map((record) =>
+      record.proxyId === proxyId
+        ? { ...record, proxyId: undefined }
+        : record,
+    ),
+  }));
 }
 
 export function updateAppSettings(settings: AppSettings) {
