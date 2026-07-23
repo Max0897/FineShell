@@ -246,7 +246,6 @@ pub(crate) fn parse_ping_output(target: &str, output: &str) -> Result<NetworkPin
         .and_then(|line| line.split_once('='))
         .map(|(_, values)| {
             values
-                .trim()
                 .split_whitespace()
                 .next()
                 .unwrap_or_default()
