@@ -1,5 +1,6 @@
 const SSH_PASSWORD_SERVICE: &str = "com.fineshell.app.ssh";
 const SSH_PRIVATE_KEY_PASSPHRASE_SERVICE: &str = "com.fineshell.app.ssh-key-passphrase";
+const PROXY_PASSWORD_SERVICE: &str = "com.fineshell.app.proxy";
 
 fn password_entry(host_id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(SSH_PASSWORD_SERVICE, host_id)
@@ -8,6 +9,11 @@ fn password_entry(host_id: &str) -> Result<keyring::Entry, String> {
 
 fn private_key_passphrase_entry(host_id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(SSH_PRIVATE_KEY_PASSPHRASE_SERVICE, host_id)
+        .map_err(|error| format!("无法访问系统凭据库：{error}"))
+}
+
+fn proxy_password_entry(proxy_id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(PROXY_PASSWORD_SERVICE, proxy_id)
         .map_err(|error| format!("无法访问系统凭据库：{error}"))
 }
 
@@ -25,6 +31,15 @@ pub(crate) fn get_host_password(host_id: &str) -> Result<String, String> {
         .map_err(|error| match error {
             keyring::Error::NoEntry => "未找到该主机的登录密码".to_string(),
             _ => format!("读取登录密码失败：{error}"),
+        })
+}
+
+pub(crate) fn get_proxy_password(proxy_id: &str) -> Result<String, String> {
+    proxy_password_entry(proxy_id)?
+        .get_password()
+        .map_err(|error| match error {
+            keyring::Error::NoEntry => "未找到该代理的认证密码".to_string(),
+            _ => format!("读取代理密码失败：{error}"),
         })
 }
 
@@ -122,6 +137,25 @@ pub(crate) fn delete_private_key_passphrase(host_id: String) -> Result<(), Strin
     match private_key_passphrase_entry(&host_id)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("删除私钥口令失败：{error}")),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn store_proxy_password(proxy_id: String, password: String) -> Result<(), String> {
+    if proxy_id.trim().is_empty() || password.is_empty() {
+        return Err("代理标识和密码不能为空".to_string());
+    }
+
+    proxy_password_entry(&proxy_id)?
+        .set_password(&password)
+        .map_err(|error| format!("保存代理密码失败：{error}"))
+}
+
+#[tauri::command]
+pub(crate) fn delete_proxy_password(proxy_id: String) -> Result<(), String> {
+    match proxy_password_entry(&proxy_id)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("删除代理密码失败：{error}")),
     }
 }
 

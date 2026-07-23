@@ -5,6 +5,7 @@ mod monitor;
 mod native_menu;
 mod sftp;
 mod ssh;
+mod transport;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -28,6 +29,8 @@ pub fn run() {
             credentials::copy_host_credentials,
             credentials::store_private_key_passphrase,
             credentials::delete_private_key_passphrase,
+            credentials::store_proxy_password,
+            credentials::delete_proxy_password,
             ssh::ssh_connect,
             ssh::ssh_write,
             ssh::ssh_resize,

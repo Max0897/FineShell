@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
     io::{self, Read, Write},
-    net::{TcpStream, ToSocketAddrs},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -22,6 +21,7 @@ use crate::monitor::{
     self, NetworkConnectionsResult, NetworkPingResult, NetworkTraceResult, ServerMonitorSnapshot,
     ServerProcessListResult,
 };
+use crate::transport::{self, ProxyConfig};
 
 const SSH_OUTPUT_EVENT: &str = "ssh-output";
 const SSH_STATUS_EVENT: &str = "ssh-status";
@@ -39,6 +39,7 @@ pub(crate) struct SshConnectRequest {
     connect_timeout_seconds: u64,
     keep_alive_interval_seconds: u32,
     expected_fingerprint: Option<String>,
+    proxy: Option<ProxyConfig>,
     cols: u32,
     rows: u32,
 }
@@ -60,6 +61,7 @@ pub(crate) struct SshAuthConfig {
     pub(crate) connect_timeout_seconds: u64,
     pub(crate) keep_alive_interval_seconds: u32,
     pub(crate) expected_fingerprint: Option<String>,
+    pub(crate) proxy: Option<ProxyConfig>,
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize)]
@@ -209,28 +211,6 @@ impl SshSessionManager {
     }
 }
 
-fn connect_tcp(config: &SshAuthConfig) -> Result<TcpStream, String> {
-    let timeout = Duration::from_secs(config.connect_timeout_seconds.clamp(3, 120));
-    let addresses = (config.address.as_str(), config.port)
-        .to_socket_addrs()
-        .map_err(|error| format!("无法解析主机地址：{error}"))?;
-    let mut last_error = None;
-
-    for address in addresses {
-        match TcpStream::connect_timeout(&address, timeout) {
-            Ok(stream) => {
-                let _ = stream.set_nodelay(true);
-                return Ok(stream);
-            }
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    Err(last_error
-        .map(|error| format!("无法连接到主机：{error}"))
-        .unwrap_or_else(|| "主机地址没有可用的网络端点".to_string()))
-}
-
 fn host_fingerprint(session: &Session) -> Result<String, String> {
     let hash = session
         .host_key_hash(HashType::Sha256)
@@ -283,7 +263,12 @@ fn connect_handshaken_session(
     config: &SshAuthConfig,
     cancelled: &AtomicBool,
 ) -> Result<(Session, String), String> {
-    let tcp = connect_tcp(config)?;
+    let tcp = transport::connect(
+        &config.address,
+        config.port,
+        config.proxy.as_ref(),
+        config.connect_timeout_seconds,
+    )?;
     if cancelled.load(Ordering::Acquire) {
         return Err("SSH 连接已取消".to_string());
     }
@@ -582,6 +567,7 @@ fn connect_session(
         connect_timeout_seconds: request.connect_timeout_seconds,
         keep_alive_interval_seconds: request.keep_alive_interval_seconds,
         expected_fingerprint: request.expected_fingerprint.clone(),
+        proxy: request.proxy.clone(),
     };
     let (session, fingerprint) = connect_handshaken_session(&auth, &cancelled)?;
     match verify_fingerprint(auth.expected_fingerprint.as_deref(), &fingerprint) {
@@ -940,6 +926,7 @@ mod tests {
             connect_timeout_seconds: 10,
             keep_alive_interval_seconds: 5,
             expected_fingerprint: std::env::var("FINESHELL_LIVE_FINGERPRINT").ok(),
+            proxy: None,
         };
 
         let (session, fingerprint) =
@@ -972,6 +959,7 @@ mod tests {
             connect_timeout_seconds: 10,
             keep_alive_interval_seconds: 15,
             expected_fingerprint: None,
+            proxy: None,
         };
 
         let (session, fingerprint) = connect_handshaken_session(&config, &AtomicBool::new(false))?;
