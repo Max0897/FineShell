@@ -6,6 +6,7 @@ import {
   Message,
   Space,
   Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -19,8 +20,17 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   LocalPortForwardRule,
   PortForwardStatus,
+  RemotePortForwardRule,
   TerminalSession,
 } from "../models";
+
+type ForwardKind = "local" | "remote";
+type RuntimeForwardRule = (
+  | LocalPortForwardRule
+  | RemotePortForwardRule
+) & {
+  kind: ForwardKind;
+};
 
 interface PortForwardDrawerProps {
   session: TerminalSession;
@@ -31,6 +41,10 @@ interface PortForwardDrawerProps {
 
 function endpoint(address: string, port: number) {
   return address.includes(":") ? `[${address}]:${port}` : `${address}:${port}`;
+}
+
+function statusKey(kind: ForwardKind, ruleId: string) {
+  return `${kind}:${ruleId}`;
 }
 
 const STATUS_META = {
@@ -45,35 +59,63 @@ function PortForwardDrawer({
   onCancel,
   onStatusChange,
 }: PortForwardDrawerProps) {
-  const [pendingRuleId, setPendingRuleId] = useState<string>();
-  const rules = session.host.localPortForwards ?? [];
-  const statusByRuleId = useMemo(
+  const [activeKind, setActiveKind] = useState<ForwardKind>("local");
+  const [pendingRuleKey, setPendingRuleKey] = useState<string>();
+  const localRules = useMemo<RuntimeForwardRule[]>(
+    () =>
+      (session.host.localPortForwards ?? []).map((rule) => ({
+        ...rule,
+        kind: "local",
+      })),
+    [session.host.localPortForwards],
+  );
+  const remoteRules = useMemo<RuntimeForwardRule[]>(
+    () =>
+      (session.host.remotePortForwards ?? []).map((rule) => ({
+        ...rule,
+        kind: "remote",
+      })),
+    [session.host.remotePortForwards],
+  );
+  const rules = activeKind === "local" ? localRules : remoteRules;
+  const allRules = [...localRules, ...remoteRules];
+  const statusByRuleKey = useMemo(
     () =>
       new Map(
         (session.portForwardStatuses ?? []).map((status) => [
-          status.ruleId,
+          statusKey(status.kind, status.ruleId),
           status,
         ]),
       ),
     [session.portForwardStatuses],
   );
-  const activeCount = rules.filter(
-    (rule) => statusByRuleId.get(rule.id)?.status === "active",
+  const activeCount = allRules.filter(
+    (rule) =>
+      statusByRuleKey.get(statusKey(rule.kind, rule.id))?.status ===
+      "active",
   ).length;
   const connected = session.status === "connected";
 
   const changeRuntimeStatus = async (
-    rule: LocalPortForwardRule,
+    rule: RuntimeForwardRule,
     running: boolean,
   ) => {
-    setPendingRuleId(rule.id);
+    const key = statusKey(rule.kind, rule.id);
+    setPendingRuleKey(key);
     try {
+      const command = running
+        ? rule.kind === "local"
+          ? "ssh_stop_local_forward"
+          : "ssh_stop_remote_forward"
+        : rule.kind === "local"
+          ? "ssh_start_local_forward"
+          : "ssh_start_remote_forward";
       const status = running
-        ? await invoke<PortForwardStatus>("ssh_stop_local_forward", {
+        ? await invoke<PortForwardStatus>(command, {
             sessionId: session.id,
             ruleId: rule.id,
           })
-        : await invoke<PortForwardStatus>("ssh_start_local_forward", {
+        : await invoke<PortForwardStatus>(command, {
             sessionId: session.id,
             rule,
           });
@@ -81,11 +123,11 @@ function PortForwardDrawer({
     } catch (error) {
       Message.error(String(error));
     } finally {
-      setPendingRuleId(undefined);
+      setPendingRuleKey(undefined);
     }
   };
 
-  const columns: TableColumnProps<LocalPortForwardRule>[] = [
+  const columns: TableColumnProps<RuntimeForwardRule>[] = [
     {
       dataIndex: "name",
       title: "名称",
@@ -96,12 +138,12 @@ function PortForwardDrawer({
       ),
     },
     {
-      title: "本地监听",
+      title: activeKind === "local" ? "本地监听" : "远程监听",
       width: 150,
       render: (_, rule) => endpoint(rule.bindAddress, rule.bindPort),
     },
     {
-      title: "目标地址",
+      title: activeKind === "local" ? "远端目标" : "本地目标",
       width: 160,
       render: (_, rule) => endpoint(rule.targetAddress, rule.targetPort),
     },
@@ -109,9 +151,11 @@ function PortForwardDrawer({
       title: "状态",
       width: 96,
       render: (_, rule) => {
-        const status = statusByRuleId.get(rule.id) ?? {
+        const status = statusByRuleKey.get(
+          statusKey(rule.kind, rule.id),
+        ) ?? {
           ruleId: rule.id,
-          kind: "local" as const,
+          kind: rule.kind,
           status: "stopped" as const,
           bindAddress: rule.bindAddress,
           bindPort: rule.bindPort,
@@ -129,14 +173,15 @@ function PortForwardDrawer({
       title: "操作",
       width: 64,
       render: (_, rule) => {
-        const running = statusByRuleId.get(rule.id)?.status === "active";
+        const key = statusKey(rule.kind, rule.id);
+        const running = statusByRuleKey.get(key)?.status === "active";
         return (
           <Tooltip content={running ? "停止转发" : "启动转发"}>
             <Button
               aria-label={`${running ? "停止" : "启动"} ${rule.name}`}
               disabled={!connected}
               icon={running ? <IconPause /> : <IconPlayArrow />}
-              loading={pendingRuleId === rule.id}
+              loading={pendingRuleKey === key}
               onClick={() => void changeRuntimeStatus(rule, running)}
               size="mini"
               type="text"
@@ -158,24 +203,37 @@ function PortForwardDrawer({
     >
       <div className="port-forward-runtime-summary">
         <Typography.Text type="secondary">
-          本地端口转发通过当前 SSH 会话访问远端服务
+          {activeKind === "local" ? "本地端口转发" : "远程端口转发"}
         </Typography.Text>
         <Space size="mini">
           <Tag color={connected ? "green" : "gray"}>
             {connected ? "SSH 已连接" : "SSH 未连接"}
           </Tag>
           <Typography.Text type="secondary">
-            {activeCount} / {rules.length} 运行中
+            {activeCount} / {allRules.length} 运行中
           </Typography.Text>
         </Space>
       </div>
+      <Tabs
+        activeTab={activeKind}
+        className="port-forward-runtime-tabs"
+        onChange={(key) => setActiveKind(key as ForwardKind)}
+        size="small"
+      >
+        <Tabs.TabPane key="local" title={`本地转发 (${localRules.length})`} />
+        <Tabs.TabPane key="remote" title={`远程转发 (${remoteRules.length})`} />
+      </Tabs>
       <Table
         border={false}
         columns={columns}
         data={rules}
-        noDataElement={<Empty description="暂无本地端口转发规则" />}
+        noDataElement={
+          <Empty
+            description={`暂无${activeKind === "local" ? "本地" : "远程"}端口转发规则`}
+          />
+        }
         pagination={false}
-        rowKey="id"
+        rowKey={(rule) => statusKey(rule.kind, rule.id)}
         size="small"
       />
     </Drawer>

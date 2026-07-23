@@ -187,13 +187,16 @@ function App() {
           if (session.id !== sessionId) return session;
           const statuses = session.portForwardStatuses ?? [];
           const exists = statuses.some(
-            (item) => item.ruleId === status.ruleId,
+            (item) =>
+              item.ruleId === status.ruleId && item.kind === status.kind,
           );
           return {
             ...session,
             portForwardStatuses: exists
               ? statuses.map((item) =>
-                  item.ruleId === status.ruleId ? status : item,
+                  item.ruleId === status.ruleId && item.kind === status.kind
+                    ? status
+                    : item,
                 )
               : [...statuses, status],
           };

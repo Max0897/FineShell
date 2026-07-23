@@ -414,6 +414,14 @@ body,
   white-space: nowrap;
 }
 
+.port-forward-runtime-tabs > .arco-tabs-header-nav {
+  margin: 0 0 12px;
+}
+
+.port-forward-runtime-tabs > .arco-tabs-content {
+  display: none;
+}
+
 .terminal-tabs {
   height: 100%;
   display: flex;
