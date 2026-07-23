@@ -34,6 +34,7 @@ export interface HostRecord {
   autoReconnect: boolean;
   maxReconnectAttempts: number;
   proxyId?: string;
+  jumpHostId?: string;
   group?: string;
   hostFingerprint?: string;
   lastConnectedAt?: string;
@@ -52,6 +53,7 @@ export interface HostFormValues {
   autoReconnect: boolean;
   maxReconnectAttempts: number;
   proxyId?: string;
+  jumpHostId?: string;
   password?: string;
   group?: string;
   hostFingerprint?: string;
@@ -74,7 +76,13 @@ export interface ConnectionHistoryRecord extends QuickTarget {
   autoReconnect?: boolean;
   maxReconnectAttempts?: number;
   proxyId?: string;
+  jumpHostId?: string;
   connectedAt: string;
+}
+
+export interface JumpHostConnection {
+  host: HostRecord;
+  proxy?: ProxyRecord;
 }
 
 export type TerminalSessionStatus =
@@ -88,6 +96,7 @@ export interface TerminalSession {
   id: string;
   host: HostRecord;
   proxy?: ProxyRecord;
+  jumpHost?: JumpHostConnection;
   openedAt: string;
   status: TerminalSessionStatus;
   error?: string;

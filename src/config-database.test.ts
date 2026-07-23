@@ -25,7 +25,7 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(6);
+    expect(configuration.schemaVersion).toBe(7);
     expect(configuration.proxies).toEqual([]);
     expect(configuration.hostSort).toBe("manual");
     expect(configuration.settings).toEqual(DEFAULT_APP_SETTINGS);
@@ -44,6 +44,7 @@ describe("migrateLegacyConfiguration", () => {
         autoReconnect: true,
         maxReconnectAttempts: 3,
         proxyId: undefined,
+        jumpHostId: undefined,
         group: undefined,
         hostFingerprint: undefined,
         lastConnectedAt: undefined,
@@ -132,6 +133,7 @@ describe("configuration import and export", () => {
             keepAliveIntervalSeconds: 15,
             autoReconnect: true,
             maxReconnectAttempts: 3,
+            jumpHostId: "jump-1",
             password: "must-not-be-exported",
           } as never,
         ],
@@ -160,6 +162,7 @@ describe("configuration import and export", () => {
     expect(contents).not.toContain("must-not-be-exported");
     const imported = parseConfigurationExport(contents);
     expect(imported.hosts).toHaveLength(1);
+    expect(imported.hosts[0].jumpHostId).toBe("jump-1");
     expect(imported.proxies).toEqual([
       {
         id: "proxy-1",

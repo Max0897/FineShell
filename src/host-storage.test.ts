@@ -14,6 +14,7 @@ describe("normalizeHostForm", () => {
       autoReconnect: true,
       maxReconnectAttempts: 3,
       proxyId: "proxy-1",
+      jumpHostId: "jump-1",
       password: "secret",
       group: "  Linux  ",
       hostFingerprint: " SHA256:abc123 ",
@@ -32,6 +33,7 @@ describe("normalizeHostForm", () => {
       autoReconnect: true,
       maxReconnectAttempts: 3,
       proxyId: "proxy-1",
+      jumpHostId: "jump-1",
       group: "Linux",
       hostFingerprint: "SHA256:abc123",
     });

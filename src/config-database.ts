@@ -18,8 +18,8 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 6;
-export const CONFIGURATION_EXPORT_VERSION = 4;
+export const CONFIGURATION_SCHEMA_VERSION = 7;
+export const CONFIGURATION_EXPORT_VERSION = 5;
 export const MAX_CONFIGURATION_BACKUPS = 10;
 export const TRASH_RETENTION_DAYS = 30;
 
@@ -151,6 +151,7 @@ function sanitizeHost(value: unknown): HostRecord | undefined {
     autoReconnect: optionalBoolean(value.autoReconnect) ?? true,
     maxReconnectAttempts: numberValue(value.maxReconnectAttempts, 3, 0, 10),
     proxyId: stringValue(value.proxyId),
+    jumpHostId: stringValue(value.jumpHostId),
     group: stringValue(value.group),
     hostFingerprint: stringValue(value.hostFingerprint),
     lastConnectedAt: stringValue(value.lastConnectedAt),
@@ -188,6 +189,7 @@ function sanitizeHistoryRecord(
     autoReconnect: optionalBoolean(value.autoReconnect) ?? true,
     maxReconnectAttempts: numberValue(value.maxReconnectAttempts, 3, 0, 10),
     proxyId: stringValue(value.proxyId),
+    jumpHostId: stringValue(value.jumpHostId),
     connectedAt,
   };
 }
@@ -585,7 +587,18 @@ export function moveHostToTrash(hostId: string) {
 
     return {
       ...current,
-      hosts: current.hosts.filter((item) => item.id !== hostId),
+      hosts: current.hosts
+        .filter((item) => item.id !== hostId)
+        .map((item) =>
+          item.jumpHostId === hostId
+            ? { ...item, jumpHostId: undefined }
+            : item,
+        ),
+      history: current.history.map((record) =>
+        record.jumpHostId === hostId
+          ? { ...record, jumpHostId: undefined }
+          : record,
+      ),
       backups: [
         createBackup(current, "删除主机前自动备份"),
         ...current.backups,
