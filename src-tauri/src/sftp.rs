@@ -1,8 +1,9 @@
 use std::{
     collections::HashMap,
-    fs::{File as LocalFile, OpenOptions},
+    ffi::OsString,
+    fs::{self, File as LocalFile, OpenOptions},
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -488,8 +489,23 @@ fn download_file(
 ) -> Result<(), String> {
     let remote_path = Path::new(remote_path);
     let local_path = Path::new(local_path);
+    if local_path.is_dir() {
+        return Err("下载目标不能是文件夹".to_string());
+    }
     if local_path.exists() && !overwrite {
         return Err("本地目标已存在，需要确认覆盖".to_string());
+    }
+    let parent = local_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        return Err(format!("下载目标目录不存在：{}", parent.display()));
+    }
+    let temporary_path = download_temporary_path(local_path, transfer_id)?;
+    if temporary_path.exists() {
+        fs::remove_file(&temporary_path)
+            .map_err(|error| format!("无法清理上次未完成的下载文件：{error}"))?;
     }
 
     let total = sftp
@@ -505,31 +521,83 @@ fn download_file(
         .open(remote_path)
         .map_err(|error| format!("无法打开远程文件：{error}"))?;
     let mut target = OpenOptions::new()
-        .create(true)
+        .create_new(true)
         .write(true)
-        .truncate(true)
-        .open(local_path)
-        .map_err(|error| format!("无法创建本地文件：{error}"))?;
-    let mut buffer = vec![0_u8; TRANSFER_BUFFER_SIZE];
-    let mut transferred = 0_u64;
-    loop {
-        let size = source
-            .read(&mut buffer)
-            .map_err(|error| format!("读取远程文件失败：{error}"))?;
-        if size == 0 {
-            break;
+        .open(&temporary_path)
+        .map_err(|error| {
+            format!(
+                "无法在所选目录“{}”创建临时下载文件：{error}",
+                parent.display()
+            )
+        })?;
+    let result = (|| -> Result<u64, String> {
+        let mut buffer = vec![0_u8; TRANSFER_BUFFER_SIZE];
+        let mut transferred = 0_u64;
+        loop {
+            let size = source
+                .read(&mut buffer)
+                .map_err(|error| format!("读取远程文件失败：{error}"))?;
+            if size == 0 {
+                break;
+            }
+            target
+                .write_all(&buffer[..size])
+                .map_err(|error| format!("写入本地临时文件失败：{error}"))?;
+            transferred += size as u64;
+            reporter.running(transferred);
         }
         target
-            .write_all(&buffer[..size])
-            .map_err(|error| format!("写入本地文件失败：{error}"))?;
-        transferred += size as u64;
-        reporter.running(transferred);
-    }
-    target
-        .flush()
-        .map_err(|error| format!("刷新本地文件失败：{error}"))?;
+            .flush()
+            .map_err(|error| format!("刷新本地临时文件失败：{error}"))?;
+        drop(target);
+        replace_download_file(&temporary_path, local_path, overwrite)?;
+        Ok(transferred)
+    })();
+    let transferred = match result {
+        Ok(transferred) => transferred,
+        Err(error) => {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(error);
+        }
+    };
     reporter.completed(transferred);
     Ok(())
+}
+
+fn download_temporary_path(local_path: &Path, transfer_id: &str) -> Result<PathBuf, String> {
+    let file_name = local_path
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "下载目标缺少文件名".to_string())?;
+    let safe_transfer_id: String = transfer_id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .take(64)
+        .collect();
+    let safe_transfer_id = if safe_transfer_id.is_empty() {
+        "transfer"
+    } else {
+        &safe_transfer_id
+    };
+    let mut temporary_name = OsString::from(".");
+    temporary_name.push(file_name);
+    temporary_name.push(format!(".{safe_transfer_id}.part"));
+    Ok(local_path.with_file_name(temporary_name))
+}
+
+fn replace_download_file(
+    temporary_path: &Path,
+    local_path: &Path,
+    overwrite: bool,
+) -> Result<(), String> {
+    if local_path.exists() && !overwrite {
+        return Err("本地目标已存在，需要确认覆盖".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    if local_path.exists() {
+        fs::remove_file(local_path).map_err(|error| format!("无法覆盖现有本地文件：{error}"))?;
+    }
+    fs::rename(temporary_path, local_path).map_err(|error| format!("无法保存下载文件：{error}"))
 }
 
 fn run_session(
@@ -927,6 +995,7 @@ pub(crate) fn sftp_disconnect(
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
         io::{Read, Write},
         path::Path,
         sync::atomic::{AtomicBool, Ordering},
@@ -935,7 +1004,10 @@ mod tests {
 
     use ssh2::{FileStat, RenameFlags};
 
-    use super::{entry_kind, fast_delete_command, shell_quote, SftpCommand, SftpSessionManager};
+    use super::{
+        download_temporary_path, entry_kind, fast_delete_command, replace_download_file,
+        shell_quote, SftpCommand, SftpSessionManager,
+    };
     use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
 
     #[test]
@@ -976,6 +1048,43 @@ mod tests {
         assert!(fast_delete_command(&["/./".to_string()]).is_err());
         assert!(fast_delete_command(&["/tmp/../data".to_string()]).is_err());
         assert!(fast_delete_command(&["relative/path".to_string()]).is_err());
+    }
+
+    #[test]
+    fn keeps_partial_downloads_next_to_the_selected_file() {
+        let target = Path::new("downloads/archive.zip");
+        let temporary = download_temporary_path(target, "transfer-123").unwrap();
+        assert_eq!(
+            temporary,
+            Path::new("downloads/.archive.zip.transfer-123.part")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn replaces_an_existing_read_only_download_after_completion() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "fineshell-download-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let target = directory.join("archive.zip");
+        let temporary = directory.join(".archive.zip.transfer.part");
+        fs::write(&target, b"old").unwrap();
+        let mut permissions = fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&target, permissions).unwrap();
+        fs::write(&temporary, b"new archive").unwrap();
+
+        replace_download_file(&temporary, &target, true).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new archive");
+        assert!(!temporary.exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
