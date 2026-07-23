@@ -502,16 +502,22 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
                   }}
                 >
                   <Menu.Item key="edit">
-                    <IconEdit />
-                    编辑
+                    <span className="host-more-menu-label">
+                      <IconEdit />
+                      编辑
+                    </span>
                   </Menu.Item>
                   <Menu.Item key="copy">
-                    <IconCopy />
-                    复制
+                    <span className="host-more-menu-label">
+                      <IconCopy />
+                      复制
+                    </span>
                   </Menu.Item>
                   <Menu.Item className="host-more-delete" key="delete">
-                    <IconDelete />
-                    删除
+                    <span className="host-more-menu-label">
+                      <IconDelete />
+                      删除
+                    </span>
                   </Menu.Item>
                 </Menu>
               }

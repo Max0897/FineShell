@@ -973,8 +973,14 @@ body,
   color: #f53f3f;
 }
 
-.host-more-menu .arco-menu-item .arco-icon {
-  margin-right: 8px;
+.host-more-menu-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.host-more-menu-label > .arco-icon {
+  margin-right: 0 !important;
 }
 
 .app-context-menu {
