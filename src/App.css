@@ -1248,6 +1248,10 @@ body,
   padding-inline: 16px;
 }
 
+.host-editor-tabs > .arco-tabs-header-nav .arco-tabs-header {
+  width: 100%;
+}
+
 .host-editor-tabs > .arco-tabs-content {
   min-width: 0;
   padding-left: 16px;
