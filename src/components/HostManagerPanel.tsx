@@ -483,6 +483,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
               disabled={configurationAction}
               droplist={
                 <Menu
+                  className="host-more-menu"
                   onClickMenuItem={(key) => {
                     if (key === "edit") {
                       openHostEditor(row.host);

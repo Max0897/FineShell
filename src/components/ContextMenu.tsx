@@ -74,8 +74,10 @@ function renderMenuItem(item: ContextMenuItem): ReactNode {
       disabled={item.disabled}
       key={item.key}
     >
-      {item.icon}
-      {item.label}
+      <span className="app-context-menu-label">
+        {item.icon}
+        {item.label}
+      </span>
     </Menu.Item>
   );
 }

@@ -27,7 +27,6 @@ import {
   IconFolderAdd,
   IconHistory,
   IconLock,
-  IconPlus,
   IconRefresh,
   IconThunderbolt,
   IconUpload,
@@ -743,40 +742,17 @@ function SftpPanel({
       });
     }
 
-    menuItems.push(
-      {
-        key: "create",
-        label: "新建",
-        icon: <IconPlus />,
-        children: [
-          {
-            key: "create-file",
-            label: "文件",
-            icon: <IconFile />,
-            disabled: operationLoading,
-            onClick: () => openCreateDialog("file"),
-          },
-          {
-            key: "create-directory",
-            label: "文件夹",
-            icon: <IconFolderAdd />,
-            disabled: operationLoading,
-            onClick: () => openCreateDialog("directory"),
-          },
-        ],
+    menuItems.push({
+      key: "refresh",
+      label: "刷新",
+      icon: <IconRefresh />,
+      disabled: operationLoading,
+      onClick: () => {
+        if (session && browser) {
+          return loadDirectory(session.id, browser.path);
+        }
       },
-      {
-        key: "refresh",
-        label: "刷新",
-        icon: <IconRefresh />,
-        disabled: operationLoading,
-        onClick: () => {
-          if (session && browser) {
-            return loadDirectory(session.id, browser.path);
-          }
-        },
-      },
-    );
+    });
 
     if (entries.length > 0) {
       menuItems.push({

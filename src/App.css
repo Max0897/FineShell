@@ -973,6 +973,10 @@ body,
   color: #f53f3f;
 }
 
+.host-more-menu .arco-menu-item .arco-icon {
+  margin-right: 8px;
+}
+
 .app-context-menu {
   min-width: 150px;
   border: 1px solid #e5e6eb;
@@ -992,6 +996,10 @@ body,
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.app-context-menu .app-context-menu-label > .arco-icon {
+  margin-right: 0;
 }
 
 @media (max-width: 760px) {
