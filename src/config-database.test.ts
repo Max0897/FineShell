@@ -25,8 +25,9 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(10);
+    expect(configuration.schemaVersion).toBe(11);
     expect(configuration.proxies).toEqual([]);
+    expect(configuration.sshKeys).toEqual([]);
     expect(configuration.hostSort).toBe("manual");
     expect(configuration.settings).toEqual(DEFAULT_APP_SETTINGS);
     expect(configuration.updatedAt).toBe("2026-07-22T00:00:00.000Z");
@@ -38,6 +39,7 @@ describe("migrateLegacyConfiguration", () => {
         port: 22,
         username: "root",
         authMethod: "password",
+        sshKeyId: undefined,
         privateKeyPath: undefined,
         connectTimeoutSeconds: 10,
         keepAliveIntervalSeconds: 15,
@@ -183,6 +185,14 @@ describe("configuration import and export", () => {
             password: "must-not-be-exported",
           } as never,
         ],
+        sshKeys: [
+          {
+            id: "ssh-key-1",
+            name: "Production key",
+            privateKeyPath: "/Users/demo/.ssh/id_ed25519",
+            passphrase: "key-passphrase-must-not-be-exported",
+          } as never,
+        ],
         hostSort: "manual",
         settings: DEFAULT_APP_SETTINGS,
       },
@@ -193,7 +203,9 @@ describe("configuration import and export", () => {
     expect(contents).toContain('"hostSort": "manual"');
     expect(contents).toContain('"settings"');
     expect(contents).toContain('"proxies"');
+    expect(contents).toContain('"sshKeys"');
     expect(contents).not.toContain("must-not-be-exported");
+    expect(contents).not.toContain("key-passphrase-must-not-be-exported");
     const imported = parseConfigurationExport(contents);
     expect(imported.hosts).toHaveLength(1);
     expect(imported.hosts[0].jumpHostId).toBe("jump-1");
@@ -208,6 +220,13 @@ describe("configuration import and export", () => {
         address: "127.0.0.1",
         port: 1080,
         username: "proxy-user",
+      },
+    ]);
+    expect(imported.sshKeys).toEqual([
+      {
+        id: "ssh-key-1",
+        name: "Production key",
+        privateKeyPath: "/Users/demo/.ssh/id_ed25519",
       },
     ]);
   });
@@ -236,6 +255,7 @@ describe("configuration import and export", () => {
 
     expect(imported.hostSort).toBe("manual");
     expect(imported.proxies).toEqual([]);
+    expect(imported.sshKeys).toEqual([]);
     expect(imported.settings).toEqual(DEFAULT_APP_SETTINGS);
   });
 
@@ -260,5 +280,44 @@ describe("configuration import and export", () => {
 
     expect(imported.hosts[0].authMethod).toBe("agent");
     expect(imported.hosts[0].privateKeyPath).toBeUndefined();
+  });
+
+  test("preserves managed key references without importing passphrases", () => {
+    const imported = parseConfigurationExport(
+      JSON.stringify({
+        format: "fineshell-config",
+        schemaVersion: 9,
+        hosts: [
+          {
+            id: "key-host",
+            name: "Key Server",
+            address: "key.example.com",
+            port: 22,
+            username: "deploy",
+            authMethod: "privateKey",
+            sshKeyId: "ssh-key-1",
+            privateKeyPath: "/tmp/duplicated-key",
+          },
+        ],
+        history: [],
+        sshKeys: [
+          {
+            id: "ssh-key-1",
+            name: "Production key",
+            privateKeyPath: "/Users/demo/.ssh/id_ed25519",
+            passphrase: "must-not-be-imported",
+          },
+        ],
+      }),
+    );
+
+    expect(imported.hosts[0].sshKeyId).toBe("ssh-key-1");
+    expect(imported.hosts[0].privateKeyPath).toBeUndefined();
+    expect(imported.sshKeys[0]).toEqual({
+      id: "ssh-key-1",
+      name: "Production key",
+      privateKeyPath: "/Users/demo/.ssh/id_ed25519",
+    });
+    expect(imported.sshKeys[0]).not.toHaveProperty("passphrase");
   });
 });

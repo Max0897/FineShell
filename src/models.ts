@@ -21,6 +21,16 @@ export interface ProxyFormValues extends Omit<ProxyRecord, "id"> {
   password?: string;
 }
 
+export interface SshKeyRecord {
+  id: string;
+  name: string;
+  privateKeyPath: string;
+}
+
+export interface SshKeyFormValues extends Omit<SshKeyRecord, "id"> {
+  passphrase?: string;
+}
+
 export interface LocalPortForwardRule {
   id: string;
   name: string;
@@ -65,6 +75,7 @@ export interface HostRecord {
   port: number;
   username: string;
   authMethod: HostAuthMethod;
+  sshKeyId?: string;
   privateKeyPath?: string;
   connectTimeoutSeconds: number;
   keepAliveIntervalSeconds: number;
@@ -86,6 +97,7 @@ export interface HostFormValues {
   port: number;
   username: string;
   authMethod: HostAuthMethod;
+  sshKeyId?: string;
   privateKeyPath?: string;
   privateKeyPassphrase?: string;
   connectTimeoutSeconds: number;
@@ -113,6 +125,7 @@ export interface ConnectionHistoryRecord extends QuickTarget {
   hostId?: string;
   name: string;
   authMethod?: HostAuthMethod;
+  sshKeyId?: string;
   privateKeyPath?: string;
   hostFingerprint?: string;
   keepAliveIntervalSeconds?: number;

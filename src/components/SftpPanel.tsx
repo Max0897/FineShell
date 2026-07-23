@@ -52,7 +52,7 @@ import {
   remoteJoinPath,
   remoteParentPath,
 } from "../sftp-utils";
-import { jumpHostRequest } from "../terminal-utils";
+import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
 type CreateEntryKind = "file" | "directory";
@@ -211,7 +211,7 @@ function SftpPanel({
           const result = await invoke<SftpConnectResult>("sftp_connect", {
             request: {
               sessionId: currentSession.id,
-              hostId: currentSession.host.id,
+              hostId: sshCredentialId(currentSession.host),
               address: currentSession.host.address,
               port: currentSession.host.port,
               username: currentSession.host.username,

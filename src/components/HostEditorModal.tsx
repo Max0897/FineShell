@@ -9,9 +9,15 @@ import {
   Space,
   Tabs,
   Tooltip,
+  Typography,
 } from "@arco-design/web-react";
 import { IconFolder } from "@arco-design/web-react/icon";
-import type { HostFormValues, HostRecord, ProxyRecord } from "../models";
+import type {
+  HostFormValues,
+  HostRecord,
+  ProxyRecord,
+  SshKeyRecord,
+} from "../models";
 import type { AppSettings } from "../app-settings";
 import PortForwardRulesEditor from "./PortForwardRulesEditor";
 
@@ -37,6 +43,7 @@ interface HostEditorModalProps {
   host: HostRecord | null;
   hosts: HostRecord[];
   proxies: ProxyRecord[];
+  sshKeys: SshKeyRecord[];
   visible: boolean;
   onCancel: () => void;
   onChoosePrivateKey: () => Promise<string | undefined>;
@@ -48,6 +55,7 @@ function HostEditorModal({
   host,
   hosts,
   proxies,
+  sshKeys,
   visible,
   onCancel,
   onChoosePrivateKey,
@@ -57,6 +65,7 @@ function HostEditorModal({
   const [authMethod, setAuthMethod] = useState(
     host?.authMethod ?? "password",
   );
+  const [sshKeyId, setSshKeyId] = useState(host?.sshKeyId);
   const [activeTab, setActiveTab] = useState("basic");
   const [proxyId, setProxyId] = useState(host?.proxyId);
   const [jumpHostId, setJumpHostId] = useState(host?.jumpHostId);
@@ -73,6 +82,7 @@ function HostEditorModal({
   useEffect(() => {
     if (visible) {
       setActiveTab("basic");
+      setSshKeyId(host?.sshKeyId);
       setProxyId(host?.proxyId);
       setJumpHostId(host?.jumpHostId);
       setLocalPortForwards(host?.localPortForwards ?? []);
@@ -88,6 +98,7 @@ function HostEditorModal({
         port: host.port,
         username: host.username,
         authMethod: host.authMethod,
+        sshKeyId: host.sshKeyId,
         privateKeyPath: host.privateKeyPath,
         privateKeyPassphrase: "",
         password: "",
@@ -101,6 +112,7 @@ function HostEditorModal({
         port: 22,
         username: "root",
         authMethod: "password",
+        sshKeyId: undefined,
         privateKeyPath: "",
         privateKeyPassphrase: "",
         password: "",
@@ -224,35 +236,58 @@ function HostEditorModal({
               ) : authMethod === "privateKey" ? (
                 <>
                   <Form.Item
-                    field="privateKeyPath"
-                    label="私钥文件"
-                    rules={[{ required: true, message: "请选择私钥文件" }]}
+                    field="sshKeyId"
+                    label="私钥"
+                    rules={
+                      host?.privateKeyPath && !sshKeyId
+                        ? undefined
+                        : [{ required: true, message: "请选择私钥" }]
+                    }
                   >
-                    <Input.Search
-                      onSearch={() =>
-                        void onChoosePrivateKey().then((path) => {
-                          if (path) {
-                            form.setFieldValue("privateKeyPath", path);
+                    <Select
+                      allowClear
+                      onChange={setSshKeyId}
+                      options={sshKeys.map((sshKey) => ({
+                        label: sshKey.name,
+                        value: sshKey.id,
+                      }))}
+                      placeholder="从密钥管理中选择"
+                    />
+                  </Form.Item>
+                  {!sshKeyId && host?.privateKeyPath ? (
+                    <>
+                      <Typography.Text type="secondary">
+                        当前主机使用旧版直接私钥配置，可继续使用或改选集中管理的密钥。
+                      </Typography.Text>
+                      <Form.Item field="privateKeyPath" label="私钥文件">
+                        <Input.Search
+                          onSearch={() =>
+                            void onChoosePrivateKey().then((path) => {
+                              if (path) {
+                                form.setFieldValue("privateKeyPath", path);
+                              }
+                            })
                           }
-                        })
-                      }
-                      placeholder="选择或输入私钥文件路径"
-                      searchButton={
-                        <Tooltip content="选择私钥文件">
-                          <IconFolder />
-                        </Tooltip>
-                      }
-                    />
-                  </Form.Item>
-                  <Form.Item field="privateKeyPassphrase" label="私钥口令">
-                    <Input.Password
-                      placeholder={
-                        host?.authMethod === "privateKey"
-                          ? "留空则保留原口令"
-                          : "没有口令可留空"
-                      }
-                    />
-                  </Form.Item>
+                          placeholder="选择或输入私钥文件路径"
+                          searchButton={
+                            <Tooltip content="选择私钥文件">
+                              <IconFolder />
+                            </Tooltip>
+                          }
+                        />
+                      </Form.Item>
+                      <Form.Item
+                        field="privateKeyPassphrase"
+                        label="私钥口令"
+                      >
+                        <Input.Password placeholder="留空则保留原口令" />
+                      </Form.Item>
+                    </>
+                  ) : sshKeys.length === 0 ? (
+                    <Typography.Text type="secondary">
+                      请先在设置的“密钥”中添加私钥。
+                    </Typography.Text>
+                  ) : null}
                 </>
               ) : null}
             </div>

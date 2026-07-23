@@ -38,6 +38,7 @@ import type {
   JumpHostConnection,
   QuickTarget,
   ProxyRecord,
+  SshKeyRecord,
 } from "../models";
 import HostEditorModal from "./HostEditorModal";
 import {
@@ -113,6 +114,15 @@ function formatTime(value?: string) {
   }).format(new Date(value));
 }
 
+function resolveManagedPrivateKey(
+  host: HostRecord,
+  sshKeys: SshKeyRecord[],
+) {
+  if (host.authMethod !== "privateKey" || !host.sshKeyId) return host;
+  const sshKey = sshKeys.find((item) => item.id === host.sshKeyId);
+  return sshKey ? { ...host, privateKeyPath: sshKey.privateKeyPath } : undefined;
+}
+
 interface HostManagerPanelProps {
   onConnect: (
     host: HostRecord,
@@ -126,6 +136,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [history, setHistory] = useState<ConnectionHistoryRecord[]>([]);
   const [proxies, setProxies] = useState<ProxyRecord[]>([]);
+  const [sshKeys, setSshKeys] = useState<SshKeyRecord[]>([]);
   const [hostSort, setHostSort] = useState<HostSortMode>("manual");
   const [configurationLoading, setConfigurationLoading] = useState(true);
   const [configurationAction, setConfigurationAction] = useState(false);
@@ -141,9 +152,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
   const [quickPassword, setQuickPassword] = useState("");
   const [quickAuthMethod, setQuickAuthMethod] =
     useState<HostAuthMethod>("password");
-  const [quickPrivateKeyPath, setQuickPrivateKeyPath] = useState("");
-  const [quickPrivateKeyPassphrase, setQuickPrivateKeyPassphrase] =
-    useState("");
+  const [quickSshKeyId, setQuickSshKeyId] = useState<string>();
   const [quickProxyId, setQuickProxyId] = useState<string>();
 
   useEffect(() => {
@@ -154,6 +163,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         setHosts(configuration.hosts);
         setHistory(configuration.history);
         setProxies(configuration.proxies);
+        setSshKeys(configuration.sshKeys);
         setHostSort(configuration.hostSort);
 
         const cleanup = await Promise.allSettled(
@@ -192,6 +202,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
           setHosts(configuration.hosts);
           setHistory(configuration.history);
           setProxies(configuration.proxies);
+          setSshKeys(configuration.sshKeys);
           setHostSort(configuration.hostSort);
         })
         .catch((error) => {
@@ -348,6 +359,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
   }
 
   async function sendConnection(host: HostRecord) {
+    let connectionSshKeys = sshKeys;
     const proxy = host.proxyId
       ? proxies.find((item) => item.id === host.proxyId)
       : undefined;
@@ -362,6 +374,8 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       try {
         const configuration = await loadConfiguration();
         setHosts(configuration.hosts);
+        setSshKeys(configuration.sshKeys);
+        connectionSshKeys = configuration.sshKeys;
         jumpHost = configuration.hosts.find(
           (item) => item.id === host.jumpHostId,
         );
@@ -388,9 +402,22 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       Message.error("跳板机引用的代理不存在，请重新编辑跳板机");
       return;
     }
+    const resolvedHost = resolveManagedPrivateKey(host, connectionSshKeys);
+    if (!resolvedHost) {
+      Message.error("主机引用的私钥不存在，请重新编辑主机");
+      return;
+    }
+    const resolvedJumpHost = jumpHost
+      ? resolveManagedPrivateKey(jumpHost, connectionSshKeys)
+      : undefined;
+    if (jumpHost && !resolvedJumpHost) {
+      Message.error("跳板机引用的私钥不存在，请重新编辑跳板机");
+      return;
+    }
     const now = new Date().toISOString();
     const identity = targetKey(host);
-    const connectedHost = { ...host, lastConnectedAt: now };
+    const storedConnectedHost = { ...host, lastConnectedAt: now };
+    const connectedHost = { ...resolvedHost, lastConnectedAt: now };
     const historyRecord: ConnectionHistoryRecord = {
       id: createId("history"),
       hostId: host.id.startsWith("quick-") ? undefined : host.id,
@@ -399,6 +426,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       port: host.port,
       username: host.username,
       authMethod: host.authMethod,
+      sshKeyId: host.sshKeyId,
       privateKeyPath: host.privateKeyPath,
       hostFingerprint: host.hostFingerprint,
       keepAliveIntervalSeconds: host.keepAliveIntervalSeconds,
@@ -413,7 +441,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     };
 
     const nextHosts = hosts.map((item) =>
-      item.id === host.id ? connectedHost : item,
+      item.id === host.id ? storedConnectedHost : item,
     );
     const nextHistory = [
       historyRecord,
@@ -431,7 +459,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     onConnect(
       connectedHost,
       proxy,
-      jumpHost ? { host: jumpHost, proxy: jumpProxy } : undefined,
+      resolvedJumpHost ? { host: resolvedJumpHost, proxy: jumpProxy } : undefined,
     );
   }
 
@@ -440,7 +468,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       quickAuthMethod === "password"
         ? Boolean(quickPassword)
         : quickAuthMethod === "privateKey"
-          ? Boolean(quickPrivateKeyPath.trim())
+          ? Boolean(quickSshKeyId)
           : true;
     if (!quickTarget.address.trim() || !credentialReady) return;
 
@@ -453,10 +481,8 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       id: `quick-${targetKey({ ...normalized, proxyId: quickProxyId })}`,
       name: normalized.address,
       authMethod: quickAuthMethod,
-      privateKeyPath:
-        quickAuthMethod === "privateKey"
-          ? quickPrivateKeyPath.trim()
-          : undefined,
+      sshKeyId:
+        quickAuthMethod === "privateKey" ? quickSshKeyId : undefined,
       connectTimeoutSeconds: settings.defaultConnectTimeoutSeconds,
       keepAliveIntervalSeconds: settings.defaultKeepAliveIntervalSeconds,
       autoReconnect: settings.defaultAutoReconnect,
@@ -468,16 +494,8 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     try {
       if (quickAuthMethod === "password") {
         await storeHostPassword(host.id, quickPassword);
-      } else if (
-        quickAuthMethod === "privateKey" &&
-        quickPrivateKeyPassphrase
-      ) {
-        await storePrivateKeyPassphrase(host.id, quickPrivateKeyPassphrase);
-      } else if (quickAuthMethod === "privateKey") {
-        await removePrivateKeyPassphrase(host.id);
       }
       setQuickPassword("");
-      setQuickPrivateKeyPassphrase("");
       await sendConnection(host);
     } catch {
       Message.error("认证凭据保存失败，请检查系统凭据库权限");
@@ -494,6 +512,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         port: record.port,
         username: record.username,
         authMethod: record.authMethod ?? "password",
+        sshKeyId: record.sshKeyId,
         privateKeyPath: record.privateKeyPath,
         hostFingerprint: record.hostFingerprint,
         connectTimeoutSeconds: settings.defaultConnectTimeoutSeconds,
@@ -755,28 +774,15 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
                   value={quickPassword}
                 />
               ) : quickAuthMethod === "privateKey" ? (
-                <div className="quick-key-credentials">
-                  <Input.Search
-                    onChange={setQuickPrivateKeyPath}
-                    onSearch={() =>
-                      void choosePrivateKeyPath().then((path) => {
-                        if (path) setQuickPrivateKeyPath(path);
-                      })
-                    }
-                    placeholder="私钥文件"
-                    searchButton={
-                      <Tooltip content="选择私钥文件">
-                        <IconFolder />
-                      </Tooltip>
-                    }
-                    value={quickPrivateKeyPath}
-                  />
-                  <Input.Password
-                    onChange={setQuickPrivateKeyPassphrase}
-                    placeholder="私钥口令（可选）"
-                    value={quickPrivateKeyPassphrase}
-                  />
-                </div>
+                <Select
+                  onChange={setQuickSshKeyId}
+                  options={sshKeys.map((sshKey) => ({
+                    label: sshKey.name,
+                    value: sshKey.id,
+                  }))}
+                  placeholder="选择私钥"
+                  value={quickSshKeyId}
+                />
               ) : null}
               <InputNumber
                 max={65535}
@@ -805,7 +811,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
                   (quickAuthMethod === "password"
                     ? !quickPassword
                     : quickAuthMethod === "privateKey"
-                      ? !quickPrivateKeyPath.trim()
+                      ? !quickSshKeyId
                       : false)
                 }
                 icon={<IconLink />}
@@ -838,6 +844,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
           host={editingHost}
           hosts={hosts}
           proxies={proxies}
+          sshKeys={sshKeys}
           onCancel={() => {
             setEditorVisible(false);
             setEditingHost(null);

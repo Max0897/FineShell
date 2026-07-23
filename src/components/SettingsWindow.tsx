@@ -17,6 +17,7 @@ import {
   IconDashboard,
   IconDelete,
   IconCloud,
+  IconLock,
   IconSave,
   IconStorage,
   IconThunderbolt,
@@ -31,12 +32,14 @@ import {
 import { loadConfiguration, updateAppSettings } from "../config-database";
 import ConfigurationMaintenance from "./ConfigurationMaintenance";
 import ProxySettings from "./ProxySettings";
+import SshKeySettings from "./SshKeySettings";
 
 type SettingsSection =
   | "terminal"
   | "files"
   | "monitor"
   | "connection"
+  | "sshKeys"
   | "proxies"
   | "backups"
   | "trash";
@@ -330,6 +333,8 @@ function SettingsWindow() {
         );
       case "proxies":
         return <ProxySettings />;
+      case "sshKeys":
+        return <SshKeySettings />;
       case "backups":
         return (
           <ConfigurationMaintenance
@@ -374,6 +379,10 @@ function SettingsWindow() {
             <IconCloud />
             代理
           </Menu.Item>
+          <Menu.Item key="sshKeys">
+            <IconLock />
+            密钥
+          </Menu.Item>
           <Menu.Item key="backups">
             <IconSave />
             备份与恢复
@@ -393,6 +402,7 @@ function SettingsWindow() {
           <div className="settings-page">{content}</div>
         )}
         {activeSection !== "proxies" &&
+          activeSection !== "sshKeys" &&
           activeSection !== "backups" &&
           activeSection !== "trash" && (
           <footer className="settings-footer">

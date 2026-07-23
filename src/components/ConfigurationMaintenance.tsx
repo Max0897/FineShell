@@ -181,7 +181,8 @@ function ConfigurationMaintenance({
           <Typography.Paragraph>
             将导入 {imported.hosts.length} 台主机和 {imported.history.length}
             条连接记录，以及 {imported.proxies.length}
-            个代理。当前配置会先自动备份，认证凭据不会被导入或覆盖。
+            个代理、{imported.sshKeys.length}
+            个密钥。当前配置会先自动备份，认证凭据不会被导入或覆盖。
           </Typography.Paragraph>
         ),
         okText: "确认导入",
@@ -279,7 +280,7 @@ function ConfigurationMaintenance({
       title: "内容",
       width: 150,
       render: (_, backup) =>
-        `${backup.hosts.length} 台主机，${backup.history.length} 条记录`,
+        `${backup.hosts.length} 台主机，${backup.sshKeys.length} 个密钥`,
     },
     {
       title: "操作",

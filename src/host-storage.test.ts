@@ -62,6 +62,7 @@ describe("normalizeHostForm", () => {
       port: 22,
       username: "root",
       authMethod: "password",
+      sshKeyId: undefined,
       privateKeyPath: undefined,
       connectTimeoutSeconds: 10,
       keepAliveIntervalSeconds: 15,
@@ -203,6 +204,27 @@ describe("normalizeHostForm", () => {
     expect(result.privateKeyPassphrase).toBeUndefined();
     expect(result.host.authMethod).toBe("agent");
     expect(result.host.privateKeyPath).toBeUndefined();
+  });
+
+  test("stores a managed key reference without duplicating its path or passphrase", () => {
+    const result = normalizeHostForm({
+      name: "Managed Key Server",
+      address: "key.example.com",
+      port: 22,
+      username: "deploy",
+      authMethod: "privateKey",
+      sshKeyId: "  ssh-key-1  ",
+      privateKeyPath: "/tmp/duplicated-key",
+      privateKeyPassphrase: "must-not-be-stored-per-host",
+      connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
+    });
+
+    expect(result.host.sshKeyId).toBe("ssh-key-1");
+    expect(result.host.privateKeyPath).toBeUndefined();
+    expect(result.privateKeyPassphrase).toBeUndefined();
   });
 });
 

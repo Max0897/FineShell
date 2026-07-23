@@ -46,7 +46,11 @@ import {
   sanitizeAppSettings,
   type AppSettings,
 } from "./app-settings";
-import { jumpHostRequest, reconnectDelaySeconds } from "./terminal-utils";
+import {
+  jumpHostRequest,
+  reconnectDelaySeconds,
+  sshCredentialId,
+} from "./terminal-utils";
 import "./App.css";
 
 const ServerMonitorPanel = lazy(
@@ -219,7 +223,7 @@ function App() {
         const result = await invoke<SshConnectResult>("ssh_connect", {
           request: {
             sessionId: session.id,
-            hostId: session.host.id,
+            hostId: sshCredentialId(session.host),
             address: session.host.address,
             port: session.host.port,
             username: session.host.username,

@@ -37,14 +37,20 @@ export function normalizeHostForm(values: HostFormValues) {
   return {
     password: values.authMethod === "password" ? password : undefined,
     privateKeyPassphrase:
-      values.authMethod === "privateKey" ? privateKeyPassphrase : undefined,
+      values.authMethod === "privateKey" && !values.sshKeyId
+        ? privateKeyPassphrase
+        : undefined,
     host: {
       ...hostValues,
       name: values.name.trim(),
       address: values.address.trim(),
       username: values.username.trim(),
-      privateKeyPath:
+      sshKeyId:
         values.authMethod === "privateKey"
+          ? values.sshKeyId?.trim() || undefined
+          : undefined,
+      privateKeyPath:
+        values.authMethod === "privateKey" && !values.sshKeyId
           ? values.privateKeyPath?.trim() || undefined
           : undefined,
       localPortForwards: values.localPortForwards?.map((rule) => ({

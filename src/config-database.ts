@@ -12,6 +12,7 @@ import type {
   LocalPortForwardRule,
   ProxyRecord,
   RemotePortForwardRule,
+  SshKeyRecord,
 } from "./models";
 
 const DATABASE_NAME = "fineshell.config";
@@ -21,8 +22,8 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 10;
-export const CONFIGURATION_EXPORT_VERSION = 8;
+export const CONFIGURATION_SCHEMA_VERSION = 11;
+export const CONFIGURATION_EXPORT_VERSION = 9;
 export const MAX_CONFIGURATION_BACKUPS = 10;
 export const TRASH_RETENTION_DAYS = 30;
 
@@ -33,6 +34,7 @@ export interface ConfigurationBackup {
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
   proxies: ProxyRecord[];
+  sshKeys: SshKeyRecord[];
   hostSort: HostSortMode;
 }
 
@@ -49,6 +51,7 @@ export interface FineShellConfiguration {
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
   proxies: ProxyRecord[];
+  sshKeys: SshKeyRecord[];
   hostSort: HostSortMode;
   settings: AppSettings;
   backups: ConfigurationBackup[];
@@ -63,6 +66,7 @@ export interface FineShellConfigurationExport {
   hosts: HostRecord[];
   history: ConnectionHistoryRecord[];
   proxies: ProxyRecord[];
+  sshKeys: SshKeyRecord[];
   hostSort: HostSortMode;
   settings: AppSettings;
 }
@@ -119,6 +123,21 @@ function sanitizeProxy(value: unknown): ProxyRecord | undefined {
       65_535,
     ),
     username: stringValue(value.username)?.trim(),
+  };
+}
+
+function sanitizeSshKey(value: unknown): SshKeyRecord | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const id = stringValue(value.id);
+  const name = stringValue(value.name);
+  const privateKeyPath = stringValue(value.privateKeyPath);
+  if (!id || !name || !privateKeyPath) return undefined;
+
+  return {
+    id,
+    name: name.trim(),
+    privateKeyPath: privateKeyPath.trim(),
   };
 }
 
@@ -190,6 +209,12 @@ function sanitizeHost(value: unknown): HostRecord | undefined {
   const address = stringValue(value.address);
   const username = stringValue(value.username);
   if (!id || !name || !address || !username) return undefined;
+  const authMethod =
+    value.authMethod === "privateKey" || value.authMethod === "agent"
+      ? value.authMethod
+      : "password";
+  const sshKeyId =
+    authMethod === "privateKey" ? stringValue(value.sshKeyId) : undefined;
 
   return withHostDefaults({
     id,
@@ -197,11 +222,12 @@ function sanitizeHost(value: unknown): HostRecord | undefined {
     address,
     port: numberValue(value.port, 22, 1, 65_535),
     username,
-    authMethod:
-      value.authMethod === "privateKey" || value.authMethod === "agent"
-        ? value.authMethod
-        : "password",
-    privateKeyPath: stringValue(value.privateKeyPath),
+    authMethod,
+    sshKeyId,
+    privateKeyPath:
+      authMethod === "privateKey" && !sshKeyId
+        ? stringValue(value.privateKeyPath)
+        : undefined,
     connectTimeoutSeconds: numberValue(
       value.connectTimeoutSeconds,
       10,
@@ -247,6 +273,12 @@ function sanitizeHistoryRecord(
   const username = stringValue(value.username);
   const connectedAt = stringValue(value.connectedAt);
   if (!id || !name || !address || !username || !connectedAt) return undefined;
+  const authMethod =
+    value.authMethod === "privateKey" || value.authMethod === "agent"
+      ? value.authMethod
+      : "password";
+  const sshKeyId =
+    authMethod === "privateKey" ? stringValue(value.sshKeyId) : undefined;
 
   return {
     id,
@@ -255,11 +287,12 @@ function sanitizeHistoryRecord(
     address,
     port: numberValue(value.port, 22, 1, 65_535),
     username,
-    authMethod:
-      value.authMethod === "privateKey" || value.authMethod === "agent"
-        ? value.authMethod
-        : "password",
-    privateKeyPath: stringValue(value.privateKeyPath),
+    authMethod,
+    sshKeyId,
+    privateKeyPath:
+      authMethod === "privateKey" && !sshKeyId
+        ? stringValue(value.privateKeyPath)
+        : undefined,
     hostFingerprint: stringValue(value.hostFingerprint),
     keepAliveIntervalSeconds: numberValue(
       value.keepAliveIntervalSeconds,
@@ -302,6 +335,7 @@ function sanitizeBackup(value: unknown): ConfigurationBackup | undefined {
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
     proxies: sanitizeList(value.proxies, sanitizeProxy),
+    sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
     hostSort: sanitizeHostSortMode(value.hostSort),
   };
 }
@@ -362,6 +396,7 @@ export function migrateLegacyConfiguration(
       sanitizeHistoryRecord,
     ).slice(0, 50),
     proxies: [],
+    sshKeys: [],
     hostSort: "manual",
     settings: { ...DEFAULT_APP_SETTINGS },
     backups: [],
@@ -385,6 +420,7 @@ function normalizeConfiguration(value: unknown): FineShellConfiguration {
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
     proxies: sanitizeList(value.proxies, sanitizeProxy),
+    sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
     hostSort: sanitizeHostSortMode(value.hostSort),
     settings: sanitizeAppSettings(value.settings),
     backups: sanitizeList(value.backups, sanitizeBackup).slice(
@@ -408,6 +444,7 @@ function createBackup(
     hosts: configuration.hosts,
     history: configuration.history,
     proxies: configuration.proxies,
+    sshKeys: configuration.sshKeys,
     hostSort: configuration.hostSort,
   };
 }
@@ -415,7 +452,7 @@ function createBackup(
 export function serializeConfigurationExport(
   configuration: Pick<
     FineShellConfiguration,
-    "hosts" | "history" | "proxies" | "hostSort" | "settings"
+    "hosts" | "history" | "proxies" | "sshKeys" | "hostSort" | "settings"
   >,
   now = new Date().toISOString(),
 ) {
@@ -429,6 +466,7 @@ export function serializeConfigurationExport(
       sanitizeHistoryRecord,
     ).slice(0, 50),
     proxies: sanitizeList(configuration.proxies, sanitizeProxy),
+    sshKeys: sanitizeList(configuration.sshKeys, sanitizeSshKey),
     hostSort: configuration.hostSort,
     settings: sanitizeAppSettings(configuration.settings),
   };
@@ -456,6 +494,7 @@ export function parseConfigurationExport(contents: string) {
     hosts: sanitizeList(value.hosts, sanitizeHost),
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
     proxies: sanitizeList(value.proxies, sanitizeProxy),
+    sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
     hostSort: sanitizeHostSortMode(value.hostSort),
     settings: sanitizeAppSettings(value.settings),
   };
@@ -614,7 +653,7 @@ export function updateStoredHostFingerprint(
 export function importConfiguration(
   imported: Pick<
     FineShellConfiguration,
-    "hosts" | "history" | "proxies" | "hostSort" | "settings"
+    "hosts" | "history" | "proxies" | "sshKeys" | "hostSort" | "settings"
   >,
 ) {
   return updateConfiguration((current) => ({
@@ -622,6 +661,7 @@ export function importConfiguration(
     hosts: imported.hosts,
     history: imported.history,
     proxies: imported.proxies,
+    sshKeys: imported.sshKeys,
     hostSort: imported.hostSort,
     settings: imported.settings,
     backups: [
@@ -641,6 +681,7 @@ export function restoreConfigurationBackup(backupId: string) {
       hosts: backup.hosts,
       history: backup.history,
       proxies: backup.proxies,
+      sshKeys: backup.sshKeys,
       hostSort: backup.hostSort,
       backups: [
         createBackup(current, "恢复配置前自动备份"),
@@ -770,6 +811,37 @@ export function deleteProxy(proxyId: string) {
         : record,
     ),
   }));
+}
+
+export function upsertSshKey(sshKey: SshKeyRecord) {
+  return updateConfiguration((current) => ({
+    ...current,
+    sshKeys: current.sshKeys.some((item) => item.id === sshKey.id)
+      ? current.sshKeys.map((item) => (item.id === sshKey.id ? sshKey : item))
+      : [...current.sshKeys, sshKey],
+  }));
+}
+
+export function deleteSshKey(sshKeyId: string) {
+  return updateConfiguration((current) => {
+    const activeUsage = current.hosts.filter(
+      (host) => host.sshKeyId === sshKeyId,
+    );
+    const trashUsage = current.trash.filter(
+      (item) => item.host.sshKeyId === sshKeyId,
+    );
+    if (activeUsage.length || trashUsage.length) {
+      throw new Error("该密钥仍被主机或回收站记录使用，无法删除");
+    }
+
+    return {
+      ...current,
+      sshKeys: current.sshKeys.filter((item) => item.id !== sshKeyId),
+      history: current.history.filter(
+        (record) => record.sshKeyId !== sshKeyId,
+      ),
+    };
+  });
 }
 
 export function updateAppSettings(settings: AppSettings) {

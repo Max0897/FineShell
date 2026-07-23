@@ -3,6 +3,7 @@ import {
   decodeSshOutput,
   jumpHostRequest,
   reconnectDelaySeconds,
+  sshCredentialId,
 } from "./terminal-utils";
 
 describe("decodeSshOutput", () => {
@@ -67,5 +68,26 @@ describe("jumpHostRequest", () => {
       },
     });
     expect(jumpHostRequest()).toBeUndefined();
+  });
+});
+
+describe("sshCredentialId", () => {
+  test("uses a managed key id only for managed private key authentication", () => {
+    const host = {
+      id: "host-1",
+      name: "Server",
+      address: "server.example.com",
+      port: 22,
+      username: "root",
+      authMethod: "privateKey" as const,
+      sshKeyId: "ssh-key-1",
+      connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
+    };
+
+    expect(sshCredentialId(host)).toBe("ssh-key-1");
+    expect(sshCredentialId({ ...host, authMethod: "agent" })).toBe("host-1");
   });
 });
