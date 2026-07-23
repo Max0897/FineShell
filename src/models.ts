@@ -87,6 +87,7 @@ export type TerminalSessionStatus =
 export interface TerminalSession {
   id: string;
   host: HostRecord;
+  proxy?: ProxyRecord;
   openedAt: string;
   status: TerminalSessionStatus;
   error?: string;

@@ -10,7 +10,7 @@ import {
   Tooltip,
 } from "@arco-design/web-react";
 import { IconFolder } from "@arco-design/web-react/icon";
-import type { HostFormValues, HostRecord } from "../models";
+import type { HostFormValues, HostRecord, ProxyRecord } from "../models";
 import type { AppSettings } from "../app-settings";
 
 type ConnectionDefaults = Pick<
@@ -33,6 +33,7 @@ type HostEditorValues = Omit<
 interface HostEditorModalProps {
   connectionDefaults: ConnectionDefaults;
   host: HostRecord | null;
+  proxies: ProxyRecord[];
   visible: boolean;
   onCancel: () => void;
   onChoosePrivateKey: () => Promise<string | undefined>;
@@ -42,6 +43,7 @@ interface HostEditorModalProps {
 function HostEditorModal({
   connectionDefaults,
   host,
+  proxies,
   visible,
   onCancel,
   onChoosePrivateKey,
@@ -62,6 +64,7 @@ function HostEditorModal({
         privateKeyPassphrase: "",
         password: "",
         group: host.group,
+        proxyId: host.proxyId,
       }
     : {
         name: "",
@@ -73,6 +76,7 @@ function HostEditorModal({
         privateKeyPassphrase: "",
         password: "",
         group: "",
+        proxyId: undefined,
       };
 
   const submitHost = (values: HostEditorValues) => {
@@ -199,6 +203,16 @@ function HostEditorModal({
             </Form.Item>
           </>
         )}
+        <Form.Item field="proxyId" label="代理">
+          <Select
+            allowClear
+            options={proxies.map((proxy) => ({
+              label: `${proxy.name} · ${proxy.type === "socks5" ? "SOCKS5" : "HTTP"}`,
+              value: proxy.id,
+            }))}
+            placeholder="直连"
+          />
+        </Form.Item>
         <Form.Item field="group" label="分组">
           <Input placeholder="可选" />
         </Form.Item>

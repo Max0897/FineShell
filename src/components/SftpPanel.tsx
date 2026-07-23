@@ -237,6 +237,7 @@ function SftpPanel({
               expectedFingerprint:
                 currentSession.fingerprint ??
                 currentSession.host.hostFingerprint,
+              proxy: currentSession.proxy,
             },
           });
           homeDir = result.homeDir;

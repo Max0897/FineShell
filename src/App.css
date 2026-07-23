@@ -826,6 +826,43 @@ body,
   margin: 0;
 }
 
+.proxy-settings-heading {
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.proxy-settings-heading > .arco-typography {
+  margin: 0;
+}
+
+.proxy-name-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.proxy-name-cell > .arco-typography {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxy-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  gap: 12px;
+}
+
+.proxy-form-row .arco-input-number {
+  width: 100%;
+}
+
 .settings-footer {
   flex: 0 0 auto;
   min-height: 60px;
@@ -967,9 +1004,14 @@ body,
   margin-top: 10px;
   display: grid;
   grid-template-columns:
-    minmax(160px, 1fr) minmax(100px, 0.6fr) 112px minmax(180px, 1fr)
-    104px auto;
+    minmax(130px, 1.1fr) minmax(90px, 0.65fr) 112px
+    minmax(160px, 1.2fr) 92px minmax(120px, 0.8fr) auto;
   gap: 8px;
+}
+
+.quick-connect-fields > .arco-input-number,
+.quick-connect-fields > .arco-select {
+  width: 100%;
 }
 
 .quick-key-credentials {

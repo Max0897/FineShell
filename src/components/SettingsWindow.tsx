@@ -16,6 +16,7 @@ import {
   IconCode,
   IconDashboard,
   IconDelete,
+  IconCloud,
   IconSave,
   IconStorage,
   IconThunderbolt,
@@ -29,12 +30,14 @@ import {
 } from "../app-settings";
 import { loadConfiguration, updateAppSettings } from "../config-database";
 import ConfigurationMaintenance from "./ConfigurationMaintenance";
+import ProxySettings from "./ProxySettings";
 
 type SettingsSection =
   | "terminal"
   | "files"
   | "monitor"
   | "connection"
+  | "proxies"
   | "backups"
   | "trash";
 
@@ -325,6 +328,8 @@ function SettingsWindow() {
             </div>
           </>
         );
+      case "proxies":
+        return <ProxySettings />;
       case "backups":
         return (
           <ConfigurationMaintenance
@@ -365,6 +370,10 @@ function SettingsWindow() {
             <IconThunderbolt />
             连接
           </Menu.Item>
+          <Menu.Item key="proxies">
+            <IconCloud />
+            代理
+          </Menu.Item>
           <Menu.Item key="backups">
             <IconSave />
             备份与恢复
@@ -383,7 +392,9 @@ function SettingsWindow() {
         ) : (
           <div className="settings-page">{content}</div>
         )}
-        {activeSection !== "backups" && activeSection !== "trash" && (
+        {activeSection !== "proxies" &&
+          activeSection !== "backups" &&
+          activeSection !== "trash" && (
           <footer className="settings-footer">
             <Popconfirm
               onOk={() => setSettings({ ...DEFAULT_APP_SETTINGS })}

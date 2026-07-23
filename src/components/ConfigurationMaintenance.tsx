@@ -180,7 +180,8 @@ function ConfigurationMaintenance({
         content: (
           <Typography.Paragraph>
             将导入 {imported.hosts.length} 台主机和 {imported.history.length}
-            条连接记录。当前配置会先自动备份，认证凭据不会被导入或覆盖。
+            条连接记录，以及 {imported.proxies.length}
+            个代理。当前配置会先自动备份，认证凭据不会被导入或覆盖。
           </Typography.Paragraph>
         ),
         okText: "确认导入",

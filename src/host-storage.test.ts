@@ -13,6 +13,7 @@ describe("normalizeHostForm", () => {
       keepAliveIntervalSeconds: 15,
       autoReconnect: true,
       maxReconnectAttempts: 3,
+      proxyId: "proxy-1",
       password: "secret",
       group: "  Linux  ",
       hostFingerprint: " SHA256:abc123 ",
@@ -30,6 +31,7 @@ describe("normalizeHostForm", () => {
       keepAliveIntervalSeconds: 15,
       autoReconnect: true,
       maxReconnectAttempts: 3,
+      proxyId: "proxy-1",
       group: "Linux",
       hostFingerprint: "SHA256:abc123",
     });

@@ -18,7 +18,7 @@ import {
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { IconHome, IconRefresh } from "@arco-design/web-react/icon";
-import type { HostRecord, TerminalSession } from "./models";
+import type { HostRecord, ProxyRecord, TerminalSession } from "./models";
 import HostManagerPanel from "./components/HostManagerPanel";
 import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
@@ -127,8 +127,10 @@ function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function targetKey(target: Pick<HostRecord, "address" | "port" | "username">) {
-  return `${target.username}@${target.address}:${target.port}`;
+function targetKey(
+  target: Pick<HostRecord, "address" | "port" | "username" | "proxyId">,
+) {
+  return `${target.username}@${target.address}:${target.port}#${target.proxyId ?? "direct"}`;
 }
 
 function App() {
@@ -174,6 +176,7 @@ function App() {
             connectTimeoutSeconds: session.host.connectTimeoutSeconds,
             keepAliveIntervalSeconds: session.host.keepAliveIntervalSeconds,
             expectedFingerprint: session.host.hostFingerprint,
+            proxy: session.proxy,
             cols: 80,
             rows: 24,
           },
@@ -264,7 +267,7 @@ function App() {
   );
 
   const openSession = useCallback(
-    (host: HostRecord) => {
+    (host: HostRecord, proxy?: ProxyRecord) => {
       const normalizedHost = withHostDefaults(host);
       const identity = targetKey(normalizedHost);
       const existing = sessionsRef.current.find(
@@ -278,6 +281,7 @@ function App() {
       const session: TerminalSession = {
         id: createId("session"),
         host: normalizedHost,
+        proxy,
         openedAt: new Date().toISOString(),
         status: "connecting",
       };

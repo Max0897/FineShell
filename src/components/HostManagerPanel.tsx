@@ -34,6 +34,7 @@ import type {
   HostRecord,
   HostSortMode,
   QuickTarget,
+  ProxyRecord,
 } from "../models";
 import HostEditorModal from "./HostEditorModal";
 import { normalizeHostForm } from "../host-storage";
@@ -86,8 +87,10 @@ async function choosePrivateKeyPath() {
   return typeof selected === "string" ? selected : undefined;
 }
 
-function targetKey(target: Pick<HostRecord, "address" | "port" | "username">) {
-  return `${target.username}@${target.address}:${target.port}`;
+function targetKey(
+  target: Pick<HostRecord, "address" | "port" | "username" | "proxyId">,
+) {
+  return `${target.username}@${target.address}:${target.port}#${target.proxyId ?? "direct"}`;
 }
 
 function formatTime(value?: string) {
@@ -102,13 +105,14 @@ function formatTime(value?: string) {
 }
 
 interface HostManagerPanelProps {
-  onConnect: (host: HostRecord) => void;
+  onConnect: (host: HostRecord, proxy?: ProxyRecord) => void;
   settings: AppSettings;
 }
 
 function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [history, setHistory] = useState<ConnectionHistoryRecord[]>([]);
+  const [proxies, setProxies] = useState<ProxyRecord[]>([]);
   const [hostSort, setHostSort] = useState<HostSortMode>("manual");
   const [configurationLoading, setConfigurationLoading] = useState(true);
   const [configurationAction, setConfigurationAction] = useState(false);
@@ -127,6 +131,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
   const [quickPrivateKeyPath, setQuickPrivateKeyPath] = useState("");
   const [quickPrivateKeyPassphrase, setQuickPrivateKeyPassphrase] =
     useState("");
+  const [quickProxyId, setQuickProxyId] = useState<string>();
 
   useEffect(() => {
     let disposed = false;
@@ -135,6 +140,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         if (disposed) return;
         setHosts(configuration.hosts);
         setHistory(configuration.history);
+        setProxies(configuration.proxies);
         setHostSort(configuration.hostSort);
 
         const cleanup = await Promise.allSettled(
@@ -172,6 +178,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
           if (disposed) return;
           setHosts(configuration.hosts);
           setHistory(configuration.history);
+          setProxies(configuration.proxies);
           setHostSort(configuration.hostSort);
         })
         .catch((error) => {
@@ -315,6 +322,13 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
   }
 
   async function sendConnection(host: HostRecord) {
+    const proxy = host.proxyId
+      ? proxies.find((item) => item.id === host.proxyId)
+      : undefined;
+    if (host.proxyId && !proxy) {
+      Message.error("主机引用的代理不存在，请重新编辑主机");
+      return;
+    }
     const now = new Date().toISOString();
     const identity = targetKey(host);
     const connectedHost = { ...host, lastConnectedAt: now };
@@ -331,6 +345,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       keepAliveIntervalSeconds: host.keepAliveIntervalSeconds,
       autoReconnect: host.autoReconnect,
       maxReconnectAttempts: host.maxReconnectAttempts,
+      proxyId: host.proxyId,
       connectedAt: now,
     };
 
@@ -350,7 +365,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     }
 
     setHistoryVisible(false);
-    onConnect(connectedHost);
+    onConnect(connectedHost, proxy);
   }
 
   async function quickConnect() {
@@ -366,7 +381,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       username: quickTarget.username.trim() || "root",
     };
     const host: HostRecord = {
-      id: `quick-${targetKey(normalized)}`,
+      id: `quick-${targetKey({ ...normalized, proxyId: quickProxyId })}`,
       name: normalized.address,
       authMethod: quickAuthMethod,
       privateKeyPath:
@@ -377,6 +392,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       keepAliveIntervalSeconds: settings.defaultKeepAliveIntervalSeconds,
       autoReconnect: settings.defaultAutoReconnect,
       maxReconnectAttempts: settings.defaultMaxReconnectAttempts,
+      proxyId: quickProxyId,
       ...normalized,
     };
 
@@ -415,6 +431,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         autoReconnect: record.autoReconnect ?? settings.defaultAutoReconnect,
         maxReconnectAttempts:
           record.maxReconnectAttempts ?? settings.defaultMaxReconnectAttempts,
+        proxyId: record.proxyId,
       },
     );
   }
@@ -668,6 +685,16 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
                 placeholder="端口"
                 value={quickTarget.port}
               />
+              <Select
+                allowClear
+                onChange={setQuickProxyId}
+                options={proxies.map((proxy) => ({
+                  label: proxy.name,
+                  value: proxy.id,
+                }))}
+                placeholder="直连"
+                value={quickProxyId}
+              />
               <Button
                 disabled={
                   configurationLoading ||
@@ -705,6 +732,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         <HostEditorModal
           connectionDefaults={settings}
           host={editingHost}
+          proxies={proxies}
           onCancel={() => {
             setEditorVisible(false);
             setEditingHost(null);
