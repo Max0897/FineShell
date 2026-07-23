@@ -608,13 +608,15 @@ body,
   min-width: 0;
 }
 
-.sftp-sticky-header {
-  z-index: 3;
-  overflow: auto;
-  background: #f7f8fa;
+.sftp-table .arco-table-content-scroll {
+  overflow: visible;
 }
 
-.sftp-sticky-header-active {
+.sftp-table thead > .arco-table-tr > .arco-table-th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #f7f8fa;
   border-bottom: 1px solid #e5e6eb;
 }
 

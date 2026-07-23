@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { HTMLAttributes } from "react";
 import {
   Badge,
   Button,
@@ -19,7 +18,6 @@ import type { TableColumnProps } from "@arco-design/web-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Sticky, StickyContainer } from "react-sticky";
 import {
   IconArrowUp,
   IconDelete,
@@ -86,39 +84,6 @@ const INITIAL_BROWSER: BrowserState = {
   path: "/",
   inputPath: "/",
   entries: [],
-};
-
-function SftpStickyHeader({
-  children,
-  className,
-  style: headerStyle,
-  ...props
-}: HTMLAttributes<HTMLDivElement>) {
-  return (
-    <Sticky relative>
-      {({ isSticky, style }) => (
-        <div
-          {...props}
-          className={[
-            className,
-            "sftp-sticky-header",
-            isSticky ? "sftp-sticky-header-active" : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-          style={{ ...headerStyle, ...style }}
-        >
-          {children}
-        </div>
-      )}
-    </Sticky>
-  );
-}
-
-const SFTP_TABLE_COMPONENTS = {
-  header: {
-    wrapper: SftpStickyHeader,
-  },
 };
 
 function createTransferId() {
@@ -751,12 +716,11 @@ function SftpPanel({
           </div>
         </div>
       ) : (
-        <StickyContainer className="sftp-table-container">
+        <div className="sftp-table-container">
           <Table
             border={false}
             className="sftp-table"
             columns={columns}
-            components={SFTP_TABLE_COMPONENTS}
             data={ready ? visibleEntries : []}
             loading={Boolean(connected && busy)}
             noDataElement={
@@ -767,10 +731,9 @@ function SftpPanel({
             })}
             pagination={false}
             rowKey="id"
-            scroll={{ y: true }}
             size="small"
           />
-        </StickyContainer>
+        </div>
       )}
       <Drawer
         bodyStyle={{ padding: 0 }}
