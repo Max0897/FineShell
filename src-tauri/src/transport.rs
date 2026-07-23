@@ -233,7 +233,7 @@ mod tests {
         time::Duration,
     };
 
-    use super::{connect_http_proxy, connect_socks5_proxy, ProxyConfig, ProxyType};
+    use super::{connect, connect_http_proxy, connect_socks5_proxy, ProxyConfig, ProxyType};
 
     fn proxy(id: &str, proxy_type: ProxyType, address: String, port: u16) -> ProxyConfig {
         ProxyConfig {
@@ -316,5 +316,46 @@ mod tests {
         .unwrap();
         drop(stream);
         worker.join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires FINESHELL_LIVE_ADDRESS and FINESHELL_LIVE_PROXY_* settings"]
+    fn handshakes_ssh_through_a_live_proxy() -> Result<(), String> {
+        let proxy_type = match std::env::var("FINESHELL_LIVE_PROXY_TYPE")
+            .unwrap_or_else(|_| "socks5".to_string())
+            .as_str()
+        {
+            "http" => ProxyType::Http,
+            "socks5" => ProxyType::Socks5,
+            _ => return Err("FINESHELL_LIVE_PROXY_TYPE 仅支持 http 或 socks5".to_string()),
+        };
+        let proxy = ProxyConfig {
+            id: "fineshell-live-proxy".to_string(),
+            proxy_type,
+            address: std::env::var("FINESHELL_LIVE_PROXY_ADDRESS")
+                .map_err(|_| "缺少 FINESHELL_LIVE_PROXY_ADDRESS".to_string())?,
+            port: std::env::var("FINESHELL_LIVE_PROXY_PORT")
+                .map_err(|_| "缺少 FINESHELL_LIVE_PROXY_PORT".to_string())?
+                .parse::<u16>()
+                .map_err(|error| format!("FINESHELL_LIVE_PROXY_PORT 无效：{error}"))?,
+            username: None,
+        };
+        let address = std::env::var("FINESHELL_LIVE_ADDRESS")
+            .map_err(|_| "缺少 FINESHELL_LIVE_ADDRESS".to_string())?;
+        let port = std::env::var("FINESHELL_LIVE_PORT")
+            .unwrap_or_else(|_| "22".to_string())
+            .parse::<u16>()
+            .map_err(|error| format!("FINESHELL_LIVE_PORT 无效：{error}"))?;
+        let stream = connect(&address, port, Some(&proxy), 10)?;
+        let mut session = ssh2::Session::new().map_err(|error| error.to_string())?;
+        session.set_timeout(10_000);
+        session.set_tcp_stream(stream);
+        session
+            .handshake()
+            .map_err(|error| format!("代理 SSH 握手失败：{error}"))?;
+        if session.host_key().is_none() {
+            return Err("代理 SSH 握手没有返回主机密钥".to_string());
+        }
+        Ok(())
     }
 }
