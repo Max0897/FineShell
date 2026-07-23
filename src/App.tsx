@@ -229,6 +229,7 @@ function App() {
             proxy: session.proxy,
             jumpHost: jumpHostRequest(session.jumpHost),
             localPortForwards: session.host.localPortForwards ?? [],
+            remotePortForwards: session.host.remotePortForwards ?? [],
             cols: 80,
             rows: 24,
           },

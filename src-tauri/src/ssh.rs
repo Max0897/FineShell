@@ -45,6 +45,8 @@ pub(crate) struct SshConnectRequest {
     jump_host: Option<JumpHostConfig>,
     #[serde(default)]
     local_port_forwards: Vec<LocalPortForwardRule>,
+    #[serde(default)]
+    remote_port_forwards: Vec<RemotePortForwardRule>,
     cols: u32,
     rows: u32,
 }
@@ -97,10 +99,30 @@ pub(crate) struct LocalPortForwardRule {
     enabled: bool,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RemotePortForwardRule {
+    id: String,
+    name: String,
+    bind_address: String,
+    bind_port: u16,
+    target_address: String,
+    target_port: u16,
+    enabled: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PortForwardKind {
+    Local,
+    Remote,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PortForwardStatus {
     rule_id: String,
+    kind: PortForwardKind,
     status: &'static str,
     bind_address: String,
     bind_port: u16,
@@ -151,6 +173,7 @@ struct SshStatusPayload {
 struct PortForwardStatusPayload {
     session_id: String,
     rule_id: String,
+    kind: PortForwardKind,
     status: &'static str,
     bind_address: String,
     bind_port: u16,
@@ -162,8 +185,15 @@ struct ActiveLocalForward {
     listener: TcpListener,
 }
 
-struct LocalForwardConnection {
+struct ActiveRemoteForward {
+    rule: RemotePortForwardRule,
+    listener: ssh2::Listener,
+    bound_port: u16,
+}
+
+struct ForwardConnection {
     rule_id: String,
+    kind: PortForwardKind,
     socket: TcpStream,
     channel: Channel,
     to_remote: VecDeque<Vec<u8>>,
@@ -173,9 +203,16 @@ struct LocalForwardConnection {
     remote_eof_sent: bool,
 }
 
+struct RemoteConnectionResult {
+    rule_id: String,
+    channel: Channel,
+    socket: Result<TcpStream, String>,
+}
+
 struct SessionRuntimeConfig {
     keep_alive_interval_seconds: u32,
     local_forwards: Vec<ActiveLocalForward>,
+    remote_forwards: Vec<ActiveRemoteForward>,
 }
 
 enum SessionCommand {
@@ -205,6 +242,14 @@ enum SessionCommand {
         response: SyncSender<Result<PortForwardStatus, String>>,
     },
     StopLocalForward {
+        rule_id: String,
+        response: SyncSender<Result<PortForwardStatus, String>>,
+    },
+    StartRemoteForward {
+        rule: RemotePortForwardRule,
+        response: SyncSender<Result<PortForwardStatus, String>>,
+    },
+    StopRemoteForward {
         rule_id: String,
         response: SyncSender<Result<PortForwardStatus, String>>,
     },
@@ -668,16 +713,33 @@ fn emit_status(
     );
 }
 
-fn port_forward_status(
+fn local_port_forward_status(
     rule: &LocalPortForwardRule,
     status: &'static str,
     error: Option<String>,
 ) -> PortForwardStatus {
     PortForwardStatus {
         rule_id: rule.id.clone(),
+        kind: PortForwardKind::Local,
         status,
         bind_address: rule.bind_address.clone(),
         bind_port: rule.bind_port,
+        error,
+    }
+}
+
+fn remote_port_forward_status(
+    rule: &RemotePortForwardRule,
+    bound_port: u16,
+    status: &'static str,
+    error: Option<String>,
+) -> PortForwardStatus {
+    PortForwardStatus {
+        rule_id: rule.id.clone(),
+        kind: PortForwardKind::Remote,
+        status,
+        bind_address: rule.bind_address.clone(),
+        bind_port: bound_port,
         error,
     }
 }
@@ -689,6 +751,7 @@ fn emit_port_forward_status(app: &AppHandle, session_id: &str, status: &PortForw
         PortForwardStatusPayload {
             session_id: session_id.to_string(),
             rule_id: status.rule_id.clone(),
+            kind: status.kind,
             status: status.status,
             bind_address: status.bind_address.clone(),
             bind_port: status.bind_port,
@@ -729,7 +792,7 @@ fn start_local_forward(
         .set_nonblocking(true)
         .map_err(|error| format!("无法启用端口转发的非阻塞监听：{error}"))?;
     rule.enabled = true;
-    let status = port_forward_status(&rule, "active", None);
+    let status = local_port_forward_status(&rule, "active", None);
     Ok((ActiveLocalForward { rule, listener }, status))
 }
 
@@ -743,7 +806,7 @@ fn prepare_local_forwards(
 
     for rule in rules {
         if !rule_ids.insert(rule.id.clone()) {
-            statuses.push(port_forward_status(
+            statuses.push(local_port_forward_status(
                 &rule,
                 "failed",
                 Some("端口转发规则标识重复".to_string()),
@@ -751,12 +814,12 @@ fn prepare_local_forwards(
             continue;
         }
         if !rule.enabled {
-            statuses.push(port_forward_status(&rule, "stopped", None));
+            statuses.push(local_port_forward_status(&rule, "stopped", None));
             continue;
         }
         let endpoint_key = format!("{}:{}", rule.bind_address.trim(), rule.bind_port);
         if !endpoints.insert(endpoint_key) {
-            statuses.push(port_forward_status(
+            statuses.push(local_port_forward_status(
                 &rule,
                 "failed",
                 Some("监听地址和端口与其他规则重复".to_string()),
@@ -768,7 +831,108 @@ fn prepare_local_forwards(
                 active_forwards.push(active);
                 statuses.push(status);
             }
-            Err(error) => statuses.push(port_forward_status(&rule, "failed", Some(error))),
+            Err(error) => statuses.push(local_port_forward_status(&rule, "failed", Some(error))),
+        }
+    }
+
+    (active_forwards, statuses)
+}
+
+fn validate_remote_forward_rule(rule: &RemotePortForwardRule) -> Result<(), String> {
+    if rule.id.trim().is_empty() {
+        return Err("远程端口转发规则缺少标识".to_string());
+    }
+    if rule.name.trim().is_empty() {
+        return Err("远程端口转发规则缺少名称".to_string());
+    }
+    if rule.bind_port == 0 || rule.target_port == 0 {
+        return Err("远程监听端口和本地目标端口必须大于 0".to_string());
+    }
+    rule.bind_address
+        .trim()
+        .parse::<IpAddr>()
+        .map_err(|_| "远程监听地址必须是有效的 IP 地址".to_string())?;
+    let target_address = rule.target_address.trim();
+    if target_address.is_empty() || target_address.chars().any(char::is_control) {
+        return Err("远程端口转发的本地目标地址无效".to_string());
+    }
+    Ok(())
+}
+
+fn start_remote_forward(
+    session: &Session,
+    mut rule: RemotePortForwardRule,
+) -> Result<(ActiveRemoteForward, PortForwardStatus), String> {
+    validate_remote_forward_rule(&rule)?;
+    let (listener, bound_port) = session
+        .channel_forward_listen(rule.bind_port, Some(rule.bind_address.trim()), Some(16))
+        .map_err(|error| {
+            format!(
+                "服务器无法监听 {}:{}：{error}",
+                rule.bind_address, rule.bind_port
+            )
+        })?;
+    rule.enabled = true;
+    let status = remote_port_forward_status(&rule, bound_port, "active", None);
+    Ok((
+        ActiveRemoteForward {
+            rule,
+            listener,
+            bound_port,
+        },
+        status,
+    ))
+}
+
+fn prepare_remote_forwards(
+    session: &Session,
+    rules: Vec<RemotePortForwardRule>,
+) -> (Vec<ActiveRemoteForward>, Vec<PortForwardStatus>) {
+    let mut active_forwards = Vec::new();
+    let mut statuses = Vec::with_capacity(rules.len());
+    let mut rule_ids = HashSet::new();
+    let mut endpoints = HashSet::new();
+
+    for rule in rules {
+        if !rule_ids.insert(rule.id.clone()) {
+            statuses.push(remote_port_forward_status(
+                &rule,
+                rule.bind_port,
+                "failed",
+                Some("远程端口转发规则标识重复".to_string()),
+            ));
+            continue;
+        }
+        if !rule.enabled {
+            statuses.push(remote_port_forward_status(
+                &rule,
+                rule.bind_port,
+                "stopped",
+                None,
+            ));
+            continue;
+        }
+        let endpoint_key = format!("{}:{}", rule.bind_address.trim(), rule.bind_port);
+        if !endpoints.insert(endpoint_key) {
+            statuses.push(remote_port_forward_status(
+                &rule,
+                rule.bind_port,
+                "failed",
+                Some("远程监听地址和端口与其他规则重复".to_string()),
+            ));
+            continue;
+        }
+        match start_remote_forward(session, rule.clone()) {
+            Ok((active, status)) => {
+                active_forwards.push(active);
+                statuses.push(status);
+            }
+            Err(error) => statuses.push(remote_port_forward_status(
+                &rule,
+                rule.bind_port,
+                "failed",
+                Some(error),
+            )),
         }
     }
 
@@ -780,7 +944,7 @@ fn open_local_forward_connection(
     forward: &ActiveLocalForward,
     socket: TcpStream,
     peer: SocketAddr,
-) -> Result<LocalForwardConnection, String> {
+) -> Result<ForwardConnection, String> {
     let originator_address = peer.ip().to_string();
     session.set_blocking(true);
     let channel_result = session.channel_direct_tcpip(
@@ -795,23 +959,38 @@ fn open_local_forward_connection(
             forward.rule.target_address, forward.rule.target_port
         )
     })?;
-    socket
-        .set_nonblocking(true)
-        .map_err(|error| format!("无法启用本地连接的非阻塞模式：{error}"))?;
-    let _ = socket.set_nodelay(true);
-    Ok(LocalForwardConnection {
-        rule_id: forward.rule.id.clone(),
+    ForwardConnection::new(
+        forward.rule.id.clone(),
+        PortForwardKind::Local,
         socket,
         channel,
-        to_remote: VecDeque::new(),
-        to_local: VecDeque::new(),
-        socket_closed: false,
-        channel_closed: false,
-        remote_eof_sent: false,
-    })
+    )
 }
 
-impl LocalForwardConnection {
+impl ForwardConnection {
+    fn new(
+        rule_id: String,
+        kind: PortForwardKind,
+        socket: TcpStream,
+        channel: Channel,
+    ) -> Result<Self, String> {
+        socket
+            .set_nonblocking(true)
+            .map_err(|error| format!("无法启用转发连接的非阻塞模式：{error}"))?;
+        let _ = socket.set_nodelay(true);
+        Ok(Self {
+            rule_id,
+            kind,
+            socket,
+            channel,
+            to_remote: VecDeque::new(),
+            to_local: VecDeque::new(),
+            socket_closed: false,
+            channel_closed: false,
+            remote_eof_sent: false,
+        })
+    }
+
     fn poll(&mut self) -> Result<(bool, bool), String> {
         let mut active = false;
         let mut buffer = [0_u8; 32 * 1024];
@@ -936,6 +1115,7 @@ fn run_session(
     let SessionRuntimeConfig {
         keep_alive_interval_seconds,
         mut local_forwards,
+        mut remote_forwards,
     } = runtime;
     session.set_blocking(false);
     let mut stderr = channel.stderr();
@@ -943,7 +1123,10 @@ fn run_session(
     let mut pending_resize = None;
     let mut terminal_error = None;
     let mut closing = false;
-    let mut forward_connections = Vec::<LocalForwardConnection>::new();
+    let mut forward_connections = Vec::<ForwardConnection>::new();
+    let (remote_connection_sender, remote_connection_receiver) =
+        mpsc::channel::<RemoteConnectionResult>();
+    let mut pending_remote_connections = HashMap::<String, usize>::new();
     let mut next_keepalive_at = Instant::now() + Duration::from_secs(1);
 
     while !closing && !channel.eof() {
@@ -1014,12 +1197,67 @@ fn run_session(
                         .position(|forward| forward.rule.id == rule_id)
                         .map(|index| {
                             let forward = local_forwards.remove(index);
-                            forward_connections.retain(|connection| connection.rule_id != rule_id);
-                            let status = port_forward_status(&forward.rule, "stopped", None);
+                            forward_connections.retain(|connection| {
+                                connection.kind != PortForwardKind::Local
+                                    || connection.rule_id != rule_id
+                            });
+                            let status = local_port_forward_status(&forward.rule, "stopped", None);
                             emit_port_forward_status(&app, &session_id, &status);
                             status
                         })
                         .ok_or_else(|| "该端口转发规则尚未启动".to_string());
+                    let _ = response.send(result);
+                    active = true;
+                }
+                Ok(SessionCommand::StartRemoteForward { rule, response }) => {
+                    let duplicate_id = remote_forwards
+                        .iter()
+                        .any(|forward| forward.rule.id == rule.id);
+                    let duplicate_endpoint = remote_forwards.iter().any(|forward| {
+                        forward.rule.bind_address.trim() == rule.bind_address.trim()
+                            && forward.rule.bind_port == rule.bind_port
+                    });
+                    let result = if duplicate_id {
+                        Err("该远程端口转发规则已经启动".to_string())
+                    } else if duplicate_endpoint {
+                        Err("远程监听地址和端口已被其他转发规则使用".to_string())
+                    } else {
+                        session.set_blocking(true);
+                        let result =
+                            start_remote_forward(&session, rule).map(|(forward, status)| {
+                                remote_forwards.push(forward);
+                                emit_port_forward_status(&app, &session_id, &status);
+                                status
+                            });
+                        session.set_blocking(false);
+                        result
+                    };
+                    let _ = response.send(result);
+                    active = true;
+                }
+                Ok(SessionCommand::StopRemoteForward { rule_id, response }) => {
+                    let result = remote_forwards
+                        .iter()
+                        .position(|forward| forward.rule.id == rule_id)
+                        .map(|index| {
+                            session.set_blocking(true);
+                            let forward = remote_forwards.remove(index);
+                            let status = remote_port_forward_status(
+                                &forward.rule,
+                                forward.bound_port,
+                                "stopped",
+                                None,
+                            );
+                            drop(forward);
+                            session.set_blocking(false);
+                            forward_connections.retain(|connection| {
+                                connection.kind != PortForwardKind::Remote
+                                    || connection.rule_id != rule_id
+                            });
+                            emit_port_forward_status(&app, &session_id, &status);
+                            status
+                        })
+                        .ok_or_else(|| "该远程端口转发规则尚未启动".to_string());
                     let _ = response.send(result);
                     active = true;
                 }
@@ -1047,7 +1285,7 @@ fn run_session(
                         peer,
                     ) {
                         Ok(connection) => {
-                            let status = port_forward_status(
+                            let status = local_port_forward_status(
                                 &local_forwards[forward_index].rule,
                                 "active",
                                 None,
@@ -1057,7 +1295,7 @@ fn run_session(
                             active = true;
                         }
                         Err(error) => {
-                            let status = port_forward_status(
+                            let status = local_port_forward_status(
                                 &local_forwards[forward_index].rule,
                                 "active",
                                 Some(error),
@@ -1074,12 +1312,154 @@ fn run_session(
             }
             if let Some(error) = listener_failed {
                 let forward = local_forwards.remove(forward_index);
-                forward_connections.retain(|connection| connection.rule_id != forward.rule.id);
-                let status = port_forward_status(&forward.rule, "failed", Some(error));
+                forward_connections.retain(|connection| {
+                    connection.kind != PortForwardKind::Local
+                        || connection.rule_id != forward.rule.id
+                });
+                let status = local_port_forward_status(&forward.rule, "failed", Some(error));
                 emit_port_forward_status(&app, &session_id, &status);
             } else {
                 forward_index += 1;
             }
+        }
+
+        let mut remote_forward_index = 0;
+        while remote_forward_index < remote_forwards.len() {
+            let mut listener_failed = None;
+            loop {
+                match remote_forwards[remote_forward_index].listener.accept() {
+                    Ok(channel) => {
+                        let rule = remote_forwards[remote_forward_index].rule.clone();
+                        let connection_count = forward_connections
+                            .iter()
+                            .filter(|connection| {
+                                connection.kind == PortForwardKind::Remote
+                                    && connection.rule_id == rule.id
+                            })
+                            .count()
+                            + pending_remote_connections
+                                .get(&rule.id)
+                                .copied()
+                                .unwrap_or(0);
+                        if connection_count >= 32 {
+                            let status = remote_port_forward_status(
+                                &rule,
+                                remote_forwards[remote_forward_index].bound_port,
+                                "active",
+                                Some("远程转发并发连接数已达到 32 条".to_string()),
+                            );
+                            emit_port_forward_status(&app, &session_id, &status);
+                            drop(channel);
+                            continue;
+                        }
+
+                        *pending_remote_connections
+                            .entry(rule.id.clone())
+                            .or_insert(0) += 1;
+                        let result_sender = remote_connection_sender.clone();
+                        let rule_id = rule.id.clone();
+                        let connection_rule = rule.clone();
+                        let thread_result = thread::Builder::new()
+                            .name("ssh-remote-forward-connect".to_string())
+                            .spawn(move || {
+                                let socket = transport::connect(
+                                    connection_rule.target_address.trim(),
+                                    connection_rule.target_port,
+                                    None,
+                                    10,
+                                )
+                                .map_err(|error| format!("连接本地目标失败：{error}"));
+                                let _ = result_sender.send(RemoteConnectionResult {
+                                    rule_id,
+                                    channel,
+                                    socket,
+                                });
+                            });
+                        if let Err(error) = thread_result {
+                            if let Some(count) = pending_remote_connections.get_mut(&rule.id) {
+                                *count = count.saturating_sub(1);
+                            }
+                            let status = remote_port_forward_status(
+                                &rule,
+                                remote_forwards[remote_forward_index].bound_port,
+                                "active",
+                                Some(format!("无法启动本地目标连接任务：{error}")),
+                            );
+                            emit_port_forward_status(&app, &session_id, &status);
+                        }
+                        active = true;
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        let io_error: io::Error = error.into();
+                        if io_error.kind() == io::ErrorKind::WouldBlock {
+                            break;
+                        }
+                        listener_failed = Some(format!("远程端口监听失败：{message}"));
+                        break;
+                    }
+                }
+            }
+            if let Some(error) = listener_failed {
+                session.set_blocking(true);
+                let forward = remote_forwards.remove(remote_forward_index);
+                let rule_id = forward.rule.id.clone();
+                let status = remote_port_forward_status(
+                    &forward.rule,
+                    forward.bound_port,
+                    "failed",
+                    Some(error),
+                );
+                drop(forward);
+                session.set_blocking(false);
+                forward_connections.retain(|connection| {
+                    connection.kind != PortForwardKind::Remote || connection.rule_id != rule_id
+                });
+                emit_port_forward_status(&app, &session_id, &status);
+            } else {
+                remote_forward_index += 1;
+            }
+        }
+
+        while let Ok(result) = remote_connection_receiver.try_recv() {
+            if let Some(count) = pending_remote_connections.get_mut(&result.rule_id) {
+                *count = count.saturating_sub(1);
+            }
+            let Some(forward) = remote_forwards
+                .iter()
+                .find(|forward| forward.rule.id == result.rule_id)
+            else {
+                continue;
+            };
+            match result.socket.and_then(|socket| {
+                ForwardConnection::new(
+                    result.rule_id,
+                    PortForwardKind::Remote,
+                    socket,
+                    result.channel,
+                )
+            }) {
+                Ok(connection) => {
+                    let status = remote_port_forward_status(
+                        &forward.rule,
+                        forward.bound_port,
+                        "active",
+                        None,
+                    );
+                    emit_port_forward_status(&app, &session_id, &status);
+                    forward_connections.push(connection);
+                }
+                Err(error) => {
+                    let status = remote_port_forward_status(
+                        &forward.rule,
+                        forward.bound_port,
+                        "active",
+                        Some(error),
+                    );
+                    emit_port_forward_status(&app, &session_id, &status);
+                }
+            }
+            active = true;
         }
 
         let mut connection_index = 0;
@@ -1095,13 +1475,33 @@ fn run_session(
                 }
                 Err(error) => {
                     let rule_id = forward_connections[connection_index].rule_id.clone();
+                    let kind = forward_connections[connection_index].kind;
                     forward_connections.remove(connection_index);
-                    if let Some(forward) = local_forwards
-                        .iter()
-                        .find(|forward| forward.rule.id == rule_id)
-                    {
-                        let status = port_forward_status(&forward.rule, "active", Some(error));
-                        emit_port_forward_status(&app, &session_id, &status);
+                    match kind {
+                        PortForwardKind::Local => {
+                            if let Some(forward) = local_forwards
+                                .iter()
+                                .find(|forward| forward.rule.id == rule_id)
+                            {
+                                let status =
+                                    local_port_forward_status(&forward.rule, "active", Some(error));
+                                emit_port_forward_status(&app, &session_id, &status);
+                            }
+                        }
+                        PortForwardKind::Remote => {
+                            if let Some(forward) = remote_forwards
+                                .iter()
+                                .find(|forward| forward.rule.id == rule_id)
+                            {
+                                let status = remote_port_forward_status(
+                                    &forward.rule,
+                                    forward.bound_port,
+                                    "active",
+                                    Some(error),
+                                );
+                                emit_port_forward_status(&app, &session_id, &status);
+                            }
+                        }
                     }
                 }
             }
@@ -1238,7 +1638,10 @@ fn connect_session(
         return Err("SSH 连接已取消".to_string());
     }
 
-    let (local_forwards, port_forwards) = prepare_local_forwards(request.local_port_forwards);
+    let (local_forwards, mut port_forwards) = prepare_local_forwards(request.local_port_forwards);
+    let (remote_forwards, remote_statuses) =
+        prepare_remote_forwards(&session, request.remote_port_forwards);
+    port_forwards.extend(remote_statuses);
 
     let (sender, receiver) = mpsc::channel();
     manager.activate(&request.session_id, sender)?;
@@ -1257,6 +1660,7 @@ fn connect_session(
                 SessionRuntimeConfig {
                     keep_alive_interval_seconds: auth.keep_alive_interval_seconds,
                     local_forwards,
+                    remote_forwards,
                 },
             )
         })
@@ -1500,6 +1904,52 @@ pub(crate) async fn ssh_stop_local_forward(
 }
 
 #[tauri::command]
+pub(crate) async fn ssh_start_remote_forward(
+    manager: State<'_, SshSessionManager>,
+    session_id: String,
+    rule: RemotePortForwardRule,
+) -> Result<PortForwardStatus, String> {
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    manager.send(
+        &session_id,
+        SessionCommand::StartRemoteForward {
+            rule,
+            response: response_sender,
+        },
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        response_receiver
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| format!("等待远程端口转发启动结果失败：{error}"))?
+    })
+    .await
+    .map_err(|error| format!("远程端口转发启动任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn ssh_stop_remote_forward(
+    manager: State<'_, SshSessionManager>,
+    session_id: String,
+    rule_id: String,
+) -> Result<PortForwardStatus, String> {
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    manager.send(
+        &session_id,
+        SessionCommand::StopRemoteForward {
+            rule_id,
+            response: response_sender,
+        },
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        response_receiver
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| format!("等待远程端口转发停止结果失败：{error}"))?
+    })
+    .await
+    .map_err(|error| format!("远程端口转发停止任务异常结束：{error}"))?
+}
+
+#[tauri::command]
 pub(crate) fn ssh_disconnect(
     manager: State<'_, SshSessionManager>,
     session_id: String,
@@ -1519,8 +1969,9 @@ mod tests {
     use super::{
         connect_authenticated_session, connect_handshaken_session, disconnect_status,
         loopback_pair, open_local_forward_connection, start_local_forward, validate_fingerprint,
-        verify_fingerprint, FingerprintVerification, JumpHostConfig, LocalPortForwardRule,
-        SessionCommand, SshAuthConfig, SshAuthMethod, SshSessionManager,
+        validate_remote_forward_rule, verify_fingerprint, FingerprintVerification, JumpHostConfig,
+        LocalPortForwardRule, RemotePortForwardRule, SessionCommand, SshAuthConfig, SshAuthMethod,
+        SshSessionManager,
     };
 
     #[test]
@@ -1586,6 +2037,24 @@ mod tests {
         assert_eq!(
             start_local_forward(rule).err().unwrap(),
             "监听地址必须是有效的 IP 地址"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_remote_forward_addresses() {
+        let rule = RemotePortForwardRule {
+            id: "remote-forward-1".to_string(),
+            name: "Preview".to_string(),
+            bind_address: "localhost".to_string(),
+            bind_port: 9000,
+            target_address: "127.0.0.1".to_string(),
+            target_port: 3000,
+            enabled: true,
+        };
+
+        assert_eq!(
+            validate_remote_forward_rule(&rule).err().unwrap(),
+            "远程监听地址必须是有效的 IP 地址"
         );
     }
 

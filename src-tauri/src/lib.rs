@@ -42,6 +42,8 @@ pub fn run() {
             ssh::ssh_signal_process,
             ssh::ssh_start_local_forward,
             ssh::ssh_stop_local_forward,
+            ssh::ssh_start_remote_forward,
+            ssh::ssh_stop_remote_forward,
             ssh::ssh_disconnect,
             sftp::sftp_connect,
             sftp::sftp_list,
