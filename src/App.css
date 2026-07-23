@@ -1237,19 +1237,8 @@ body,
 }
 
 .host-editor-tabs > .arco-tabs-header-nav {
-  flex: 0 0 96px;
-  width: 96px;
-  margin-left: -20px;
-}
-
-.host-editor-tabs
-  > .arco-tabs-header-nav-line.arco-tabs-header-nav-vertical
-  .arco-tabs-header-title {
-  padding-inline: 16px;
-}
-
-.host-editor-tabs > .arco-tabs-header-nav .arco-tabs-header {
-  width: 100%;
+  flex: 0 0 88px;
+  width: 88px;
 }
 
 .host-editor-tabs > .arco-tabs-content {
