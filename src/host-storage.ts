@@ -53,6 +53,12 @@ export function normalizeHostForm(values: HostFormValues) {
         bindAddress: rule.bindAddress.trim(),
         targetAddress: rule.targetAddress.trim(),
       })),
+      remotePortForwards: values.remotePortForwards?.map((rule) => ({
+        ...rule,
+        name: rule.name.trim(),
+        bindAddress: rule.bindAddress.trim(),
+        targetAddress: rule.targetAddress.trim(),
+      })),
       group: normalizeGroupPath(values.group),
       hostFingerprint: values.hostFingerprint?.trim() || undefined,
     },

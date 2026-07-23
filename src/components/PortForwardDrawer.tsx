@@ -111,6 +111,7 @@ function PortForwardDrawer({
       render: (_, rule) => {
         const status = statusByRuleId.get(rule.id) ?? {
           ruleId: rule.id,
+          kind: "local" as const,
           status: "stopped" as const,
           bindAddress: rule.bindAddress,
           bindPort: rule.bindPort,

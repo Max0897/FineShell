@@ -25,7 +25,7 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(8);
+    expect(configuration.schemaVersion).toBe(9);
     expect(configuration.proxies).toEqual([]);
     expect(configuration.hostSort).toBe("manual");
     expect(configuration.settings).toEqual(DEFAULT_APP_SETTINGS);
@@ -46,6 +46,7 @@ describe("migrateLegacyConfiguration", () => {
         proxyId: undefined,
         jumpHostId: undefined,
         localPortForwards: [],
+        remotePortForwards: [],
         group: undefined,
         hostFingerprint: undefined,
         lastConnectedAt: undefined,
@@ -146,6 +147,17 @@ describe("configuration import and export", () => {
                 enabled: true,
               },
             ],
+            remotePortForwards: [
+              {
+                id: "remote-forward-1",
+                name: "Preview",
+                bindAddress: "127.0.0.1",
+                bindPort: 9000,
+                targetAddress: "127.0.0.1",
+                targetPort: 3000,
+                enabled: true,
+              },
+            ],
             password: "must-not-be-exported",
           } as never,
         ],
@@ -176,6 +188,7 @@ describe("configuration import and export", () => {
     expect(imported.hosts).toHaveLength(1);
     expect(imported.hosts[0].jumpHostId).toBe("jump-1");
     expect(imported.hosts[0].localPortForwards).toHaveLength(1);
+    expect(imported.hosts[0].remotePortForwards).toHaveLength(1);
     expect(imported.proxies).toEqual([
       {
         id: "proxy-1",

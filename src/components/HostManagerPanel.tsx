@@ -407,6 +407,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       proxyId: host.proxyId,
       jumpHostId: host.jumpHostId,
       localPortForwards: host.localPortForwards,
+      remotePortForwards: host.remotePortForwards,
       connectedAt: now,
     };
 
@@ -499,6 +500,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         proxyId: record.proxyId,
         jumpHostId: record.jumpHostId,
         localPortForwards: record.localPortForwards,
+        remotePortForwards: record.remotePortForwards,
       },
     );
   }

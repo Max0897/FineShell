@@ -10,6 +10,7 @@ import type {
   HostSortMode,
   LocalPortForwardRule,
   ProxyRecord,
+  RemotePortForwardRule,
 } from "./models";
 
 const DATABASE_NAME = "fineshell.config";
@@ -19,8 +20,8 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 8;
-export const CONFIGURATION_EXPORT_VERSION = 6;
+export const CONFIGURATION_SCHEMA_VERSION = 9;
+export const CONFIGURATION_EXPORT_VERSION = 7;
 export const MAX_CONFIGURATION_BACKUPS = 10;
 export const TRASH_RETENTION_DAYS = 30;
 
@@ -141,6 +142,27 @@ function sanitizeLocalPortForward(
   };
 }
 
+function sanitizeRemotePortForward(
+  value: unknown,
+): RemotePortForwardRule | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = stringValue(value.id);
+  const name = stringValue(value.name);
+  const bindAddress = stringValue(value.bindAddress);
+  const targetAddress = stringValue(value.targetAddress);
+  if (!id || !name || !bindAddress || !targetAddress) return undefined;
+
+  return {
+    id,
+    name: name.trim(),
+    bindAddress: bindAddress.trim(),
+    bindPort: numberValue(value.bindPort, 8080, 1, 65_535),
+    targetAddress: targetAddress.trim(),
+    targetPort: numberValue(value.targetPort, 80, 1, 65_535),
+    enabled: optionalBoolean(value.enabled) ?? true,
+  };
+}
+
 function sanitizeHost(value: unknown): HostRecord | undefined {
   if (!isRecord(value)) return undefined;
 
@@ -177,6 +199,10 @@ function sanitizeHost(value: unknown): HostRecord | undefined {
     localPortForwards: sanitizeList(
       value.localPortForwards,
       sanitizeLocalPortForward,
+    ),
+    remotePortForwards: sanitizeList(
+      value.remotePortForwards,
+      sanitizeRemotePortForward,
     ),
     group: stringValue(value.group),
     hostFingerprint: stringValue(value.hostFingerprint),
@@ -219,6 +245,10 @@ function sanitizeHistoryRecord(
     localPortForwards: sanitizeList(
       value.localPortForwards,
       sanitizeLocalPortForward,
+    ),
+    remotePortForwards: sanitizeList(
+      value.remotePortForwards,
+      sanitizeRemotePortForward,
     ),
     connectedAt,
   };
