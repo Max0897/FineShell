@@ -691,6 +691,18 @@ function App() {
 
   const terminalPanel = (
     <section className="panel terminal-panel">
+      <button
+        aria-selected={activeSessionId === null}
+        className={`terminal-home-tab${
+          activeSessionId === null ? " terminal-home-tab-active" : ""
+        }`}
+        onClick={() => setActiveSessionId(null)}
+        role="tab"
+        type="button"
+      >
+        <IconHome />
+        <span>首页</span>
+      </button>
       <Tabs
         activeTab={activeSessionId ?? HOME_TAB_ID}
         className="terminal-tabs"
