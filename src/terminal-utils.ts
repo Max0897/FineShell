@@ -1,5 +1,10 @@
 import type { HostRecord, JumpHostConnection } from "./models";
 
+interface SessionTabTarget {
+  id: string;
+  host: Pick<HostRecord, "id" | "name">;
+}
+
 export function decodeSshOutput(value: string) {
   const padding = (4 - (value.length % 4)) % 4;
   const binary = atob(value.padEnd(value.length + padding, "="));
@@ -8,6 +13,21 @@ export function decodeSshOutput(value: string) {
 
 export function reconnectDelaySeconds(attempt: number) {
   return Math.min(30, 2 ** Math.max(0, Math.floor(attempt) - 1));
+}
+
+export function sessionTabName(
+  sessions: SessionTabTarget[],
+  sessionId: string,
+) {
+  const index = sessions.findIndex((session) => session.id === sessionId);
+  if (index < 0) return "";
+  const session = sessions[index];
+  const occurrence = sessions
+    .slice(0, index + 1)
+    .filter((item) => item.host.id === session.host.id).length;
+  return occurrence > 1
+    ? `${session.host.name} (${occurrence})`
+    : session.host.name;
 }
 
 export function sshCredentialId(host: HostRecord) {

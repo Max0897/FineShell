@@ -49,6 +49,7 @@ import {
 import {
   jumpHostRequest,
   reconnectDelaySeconds,
+  sessionTabName,
   sshCredentialId,
 } from "./terminal-utils";
 import "./App.css";
@@ -730,7 +731,7 @@ function App() {
                   />
                   <Tooltip content={sessionStatusLabel(session)}>
                     <span className="terminal-tab-name">
-                      {session.host.name}
+                      {sessionTabName(sessions, session.id)}
                     </span>
                   </Tooltip>
                 </span>

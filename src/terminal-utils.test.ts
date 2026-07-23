@@ -3,6 +3,7 @@ import {
   decodeSshOutput,
   jumpHostRequest,
   reconnectDelaySeconds,
+  sessionTabName,
   sshCredentialId,
 } from "./terminal-utils";
 
@@ -20,6 +21,23 @@ describe("reconnectDelaySeconds", () => {
     expect(reconnectDelaySeconds(2)).toBe(2);
     expect(reconnectDelaySeconds(3)).toBe(4);
     expect(reconnectDelaySeconds(10)).toBe(30);
+  });
+});
+
+describe("sessionTabName", () => {
+  test("numbers repeated sessions of the same saved host", () => {
+    const sessions = [
+      { id: "session-1", host: { id: "host-1", name: "Production" } },
+      { id: "session-2", host: { id: "host-2", name: "Staging" } },
+      { id: "session-3", host: { id: "host-1", name: "Production" } },
+      { id: "session-4", host: { id: "host-1", name: "Production" } },
+    ];
+
+    expect(sessionTabName(sessions, "session-1")).toBe("Production");
+    expect(sessionTabName(sessions, "session-2")).toBe("Staging");
+    expect(sessionTabName(sessions, "session-3")).toBe("Production (2)");
+    expect(sessionTabName(sessions, "session-4")).toBe("Production (3)");
+    expect(sessionTabName(sessions.slice(1), "session-3")).toBe("Production");
   });
 });
 
