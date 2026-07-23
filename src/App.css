@@ -925,6 +925,11 @@ body,
   width: 100%;
 }
 
+.host-more-delete,
+.host-more-delete .arco-icon {
+  color: #f53f3f;
+}
+
 @media (max-width: 760px) {
   .manager-toolbar,
   .manager-toolbar-filters {
