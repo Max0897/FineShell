@@ -51,7 +51,7 @@ export interface DynamicPortForwardRule {
 
 export interface PortForwardStatus {
   ruleId: string;
-  kind: "local" | "remote";
+  kind: "local" | "remote" | "dynamic";
   status: "active" | "stopped" | "failed";
   bindAddress: string;
   bindPort: number;

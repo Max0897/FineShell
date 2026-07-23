@@ -232,6 +232,7 @@ function App() {
             jumpHost: jumpHostRequest(session.jumpHost),
             localPortForwards: session.host.localPortForwards ?? [],
             remotePortForwards: session.host.remotePortForwards ?? [],
+            dynamicPortForwards: session.host.dynamicPortForwards ?? [],
             cols: 80,
             rows: 24,
           },

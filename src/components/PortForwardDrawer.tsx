@@ -18,16 +18,18 @@ import {
 } from "@arco-design/web-react/icon";
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  DynamicPortForwardRule,
   LocalPortForwardRule,
   PortForwardStatus,
   RemotePortForwardRule,
   TerminalSession,
 } from "../models";
 
-type ForwardKind = "local" | "remote";
+type ForwardKind = "local" | "remote" | "dynamic";
 type RuntimeForwardRule = (
   | LocalPortForwardRule
   | RemotePortForwardRule
+  | DynamicPortForwardRule
 ) & {
   kind: ForwardKind;
 };
@@ -77,8 +79,21 @@ function PortForwardDrawer({
       })),
     [session.host.remotePortForwards],
   );
-  const rules = activeKind === "local" ? localRules : remoteRules;
-  const allRules = [...localRules, ...remoteRules];
+  const dynamicRules = useMemo<RuntimeForwardRule[]>(
+    () =>
+      (session.host.dynamicPortForwards ?? []).map((rule) => ({
+        ...rule,
+        kind: "dynamic",
+      })),
+    [session.host.dynamicPortForwards],
+  );
+  const rules =
+    activeKind === "local"
+      ? localRules
+      : activeKind === "remote"
+        ? remoteRules
+        : dynamicRules;
+  const allRules = [...localRules, ...remoteRules, ...dynamicRules];
   const statusByRuleKey = useMemo(
     () =>
       new Map(
@@ -104,12 +119,16 @@ function PortForwardDrawer({
     setPendingRuleKey(key);
     try {
       const command = running
-        ? rule.kind === "local"
-          ? "ssh_stop_local_forward"
-          : "ssh_stop_remote_forward"
-        : rule.kind === "local"
-          ? "ssh_start_local_forward"
-          : "ssh_start_remote_forward";
+        ? {
+            local: "ssh_stop_local_forward",
+            remote: "ssh_stop_remote_forward",
+            dynamic: "ssh_stop_dynamic_forward",
+          }[rule.kind]
+        : {
+            local: "ssh_start_local_forward",
+            remote: "ssh_start_remote_forward",
+            dynamic: "ssh_start_dynamic_forward",
+          }[rule.kind];
       const status = running
         ? await invoke<PortForwardStatus>(command, {
             sessionId: session.id,
@@ -138,15 +157,27 @@ function PortForwardDrawer({
       ),
     },
     {
-      title: activeKind === "local" ? "本地监听" : "远程监听",
+      title:
+        activeKind === "remote"
+          ? "远程监听"
+          : activeKind === "dynamic"
+            ? "SOCKS5 监听"
+            : "本地监听",
       width: 150,
       render: (_, rule) => endpoint(rule.bindAddress, rule.bindPort),
     },
-    {
-      title: activeKind === "local" ? "远端目标" : "本地目标",
-      width: 160,
-      render: (_, rule) => endpoint(rule.targetAddress, rule.targetPort),
-    },
+    ...(activeKind === "dynamic"
+      ? []
+      : [
+          {
+            title: activeKind === "local" ? "远端目标" : "本地目标",
+            width: 160,
+            render: (_: unknown, rule: RuntimeForwardRule) =>
+              "targetAddress" in rule
+                ? endpoint(rule.targetAddress, rule.targetPort)
+                : "-",
+          },
+        ]),
     {
       title: "状态",
       width: 96,
@@ -203,7 +234,11 @@ function PortForwardDrawer({
     >
       <div className="port-forward-runtime-summary">
         <Typography.Text type="secondary">
-          {activeKind === "local" ? "本地端口转发" : "远程端口转发"}
+          {activeKind === "local"
+            ? "本地端口转发"
+            : activeKind === "remote"
+              ? "远程端口转发"
+              : "动态 SOCKS5 转发"}
         </Typography.Text>
         <Space size="mini">
           <Tag color={connected ? "green" : "gray"}>
@@ -222,6 +257,7 @@ function PortForwardDrawer({
       >
         <Tabs.TabPane key="local" title={`本地转发 (${localRules.length})`} />
         <Tabs.TabPane key="remote" title={`远程转发 (${remoteRules.length})`} />
+        <Tabs.TabPane key="dynamic" title={`动态转发 (${dynamicRules.length})`} />
       </Tabs>
       <Table
         border={false}
@@ -229,7 +265,13 @@ function PortForwardDrawer({
         data={rules}
         noDataElement={
           <Empty
-            description={`暂无${activeKind === "local" ? "本地" : "远程"}端口转发规则`}
+            description={`暂无${
+              activeKind === "local"
+                ? "本地"
+                : activeKind === "remote"
+                  ? "远程"
+                  : "动态"
+            }端口转发规则`}
           />
         }
         pagination={false}
