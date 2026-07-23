@@ -670,7 +670,7 @@ body,
   color: #165dff;
 }
 
-.sftp-path:focus-visible {
+.sftp-path-autocomplete .arco-input:focus-visible {
   outline: none;
 }
 
