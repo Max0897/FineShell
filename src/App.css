@@ -1139,8 +1139,7 @@ body,
 }
 
 .host-editor-tabs {
-  height: min(390px, calc(100vh - 240px));
-  min-height: 280px;
+  height: clamp(340px, calc(100vh - 210px), 460px);
 }
 
 .host-editor-tabs > .arco-tabs-header-nav {

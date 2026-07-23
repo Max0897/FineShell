@@ -117,7 +117,7 @@ function HostEditorModal({
       footer={null}
       maskClosable={false}
       onCancel={onCancel}
-      style={{ width: 520 }}
+      style={{ width: "min(680px, calc(100vw - 64px))" }}
       title={host ? "编辑主机" : "新增主机"}
       visible={visible}
     >
