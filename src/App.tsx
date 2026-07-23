@@ -718,11 +718,9 @@ function App() {
           closable={false}
           key={HOME_TAB_ID}
           title={
-            <span className="terminal-tab-label-frame">
-              <span className="terminal-tab-title">
-                <IconHome />
-                <span className="terminal-tab-name">首页</span>
-              </span>
+            <span className="terminal-tab-label">
+              <IconHome />
+              <span className="terminal-tab-name">首页</span>
             </span>
           }
         >
@@ -735,17 +733,15 @@ function App() {
             title={
               <ContextMenu items={sessionContextMenuItems(session)}>
                 <span
-                  className="terminal-tab-context-target terminal-tab-label-frame"
+                  className="terminal-tab-context-target terminal-tab-label"
                   onContextMenu={() => setActiveSessionId(session.id)}
                 >
+                  <span
+                    className={`terminal-status-dot terminal-status-${session.status}`}
+                  />
                   <Tooltip content={sessionStatusLabel(session)}>
-                    <span className="terminal-tab-title">
-                      <span
-                        className={`terminal-status-dot terminal-status-${session.status}`}
-                      />
-                      <span className="terminal-tab-name">
-                        {session.host.name}
-                      </span>
+                    <span className="terminal-tab-name">
+                      {session.host.name}
                     </span>
                   </Tooltip>
                 </span>

@@ -536,7 +536,8 @@ body,
   background: #f2f3f5;
 }
 
-.terminal-tab-title {
+.terminal-tab-label {
+  height: 100%;
   min-width: 0;
   display: inline-flex;
   align-items: center;
@@ -546,15 +547,8 @@ body,
   user-select: none;
 }
 
-.terminal-tab-title > svg {
+.terminal-tab-label > svg {
   flex: 0 0 auto;
-}
-
-.terminal-tab-label-frame {
-  height: 100%;
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
 }
 
 .terminal-tab-name {
