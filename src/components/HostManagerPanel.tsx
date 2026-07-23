@@ -35,11 +35,15 @@ import type {
   HostAuthMethod,
   HostRecord,
   HostSortMode,
+  JumpHostConnection,
   QuickTarget,
   ProxyRecord,
 } from "../models";
 import HostEditorModal from "./HostEditorModal";
-import { normalizeHostForm } from "../host-storage";
+import {
+  jumpHostSelectionError,
+  normalizeHostForm,
+} from "../host-storage";
 import {
   buildHostTableTree,
   createHostCopy,
@@ -90,9 +94,12 @@ async function choosePrivateKeyPath() {
 }
 
 function targetKey(
-  target: Pick<HostRecord, "address" | "port" | "username" | "proxyId">,
+  target: Pick<
+    HostRecord,
+    "address" | "port" | "username" | "proxyId" | "jumpHostId"
+  >,
 ) {
-  return `${target.username}@${target.address}:${target.port}#${target.proxyId ?? "direct"}`;
+  return `${target.username}@${target.address}:${target.port}#${target.proxyId ?? "direct"}#${target.jumpHostId ?? "no-jump"}`;
 }
 
 function formatTime(value?: string) {
@@ -107,7 +114,11 @@ function formatTime(value?: string) {
 }
 
 interface HostManagerPanelProps {
-  onConnect: (host: HostRecord, proxy?: ProxyRecord) => void;
+  onConnect: (
+    host: HostRecord,
+    proxy?: ProxyRecord,
+    jumpHost?: JumpHostConnection,
+  ) => void;
   settings: AppSettings;
 }
 
@@ -245,6 +256,19 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       host: normalized,
     } = normalizeHostForm(values);
     const hostId = editingHost?.id ?? createId("host");
+    if (normalized.proxyId && normalized.jumpHostId) {
+      Message.error("代理和跳板机不能同时配置");
+      return;
+    }
+    const routeError = jumpHostSelectionError(
+      hostId,
+      normalized.jumpHostId,
+      hosts,
+    );
+    if (routeError) {
+      Message.error(routeError);
+      return;
+    }
 
     try {
       if (password) await storeHostPassword(hostId, password);
@@ -331,6 +355,28 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       Message.error("主机引用的代理不存在，请重新编辑主机");
       return;
     }
+    const jumpHost = host.jumpHostId
+      ? hosts.find((item) => item.id === host.jumpHostId)
+      : undefined;
+    if (host.jumpHostId && !jumpHost) {
+      Message.error("主机引用的跳板机不存在，请重新编辑主机");
+      return;
+    }
+    if (jumpHost?.jumpHostId) {
+      Message.error("当前仅支持一级跳板机连接");
+      return;
+    }
+    if (jumpHost && !jumpHost.hostFingerprint) {
+      Message.error("请先直接连接并信任该跳板机，再将其用于连接链路");
+      return;
+    }
+    const jumpProxy = jumpHost?.proxyId
+      ? proxies.find((item) => item.id === jumpHost.proxyId)
+      : undefined;
+    if (jumpHost?.proxyId && !jumpProxy) {
+      Message.error("跳板机引用的代理不存在，请重新编辑跳板机");
+      return;
+    }
     const now = new Date().toISOString();
     const identity = targetKey(host);
     const connectedHost = { ...host, lastConnectedAt: now };
@@ -348,6 +394,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       autoReconnect: host.autoReconnect,
       maxReconnectAttempts: host.maxReconnectAttempts,
       proxyId: host.proxyId,
+      jumpHostId: host.jumpHostId,
       connectedAt: now,
     };
 
@@ -367,7 +414,11 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     }
 
     setHistoryVisible(false);
-    onConnect(connectedHost, proxy);
+    onConnect(
+      connectedHost,
+      proxy,
+      jumpHost ? { host: jumpHost, proxy: jumpProxy } : undefined,
+    );
   }
 
   async function quickConnect() {
@@ -434,6 +485,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         maxReconnectAttempts:
           record.maxReconnectAttempts ?? settings.defaultMaxReconnectAttempts,
         proxyId: record.proxyId,
+        jumpHostId: record.jumpHostId,
       },
     );
   }
@@ -759,6 +811,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         <HostEditorModal
           connectionDefaults={settings}
           host={editingHost}
+          hosts={hosts}
           proxies={proxies}
           onCancel={() => {
             setEditorVisible(false);

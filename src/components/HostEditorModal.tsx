@@ -34,6 +34,7 @@ type HostEditorValues = Omit<
 interface HostEditorModalProps {
   connectionDefaults: ConnectionDefaults;
   host: HostRecord | null;
+  hosts: HostRecord[];
   proxies: ProxyRecord[];
   visible: boolean;
   onCancel: () => void;
@@ -44,6 +45,7 @@ interface HostEditorModalProps {
 function HostEditorModal({
   connectionDefaults,
   host,
+  hosts,
   proxies,
   visible,
   onCancel,
@@ -55,10 +57,14 @@ function HostEditorModal({
     host?.authMethod ?? "password",
   );
   const [activeTab, setActiveTab] = useState("basic");
+  const [proxyId, setProxyId] = useState(host?.proxyId);
+  const [jumpHostId, setJumpHostId] = useState(host?.jumpHostId);
 
   useEffect(() => {
     if (visible) {
       setActiveTab("basic");
+      setProxyId(host?.proxyId);
+      setJumpHostId(host?.jumpHostId);
     }
   }, [visible, host?.id]);
 
@@ -74,6 +80,7 @@ function HostEditorModal({
         password: "",
         group: host.group,
         proxyId: host.proxyId,
+        jumpHostId: host.jumpHostId,
       }
     : {
         name: "",
@@ -86,6 +93,7 @@ function HostEditorModal({
         password: "",
         group: "",
         proxyId: undefined,
+        jumpHostId: undefined,
       };
 
   const submitHost = (values: HostEditorValues) => {
@@ -237,11 +245,43 @@ function HostEditorModal({
               <Form.Item field="proxyId" label="代理">
                 <Select
                   allowClear
+                  disabled={Boolean(jumpHostId)}
+                  onChange={(value) => {
+                    setProxyId(value);
+                    if (value) {
+                      setJumpHostId(undefined);
+                      form.setFieldValue("jumpHostId", undefined);
+                    }
+                  }}
                   options={proxies.map((proxy) => ({
                     label: `${proxy.name} · ${proxy.type === "socks5" ? "SOCKS5" : "HTTP"}`,
                     value: proxy.id,
                   }))}
                   placeholder="直连"
+                />
+              </Form.Item>
+              <Form.Item field="jumpHostId" label="跳板机">
+                <Select
+                  allowClear
+                  disabled={Boolean(proxyId)}
+                  onChange={(value) => {
+                    setJumpHostId(value);
+                    if (value) {
+                      setProxyId(undefined);
+                      form.setFieldValue("proxyId", undefined);
+                    }
+                  }}
+                  options={hosts
+                    .filter(
+                      (candidate) =>
+                        candidate.id !== host?.id && !candidate.jumpHostId,
+                    )
+                    .map((candidate) => ({
+                      label: `${candidate.name} · ${candidate.username}@${candidate.address}:${candidate.port}`,
+                      value: candidate.id,
+                    }))}
+                  placeholder="不使用跳板机"
+                  showSearch
                 />
               </Form.Item>
             </div>

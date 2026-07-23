@@ -52,3 +52,20 @@ export function normalizeHostForm(values: HostFormValues) {
     },
   };
 }
+
+export function jumpHostSelectionError(
+  hostId: string,
+  jumpHostId: string | undefined,
+  hosts: HostRecord[],
+) {
+  if (!jumpHostId) return undefined;
+  if (hostId === jumpHostId) return "主机不能将自身设置为跳板机";
+
+  const jumpHost = hosts.find((host) => host.id === jumpHostId);
+  if (!jumpHost) return "选择的跳板机不存在，请重新选择";
+  if (jumpHost.jumpHostId) return "当前仅支持一级跳板机连接";
+  if (hosts.some((host) => host.id !== hostId && host.jumpHostId === hostId)) {
+    return "当前主机已被其他主机用作跳板机，不能再配置上级跳板机";
+  }
+  return undefined;
+}

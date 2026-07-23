@@ -24,7 +24,12 @@ import {
   IconPoweroff,
   IconRefresh,
 } from "@arco-design/web-react/icon";
-import type { HostRecord, ProxyRecord, TerminalSession } from "./models";
+import type {
+  HostRecord,
+  JumpHostConnection,
+  ProxyRecord,
+  TerminalSession,
+} from "./models";
 import ContextMenu, {
   type ContextMenuItem,
 } from "./components/ContextMenu";
@@ -137,9 +142,12 @@ function createId(prefix: string) {
 }
 
 function targetKey(
-  target: Pick<HostRecord, "address" | "port" | "username" | "proxyId">,
+  target: Pick<
+    HostRecord,
+    "address" | "port" | "username" | "proxyId" | "jumpHostId"
+  >,
 ) {
-  return `${target.username}@${target.address}:${target.port}#${target.proxyId ?? "direct"}`;
+  return `${target.username}@${target.address}:${target.port}#${target.proxyId ?? "direct"}#${target.jumpHostId ?? "no-jump"}`;
 }
 
 function App() {
@@ -285,7 +293,11 @@ function App() {
   );
 
   const openSession = useCallback(
-    (host: HostRecord, proxy?: ProxyRecord) => {
+    (
+      host: HostRecord,
+      proxy?: ProxyRecord,
+      jumpHost?: JumpHostConnection,
+    ) => {
       const normalizedHost = withHostDefaults(host);
       const identity = targetKey(normalizedHost);
       const existing = sessionsRef.current.find(
@@ -300,6 +312,7 @@ function App() {
         id: createId("session"),
         host: normalizedHost,
         proxy,
+        jumpHost,
         openedAt: new Date().toISOString(),
         status: "connecting",
       };

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeHostForm, withHostDefaults } from "./host-storage";
+import {
+  jumpHostSelectionError,
+  normalizeHostForm,
+  withHostDefaults,
+} from "./host-storage";
 
 describe("normalizeHostForm", () => {
   test("trims metadata without putting the password in the stored host", () => {
@@ -133,5 +137,64 @@ describe("withHostDefaults", () => {
     expect(host.keepAliveIntervalSeconds).toBe(15);
     expect(host.autoReconnect).toBe(true);
     expect(host.maxReconnectAttempts).toBe(3);
+  });
+});
+
+describe("jumpHostSelectionError", () => {
+  const hosts = [
+    {
+      id: "jump",
+      name: "Jump",
+      address: "jump.example.com",
+      port: 22,
+      username: "root",
+      authMethod: "password" as const,
+      connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
+    },
+    {
+      id: "nested",
+      name: "Nested",
+      address: "nested.example.com",
+      port: 22,
+      username: "root",
+      authMethod: "password" as const,
+      connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
+      jumpHostId: "jump",
+    },
+    {
+      id: "other",
+      name: "Other",
+      address: "other.example.com",
+      port: 22,
+      username: "root",
+      authMethod: "password" as const,
+      connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
+    },
+  ];
+
+  test("accepts a direct saved host", () => {
+    expect(jumpHostSelectionError("target", "jump", hosts)).toBeUndefined();
+  });
+
+  test("rejects self references, missing hosts and nested routes", () => {
+    expect(jumpHostSelectionError("jump", "jump", hosts)).toContain("自身");
+    expect(jumpHostSelectionError("target", "missing", hosts)).toContain(
+      "不存在",
+    );
+    expect(jumpHostSelectionError("target", "nested", hosts)).toContain(
+      "一级",
+    );
+    expect(jumpHostSelectionError("jump", "other", hosts)).toContain(
+      "其他主机",
+    );
   });
 });
