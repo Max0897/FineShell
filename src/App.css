@@ -575,6 +575,24 @@ body,
   padding: 8px 0 4px 8px;
 }
 
+.terminal-view .xterm-scrollable-element {
+  overflow: hidden;
+}
+
+.terminal-view .xterm-scrollable-element > .scrollbar.horizontal,
+.terminal-view .xterm-decoration-overview-ruler {
+  display: none !important;
+}
+
+.terminal-view .xterm-scrollable-element > .scrollbar.vertical,
+.terminal-view .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  width: 6px !important;
+}
+
+.terminal-view .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  border-radius: 3px;
+}
+
 .sftp-toolbar {
   gap: 10px;
 }

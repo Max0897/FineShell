@@ -44,12 +44,18 @@ function TerminalView({ active, settings, session }: TerminalViewProps) {
       fontFamily: TERMINAL_FONT_FAMILIES[settings.terminalFontFamily],
       fontSize: settings.terminalFontSize,
       lineHeight: 1.2,
+      overviewRuler: {
+        width: 6,
+      },
       scrollback: settings.terminalScrollback,
       theme: {
         background: "#191b20",
         foreground: "#d7dae0",
         cursor: "#23c343",
         cursorAccent: "#191b20",
+        scrollbarSliderActiveBackground: "#4e5969",
+        scrollbarSliderBackground: "#c9cdd4",
+        scrollbarSliderHoverBackground: "#86909c",
         selectionBackground: "#3b4354",
       },
     });
