@@ -46,7 +46,7 @@ import {
   sanitizeAppSettings,
   type AppSettings,
 } from "./app-settings";
-import { reconnectDelaySeconds } from "./terminal-utils";
+import { jumpHostRequest, reconnectDelaySeconds } from "./terminal-utils";
 import "./App.css";
 
 const ServerMonitorPanel = lazy(
@@ -196,6 +196,7 @@ function App() {
             keepAliveIntervalSeconds: session.host.keepAliveIntervalSeconds,
             expectedFingerprint: session.host.hostFingerprint,
             proxy: session.proxy,
+            jumpHost: jumpHostRequest(session.jumpHost),
             cols: 80,
             rows: 24,
           },

@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     io::{self, Read, Write},
+    net::{Shutdown, TcpListener, TcpStream},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -40,6 +41,7 @@ pub(crate) struct SshConnectRequest {
     keep_alive_interval_seconds: u32,
     expected_fingerprint: Option<String>,
     proxy: Option<ProxyConfig>,
+    jump_host: Option<JumpHostConfig>,
     cols: u32,
     rows: u32,
 }
@@ -52,6 +54,22 @@ pub(crate) enum SshAuthMethod {
 }
 
 pub(crate) struct SshAuthConfig {
+    pub(crate) host_id: String,
+    pub(crate) address: String,
+    pub(crate) port: u16,
+    pub(crate) username: String,
+    pub(crate) auth_method: SshAuthMethod,
+    pub(crate) private_key_path: Option<String>,
+    pub(crate) connect_timeout_seconds: u64,
+    pub(crate) keep_alive_interval_seconds: u32,
+    pub(crate) expected_fingerprint: Option<String>,
+    pub(crate) proxy: Option<ProxyConfig>,
+    pub(crate) jump_host: Option<JumpHostConfig>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct JumpHostConfig {
     pub(crate) host_id: String,
     pub(crate) address: String,
     pub(crate) port: u16,
@@ -259,16 +277,229 @@ fn configure_keepalive(session: &Session, interval_seconds: u32) {
     }
 }
 
+fn write_relay_pending<W: Write>(
+    writer: &mut W,
+    pending: &mut VecDeque<Vec<u8>>,
+) -> io::Result<bool> {
+    let mut wrote_data = false;
+    while let Some(data) = pending.front_mut() {
+        match writer.write(data) {
+            Ok(0) => break,
+            Ok(written) => {
+                data.drain(..written);
+                wrote_data = true;
+                if data.is_empty() {
+                    pending.pop_front();
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(wrote_data)
+}
+
+fn run_jump_relay(
+    session: Session,
+    mut channel: Channel,
+    mut socket: TcpStream,
+    keep_alive_interval_seconds: u32,
+) {
+    session.set_blocking(false);
+    if socket.set_nonblocking(true).is_err() {
+        return;
+    }
+
+    let mut to_jump = VecDeque::new();
+    let mut to_target = VecDeque::new();
+    let mut socket_closed = false;
+    let mut channel_closed = false;
+    let mut jump_eof_sent = false;
+    let mut next_keepalive_at = Instant::now() + Duration::from_secs(1);
+    let mut buffer = [0_u8; 32 * 1024];
+
+    while !channel_closed || !to_target.is_empty() {
+        let mut active = false;
+
+        if !socket_closed {
+            loop {
+                match socket.read(&mut buffer) {
+                    Ok(0) => {
+                        socket_closed = true;
+                        break;
+                    }
+                    Ok(size) => {
+                        to_jump.push_back(buffer[..size].to_vec());
+                        active = true;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => {
+                        socket_closed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !channel_closed {
+            loop {
+                match channel.read(&mut buffer) {
+                    Ok(0) if channel.eof() => {
+                        channel_closed = true;
+                        let _ = socket.shutdown(Shutdown::Write);
+                        break;
+                    }
+                    Ok(0) => break,
+                    Ok(size) => {
+                        to_target.push_back(buffer[..size].to_vec());
+                        active = true;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => {
+                        channel_closed = true;
+                        let _ = socket.shutdown(Shutdown::Write);
+                        break;
+                    }
+                }
+            }
+        }
+
+        match write_relay_pending(&mut channel, &mut to_jump) {
+            Ok(wrote) => active |= wrote,
+            Err(_) => break,
+        }
+        match write_relay_pending(&mut socket, &mut to_target) {
+            Ok(wrote) => active |= wrote,
+            Err(_) => break,
+        }
+
+        if socket_closed && to_jump.is_empty() && !jump_eof_sent {
+            match channel.send_eof() {
+                Ok(()) => jump_eof_sent = true,
+                Err(error) => {
+                    let io_error: io::Error = error.into();
+                    if io_error.kind() != io::ErrorKind::WouldBlock {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if keep_alive_interval_seconds > 0 && Instant::now() >= next_keepalive_at {
+            match session.keepalive_send() {
+                Ok(next_seconds) => {
+                    next_keepalive_at =
+                        Instant::now() + Duration::from_secs(u64::from(next_seconds.max(1)));
+                }
+                Err(error) => {
+                    let io_error: io::Error = error.into();
+                    if io_error.kind() != io::ErrorKind::WouldBlock {
+                        break;
+                    }
+                    next_keepalive_at = Instant::now() + Duration::from_millis(100);
+                }
+            }
+        }
+
+        if socket_closed && channel_closed && to_target.is_empty() {
+            break;
+        }
+        if socket_closed && jump_eof_sent && to_jump.is_empty() && to_target.is_empty() {
+            break;
+        }
+        if !active {
+            thread::sleep(Duration::from_millis(4));
+        }
+    }
+
+    let _ = channel.close();
+    let _ = socket.shutdown(Shutdown::Both);
+}
+
+fn loopback_pair() -> Result<(TcpStream, TcpStream), String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| format!("创建跳板机本地通道失败：{error}"))?;
+    let endpoint = listener
+        .local_addr()
+        .map_err(|error| format!("读取跳板机本地通道地址失败：{error}"))?;
+    let client =
+        TcpStream::connect(endpoint).map_err(|error| format!("连接跳板机本地通道失败：{error}"))?;
+    let (server, _) = listener
+        .accept()
+        .map_err(|error| format!("接受跳板机本地通道失败：{error}"))?;
+    let _ = client.set_nodelay(true);
+    let _ = server.set_nodelay(true);
+    Ok((client, server))
+}
+
+fn connect_via_jump_host(
+    target_address: &str,
+    target_port: u16,
+    jump_host: &JumpHostConfig,
+    cancelled: &AtomicBool,
+) -> Result<TcpStream, String> {
+    if jump_host.expected_fingerprint.is_none() {
+        return Err("跳板机尚未确认主机指纹，请先直接连接并信任该主机".to_string());
+    }
+
+    let jump_auth = SshAuthConfig {
+        host_id: jump_host.host_id.clone(),
+        address: jump_host.address.clone(),
+        port: jump_host.port,
+        username: jump_host.username.clone(),
+        auth_method: jump_host.auth_method,
+        private_key_path: jump_host.private_key_path.clone(),
+        connect_timeout_seconds: jump_host.connect_timeout_seconds,
+        keep_alive_interval_seconds: jump_host.keep_alive_interval_seconds,
+        expected_fingerprint: jump_host.expected_fingerprint.clone(),
+        proxy: jump_host.proxy.clone(),
+        jump_host: None,
+    };
+    let (session, fingerprint) = connect_handshaken_session(&jump_auth, cancelled)
+        .map_err(|error| format!("跳板机连接失败：{error}"))?;
+    validate_fingerprint(jump_auth.expected_fingerprint.as_deref(), &fingerprint)
+        .map_err(|error| format!("跳板机{error}"))?;
+    authenticate_session(&session, &jump_auth)
+        .map_err(|error| format!("跳板机认证失败：{error}"))?;
+    configure_keepalive(&session, jump_auth.keep_alive_interval_seconds);
+    if cancelled.load(Ordering::Acquire) {
+        return Err("SSH 连接已取消".to_string());
+    }
+
+    let channel = session
+        .channel_direct_tcpip(target_address, target_port, None)
+        .map_err(|error| format!("跳板机无法连接目标主机：{error}"))?;
+    let (target_socket, relay_socket) = loopback_pair()?;
+    thread::Builder::new()
+        .name(format!("ssh-jump-{}", jump_host.host_id))
+        .spawn({
+            let keep_alive_interval_seconds = jump_auth.keep_alive_interval_seconds;
+            move || {
+                run_jump_relay(session, channel, relay_socket, keep_alive_interval_seconds);
+            }
+        })
+        .map_err(|error| format!("无法启动跳板机转发线程：{error}"))?;
+    Ok(target_socket)
+}
+
 fn connect_handshaken_session(
     config: &SshAuthConfig,
     cancelled: &AtomicBool,
 ) -> Result<(Session, String), String> {
-    let tcp = transport::connect(
-        &config.address,
-        config.port,
-        config.proxy.as_ref(),
-        config.connect_timeout_seconds,
-    )?;
+    if config.proxy.is_some() && config.jump_host.is_some() {
+        return Err("代理和跳板机不能同时配置".to_string());
+    }
+    let tcp = match config.jump_host.as_ref() {
+        Some(jump_host) => {
+            connect_via_jump_host(&config.address, config.port, jump_host, cancelled)?
+        }
+        None => transport::connect(
+            &config.address,
+            config.port,
+            config.proxy.as_ref(),
+            config.connect_timeout_seconds,
+        )?,
+    };
     if cancelled.load(Ordering::Acquire) {
         return Err("SSH 连接已取消".to_string());
     }
@@ -568,6 +799,7 @@ fn connect_session(
         keep_alive_interval_seconds: request.keep_alive_interval_seconds,
         expected_fingerprint: request.expected_fingerprint.clone(),
         proxy: request.proxy.clone(),
+        jump_host: request.jump_host.clone(),
     };
     let (session, fingerprint) = connect_handshaken_session(&auth, &cancelled)?;
     match verify_fingerprint(auth.expected_fingerprint.as_deref(), &fingerprint) {
@@ -829,12 +1061,15 @@ pub(crate) fn ssh_disconnect(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::{
+        io::{Read, Write},
+        sync::atomic::{AtomicBool, Ordering},
+    };
 
     use super::{
         connect_authenticated_session, connect_handshaken_session, disconnect_status,
-        validate_fingerprint, verify_fingerprint, FingerprintVerification, SessionCommand,
-        SshAuthConfig, SshAuthMethod, SshSessionManager,
+        loopback_pair, validate_fingerprint, verify_fingerprint, FingerprintVerification,
+        SessionCommand, SshAuthConfig, SshAuthMethod, SshSessionManager,
     };
 
     #[test]
@@ -848,6 +1083,20 @@ mod tests {
     #[test]
     fn rejects_changed_fingerprint() {
         assert!(validate_fingerprint(Some("SHA256:expected"), "SHA256:actual").is_err());
+    }
+
+    #[test]
+    fn creates_a_bidirectional_loopback_pair_for_jump_relay() {
+        let (mut client, mut relay) = loopback_pair().unwrap();
+        client.write_all(b"target").unwrap();
+        let mut from_target = [0_u8; 6];
+        relay.read_exact(&mut from_target).unwrap();
+        assert_eq!(&from_target, b"target");
+
+        relay.write_all(b"jump").unwrap();
+        let mut from_jump = [0_u8; 4];
+        client.read_exact(&mut from_jump).unwrap();
+        assert_eq!(&from_jump, b"jump");
     }
 
     #[test]
@@ -927,6 +1176,7 @@ mod tests {
             keep_alive_interval_seconds: 5,
             expected_fingerprint: std::env::var("FINESHELL_LIVE_FINGERPRINT").ok(),
             proxy: None,
+            jump_host: None,
         };
 
         let (session, fingerprint) =
@@ -960,6 +1210,7 @@ mod tests {
             keep_alive_interval_seconds: 15,
             expected_fingerprint: None,
             proxy: None,
+            jump_host: None,
         };
 
         let (session, fingerprint) = connect_handshaken_session(&config, &AtomicBool::new(false))?;

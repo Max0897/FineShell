@@ -52,6 +52,7 @@ import {
   remoteJoinPath,
   remoteParentPath,
 } from "../sftp-utils";
+import { jumpHostRequest } from "../terminal-utils";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
 type CreateEntryKind = "file" | "directory";
@@ -215,6 +216,7 @@ function SftpPanel({
                 currentSession.fingerprint ??
                 currentSession.host.hostFingerprint,
               proxy: currentSession.proxy,
+              jumpHost: jumpHostRequest(currentSession.jumpHost),
             },
           });
           homeDir = result.homeDir;

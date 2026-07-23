@@ -355,9 +355,20 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       Message.error("主机引用的代理不存在，请重新编辑主机");
       return;
     }
-    const jumpHost = host.jumpHostId
+    let jumpHost = host.jumpHostId
       ? hosts.find((item) => item.id === host.jumpHostId)
       : undefined;
+    if (host.jumpHostId && jumpHost && !jumpHost.hostFingerprint) {
+      try {
+        const configuration = await loadConfiguration();
+        setHosts(configuration.hosts);
+        jumpHost = configuration.hosts.find(
+          (item) => item.id === host.jumpHostId,
+        );
+      } catch {
+        // The existing in-memory validation below will provide the actionable error.
+      }
+    }
     if (host.jumpHostId && !jumpHost) {
       Message.error("主机引用的跳板机不存在，请重新编辑主机");
       return;

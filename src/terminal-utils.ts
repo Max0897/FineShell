@@ -1,3 +1,5 @@
+import type { JumpHostConnection } from "./models";
+
 export function decodeSshOutput(value: string) {
   const padding = (4 - (value.length % 4)) % 4;
   const binary = atob(value.padEnd(value.length + padding, "="));
@@ -6,4 +8,21 @@ export function decodeSshOutput(value: string) {
 
 export function reconnectDelaySeconds(attempt: number) {
   return Math.min(30, 2 ** Math.max(0, Math.floor(attempt) - 1));
+}
+
+export function jumpHostRequest(connection?: JumpHostConnection) {
+  if (!connection) return undefined;
+  const { host, proxy } = connection;
+  return {
+    hostId: host.id,
+    address: host.address,
+    port: host.port,
+    username: host.username,
+    authMethod: host.authMethod,
+    privateKeyPath: host.privateKeyPath,
+    connectTimeoutSeconds: host.connectTimeoutSeconds,
+    keepAliveIntervalSeconds: host.keepAliveIntervalSeconds,
+    expectedFingerprint: host.hostFingerprint,
+    proxy,
+  };
 }

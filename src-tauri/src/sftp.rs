@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use ssh2::{FileStat, FileType, OpenFlags, OpenType, RenameFlags, Session, Sftp};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
+use crate::ssh::{connect_authenticated_session, JumpHostConfig, SshAuthConfig, SshAuthMethod};
 use crate::transport::ProxyConfig;
 
 const SFTP_TRANSFER_EVENT: &str = "sftp-transfer";
@@ -36,6 +36,7 @@ pub(crate) struct SftpConnectRequest {
     keep_alive_interval_seconds: u32,
     expected_fingerprint: Option<String>,
     proxy: Option<ProxyConfig>,
+    jump_host: Option<JumpHostConfig>,
 }
 
 #[derive(Serialize)]
@@ -692,6 +693,7 @@ fn connect_session(
         keep_alive_interval_seconds: request.keep_alive_interval_seconds,
         expected_fingerprint: request.expected_fingerprint,
         proxy: request.proxy,
+        jump_host: request.jump_host,
     };
     let (session, fingerprint) = connect_authenticated_session(&auth, &cancelled)?;
     let mut sftp = session
@@ -1042,6 +1044,7 @@ mod tests {
             keep_alive_interval_seconds: 15,
             expected_fingerprint,
             proxy: None,
+            jump_host: None,
         };
         let (session, _) = connect_authenticated_session(&config, &AtomicBool::new(false))?;
         let sftp = session
