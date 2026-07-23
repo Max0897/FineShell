@@ -439,7 +439,9 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     const credentialReady =
       quickAuthMethod === "password"
         ? Boolean(quickPassword)
-        : Boolean(quickPrivateKeyPath.trim());
+        : quickAuthMethod === "privateKey"
+          ? Boolean(quickPrivateKeyPath.trim())
+          : true;
     if (!quickTarget.address.trim() || !credentialReady) return;
 
     const normalized = {
@@ -466,9 +468,12 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     try {
       if (quickAuthMethod === "password") {
         await storeHostPassword(host.id, quickPassword);
-      } else if (quickPrivateKeyPassphrase) {
+      } else if (
+        quickAuthMethod === "privateKey" &&
+        quickPrivateKeyPassphrase
+      ) {
         await storePrivateKeyPassphrase(host.id, quickPrivateKeyPassphrase);
-      } else {
+      } else if (quickAuthMethod === "privateKey") {
         await removePrivateKeyPassphrase(host.id);
       }
       setQuickPassword("");
@@ -739,6 +744,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
                 options={[
                   { label: "密码认证", value: "password" },
                   { label: "私钥认证", value: "privateKey" },
+                  { label: "SSH Agent", value: "agent" },
                 ]}
                 value={quickAuthMethod}
               />
@@ -748,7 +754,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
                   placeholder="密码"
                   value={quickPassword}
                 />
-              ) : (
+              ) : quickAuthMethod === "privateKey" ? (
                 <div className="quick-key-credentials">
                   <Input.Search
                     onChange={setQuickPrivateKeyPath}
@@ -771,7 +777,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
                     value={quickPrivateKeyPassphrase}
                   />
                 </div>
-              )}
+              ) : null}
               <InputNumber
                 max={65535}
                 min={1}
@@ -798,7 +804,9 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
                   !quickTarget.address.trim() ||
                   (quickAuthMethod === "password"
                     ? !quickPassword
-                    : !quickPrivateKeyPath.trim())
+                    : quickAuthMethod === "privateKey"
+                      ? !quickPrivateKeyPath.trim()
+                      : false)
                 }
                 icon={<IconLink />}
                 onClick={() => void quickConnect()}

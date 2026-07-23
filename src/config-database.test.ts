@@ -238,4 +238,27 @@ describe("configuration import and export", () => {
     expect(imported.proxies).toEqual([]);
     expect(imported.settings).toEqual(DEFAULT_APP_SETTINGS);
   });
+
+  test("preserves SSH Agent authentication during import", () => {
+    const imported = parseConfigurationExport(
+      JSON.stringify({
+        format: "fineshell-config",
+        schemaVersion: 8,
+        hosts: [
+          {
+            id: "agent-host",
+            name: "Agent Server",
+            address: "agent.example.com",
+            port: 22,
+            username: "deploy",
+            authMethod: "agent",
+          },
+        ],
+        history: [],
+      }),
+    );
+
+    expect(imported.hosts[0].authMethod).toBe("agent");
+    expect(imported.hosts[0].privateKeyPath).toBeUndefined();
+  });
 });

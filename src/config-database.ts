@@ -197,7 +197,10 @@ function sanitizeHost(value: unknown): HostRecord | undefined {
     address,
     port: numberValue(value.port, 22, 1, 65_535),
     username,
-    authMethod: value.authMethod === "privateKey" ? "privateKey" : "password",
+    authMethod:
+      value.authMethod === "privateKey" || value.authMethod === "agent"
+        ? value.authMethod
+        : "password",
     privateKeyPath: stringValue(value.privateKeyPath),
     connectTimeoutSeconds: numberValue(
       value.connectTimeoutSeconds,
@@ -252,7 +255,10 @@ function sanitizeHistoryRecord(
     address,
     port: numberValue(value.port, 22, 1, 65_535),
     username,
-    authMethod: value.authMethod === "privateKey" ? "privateKey" : "password",
+    authMethod:
+      value.authMethod === "privateKey" || value.authMethod === "agent"
+        ? value.authMethod
+        : "password",
     privateKeyPath: stringValue(value.privateKeyPath),
     hostFingerprint: stringValue(value.hostFingerprint),
     keepAliveIntervalSeconds: numberValue(

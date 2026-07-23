@@ -59,6 +59,7 @@ pub(crate) struct SshConnectRequest {
 pub(crate) enum SshAuthMethod {
     Password,
     PrivateKey,
+    Agent,
 }
 
 pub(crate) struct SshAuthConfig {
@@ -685,6 +686,13 @@ fn authenticate_session(session: &Session, config: &SshAuthConfig) -> Result<(),
             session
                 .userauth_pubkey_file(&config.username, None, &private_key, passphrase.as_deref())
                 .map_err(|error| format!("SSH 私钥认证失败：{error}"))?;
+        }
+        SshAuthMethod::Agent => {
+            session.userauth_agent(&config.username).map_err(|error| {
+                format!(
+                    "SSH Agent 认证失败：{error}。请确认本机 SSH Agent 正在运行且已加载可用密钥"
+                )
+            })?;
         }
     }
     if !session.authenticated() {
@@ -2347,6 +2355,12 @@ mod tests {
         JumpHostConfig, LocalPortForwardRule, PortForwardKind, RemotePortForwardRule,
         SessionCommand, SshAuthConfig, SshAuthMethod, SshSessionManager,
     };
+
+    #[test]
+    fn deserializes_ssh_agent_authentication() {
+        let method = serde_json::from_str::<SshAuthMethod>("\"agent\"");
+        assert!(method.is_ok());
+    }
 
     #[test]
     fn accepts_fingerprint_with_or_without_prefix() {

@@ -1,4 +1,4 @@
-export type HostAuthMethod = "password" | "privateKey";
+export type HostAuthMethod = "password" | "privateKey" | "agent";
 export type HostSortMode =
   | "manual"
   | "nameAsc"

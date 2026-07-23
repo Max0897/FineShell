@@ -182,6 +182,28 @@ describe("normalizeHostForm", () => {
     expect(result.host.privateKeyPath).toBeUndefined();
     expect(result.privateKeyPassphrase).toBeUndefined();
   });
+
+  test("stores SSH Agent hosts without local credential metadata", () => {
+    const result = normalizeHostForm({
+      name: "Agent Server",
+      address: "agent.example.com",
+      port: 22,
+      username: "deploy",
+      authMethod: "agent",
+      password: "old-password",
+      privateKeyPath: "/tmp/old-key",
+      privateKeyPassphrase: "old-passphrase",
+      connectTimeoutSeconds: 10,
+      keepAliveIntervalSeconds: 15,
+      autoReconnect: true,
+      maxReconnectAttempts: 3,
+    });
+
+    expect(result.password).toBeUndefined();
+    expect(result.privateKeyPassphrase).toBeUndefined();
+    expect(result.host.authMethod).toBe("agent");
+    expect(result.host.privateKeyPath).toBeUndefined();
+  });
 });
 
 describe("withHostDefaults", () => {

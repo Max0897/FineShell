@@ -203,6 +203,7 @@ function HostEditorModal({
                   options={[
                     { label: "密码认证", value: "password" },
                     { label: "私钥认证", value: "privateKey" },
+                    { label: "SSH Agent", value: "agent" },
                   ]}
                 />
               </Form.Item>
@@ -220,7 +221,7 @@ function HostEditorModal({
                     placeholder={host ? "留空则保留原密码" : "登录密码"}
                   />
                 </Form.Item>
-              ) : (
+              ) : authMethod === "privateKey" ? (
                 <>
                   <Form.Item
                     field="privateKeyPath"
@@ -253,7 +254,7 @@ function HostEditorModal({
                     />
                   </Form.Item>
                 </>
-              )}
+              ) : null}
             </div>
           </Tabs.TabPane>
           <Tabs.TabPane key="route" title="连接链路">
