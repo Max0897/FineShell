@@ -739,7 +739,7 @@ body,
   min-height: 64px;
   padding: 8px 16px;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 24px;
+  grid-template-columns: 24px minmax(0, 1fr) 56px;
   align-items: center;
   gap: 8px;
   border-bottom: 1px solid #f2f3f5;
@@ -811,6 +811,15 @@ body,
   color: #00b42a;
 }
 
+.sftp-transfer-activity-paused {
+  color: #ff7d00;
+}
+
+.sftp-transfer-activity-cancelled,
+.sftp-transfer-activity-queued {
+  color: #86909c;
+}
+
 .sftp-transfer-row .arco-progress {
   width: 100%;
   min-width: 0;
@@ -821,8 +830,15 @@ body,
   margin: 0;
 }
 
-.sftp-transfer-retry {
+.sftp-transfer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
   align-self: center;
+}
+
+.sftp-transfer-actions:empty {
+  display: none;
 }
 
 .host-manager-panel {

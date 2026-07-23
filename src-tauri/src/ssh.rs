@@ -62,6 +62,7 @@ pub(crate) enum SshAuthMethod {
     Agent,
 }
 
+#[derive(Clone)]
 pub(crate) struct SshAuthConfig {
     pub(crate) host_id: String,
     pub(crate) address: String,

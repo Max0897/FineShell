@@ -58,6 +58,9 @@ pub fn run() {
             sftp::sftp_set_permissions,
             sftp::sftp_upload,
             sftp::sftp_download,
+            sftp::sftp_pause_transfer,
+            sftp::sftp_resume_transfer,
+            sftp::sftp_cancel_transfer,
             sftp::sftp_disconnect,
         ])
         .run(tauri::generate_context!())

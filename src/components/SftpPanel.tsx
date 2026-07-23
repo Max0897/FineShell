@@ -30,7 +30,10 @@ import {
   IconFolderAdd,
   IconHistory,
   IconLock,
+  IconPause,
+  IconPlayArrow,
   IconRefresh,
+  IconStop,
   IconThunderbolt,
   IconUpload,
 } from "@arco-design/web-react/icon";
@@ -56,6 +59,13 @@ import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
 type CreateEntryKind = "file" | "directory";
+type TransferStatus =
+  | "queued"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 interface BrowserState {
   status: BrowserStatus;
@@ -78,11 +88,12 @@ interface SftpTransferPayload {
   fileName: string;
   transferredBytes: number;
   totalBytes: number;
-  status: "running" | "completed" | "failed";
+  status: Exclude<TransferStatus, "queued">;
   error?: string;
 }
 
-interface TransferRecord extends SftpTransferPayload {
+interface TransferRecord extends Omit<SftpTransferPayload, "status"> {
+  status: TransferStatus;
   localPath: string;
   remotePath: string;
   overwrite: boolean;
@@ -98,6 +109,8 @@ const INITIAL_BROWSER: BrowserState = {
   entries: [],
 };
 
+const MAX_CONCURRENT_TRANSFERS = 2;
+
 function createTransferId() {
   return `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -106,6 +119,14 @@ function formatTransferSpeed(bytesPerSecond: number) {
   return bytesPerSecond > 0
     ? `${formatFileSize(bytesPerSecond)}/s`
     : "正在计算";
+}
+
+function isActiveTransfer(status: TransferStatus) {
+  return status === "queued" || status === "running" || status === "paused";
+}
+
+function isTransferCancellation(message: string) {
+  return /传输已取消|连接已取消|cancel(?:led|ed)/i.test(message);
 }
 
 function isSftpSessionFailure(message: string) {
@@ -135,6 +156,17 @@ function SftpPanel({
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
+  const startingTransfersRef = useRef(new Set<string>());
+  const browsersRef = useRef(browsers);
+  const transfersRef = useRef(transfers);
+
+  useEffect(() => {
+    browsersRef.current = browsers;
+  }, [browsers]);
+
+  useEffect(() => {
+    transfersRef.current = transfers;
+  }, [transfers]);
 
   const updateBrowser = useCallback(
     (sessionId: string, values: Partial<BrowserState>) => {
@@ -264,6 +296,27 @@ function SftpPanel({
       void invoke("sftp_disconnect", { sessionId: session.id }).catch(
         () => undefined,
       );
+      setTransfers((current) =>
+        Object.fromEntries(
+          Object.entries(current).map(([transferId, transfer]) => {
+            if (
+              transfer.sessionId === session.id &&
+              isActiveTransfer(transfer.status)
+            ) {
+              startingTransfersRef.current.delete(transferId);
+              return [
+                transferId,
+                {
+                  ...transfer,
+                  status: "cancelled",
+                  bytesPerSecond: 0,
+                },
+              ];
+            }
+            return [transferId, transfer];
+          }),
+        ),
+      );
       updateBrowser(session.id, {
         status: "idle",
         entries: [],
@@ -281,9 +334,16 @@ function SftpPanel({
       setTransfers((current) => {
         const previous = current[payload.transferId];
         if (!previous) return current;
+        if (
+          previous.status === "cancelled" &&
+          payload.status !== "cancelled"
+        ) {
+          return current;
+        }
         const now = Date.now();
         const transferredBytes =
-          payload.status === "failed" && payload.transferredBytes === 0
+          (payload.status === "failed" || payload.status === "cancelled") &&
+          payload.transferredBytes === 0
             ? previous.transferredBytes
             : payload.transferredBytes;
         const elapsedSeconds = (now - previous.sampledAt) / 1000;
@@ -294,11 +354,14 @@ function SftpPanel({
           ? (transferredBytes - previous.sampledBytes) /
             Math.max(elapsedSeconds, 0.001)
           : previous.bytesPerSecond;
-        const bytesPerSecond = shouldSample
-          ? previous.bytesPerSecond > 0
-            ? previous.bytesPerSecond * 0.6 + currentSpeed * 0.4
-            : currentSpeed
-          : previous.bytesPerSecond;
+        const bytesPerSecond =
+          payload.status === "paused" || payload.status === "cancelled"
+            ? 0
+            : shouldSample
+              ? previous.bytesPerSecond > 0
+                ? previous.bytesPerSecond * 0.6 + currentSpeed * 0.4
+                : currentSpeed
+              : previous.bytesPerSecond;
         return {
           ...current,
           [payload.transferId]: {
@@ -395,7 +458,95 @@ function SftpPanel({
     [],
   );
 
-  async function runTransfer(
+  const executeTransfer = useCallback(
+    async (transfer: TransferRecord) => {
+      try {
+        await invoke(
+          transfer.direction === "upload" ? "sftp_upload" : "sftp_download",
+          {
+            sessionId: transfer.sessionId,
+            transferId: transfer.transferId,
+            localPath: transfer.localPath,
+            remotePath: transfer.remotePath,
+            overwrite: transfer.overwrite,
+          },
+        );
+        Message.success(
+          `${transfer.direction === "upload" ? "上传" : "下载"}完成：${transfer.fileName}`,
+        );
+        const currentBrowser = browsersRef.current[transfer.sessionId];
+        if (transfer.direction === "upload" && currentBrowser) {
+          await loadDirectory(transfer.sessionId, currentBrowser.path);
+        }
+      } catch (error) {
+        const message = String(error);
+        const cancelled =
+          isTransferCancellation(message) ||
+          transfersRef.current[transfer.transferId]?.status === "cancelled";
+        setTransfers((current) => {
+          const previous = current[transfer.transferId] ?? transfer;
+          return {
+            ...current,
+            [transfer.transferId]: {
+              ...previous,
+              status: cancelled ? "cancelled" : "failed",
+              error: cancelled ? undefined : message,
+              bytesPerSecond: 0,
+            },
+          };
+        });
+        if (!cancelled) {
+          if (isSftpSessionFailure(message)) {
+            connectedHomesRef.current.delete(transfer.sessionId);
+            updateBrowser(transfer.sessionId, {
+              status: "failed",
+              error: message,
+            });
+          }
+          Message.error(message);
+        }
+      } finally {
+        startingTransfersRef.current.delete(transfer.transferId);
+      }
+    },
+    [loadDirectory, updateBrowser],
+  );
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    const activeCounts = new Map<string, number>();
+    for (const transfer of Object.values(transfers)) {
+      if (transfer.status === "running" || transfer.status === "paused") {
+        activeCounts.set(
+          transfer.sessionId,
+          (activeCounts.get(transfer.sessionId) ?? 0) + 1,
+        );
+      }
+    }
+
+    for (const transfer of Object.values(transfers)) {
+      if (
+        transfer.status !== "queued" ||
+        startingTransfersRef.current.has(transfer.transferId) ||
+        !connectedHomesRef.current.has(transfer.sessionId)
+      ) {
+        continue;
+      }
+      const activeCount = activeCounts.get(transfer.sessionId) ?? 0;
+      if (activeCount >= MAX_CONCURRENT_TRANSFERS) continue;
+
+      startingTransfersRef.current.add(transfer.transferId);
+      activeCounts.set(transfer.sessionId, activeCount + 1);
+      const runningTransfer = { ...transfer, status: "running" as const };
+      setTransfers((current) => ({
+        ...current,
+        [transfer.transferId]: runningTransfer,
+      }));
+      void executeTransfer(runningTransfer);
+    }
+  }, [executeTransfer, transfers]);
+
+  function runTransfer(
     direction: "upload" | "download",
     localPath: string,
     remotePath: string,
@@ -414,7 +565,7 @@ function SftpPanel({
       fileName,
       transferredBytes: 0,
       totalBytes: 0,
-      status: "running",
+      status: "queued",
       localPath,
       remotePath,
       overwrite,
@@ -423,38 +574,6 @@ function SftpPanel({
       bytesPerSecond: 0,
     };
     setTransfers((current) => ({ ...current, [transferId]: record }));
-
-    try {
-      await invoke(direction === "upload" ? "sftp_upload" : "sftp_download", {
-        sessionId: session.id,
-        transferId,
-        localPath,
-        remotePath,
-        overwrite,
-      });
-      Message.success(`${direction === "upload" ? "上传" : "下载"}完成：${fileName}`);
-      if (direction === "upload" && browser) {
-        await loadDirectory(session.id, browser.path);
-      }
-    } catch (error) {
-      const message = String(error);
-      if (isSftpSessionFailure(message)) {
-        connectedHomesRef.current.delete(session.id);
-        updateBrowser(session.id, { status: "failed", error: message });
-      }
-      setTransfers((current) => {
-        const previous = current[transferId] ?? record;
-        return {
-          ...current,
-          [transferId]: {
-            ...previous,
-            status: "failed",
-            error: message,
-          },
-        };
-      });
-      Message.error(message);
-    }
   }
 
   async function chooseUploadFile() {
@@ -494,7 +613,7 @@ function SftpPanel({
   }
 
   async function retryTransfer(transfer: TransferRecord) {
-    await runTransfer(
+    runTransfer(
       transfer.direction,
       transfer.localPath,
       transfer.remotePath,
@@ -503,13 +622,99 @@ function SftpPanel({
     );
   }
 
+  async function pauseTransfer(transfer: TransferRecord) {
+    if (transfer.status !== "running") return;
+    try {
+      await invoke("sftp_pause_transfer", {
+        sessionId: transfer.sessionId,
+        transferId: transfer.transferId,
+      });
+      setTransfers((current) => {
+        const previous = current[transfer.transferId];
+        if (!previous || previous.status !== "running") return current;
+        return {
+          ...current,
+          [transfer.transferId]: {
+            ...previous,
+            status: "paused",
+            bytesPerSecond: 0,
+          },
+        };
+      });
+    } catch (error) {
+      Message.error(String(error));
+    }
+  }
+
+  async function resumeTransfer(transfer: TransferRecord) {
+    if (transfer.status !== "paused") return;
+    try {
+      await invoke("sftp_resume_transfer", {
+        sessionId: transfer.sessionId,
+        transferId: transfer.transferId,
+      });
+      setTransfers((current) => {
+        const previous = current[transfer.transferId];
+        if (!previous || previous.status !== "paused") return current;
+        return {
+          ...current,
+          [transfer.transferId]: {
+            ...previous,
+            status: "running",
+            sampledAt: Date.now(),
+            sampledBytes: previous.transferredBytes,
+          },
+        };
+      });
+    } catch (error) {
+      Message.error(String(error));
+    }
+  }
+
+  async function cancelTransfer(transfer: TransferRecord) {
+    if (transfer.status === "queued") {
+      startingTransfersRef.current.delete(transfer.transferId);
+      setTransfers((current) => ({
+        ...current,
+        [transfer.transferId]: {
+          ...transfer,
+          status: "cancelled",
+          bytesPerSecond: 0,
+        },
+      }));
+      return;
+    }
+    if (transfer.status !== "running" && transfer.status !== "paused") return;
+    try {
+      await invoke("sftp_cancel_transfer", {
+        sessionId: transfer.sessionId,
+        transferId: transfer.transferId,
+      });
+      setTransfers((current) => {
+        const previous = current[transfer.transferId];
+        if (!previous || !isActiveTransfer(previous.status)) return current;
+        return {
+          ...current,
+          [transfer.transferId]: {
+            ...previous,
+            status: "cancelled",
+            bytesPerSecond: 0,
+          },
+        };
+      });
+    } catch (error) {
+      Message.error(String(error));
+    }
+  }
+
   function clearFinishedTransfers() {
     if (!session) return;
     setTransfers((current) =>
       Object.fromEntries(
         Object.entries(current).filter(
           ([, transfer]) =>
-            transfer.sessionId !== session.id || transfer.status === "running",
+            transfer.sessionId !== session.id ||
+            isActiveTransfer(transfer.status),
         ),
       ),
     );
@@ -1072,7 +1277,13 @@ function SftpPanel({
                   ? "已完成"
                   : transfer.status === "failed"
                     ? "传输失败"
-                    : formatTransferSpeed(transfer.bytesPerSecond);
+                    : transfer.status === "cancelled"
+                      ? "已取消"
+                      : transfer.status === "paused"
+                        ? "已暂停"
+                        : transfer.status === "queued"
+                          ? "等待中"
+                          : formatTransferSpeed(transfer.bytesPerSecond);
 
               return (
                 <div className="sftp-transfer-row" key={transfer.transferId}>
@@ -1124,17 +1335,51 @@ function SftpPanel({
                       </Typography.Text>
                     )}
                   </div>
-                  {transfer.status === "failed" && (
-                    <Tooltip content="重试">
-                      <Button
-                        aria-label={`重试 ${transfer.fileName}`}
-                        className="sftp-transfer-retry"
-                        icon={<IconRefresh />}
-                        onClick={() => void retryTransfer(transfer)}
-                        size="mini"
-                      />
-                    </Tooltip>
-                  )}
+                  <div className="sftp-transfer-actions">
+                    {transfer.status === "running" && (
+                      <Tooltip content="暂停">
+                        <Button
+                          aria-label={`暂停 ${transfer.fileName}`}
+                          icon={<IconPause />}
+                          onClick={() => void pauseTransfer(transfer)}
+                          size="mini"
+                          type="text"
+                        />
+                      </Tooltip>
+                    )}
+                    {transfer.status === "paused" && (
+                      <Tooltip content="继续">
+                        <Button
+                          aria-label={`继续 ${transfer.fileName}`}
+                          icon={<IconPlayArrow />}
+                          onClick={() => void resumeTransfer(transfer)}
+                          size="mini"
+                          type="text"
+                        />
+                      </Tooltip>
+                    )}
+                    {isActiveTransfer(transfer.status) && (
+                      <Tooltip content="取消">
+                        <Button
+                          aria-label={`取消 ${transfer.fileName}`}
+                          icon={<IconStop />}
+                          onClick={() => void cancelTransfer(transfer)}
+                          size="mini"
+                          type="text"
+                        />
+                      </Tooltip>
+                    )}
+                    {transfer.status === "failed" && (
+                      <Tooltip content="重试">
+                        <Button
+                          aria-label={`重试 ${transfer.fileName}`}
+                          icon={<IconRefresh />}
+                          onClick={() => void retryTransfer(transfer)}
+                          size="mini"
+                        />
+                      </Tooltip>
+                    )}
+                  </div>
                 </div>
               );
             })}

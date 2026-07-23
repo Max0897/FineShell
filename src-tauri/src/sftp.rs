@@ -7,7 +7,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
     thread,
     time::Duration,
@@ -22,6 +22,7 @@ use crate::transport::ProxyConfig;
 
 const SFTP_TRANSFER_EVENT: &str = "sftp-transfer";
 const TRANSFER_BUFFER_SIZE: usize = 64 * 1024;
+const TRANSFER_CANCELLED_ERROR: &str = "传输已取消";
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,33 +112,62 @@ enum SftpCommand {
         permissions: u32,
         reply: Sender<Result<(), String>>,
     },
-    Upload {
-        transfer_id: String,
-        local_path: String,
-        remote_path: String,
-        overwrite: bool,
-        reply: Sender<Result<(), String>>,
-    },
-    Download {
-        transfer_id: String,
-        remote_path: String,
-        local_path: String,
-        overwrite: bool,
-        reply: Sender<Result<(), String>>,
-    },
     Close,
 }
 
 #[derive(Clone)]
 enum SftpHandle {
     Connecting(Arc<AtomicBool>),
-    Connected(Sender<SftpCommand>),
+    Connected {
+        sender: Sender<SftpCommand>,
+        auth: Box<SshAuthConfig>,
+    },
+}
+
+#[derive(Default)]
+struct TransferControl {
+    cancelled: AtomicBool,
+    paused: Mutex<bool>,
+    wake: Condvar,
+}
+
+impl TransferControl {
+    fn pause(&self) -> Result<(), String> {
+        let mut paused = self
+            .paused
+            .lock()
+            .map_err(|_| "传输任务状态不可用".to_string())?;
+        *paused = true;
+        Ok(())
+    }
+
+    fn resume(&self) -> Result<(), String> {
+        let mut paused = self
+            .paused
+            .lock()
+            .map_err(|_| "传输任务状态不可用".to_string())?;
+        *paused = false;
+        self.wake.notify_all();
+        Ok(())
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        if let Ok(mut paused) = self.paused.lock() {
+            *paused = false;
+        }
+        self.wake.notify_all();
+    }
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct SftpSessionManager {
     sessions: Arc<Mutex<HashMap<String, SftpHandle>>>,
+    transfers: Arc<Mutex<TransferRegistry>>,
 }
+
+type TransferKey = (String, String);
+type TransferRegistry = HashMap<TransferKey, Arc<TransferControl>>;
 
 impl SftpSessionManager {
     fn begin_connect(&self, session_id: &str) -> Result<Arc<AtomicBool>, String> {
@@ -157,14 +187,25 @@ impl SftpSessionManager {
         Ok(cancelled)
     }
 
-    fn activate(&self, session_id: &str, sender: Sender<SftpCommand>) -> Result<(), String> {
+    fn activate(
+        &self,
+        session_id: &str,
+        sender: Sender<SftpCommand>,
+        auth: SshAuthConfig,
+    ) -> Result<(), String> {
         let mut sessions = self
             .sessions
             .lock()
             .map_err(|_| "SFTP 会话状态不可用".to_string())?;
         match sessions.get(session_id) {
             Some(SftpHandle::Connecting(cancelled)) if !cancelled.load(Ordering::Acquire) => {
-                sessions.insert(session_id.to_string(), SftpHandle::Connected(sender));
+                sessions.insert(
+                    session_id.to_string(),
+                    SftpHandle::Connected {
+                        sender,
+                        auth: Box::new(auth),
+                    },
+                );
                 Ok(())
             }
             _ => Err("SFTP 连接已取消".to_string()),
@@ -180,7 +221,7 @@ impl SftpSessionManager {
             .cloned()
             .ok_or_else(|| "SFTP 会话不存在或已关闭".to_string())?;
         match handle {
-            SftpHandle::Connected(sender) => sender
+            SftpHandle::Connected { sender, .. } => sender
                 .send(command)
                 .map_err(|_| "SFTP 会话已停止".to_string()),
             SftpHandle::Connecting(_) => Err("SFTP 会话仍在连接".to_string()),
@@ -194,12 +235,13 @@ impl SftpSessionManager {
             .map_err(|_| "SFTP 会话状态不可用".to_string())?
             .remove(session_id)
             .ok_or_else(|| "SFTP 会话不存在或已关闭".to_string())?;
+        self.cancel_session_transfers(session_id);
         match handle {
             SftpHandle::Connecting(cancelled) => {
                 cancelled.store(true, Ordering::Release);
                 Ok(())
             }
-            SftpHandle::Connected(sender) => sender
+            SftpHandle::Connected { sender, .. } => sender
                 .send(SftpCommand::Close)
                 .map_err(|_| "SFTP 会话已停止".to_string()),
         }
@@ -208,6 +250,63 @@ impl SftpSessionManager {
     fn remove(&self, session_id: &str) {
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.remove(session_id);
+        }
+        self.cancel_session_transfers(session_id);
+    }
+
+    fn begin_transfer(
+        &self,
+        session_id: &str,
+        transfer_id: &str,
+    ) -> Result<(SshAuthConfig, Arc<TransferControl>), String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "SFTP 会话状态不可用".to_string())?;
+        let auth = match sessions.get(session_id) {
+            Some(SftpHandle::Connected { auth, .. }) => auth.as_ref().clone(),
+            Some(SftpHandle::Connecting(_)) => return Err("SFTP 会话仍在连接".to_string()),
+            None => return Err("SFTP 会话不存在或已关闭".to_string()),
+        };
+        let key = (session_id.to_string(), transfer_id.to_string());
+        let mut transfers = self
+            .transfers
+            .lock()
+            .map_err(|_| "传输任务状态不可用".to_string())?;
+        if transfers.contains_key(&key) {
+            return Err("传输任务已存在".to_string());
+        }
+        let control = Arc::new(TransferControl::default());
+        transfers.insert(key, control.clone());
+        Ok((auth, control))
+    }
+
+    fn transfer_control(
+        &self,
+        session_id: &str,
+        transfer_id: &str,
+    ) -> Result<Arc<TransferControl>, String> {
+        self.transfers
+            .lock()
+            .map_err(|_| "传输任务状态不可用".to_string())?
+            .get(&(session_id.to_string(), transfer_id.to_string()))
+            .cloned()
+            .ok_or_else(|| "传输任务不存在或已结束".to_string())
+    }
+
+    fn finish_transfer(&self, session_id: &str, transfer_id: &str) {
+        if let Ok(mut transfers) = self.transfers.lock() {
+            transfers.remove(&(session_id.to_string(), transfer_id.to_string()));
+        }
+    }
+
+    fn cancel_session_transfers(&self, session_id: &str) {
+        if let Ok(transfers) = self.transfers.lock() {
+            for ((task_session_id, _), control) in transfers.iter() {
+                if task_session_id == session_id {
+                    control.cancel();
+                }
+            }
         }
     }
 }
@@ -424,75 +523,158 @@ impl<'a> TransferReporter<'a> {
         self.emit(transferred_bytes, "completed", None);
     }
 
+    fn paused(&self, transferred_bytes: u64) {
+        self.emit(transferred_bytes, "paused", None);
+    }
+
+    fn cancelled(&self) {
+        self.emit(0, "cancelled", None);
+    }
+
     fn failed(&self, error: &str) {
         self.emit(0, "failed", Some(error.to_string()));
     }
 }
 
-fn upload_file(
-    app: &AppHandle,
-    session_id: &str,
-    sftp: &Sftp,
-    transfer_id: &str,
-    local_path: &str,
-    remote_path: &str,
-    overwrite: bool,
+fn wait_for_transfer(
+    control: &TransferControl,
+    reporter: &TransferReporter<'_>,
+    transferred_bytes: u64,
 ) -> Result<(), String> {
-    let local_path = Path::new(local_path);
-    let remote_path = Path::new(remote_path);
-    let total = local_path
+    if control.cancelled.load(Ordering::Acquire) {
+        return Err(TRANSFER_CANCELLED_ERROR.to_string());
+    }
+    let mut paused = control
+        .paused
+        .lock()
+        .map_err(|_| "传输任务状态不可用".to_string())?;
+    if !*paused {
+        return Ok(());
+    }
+
+    reporter.paused(transferred_bytes);
+    while *paused && !control.cancelled.load(Ordering::Acquire) {
+        paused = control
+            .wake
+            .wait(paused)
+            .map_err(|_| "传输任务状态不可用".to_string())?;
+    }
+    if control.cancelled.load(Ordering::Acquire) {
+        return Err(TRANSFER_CANCELLED_ERROR.to_string());
+    }
+    reporter.running(transferred_bytes);
+    Ok(())
+}
+
+struct TransferTaskContext<'a> {
+    app: &'a AppHandle,
+    session_id: &'a str,
+    control: &'a TransferControl,
+    transfer_id: &'a str,
+    local_path: &'a str,
+    remote_path: &'a str,
+    overwrite: bool,
+}
+
+fn upload_file(sftp: &Sftp, task: &TransferTaskContext<'_>) -> Result<(), String> {
+    let local_path = Path::new(task.local_path);
+    let remote_path = Path::new(task.remote_path);
+    let metadata = local_path
         .metadata()
-        .map_err(|error| format!("无法读取本地文件信息：{error}"))?
-        .len();
-    if remote_exists(sftp, remote_path) && !overwrite {
+        .map_err(|error| format!("无法读取本地文件信息：{error}"))?;
+    if !metadata.is_file() {
+        return Err("当前仅支持上传文件".to_string());
+    }
+    let total = metadata.len();
+    if remote_exists(sftp, remote_path) && !task.overwrite {
         return Err("远程目标已存在，需要确认覆盖".to_string());
     }
-
-    let reporter = TransferReporter::new(app, session_id, transfer_id, "upload", local_path, total);
-    reporter.running(0);
-
-    let mut source =
-        LocalFile::open(local_path).map_err(|error| format!("无法打开本地文件：{error}"))?;
-    let mut target = sftp
-        .create(remote_path)
-        .map_err(|error| format!("无法创建远程文件：{error}"))?;
-    let mut buffer = vec![0_u8; TRANSFER_BUFFER_SIZE];
-    let mut transferred = 0_u64;
-    loop {
-        let size = source
-            .read(&mut buffer)
-            .map_err(|error| format!("读取本地文件失败：{error}"))?;
-        if size == 0 {
-            break;
-        }
-        target
-            .write_all(&buffer[..size])
-            .map_err(|error| format!("写入远程文件失败：{error}"))?;
-        transferred += size as u64;
-        reporter.running(transferred);
+    let temporary_path = remote_upload_temporary_path(remote_path, task.transfer_id)?;
+    if remote_exists(sftp, &temporary_path) {
+        sftp.unlink(&temporary_path)
+            .map_err(|error| format!("无法清理上次未完成的上传文件：{error}"))?;
     }
-    target
-        .flush()
-        .map_err(|error| format!("刷新远程文件失败：{error}"))?;
+
+    let reporter = TransferReporter::new(
+        task.app,
+        task.session_id,
+        task.transfer_id,
+        "upload",
+        local_path,
+        total,
+    );
+    reporter.running(0);
+    let mut transferred = 0_u64;
+    let result = (|| -> Result<(), String> {
+        let mut source =
+            LocalFile::open(local_path).map_err(|error| format!("无法打开本地文件：{error}"))?;
+        let mut target = sftp
+            .create(&temporary_path)
+            .map_err(|error| format!("无法创建远程临时文件：{error}"))?;
+        let mut buffer = vec![0_u8; TRANSFER_BUFFER_SIZE];
+        loop {
+            wait_for_transfer(task.control, &reporter, transferred)?;
+            let size = source
+                .read(&mut buffer)
+                .map_err(|error| format!("读取本地文件失败：{error}"))?;
+            if size == 0 {
+                break;
+            }
+            target
+                .write_all(&buffer[..size])
+                .map_err(|error| format!("写入远程文件失败：{error}"))?;
+            transferred += size as u64;
+            reporter.running(transferred);
+        }
+        wait_for_transfer(task.control, &reporter, transferred)?;
+        target
+            .flush()
+            .map_err(|error| format!("刷新远程文件失败：{error}"))?;
+        drop(target);
+        let flags = if task.overwrite {
+            RenameFlags::OVERWRITE
+        } else {
+            RenameFlags::empty()
+        };
+        sftp.rename(&temporary_path, remote_path, Some(flags))
+            .map_err(|error| format!("无法保存上传文件：{error}"))
+    })();
+    if let Err(error) = result {
+        let _ = sftp.unlink(&temporary_path);
+        return Err(error);
+    }
     reporter.completed(transferred);
     Ok(())
 }
 
-fn download_file(
-    app: &AppHandle,
-    session_id: &str,
-    sftp: &Sftp,
-    transfer_id: &str,
-    remote_path: &str,
-    local_path: &str,
-    overwrite: bool,
-) -> Result<(), String> {
-    let remote_path = Path::new(remote_path);
-    let local_path = Path::new(local_path);
+fn remote_upload_temporary_path(remote_path: &Path, transfer_id: &str) -> Result<PathBuf, String> {
+    let file_name = remote_path
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "上传目标缺少文件名".to_string())?;
+    let safe_transfer_id: String = transfer_id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .take(64)
+        .collect();
+    let safe_transfer_id = if safe_transfer_id.is_empty() {
+        "transfer"
+    } else {
+        &safe_transfer_id
+    };
+    let mut temporary_name = OsString::from(".");
+    temporary_name.push(file_name);
+    temporary_name.push(format!(".{safe_transfer_id}.part"));
+    Ok(remote_path.with_file_name(temporary_name))
+}
+
+fn download_file(sftp: &Sftp, task: &TransferTaskContext<'_>) -> Result<(), String> {
+    let remote_path = Path::new(task.remote_path);
+    let local_path = Path::new(task.local_path);
     if local_path.is_dir() {
         return Err("下载目标不能是文件夹".to_string());
     }
-    if local_path.exists() && !overwrite {
+    if local_path.exists() && !task.overwrite {
         return Err("本地目标已存在，需要确认覆盖".to_string());
     }
     let parent = local_path
@@ -502,7 +684,7 @@ fn download_file(
     if !parent.is_dir() {
         return Err(format!("下载目标目录不存在：{}", parent.display()));
     }
-    let temporary_path = download_temporary_path(local_path, transfer_id)?;
+    let temporary_path = download_temporary_path(local_path, task.transfer_id)?;
     if temporary_path.exists() {
         fs::remove_file(&temporary_path)
             .map_err(|error| format!("无法清理上次未完成的下载文件：{error}"))?;
@@ -513,8 +695,14 @@ fn download_file(
         .map_err(|error| format!("无法读取远程文件信息：{error}"))?
         .size
         .unwrap_or(0);
-    let reporter =
-        TransferReporter::new(app, session_id, transfer_id, "download", remote_path, total);
+    let reporter = TransferReporter::new(
+        task.app,
+        task.session_id,
+        task.transfer_id,
+        "download",
+        remote_path,
+        total,
+    );
     reporter.running(0);
 
     let mut source = sftp
@@ -530,10 +718,11 @@ fn download_file(
                 parent.display()
             )
         })?;
-    let result = (|| -> Result<u64, String> {
+    let mut transferred = 0_u64;
+    let result = (|| -> Result<(), String> {
         let mut buffer = vec![0_u8; TRANSFER_BUFFER_SIZE];
-        let mut transferred = 0_u64;
         loop {
+            wait_for_transfer(task.control, &reporter, transferred)?;
             let size = source
                 .read(&mut buffer)
                 .map_err(|error| format!("读取远程文件失败：{error}"))?;
@@ -546,20 +735,18 @@ fn download_file(
             transferred += size as u64;
             reporter.running(transferred);
         }
+        wait_for_transfer(task.control, &reporter, transferred)?;
         target
             .flush()
             .map_err(|error| format!("刷新本地临时文件失败：{error}"))?;
         drop(target);
-        replace_download_file(&temporary_path, local_path, overwrite)?;
-        Ok(transferred)
+        replace_download_file(&temporary_path, local_path, task.overwrite)?;
+        Ok(())
     })();
-    let transferred = match result {
-        Ok(transferred) => transferred,
-        Err(error) => {
-            let _ = fs::remove_file(&temporary_path);
-            return Err(error);
-        }
-    };
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error);
+    }
     reporter.completed(transferred);
     Ok(())
 }
@@ -601,7 +788,6 @@ fn replace_download_file(
 }
 
 fn run_session(
-    app: AppHandle,
     manager: SftpSessionManager,
     session_id: String,
     session: Session,
@@ -678,64 +864,6 @@ fn run_session(
             } => {
                 let _ = reply.send(set_permissions(&sftp, &path, permissions));
             }
-            SftpCommand::Upload {
-                transfer_id,
-                local_path,
-                remote_path,
-                overwrite,
-                reply,
-            } => {
-                let result = upload_file(
-                    &app,
-                    &session_id,
-                    &sftp,
-                    &transfer_id,
-                    &local_path,
-                    &remote_path,
-                    overwrite,
-                );
-                if let Err(error) = &result {
-                    TransferReporter::new(
-                        &app,
-                        &session_id,
-                        &transfer_id,
-                        "upload",
-                        Path::new(&local_path),
-                        0,
-                    )
-                    .failed(error);
-                }
-                let _ = reply.send(result);
-            }
-            SftpCommand::Download {
-                transfer_id,
-                remote_path,
-                local_path,
-                overwrite,
-                reply,
-            } => {
-                let result = download_file(
-                    &app,
-                    &session_id,
-                    &sftp,
-                    &transfer_id,
-                    &remote_path,
-                    &local_path,
-                    overwrite,
-                );
-                if let Err(error) = &result {
-                    TransferReporter::new(
-                        &app,
-                        &session_id,
-                        &transfer_id,
-                        "download",
-                        Path::new(&remote_path),
-                        0,
-                    )
-                    .failed(error);
-                }
-                let _ = reply.send(result);
-            }
             SftpCommand::Close => break,
         }
     }
@@ -745,7 +873,6 @@ fn run_session(
 }
 
 fn connect_session(
-    app: AppHandle,
     manager: SftpSessionManager,
     request: SftpConnectRequest,
     cancelled: Arc<AtomicBool>,
@@ -776,14 +903,13 @@ fn connect_session(
     }
 
     let (sender, receiver) = mpsc::channel();
-    manager.activate(&request.session_id, sender)?;
+    manager.activate(&request.session_id, sender, auth.clone())?;
     let worker_manager = manager.clone();
     let worker_session_id = request.session_id.clone();
     if let Err(error) = thread::Builder::new()
         .name(format!("sftp-{}", request.session_id))
         .spawn(move || {
             run_session(
-                app,
                 worker_manager,
                 worker_session_id,
                 session,
@@ -823,9 +949,50 @@ where
     .map_err(|error| format!("SFTP 操作任务异常结束：{error}"))?
 }
 
+async fn run_transfer_task<F>(
+    manager: SftpSessionManager,
+    session_id: String,
+    transfer_id: String,
+    task: F,
+) -> Result<(), String>
+where
+    F: FnOnce(SshAuthConfig, Arc<TransferControl>) -> Result<(), String> + Send + 'static,
+{
+    let (auth, control) = manager.begin_transfer(&session_id, &transfer_id)?;
+    let worker_manager = manager.clone();
+    let worker_session_id = session_id.clone();
+    let worker_transfer_id = transfer_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let result = task(auth, control);
+        worker_manager.finish_transfer(&worker_session_id, &worker_transfer_id);
+        result
+    })
+    .await;
+    match result {
+        Ok(result) => result,
+        Err(error) => {
+            manager.finish_transfer(&session_id, &transfer_id);
+            Err(format!("SFTP 传输任务异常结束：{error}"))
+        }
+    }
+}
+
+fn report_transfer_result(
+    reporter: &TransferReporter<'_>,
+    control: &TransferControl,
+    result: &Result<(), String>,
+) {
+    if let Err(error) = result {
+        if control.cancelled.load(Ordering::Acquire) || error == TRANSFER_CANCELLED_ERROR {
+            reporter.cancelled();
+        } else {
+            reporter.failed(error);
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn sftp_connect(
-    app: AppHandle,
     manager: State<'_, SftpSessionManager>,
     request: SftpConnectRequest,
 ) -> Result<SftpConnectResult, String> {
@@ -834,7 +1001,7 @@ pub(crate) async fn sftp_connect(
     let cancelled = manager.begin_connect(&session_id)?;
     let worker_manager = manager.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        connect_session(app, worker_manager, request, cancelled)
+        connect_session(worker_manager, request, cancelled)
     })
     .await
     .map_err(|error| format!("SFTP 连接任务异常结束：{error}"))?;
@@ -943,6 +1110,7 @@ pub(crate) async fn sftp_set_permissions(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn sftp_upload(
+    app: AppHandle,
     manager: State<'_, SftpSessionManager>,
     session_id: String,
     transfer_id: String,
@@ -950,21 +1118,50 @@ pub(crate) async fn sftp_upload(
     remote_path: String,
     overwrite: bool,
 ) -> Result<(), String> {
-    dispatch(manager.inner().clone(), session_id, move |reply| {
-        SftpCommand::Upload {
-            transfer_id,
-            local_path,
-            remote_path,
-            overwrite,
-            reply,
-        }
-    })
+    let task_session_id = session_id.clone();
+    let task_transfer_id = transfer_id.clone();
+    run_transfer_task(
+        manager.inner().clone(),
+        session_id,
+        transfer_id,
+        move |auth, control| {
+            let reporter = TransferReporter::new(
+                &app,
+                &task_session_id,
+                &task_transfer_id,
+                "upload",
+                Path::new(&local_path),
+                0,
+            );
+            let result = (|| -> Result<(), String> {
+                let (session, _) = connect_authenticated_session(&auth, &control.cancelled)?;
+                let mut sftp = session
+                    .sftp()
+                    .map_err(|error| format!("无法建立上传通道：{error}"))?;
+                let task = TransferTaskContext {
+                    app: &app,
+                    session_id: &task_session_id,
+                    control: &control,
+                    transfer_id: &task_transfer_id,
+                    local_path: &local_path,
+                    remote_path: &remote_path,
+                    overwrite,
+                };
+                let result = upload_file(&sftp, &task);
+                let _ = sftp.shutdown();
+                result
+            })();
+            report_transfer_result(&reporter, &control, &result);
+            result
+        },
+    )
     .await
 }
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn sftp_download(
+    app: AppHandle,
     manager: State<'_, SftpSessionManager>,
     session_id: String,
     transfer_id: String,
@@ -972,16 +1169,76 @@ pub(crate) async fn sftp_download(
     local_path: String,
     overwrite: bool,
 ) -> Result<(), String> {
-    dispatch(manager.inner().clone(), session_id, move |reply| {
-        SftpCommand::Download {
-            transfer_id,
-            remote_path,
-            local_path,
-            overwrite,
-            reply,
-        }
-    })
+    let task_session_id = session_id.clone();
+    let task_transfer_id = transfer_id.clone();
+    run_transfer_task(
+        manager.inner().clone(),
+        session_id,
+        transfer_id,
+        move |auth, control| {
+            let reporter = TransferReporter::new(
+                &app,
+                &task_session_id,
+                &task_transfer_id,
+                "download",
+                Path::new(&remote_path),
+                0,
+            );
+            let result = (|| -> Result<(), String> {
+                let (session, _) = connect_authenticated_session(&auth, &control.cancelled)?;
+                let mut sftp = session
+                    .sftp()
+                    .map_err(|error| format!("无法建立下载通道：{error}"))?;
+                let task = TransferTaskContext {
+                    app: &app,
+                    session_id: &task_session_id,
+                    control: &control,
+                    transfer_id: &task_transfer_id,
+                    local_path: &local_path,
+                    remote_path: &remote_path,
+                    overwrite,
+                };
+                let result = download_file(&sftp, &task);
+                let _ = sftp.shutdown();
+                result
+            })();
+            report_transfer_result(&reporter, &control, &result);
+            result
+        },
+    )
     .await
+}
+
+#[tauri::command]
+pub(crate) fn sftp_pause_transfer(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    transfer_id: String,
+) -> Result<(), String> {
+    manager.transfer_control(&session_id, &transfer_id)?.pause()
+}
+
+#[tauri::command]
+pub(crate) fn sftp_resume_transfer(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    transfer_id: String,
+) -> Result<(), String> {
+    manager
+        .transfer_control(&session_id, &transfer_id)?
+        .resume()
+}
+
+#[tauri::command]
+pub(crate) fn sftp_cancel_transfer(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    transfer_id: String,
+) -> Result<(), String> {
+    manager
+        .transfer_control(&session_id, &transfer_id)?
+        .cancel();
+    Ok(())
 }
 
 #[tauri::command]
@@ -1005,10 +1262,26 @@ mod tests {
     use ssh2::{FileStat, RenameFlags};
 
     use super::{
-        download_temporary_path, entry_kind, fast_delete_command, replace_download_file,
-        shell_quote, SftpCommand, SftpSessionManager,
+        download_temporary_path, entry_kind, fast_delete_command, remote_upload_temporary_path,
+        replace_download_file, shell_quote, SftpCommand, SftpSessionManager,
     };
     use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
+
+    fn test_auth() -> SshAuthConfig {
+        SshAuthConfig {
+            host_id: "host-1".to_string(),
+            address: "127.0.0.1".to_string(),
+            port: 22,
+            username: "root".to_string(),
+            auth_method: SshAuthMethod::Password,
+            private_key_path: None,
+            connect_timeout_seconds: 10,
+            keep_alive_interval_seconds: 0,
+            expected_fingerprint: None,
+            proxy: None,
+            jump_host: None,
+        }
+    }
 
     #[test]
     fn classifies_common_remote_entry_types() {
@@ -1061,6 +1334,16 @@ mod tests {
     }
 
     #[test]
+    fn keeps_partial_uploads_next_to_the_remote_target() {
+        let target = Path::new("/srv/releases/archive.zip");
+        let temporary = remote_upload_temporary_path(target, "transfer-123").unwrap();
+        assert_eq!(
+            temporary,
+            Path::new("/srv/releases/.archive.zip.transfer-123.part")
+        );
+    }
+
+    #[test]
     #[cfg(unix)]
     fn replaces_an_existing_read_only_download_after_completion() {
         let unique = SystemTime::now()
@@ -1096,7 +1379,7 @@ mod tests {
 
         assert!(cancelled.load(Ordering::Acquire));
         let (sender, _) = std::sync::mpsc::channel();
-        assert!(manager.activate("session-1", sender).is_err());
+        assert!(manager.activate("session-1", sender, test_auth()).is_err());
     }
 
     #[test]
@@ -1104,7 +1387,7 @@ mod tests {
         let manager = SftpSessionManager::default();
         manager.begin_connect("session-1").unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
-        manager.activate("session-1", sender).unwrap();
+        manager.activate("session-1", sender, test_auth()).unwrap();
         let (reply, _) = std::sync::mpsc::channel();
 
         manager
@@ -1121,6 +1404,23 @@ mod tests {
             receiver.recv().unwrap(),
             SftpCommand::List { path, .. } if path == "/tmp"
         ));
+    }
+
+    #[test]
+    fn controls_and_cancels_active_transfers() {
+        let manager = SftpSessionManager::default();
+        manager.begin_connect("session-1").unwrap();
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        manager.activate("session-1", sender, test_auth()).unwrap();
+        let (_auth, control) = manager.begin_transfer("session-1", "transfer-1").unwrap();
+
+        control.pause().unwrap();
+        assert!(*control.paused.lock().unwrap());
+        control.resume().unwrap();
+        assert!(!*control.paused.lock().unwrap());
+
+        manager.disconnect("session-1").unwrap();
+        assert!(control.cancelled.load(Ordering::Acquire));
     }
 
     #[test]
