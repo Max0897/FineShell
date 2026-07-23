@@ -9,6 +9,8 @@ export interface AppSettings {
   terminalScrollback: number;
   showHiddenFiles: boolean;
   confirmFileDelete: boolean;
+  externalEditorPath: string;
+  externalEditorName: string;
   monitorRefreshIntervalSeconds: number;
   defaultConnectTimeoutSeconds: number;
   defaultKeepAliveIntervalSeconds: number;
@@ -24,6 +26,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   terminalScrollback: 5_000,
   showHiddenFiles: true,
   confirmFileDelete: true,
+  externalEditorPath: "",
+  externalEditorName: "",
   monitorRefreshIntervalSeconds: 5,
   defaultConnectTimeoutSeconds: 10,
   defaultKeepAliveIntervalSeconds: 15,
@@ -56,6 +60,10 @@ function numberValue(
   return typeof value === "number" && Number.isFinite(value)
     ? Math.min(max, Math.max(min, Math.round(value)))
     : fallback;
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 export function sanitizeAppSettings(value: unknown): AppSettings {
@@ -95,6 +103,8 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
       settings.confirmFileDelete,
       DEFAULT_APP_SETTINGS.confirmFileDelete,
     ),
+    externalEditorPath: stringValue(settings.externalEditorPath),
+    externalEditorName: stringValue(settings.externalEditorName),
     monitorRefreshIntervalSeconds: numberValue(
       settings.monitorRefreshIntervalSeconds,
       DEFAULT_APP_SETTINGS.monitorRefreshIntervalSeconds,

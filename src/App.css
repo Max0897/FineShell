@@ -735,6 +735,41 @@ body,
   margin: 0;
 }
 
+.sftp-external-edit-status {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  display: inline-grid;
+  place-items: center;
+  color: #86909c;
+}
+
+.sftp-external-edit-status-syncing,
+.sftp-external-edit-status-active {
+  color: #165dff;
+}
+
+.sftp-external-edit-status-synced {
+  color: #00b42a;
+}
+
+.sftp-external-edit-status-conflict {
+  color: #ff7d00;
+}
+
+.sftp-external-edit-status-failed {
+  color: #f53f3f;
+}
+
+.sftp-external-edit-conflict .arco-typography {
+  display: block;
+  margin: 0;
+}
+
+.sftp-external-edit-conflict .arco-typography + .arco-typography {
+  margin-top: 8px;
+}
+
 .sftp-text-editor-modal {
   width: min(960px, calc(100vw - 64px));
 }
@@ -1008,6 +1043,10 @@ body,
 .settings-control .arco-select,
 .settings-control .arco-input-number {
   width: 180px;
+}
+
+.settings-editor-picker .arco-input {
+  width: 220px;
 }
 
 .settings-loading {

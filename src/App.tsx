@@ -766,6 +766,8 @@ function App() {
   const sftpPanel = (
     <SftpPanel
       confirmFileDelete={settings.confirmFileDelete}
+      externalEditorName={settings.externalEditorName}
+      externalEditorPath={settings.externalEditorPath}
       session={activeSession}
       showHiddenFiles={settings.showHiddenFiles}
     />

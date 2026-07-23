@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   Button,
+  Input,
   InputNumber,
   Menu,
   Message,
@@ -24,6 +25,7 @@ import {
 } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
 import { emitTo } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   DEFAULT_APP_SETTINGS,
   appSettingsEqual,
@@ -56,6 +58,12 @@ function SettingRow({ control, label }: SettingRowProps) {
       <div className="settings-control">{control}</div>
     </div>
   );
+}
+
+function editorNameFromPath(path: string) {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  const name = parts[parts.length - 1] ?? path;
+  return name.replace(/\.(?:app|exe)$/i, "");
 }
 
 function SettingsWindow() {
@@ -109,6 +117,24 @@ function SettingsWindow() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const chooseExternalEditor = async () => {
+    if (!isTauri()) {
+      Message.warning("仅桌面应用支持选择外部编辑器");
+      return;
+    }
+    const selected = await open({
+      directory: false,
+      multiple: false,
+      title: "选择外部编辑器",
+    });
+    if (typeof selected !== "string") return;
+    setSettings((current) => ({
+      ...current,
+      externalEditorPath: selected,
+      externalEditorName: editorNameFromPath(selected),
+    }));
   };
 
   const content = (() => {
@@ -232,6 +258,35 @@ function SettingsWindow() {
                   />
                 }
                 label="删除前确认"
+              />
+              <SettingRow
+                control={
+                  <Space className="settings-editor-picker" size="mini">
+                    <Input
+                      aria-label="外部编辑器"
+                      placeholder="使用系统默认应用"
+                      readOnly
+                      value={settings.externalEditorName}
+                    />
+                    <Button onClick={() => void chooseExternalEditor()}>
+                      选择
+                    </Button>
+                    {settings.externalEditorPath && (
+                      <Button
+                        aria-label="清除外部编辑器"
+                        icon={<IconDelete />}
+                        onClick={() =>
+                          setSettings((current) => ({
+                            ...current,
+                            externalEditorPath: "",
+                            externalEditorName: "",
+                          }))
+                        }
+                      />
+                    )}
+                  </Space>
+                }
+                label="外部编辑器"
               />
             </div>
           </>

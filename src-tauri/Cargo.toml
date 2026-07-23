@@ -21,6 +21,7 @@ tauri-build = { version = "2", features = [] }
 base64 = "0.22.1"
 fast-socks5 = "1.0.0"
 keyring = "4.1.5"
+notify = "8.2.0"
 httparse = "1.10.1"
 ssh2 = "0.9.6"
 tauri = { version = "2", features = [] }

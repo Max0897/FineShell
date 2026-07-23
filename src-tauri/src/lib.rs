@@ -1,6 +1,7 @@
 mod config_files;
 mod credentials;
 mod dynamic_forward;
+mod external_edit;
 mod monitor;
 #[cfg(desktop)]
 mod native_menu;
@@ -12,6 +13,7 @@ mod transport;
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(sftp::SftpSessionManager::default())
+        .manage(external_edit::ExternalEditManager::default())
         .manage(ssh::SshSessionManager::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
@@ -59,6 +61,9 @@ pub fn run() {
             sftp::sftp_set_permissions,
             sftp::sftp_read_text_file,
             sftp::sftp_write_text_file,
+            external_edit::sftp_start_external_edit,
+            external_edit::sftp_external_edit_action,
+            external_edit::sftp_launch_external_editor,
             sftp::sftp_upload,
             sftp::sftp_download,
             sftp::sftp_pause_transfer,

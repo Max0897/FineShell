@@ -23,8 +23,8 @@ use crate::transport::ProxyConfig;
 const SFTP_TRANSFER_EVENT: &str = "sftp-transfer";
 const TRANSFER_BUFFER_SIZE: usize = 64 * 1024;
 const TRANSFER_CANCELLED_ERROR: &str = "传输已取消";
-const REMOTE_TEXT_MAX_BYTES: usize = 2 * 1024 * 1024;
-const REMOTE_TEXT_CONFLICT_ERROR: &str = "远程文件已被其他程序修改";
+pub(crate) const REMOTE_TEXT_MAX_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const REMOTE_TEXT_CONFLICT_ERROR: &str = "远程文件已被其他程序修改";
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,14 +69,14 @@ pub(crate) struct SftpListResult {
     entries: Vec<SftpEntry>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SftpTextFile {
-    path: String,
-    content: String,
-    size: u64,
-    modified_at: Option<u64>,
-    permissions: Option<u32>,
+    pub(crate) path: String,
+    pub(crate) content: String,
+    pub(crate) size: u64,
+    pub(crate) modified_at: Option<u64>,
+    pub(crate) permissions: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -201,6 +201,42 @@ type TransferKey = (String, String);
 type TransferRegistry = HashMap<TransferKey, Arc<TransferControl>>;
 
 impl SftpSessionManager {
+    pub(crate) fn read_text_file(
+        &self,
+        session_id: &str,
+        path: String,
+    ) -> Result<SftpTextFile, String> {
+        let (reply, receiver) = mpsc::channel();
+        self.send(session_id, SftpCommand::ReadTextFile { path, reply })?;
+        receiver
+            .recv()
+            .map_err(|_| "SFTP 操作没有返回结果".to_string())?
+    }
+
+    pub(crate) fn write_text_file(
+        &self,
+        session_id: &str,
+        path: String,
+        content: String,
+        original_content: String,
+        overwrite: bool,
+    ) -> Result<SftpTextFile, String> {
+        let (reply, receiver) = mpsc::channel();
+        self.send(
+            session_id,
+            SftpCommand::WriteTextFile {
+                path,
+                content,
+                original_content,
+                overwrite,
+                reply,
+            },
+        )?;
+        receiver
+            .recv()
+            .map_err(|_| "SFTP 操作没有返回结果".to_string())?
+    }
+
     fn begin_connect(&self, session_id: &str) -> Result<Arc<AtomicBool>, String> {
         let mut sessions = self
             .sessions

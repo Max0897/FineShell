@@ -23,22 +23,28 @@ import { join } from "@tauri-apps/api/path";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
 import {
+  IconApps,
   IconArrowUp,
   IconCode,
   IconDelete,
   IconDown,
   IconDownload,
+  IconDesktop,
   IconEdit,
+  IconExclamationCircle,
   IconFile,
   IconFolder,
   IconFolderAdd,
   IconHistory,
   IconLock,
+  IconLaunch,
   IconPause,
   IconPlayArrow,
   IconRefresh,
   IconStop,
+  IconSync,
   IconThunderbolt,
   IconUpload,
 } from "@arco-design/web-react/icon";
@@ -77,6 +83,8 @@ interface BrowserState {
 
 interface SftpPanelProps {
   confirmFileDelete: boolean;
+  externalEditorName: string;
+  externalEditorPath: string;
   session: TerminalSession | null;
   showHiddenFiles: boolean;
 }
@@ -124,6 +132,30 @@ interface TextEditorState {
   saving: boolean;
 }
 
+type ExternalEditStatus =
+  | "watching"
+  | "syncing"
+  | "synced"
+  | "conflict"
+  | "failed"
+  | "closed";
+
+interface ExternalEditPayload {
+  editId: string;
+  sessionId: string;
+  remotePath: string;
+  fileName: string;
+  localPath: string;
+  status: ExternalEditStatus;
+  error?: string;
+}
+
+interface ExternalEditResult {
+  editId: string;
+  localPath: string;
+  created: boolean;
+}
+
 const INITIAL_BROWSER: BrowserState = {
   status: "idle",
   path: "/",
@@ -155,8 +187,36 @@ function isSftpSessionFailure(message: string) {
   );
 }
 
+function ExternalEditStatusIcon({ edit }: { edit: ExternalEditPayload }) {
+  const status = {
+    watching: { label: "外部编辑中", tone: "active" },
+    syncing: { label: "正在同步", tone: "syncing" },
+    synced: { label: "已同步", tone: "synced" },
+    conflict: { label: "同步冲突", tone: "conflict" },
+    failed: { label: "同步失败", tone: "failed" },
+    closed: { label: "已结束", tone: "closed" },
+  }[edit.status];
+
+  return (
+    <Tooltip content={edit.error || status.label}>
+      <span
+        aria-label={status.label}
+        className={`sftp-external-edit-status sftp-external-edit-status-${status.tone}`}
+      >
+        {edit.status === "conflict" || edit.status === "failed" ? (
+          <IconExclamationCircle />
+        ) : (
+          <IconSync />
+        )}
+      </span>
+    </Tooltip>
+  );
+}
+
 function SftpPanel({
   confirmFileDelete,
+  externalEditorName,
+  externalEditorPath,
   session,
   showHiddenFiles,
 }: SftpPanelProps) {
@@ -174,6 +234,13 @@ function SftpPanel({
   const [permissionValue, setPermissionValue] = useState("");
   const [operationLoading, setOperationLoading] = useState(false);
   const [textEditor, setTextEditor] = useState<TextEditorState | null>(null);
+  const [externalEdits, setExternalEdits] = useState<
+    Record<string, ExternalEditPayload>
+  >({});
+  const [externalEditConflict, setExternalEditConflict] =
+    useState<ExternalEditPayload | null>(null);
+  const [externalEditActionLoading, setExternalEditActionLoading] =
+    useState(false);
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
   const [fileDropActive, setFileDropActive] = useState(false);
   const connectingRef = useRef(new Set<string>());
@@ -183,6 +250,7 @@ function SftpPanel({
   const transfersRef = useRef(transfers);
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const textEditorRequestRef = useRef(0);
+  const sessionIdRef = useRef(session?.id);
   const readyRef = useRef(false);
   const queueUploadPathsRef = useRef<(paths: string[]) => Promise<void>>(
     async () => undefined,
@@ -195,6 +263,8 @@ function SftpPanel({
   useEffect(() => {
     transfersRef.current = transfers;
   }, [transfers]);
+
+  sessionIdRef.current = session?.id;
 
   const updateBrowser = useCallback(
     (sessionId: string, values: Partial<BrowserState>) => {
@@ -422,6 +492,50 @@ function SftpPanel({
     };
   }, []);
 
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<ExternalEditPayload>("sftp-external-edit", ({ payload }) => {
+      setExternalEdits((current) => {
+        if (payload.status === "closed") {
+          const next = { ...current };
+          delete next[payload.editId];
+          return next;
+        }
+        return { ...current, [payload.editId]: payload };
+      });
+
+      if (payload.status === "conflict") {
+        if (payload.sessionId === sessionIdRef.current) {
+          setExternalEditConflict(payload);
+        }
+      } else if (payload.status === "synced") {
+        setExternalEditConflict((current) =>
+          current?.editId === payload.editId ? null : current,
+        );
+      } else if (
+        payload.status === "failed" &&
+        payload.sessionId === sessionIdRef.current &&
+        payload.error
+      ) {
+        Message.error(payload.error);
+      }
+    }).then((stopListening) => {
+      if (disposed) {
+        stopListening();
+      } else {
+        unlisten = stopListening;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const browser = session ? browsers[session.id] ?? INITIAL_BROWSER : null;
   const connected = session?.status === "connected";
   const ready = Boolean(connected && browser?.status === "ready");
@@ -475,12 +589,19 @@ function SftpPanel({
       {
         title: "名称",
         dataIndex: "name",
-        render: (_, entry) => (
-          <div className="sftp-name-cell">
-            {entry.kind === "directory" ? <IconFolder /> : <IconFile />}
-            <Typography.Text ellipsis>{entry.name}</Typography.Text>
-          </div>
-        ),
+        render: (_, entry) => {
+          const externalEdit = Object.values(externalEdits).find(
+            (edit) =>
+              edit.sessionId === session?.id && edit.remotePath === entry.path,
+          );
+          return (
+            <div className="sftp-name-cell">
+              {entry.kind === "directory" ? <IconFolder /> : <IconFile />}
+              <Typography.Text ellipsis>{entry.name}</Typography.Text>
+              {externalEdit && <ExternalEditStatusIcon edit={externalEdit} />}
+            </div>
+          );
+        },
       },
       {
         title: "大小",
@@ -502,7 +623,7 @@ function SftpPanel({
         render: (value) => formatRemoteTime(value),
       },
     ],
-    [],
+    [externalEdits, session?.id],
   );
 
   const executeTransfer = useCallback(
@@ -1232,6 +1353,93 @@ function SftpPanel({
     }
   }
 
+  function externalEditForEntry(entry: SftpEntry) {
+    return Object.values(externalEdits).find(
+      (edit) =>
+        edit.sessionId === session?.id && edit.remotePath === entry.path,
+    );
+  }
+
+  async function openExternalEditor(entry: SftpEntry, editorPath?: string) {
+    if (!session || entry.kind !== "file") return;
+    let edit: ExternalEditResult | null = null;
+    try {
+      edit = await invoke<ExternalEditResult>("sftp_start_external_edit", {
+        sessionId: session.id,
+        path: entry.path,
+      });
+      if (editorPath) {
+        await invoke("sftp_launch_external_editor", {
+          editId: edit.editId,
+          editorPath,
+        });
+      } else {
+        await openPath(edit.localPath);
+      }
+      Message.success(`已打开 ${entry.name}，保存后将自动同步`);
+    } catch (error) {
+      if (edit?.created) {
+        await invoke("sftp_external_edit_action", {
+          editId: edit.editId,
+          action: "close",
+        }).catch(() => undefined);
+      }
+      handleOperationError(error);
+    }
+  }
+
+  async function chooseExternalEditor(entry: SftpEntry) {
+    try {
+      const selected = await open({
+        directory: false,
+        multiple: false,
+        title: "选择外部编辑器",
+      });
+      if (typeof selected === "string") {
+        await openExternalEditor(entry, selected);
+      }
+    } catch (error) {
+      handleOperationError(error);
+    }
+  }
+
+  async function resolveExternalEdit(action: "overwrite" | "reload") {
+    if (!externalEditConflict || !session || !browser) return;
+    setExternalEditActionLoading(true);
+    try {
+      await invoke("sftp_external_edit_action", {
+        editId: externalEditConflict.editId,
+        action,
+      });
+      Message.success(
+        action === "overwrite"
+          ? "本地内容已覆盖远端文件"
+          : "已用远端内容更新本地文件",
+      );
+      setExternalEditConflict(null);
+      await loadDirectory(session.id, browser.path);
+    } catch (error) {
+      handleOperationError(error);
+    } finally {
+      setExternalEditActionLoading(false);
+    }
+  }
+
+  async function stopExternalEdit(edit: ExternalEditPayload) {
+    try {
+      await invoke("sftp_external_edit_action", {
+        editId: edit.editId,
+        action: "close",
+      });
+      setExternalEditConflict((current) =>
+        current?.editId === edit.editId ? null : current,
+      );
+      Message.success(`已停止外部编辑：${edit.fileName}`);
+    } catch (error) {
+      handleOperationError(error);
+    }
+  }
+
   function entryContextMenuItems(entries: SftpEntry[]): ContextMenuItem[] {
     const singleEntry = entries.length === 1 ? entries[0] : null;
     const menuItems: ContextMenuItem[] = [];
@@ -1246,12 +1454,69 @@ function SftpPanel({
       });
     } else if (singleEntry) {
       if (singleEntry.kind === "file") {
-        menuItems.push({
-          key: "edit-text",
-          label: "编辑文本",
-          icon: <IconCode />,
+        const activeEdit = externalEditForEntry(singleEntry);
+        const openItems: ContextMenuItem[] = [
+          {
+            key: "open-internal",
+            label: "内置编辑器",
+            icon: <IconCode />,
+            disabled: operationLoading,
+            onClick: () => openTextEditor(singleEntry),
+          },
+          {
+            key: "open-default",
+            label: "系统默认应用",
+            icon: <IconDesktop />,
+            disabled: operationLoading,
+            onClick: () => openExternalEditor(singleEntry),
+          },
+        ];
+        if (externalEditorPath) {
+          openItems.push({
+            key: "open-configured",
+            label: externalEditorName || "已配置编辑器",
+            icon: <IconLaunch />,
+            disabled: operationLoading,
+            onClick: () =>
+              openExternalEditor(singleEntry, externalEditorPath),
+          });
+        }
+        openItems.push({
+          key: "open-other",
+          label: "选择其他应用...",
+          icon: <IconApps />,
           disabled: operationLoading,
-          onClick: () => openTextEditor(singleEntry),
+          onClick: () => chooseExternalEditor(singleEntry),
+        });
+        if (
+          activeEdit?.status === "conflict" ||
+          activeEdit?.status === "failed"
+        ) {
+          openItems.push({
+            key: "resolve-external-edit",
+            label: "处理同步问题",
+            icon: <IconExclamationCircle />,
+            dividerBefore: true,
+            onClick: () => setExternalEditConflict(activeEdit),
+          });
+        }
+        if (activeEdit) {
+          openItems.push({
+            key: "stop-external-edit",
+            label: "停止外部编辑",
+            icon: <IconStop />,
+            dividerBefore:
+              activeEdit.status !== "conflict" &&
+              activeEdit.status !== "failed",
+            onClick: () => stopExternalEdit(activeEdit),
+          });
+        }
+        menuItems.push({
+          key: "open-file",
+          label: "打开",
+          icon: <IconLaunch />,
+          children: openItems,
+          disabled: operationLoading,
         });
       }
       menuItems.push({
@@ -1832,6 +2097,50 @@ function SftpPanel({
               </div>
             )}
           </div>
+        </div>
+      </Modal>
+      <Modal
+        footer={
+          <Space>
+            <Button
+              disabled={externalEditActionLoading}
+              onClick={() => setExternalEditConflict(null)}
+            >
+              保留本地
+            </Button>
+            <Button
+              disabled={externalEditActionLoading}
+              onClick={() => void resolveExternalEdit("reload")}
+            >
+              重新加载远端
+            </Button>
+            <Button
+              loading={externalEditActionLoading}
+              onClick={() => void resolveExternalEdit("overwrite")}
+              status="danger"
+              type="primary"
+            >
+              覆盖远端
+            </Button>
+          </Space>
+        }
+        maskClosable={false}
+        onCancel={() => setExternalEditConflict(null)}
+        title={
+          externalEditConflict?.status === "failed"
+            ? "自动同步失败"
+            : "远程文件已修改"
+        }
+        visible={Boolean(externalEditConflict)}
+      >
+        <div className="sftp-external-edit-conflict">
+          <Typography.Paragraph>
+            {externalEditConflict?.error ||
+              "远端文件在本地编辑期间发生了变化。"}
+          </Typography.Paragraph>
+          <Typography.Text ellipsis={{ showTooltip: true }} type="secondary">
+            {externalEditConflict?.remotePath ?? ""}
+          </Typography.Text>
         </div>
       </Modal>
       <Modal
