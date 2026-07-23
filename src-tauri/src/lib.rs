@@ -1,5 +1,6 @@
 mod config_files;
 mod credentials;
+mod dynamic_forward;
 mod monitor;
 #[cfg(desktop)]
 mod native_menu;
@@ -44,6 +45,8 @@ pub fn run() {
             ssh::ssh_stop_local_forward,
             ssh::ssh_start_remote_forward,
             ssh::ssh_stop_remote_forward,
+            ssh::ssh_start_dynamic_forward,
+            ssh::ssh_stop_dynamic_forward,
             ssh::ssh_disconnect,
             sftp::sftp_connect,
             sftp::sftp_list,

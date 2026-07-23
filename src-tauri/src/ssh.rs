@@ -18,6 +18,7 @@ use ssh2::{Channel, HashType, Session};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::credentials;
+use crate::dynamic_forward::{self, DynamicConnectRequest, DynamicConnectionResult};
 use crate::monitor::{
     self, NetworkConnectionsResult, NetworkPingResult, NetworkTraceResult, ServerMonitorSnapshot,
     ServerProcessListResult,
@@ -47,6 +48,8 @@ pub(crate) struct SshConnectRequest {
     local_port_forwards: Vec<LocalPortForwardRule>,
     #[serde(default)]
     remote_port_forwards: Vec<RemotePortForwardRule>,
+    #[serde(default)]
+    dynamic_port_forwards: Vec<DynamicPortForwardRule>,
     cols: u32,
     rows: u32,
 }
@@ -111,11 +114,22 @@ pub(crate) struct RemotePortForwardRule {
     enabled: bool,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DynamicPortForwardRule {
+    id: String,
+    name: String,
+    bind_address: String,
+    bind_port: u16,
+    enabled: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum PortForwardKind {
     Local,
     Remote,
+    Dynamic,
 }
 
 #[derive(Clone, Serialize)]
@@ -191,6 +205,11 @@ struct ActiveRemoteForward {
     bound_port: u16,
 }
 
+struct ActiveDynamicForward {
+    rule: DynamicPortForwardRule,
+    listener: TcpListener,
+}
+
 struct ForwardConnection {
     rule_id: String,
     kind: PortForwardKind,
@@ -213,6 +232,7 @@ struct SessionRuntimeConfig {
     keep_alive_interval_seconds: u32,
     local_forwards: Vec<ActiveLocalForward>,
     remote_forwards: Vec<ActiveRemoteForward>,
+    dynamic_forwards: Vec<ActiveDynamicForward>,
 }
 
 enum SessionCommand {
@@ -250,6 +270,14 @@ enum SessionCommand {
         response: SyncSender<Result<PortForwardStatus, String>>,
     },
     StopRemoteForward {
+        rule_id: String,
+        response: SyncSender<Result<PortForwardStatus, String>>,
+    },
+    StartDynamicForward {
+        rule: DynamicPortForwardRule,
+        response: SyncSender<Result<PortForwardStatus, String>>,
+    },
+    StopDynamicForward {
         rule_id: String,
         response: SyncSender<Result<PortForwardStatus, String>>,
     },
@@ -744,6 +772,21 @@ fn remote_port_forward_status(
     }
 }
 
+fn dynamic_port_forward_status(
+    rule: &DynamicPortForwardRule,
+    status: &'static str,
+    error: Option<String>,
+) -> PortForwardStatus {
+    PortForwardStatus {
+        rule_id: rule.id.clone(),
+        kind: PortForwardKind::Dynamic,
+        status,
+        bind_address: rule.bind_address.clone(),
+        bind_port: rule.bind_port,
+        error,
+    }
+}
+
 fn emit_port_forward_status(app: &AppHandle, session_id: &str, status: &PortForwardStatus) {
     let _ = app.emit_to(
         "main",
@@ -939,6 +982,80 @@ fn prepare_remote_forwards(
     (active_forwards, statuses)
 }
 
+fn validate_dynamic_forward_rule(rule: &DynamicPortForwardRule) -> Result<SocketAddr, String> {
+    if rule.id.trim().is_empty() {
+        return Err("动态端口转发规则缺少标识".to_string());
+    }
+    if rule.name.trim().is_empty() {
+        return Err("动态端口转发规则缺少名称".to_string());
+    }
+    if rule.bind_port == 0 {
+        return Err("动态端口转发的监听端口必须大于 0".to_string());
+    }
+    let bind_address = rule
+        .bind_address
+        .trim()
+        .parse::<IpAddr>()
+        .map_err(|_| "动态端口转发的监听地址必须是有效的 IP 地址".to_string())?;
+    Ok(SocketAddr::new(bind_address, rule.bind_port))
+}
+
+fn start_dynamic_forward(
+    mut rule: DynamicPortForwardRule,
+) -> Result<(ActiveDynamicForward, PortForwardStatus), String> {
+    let endpoint = validate_dynamic_forward_rule(&rule)?;
+    let listener =
+        TcpListener::bind(endpoint).map_err(|error| format!("无法监听 {}：{error}", endpoint))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("无法启用动态端口转发的非阻塞监听：{error}"))?;
+    rule.enabled = true;
+    let status = dynamic_port_forward_status(&rule, "active", None);
+    Ok((ActiveDynamicForward { rule, listener }, status))
+}
+
+fn prepare_dynamic_forwards(
+    rules: Vec<DynamicPortForwardRule>,
+) -> (Vec<ActiveDynamicForward>, Vec<PortForwardStatus>) {
+    let mut active_forwards = Vec::new();
+    let mut statuses = Vec::with_capacity(rules.len());
+    let mut rule_ids = HashSet::new();
+    let mut endpoints = HashSet::new();
+
+    for rule in rules {
+        if !rule_ids.insert(rule.id.clone()) {
+            statuses.push(dynamic_port_forward_status(
+                &rule,
+                "failed",
+                Some("动态端口转发规则标识重复".to_string()),
+            ));
+            continue;
+        }
+        if !rule.enabled {
+            statuses.push(dynamic_port_forward_status(&rule, "stopped", None));
+            continue;
+        }
+        let endpoint_key = format!("{}:{}", rule.bind_address.trim(), rule.bind_port);
+        if !endpoints.insert(endpoint_key) {
+            statuses.push(dynamic_port_forward_status(
+                &rule,
+                "failed",
+                Some("监听地址和端口与其他动态转发规则重复".to_string()),
+            ));
+            continue;
+        }
+        match start_dynamic_forward(rule.clone()) {
+            Ok((active, status)) => {
+                active_forwards.push(active);
+                statuses.push(status);
+            }
+            Err(error) => statuses.push(dynamic_port_forward_status(&rule, "failed", Some(error))),
+        }
+    }
+
+    (active_forwards, statuses)
+}
+
 fn open_local_forward_connection(
     session: &Session,
     forward: &ActiveLocalForward,
@@ -965,6 +1082,31 @@ fn open_local_forward_connection(
         socket,
         channel,
     )
+}
+
+fn open_dynamic_forward_channel(
+    session: &Session,
+    target_address: &str,
+    target_port: u16,
+    peer: SocketAddr,
+) -> Result<Channel, String> {
+    let target_address = target_address.trim();
+    if target_address.is_empty() || target_address.chars().any(char::is_control) {
+        return Err("SOCKS5 目标地址无效".to_string());
+    }
+    if target_port == 0 {
+        return Err("SOCKS5 目标端口必须大于 0".to_string());
+    }
+    let originator_address = peer.ip().to_string();
+    session.set_blocking(true);
+    let channel_result = session.channel_direct_tcpip(
+        target_address,
+        target_port,
+        Some((&originator_address, peer.port())),
+    );
+    session.set_blocking(false);
+    channel_result
+        .map_err(|error| format!("无法通过 SSH 连接目标 {target_address}:{target_port}：{error}"))
 }
 
 impl ForwardConnection {
@@ -1116,6 +1258,7 @@ fn run_session(
         keep_alive_interval_seconds,
         mut local_forwards,
         mut remote_forwards,
+        mut dynamic_forwards,
     } = runtime;
     session.set_blocking(false);
     let mut stderr = channel.stderr();
@@ -1127,6 +1270,11 @@ fn run_session(
     let (remote_connection_sender, remote_connection_receiver) =
         mpsc::channel::<RemoteConnectionResult>();
     let mut pending_remote_connections = HashMap::<String, usize>::new();
+    let (dynamic_request_sender, dynamic_request_receiver) =
+        mpsc::channel::<DynamicConnectRequest>();
+    let (dynamic_connection_sender, dynamic_connection_receiver) =
+        mpsc::channel::<DynamicConnectionResult>();
+    let mut pending_dynamic_connections = HashMap::<String, usize>::new();
     let mut next_keepalive_at = Instant::now() + Duration::from_secs(1);
 
     while !closing && !channel.eof() {
@@ -1261,6 +1409,51 @@ fn run_session(
                     let _ = response.send(result);
                     active = true;
                 }
+                Ok(SessionCommand::StartDynamicForward { rule, response }) => {
+                    let duplicate_id = dynamic_forwards
+                        .iter()
+                        .any(|forward| forward.rule.id == rule.id);
+                    let duplicate_endpoint =
+                        validate_dynamic_forward_rule(&rule)
+                            .ok()
+                            .is_some_and(|endpoint| {
+                                dynamic_forwards.iter().any(|forward| {
+                                    forward.listener.local_addr().ok() == Some(endpoint)
+                                })
+                            });
+                    let result = if duplicate_id {
+                        Err("该动态端口转发规则已经启动".to_string())
+                    } else if duplicate_endpoint {
+                        Err("监听地址和端口已被其他动态转发规则使用".to_string())
+                    } else {
+                        start_dynamic_forward(rule).map(|(forward, status)| {
+                            dynamic_forwards.push(forward);
+                            emit_port_forward_status(&app, &session_id, &status);
+                            status
+                        })
+                    };
+                    let _ = response.send(result);
+                    active = true;
+                }
+                Ok(SessionCommand::StopDynamicForward { rule_id, response }) => {
+                    let result = dynamic_forwards
+                        .iter()
+                        .position(|forward| forward.rule.id == rule_id)
+                        .map(|index| {
+                            let forward = dynamic_forwards.remove(index);
+                            forward_connections.retain(|connection| {
+                                connection.kind != PortForwardKind::Dynamic
+                                    || connection.rule_id != rule_id
+                            });
+                            let status =
+                                dynamic_port_forward_status(&forward.rule, "stopped", None);
+                            emit_port_forward_status(&app, &session_id, &status);
+                            status
+                        })
+                        .ok_or_else(|| "该动态端口转发规则尚未启动".to_string());
+                    let _ = response.send(result);
+                    active = true;
+                }
                 Ok(SessionCommand::Close) | Err(TryRecvError::Disconnected) => {
                     closing = true;
                     break;
@@ -1321,6 +1514,91 @@ fn run_session(
             } else {
                 forward_index += 1;
             }
+        }
+
+        let mut dynamic_forward_index = 0;
+        while dynamic_forward_index < dynamic_forwards.len() {
+            let mut listener_failed = None;
+            loop {
+                match dynamic_forwards[dynamic_forward_index].listener.accept() {
+                    Ok((socket, peer)) => {
+                        let rule = dynamic_forwards[dynamic_forward_index].rule.clone();
+                        let connection_count = forward_connections
+                            .iter()
+                            .filter(|connection| {
+                                connection.kind == PortForwardKind::Dynamic
+                                    && connection.rule_id == rule.id
+                            })
+                            .count()
+                            + pending_dynamic_connections
+                                .get(&rule.id)
+                                .copied()
+                                .unwrap_or(0);
+                        if connection_count >= 32 {
+                            let status = dynamic_port_forward_status(
+                                &rule,
+                                "active",
+                                Some("动态转发并发连接数已达到 32 条".to_string()),
+                            );
+                            emit_port_forward_status(&app, &session_id, &status);
+                            drop(socket);
+                            continue;
+                        }
+
+                        *pending_dynamic_connections
+                            .entry(rule.id.clone())
+                            .or_insert(0) += 1;
+                        if let Err(error) = dynamic_forward::spawn_socks5_handshake(
+                            rule.id.clone(),
+                            socket,
+                            peer,
+                            dynamic_request_sender.clone(),
+                            dynamic_connection_sender.clone(),
+                        ) {
+                            if let Some(count) = pending_dynamic_connections.get_mut(&rule.id) {
+                                *count = count.saturating_sub(1);
+                            }
+                            let status = dynamic_port_forward_status(&rule, "active", Some(error));
+                            emit_port_forward_status(&app, &session_id, &status);
+                        }
+                        active = true;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => {
+                        listener_failed = Some(format!("动态端口监听失败：{error}"));
+                        break;
+                    }
+                }
+            }
+            if let Some(error) = listener_failed {
+                let forward = dynamic_forwards.remove(dynamic_forward_index);
+                forward_connections.retain(|connection| {
+                    connection.kind != PortForwardKind::Dynamic
+                        || connection.rule_id != forward.rule.id
+                });
+                let status = dynamic_port_forward_status(&forward.rule, "failed", Some(error));
+                emit_port_forward_status(&app, &session_id, &status);
+            } else {
+                dynamic_forward_index += 1;
+            }
+        }
+
+        while let Ok(request) = dynamic_request_receiver.try_recv() {
+            let result = if dynamic_forwards
+                .iter()
+                .any(|forward| forward.rule.id == request.rule_id)
+            {
+                open_dynamic_forward_channel(
+                    &session,
+                    &request.target_address,
+                    request.target_port,
+                    request.peer,
+                )
+            } else {
+                Err("动态端口转发规则已停止".to_string())
+            };
+            let _ = request.response.send(result);
+            active = true;
         }
 
         let mut remote_forward_index = 0;
@@ -1462,6 +1740,32 @@ fn run_session(
             active = true;
         }
 
+        while let Ok(result) = dynamic_connection_receiver.try_recv() {
+            if let Some(count) = pending_dynamic_connections.get_mut(&result.rule_id) {
+                *count = count.saturating_sub(1);
+            }
+            let Some(forward) = dynamic_forwards
+                .iter()
+                .find(|forward| forward.rule.id == result.rule_id)
+            else {
+                continue;
+            };
+            match result.result.and_then(|(socket, channel)| {
+                ForwardConnection::new(result.rule_id, PortForwardKind::Dynamic, socket, channel)
+            }) {
+                Ok(connection) => {
+                    let status = dynamic_port_forward_status(&forward.rule, "active", None);
+                    emit_port_forward_status(&app, &session_id, &status);
+                    forward_connections.push(connection);
+                }
+                Err(error) => {
+                    let status = dynamic_port_forward_status(&forward.rule, "active", Some(error));
+                    emit_port_forward_status(&app, &session_id, &status);
+                }
+            }
+            active = true;
+        }
+
         let mut connection_index = 0;
         while connection_index < forward_connections.len() {
             match forward_connections[connection_index].poll() {
@@ -1496,6 +1800,19 @@ fn run_session(
                                 let status = remote_port_forward_status(
                                     &forward.rule,
                                     forward.bound_port,
+                                    "active",
+                                    Some(error),
+                                );
+                                emit_port_forward_status(&app, &session_id, &status);
+                            }
+                        }
+                        PortForwardKind::Dynamic => {
+                            if let Some(forward) = dynamic_forwards
+                                .iter()
+                                .find(|forward| forward.rule.id == rule_id)
+                            {
+                                let status = dynamic_port_forward_status(
+                                    &forward.rule,
                                     "active",
                                     Some(error),
                                 );
@@ -1642,6 +1959,9 @@ fn connect_session(
     let (remote_forwards, remote_statuses) =
         prepare_remote_forwards(&session, request.remote_port_forwards);
     port_forwards.extend(remote_statuses);
+    let (dynamic_forwards, dynamic_statuses) =
+        prepare_dynamic_forwards(request.dynamic_port_forwards);
+    port_forwards.extend(dynamic_statuses);
 
     let (sender, receiver) = mpsc::channel();
     manager.activate(&request.session_id, sender)?;
@@ -1661,6 +1981,7 @@ fn connect_session(
                     keep_alive_interval_seconds: auth.keep_alive_interval_seconds,
                     local_forwards,
                     remote_forwards,
+                    dynamic_forwards,
                 },
             )
         })
@@ -1950,6 +2271,52 @@ pub(crate) async fn ssh_stop_remote_forward(
 }
 
 #[tauri::command]
+pub(crate) async fn ssh_start_dynamic_forward(
+    manager: State<'_, SshSessionManager>,
+    session_id: String,
+    rule: DynamicPortForwardRule,
+) -> Result<PortForwardStatus, String> {
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    manager.send(
+        &session_id,
+        SessionCommand::StartDynamicForward {
+            rule,
+            response: response_sender,
+        },
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        response_receiver
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| format!("等待动态端口转发启动结果失败：{error}"))?
+    })
+    .await
+    .map_err(|error| format!("动态端口转发启动任务异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn ssh_stop_dynamic_forward(
+    manager: State<'_, SshSessionManager>,
+    session_id: String,
+    rule_id: String,
+) -> Result<PortForwardStatus, String> {
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    manager.send(
+        &session_id,
+        SessionCommand::StopDynamicForward {
+            rule_id,
+            response: response_sender,
+        },
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        response_receiver
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| format!("等待动态端口转发停止结果失败：{error}"))?
+    })
+    .await
+    .map_err(|error| format!("动态端口转发停止任务异常结束：{error}"))?
+}
+
+#[tauri::command]
 pub(crate) fn ssh_disconnect(
     manager: State<'_, SshSessionManager>,
     session_id: String,
@@ -1968,8 +2335,9 @@ mod tests {
 
     use super::{
         connect_authenticated_session, connect_handshaken_session, disconnect_status,
-        loopback_pair, open_local_forward_connection, start_local_forward, start_remote_forward,
-        validate_fingerprint, validate_remote_forward_rule, verify_fingerprint,
+        loopback_pair, open_local_forward_connection, start_dynamic_forward, start_local_forward,
+        start_remote_forward, validate_dynamic_forward_rule, validate_fingerprint,
+        validate_remote_forward_rule, verify_fingerprint, DynamicPortForwardRule,
         FingerprintVerification, ForwardConnection, JumpHostConfig, LocalPortForwardRule,
         PortForwardKind, RemotePortForwardRule, SessionCommand, SshAuthConfig, SshAuthMethod,
         SshSessionManager,
@@ -2056,6 +2424,37 @@ mod tests {
         assert_eq!(
             validate_remote_forward_rule(&rule).err().unwrap(),
             "远程监听地址必须是有效的 IP 地址"
+        );
+    }
+
+    #[test]
+    fn starts_and_validates_a_dynamic_forward_listener() {
+        let available = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = available.local_addr().unwrap().port();
+        drop(available);
+        let rule = DynamicPortForwardRule {
+            id: "dynamic-forward-1".to_string(),
+            name: "Browser proxy".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: port,
+            enabled: true,
+        };
+
+        let (forward, status) = start_dynamic_forward(rule.clone()).unwrap();
+        assert_eq!(status.status, "active");
+        TcpStream::connect(forward.listener.local_addr().unwrap()).unwrap();
+        assert!(start_dynamic_forward(rule).is_err());
+
+        let invalid_rule = DynamicPortForwardRule {
+            id: "dynamic-forward-2".to_string(),
+            name: "Invalid proxy".to_string(),
+            bind_address: "localhost".to_string(),
+            bind_port: 1080,
+            enabled: true,
+        };
+        assert_eq!(
+            validate_dynamic_forward_rule(&invalid_rule).err().unwrap(),
+            "动态端口转发的监听地址必须是有效的 IP 地址"
         );
     }
 
