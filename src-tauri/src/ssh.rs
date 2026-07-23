@@ -1069,7 +1069,7 @@ mod tests {
     use super::{
         connect_authenticated_session, connect_handshaken_session, disconnect_status,
         loopback_pair, validate_fingerprint, verify_fingerprint, FingerprintVerification,
-        SessionCommand, SshAuthConfig, SshAuthMethod, SshSessionManager,
+        JumpHostConfig, SessionCommand, SshAuthConfig, SshAuthMethod, SshSessionManager,
     };
 
     #[test]
@@ -1097,6 +1097,75 @@ mod tests {
         let mut from_jump = [0_u8; 4];
         client.read_exact(&mut from_jump).unwrap();
         assert_eq!(&from_jump, b"jump");
+    }
+
+    #[test]
+    #[ignore = "requires FINESHELL_LIVE_JUMP_* environment variables and stored passwords"]
+    fn connects_terminal_and_sftp_through_a_live_jump_host() -> Result<(), String> {
+        let jump_host_id = std::env::var("FINESHELL_LIVE_JUMP_HOST_ID")
+            .map_err(|_| "缺少 FINESHELL_LIVE_JUMP_HOST_ID".to_string())?;
+        let target_host_id = std::env::var("FINESHELL_LIVE_JUMP_TARGET_HOST_ID")
+            .map_err(|_| "缺少 FINESHELL_LIVE_JUMP_TARGET_HOST_ID".to_string())?;
+        let address = std::env::var("FINESHELL_LIVE_JUMP_ADDRESS")
+            .map_err(|_| "缺少 FINESHELL_LIVE_JUMP_ADDRESS".to_string())?;
+        let port = std::env::var("FINESHELL_LIVE_JUMP_PORT")
+            .unwrap_or_else(|_| "22".to_string())
+            .parse::<u16>()
+            .map_err(|error| format!("FINESHELL_LIVE_JUMP_PORT 无效：{error}"))?;
+        let username =
+            std::env::var("FINESHELL_LIVE_JUMP_USERNAME").unwrap_or_else(|_| "root".to_string());
+        let fingerprint = std::env::var("FINESHELL_LIVE_JUMP_FINGERPRINT")
+            .map_err(|_| "缺少 FINESHELL_LIVE_JUMP_FINGERPRINT".to_string())?;
+        let target_address = std::env::var("FINESHELL_LIVE_JUMP_TARGET_ADDRESS")
+            .unwrap_or_else(|_| "127.0.0.1".to_string());
+
+        let config = SshAuthConfig {
+            host_id: target_host_id,
+            address: target_address,
+            port,
+            username: username.clone(),
+            auth_method: SshAuthMethod::Password,
+            private_key_path: None,
+            connect_timeout_seconds: 10,
+            keep_alive_interval_seconds: 5,
+            expected_fingerprint: Some(fingerprint.clone()),
+            proxy: None,
+            jump_host: Some(JumpHostConfig {
+                host_id: jump_host_id,
+                address,
+                port,
+                username,
+                auth_method: SshAuthMethod::Password,
+                private_key_path: None,
+                connect_timeout_seconds: 10,
+                keep_alive_interval_seconds: 5,
+                expected_fingerprint: Some(fingerprint),
+                proxy: None,
+            }),
+        };
+        let (session, _) = connect_authenticated_session(&config, &AtomicBool::new(false))?;
+
+        let sftp = session
+            .sftp()
+            .map_err(|error| format!("跳板机 SFTP 初始化失败：{error}"))?;
+        sftp.realpath(std::path::Path::new("."))
+            .map_err(|error| format!("跳板机 SFTP 目录读取失败：{error}"))?;
+        drop(sftp);
+
+        let mut channel = session
+            .channel_session()
+            .map_err(|error| format!("跳板机命令通道创建失败：{error}"))?;
+        channel
+            .exec("printf fineshell-jump-ok")
+            .map_err(|error| format!("跳板机命令执行失败：{error}"))?;
+        let mut output = String::new();
+        channel
+            .read_to_string(&mut output)
+            .map_err(|error| format!("跳板机命令输出读取失败：{error}"))?;
+        if output != "fineshell-jump-ok" {
+            return Err(format!("跳板机命令输出无效：{output}"));
+        }
+        Ok(())
     }
 
     #[test]
