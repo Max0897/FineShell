@@ -12,8 +12,10 @@ import type {
   LocalPortForwardRule,
   ProxyRecord,
   RemotePortForwardRule,
+  SftpLocationRecord,
   SshKeyRecord,
 } from "./models";
+import { normalizeRemoteDirectoryPath } from "./sftp-utils";
 
 const DATABASE_NAME = "fineshell.config";
 const DATABASE_VERSION = 1;
@@ -22,10 +24,12 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 11;
-export const CONFIGURATION_EXPORT_VERSION = 9;
+export const CONFIGURATION_SCHEMA_VERSION = 12;
+export const CONFIGURATION_EXPORT_VERSION = 10;
 export const MAX_CONFIGURATION_BACKUPS = 10;
 export const TRASH_RETENTION_DAYS = 30;
+export const MAX_SFTP_BOOKMARKS = 20;
+export const MAX_SFTP_PATH_HISTORY = 30;
 
 export interface ConfigurationBackup {
   id: string;
@@ -36,6 +40,7 @@ export interface ConfigurationBackup {
   proxies: ProxyRecord[];
   sshKeys: SshKeyRecord[];
   hostSort: HostSortMode;
+  sftpLocations: SftpLocationRecord[];
 }
 
 export interface DeletedHostRecord {
@@ -53,6 +58,7 @@ export interface FineShellConfiguration {
   proxies: ProxyRecord[];
   sshKeys: SshKeyRecord[];
   hostSort: HostSortMode;
+  sftpLocations: SftpLocationRecord[];
   settings: AppSettings;
   backups: ConfigurationBackup[];
   trash: DeletedHostRecord[];
@@ -68,6 +74,7 @@ export interface FineShellConfigurationExport {
   proxies: ProxyRecord[];
   sshKeys: SshKeyRecord[];
   hostSort: HostSortMode;
+  sftpLocations: SftpLocationRecord[];
   settings: AppSettings;
 }
 
@@ -138,6 +145,32 @@ function sanitizeSshKey(value: unknown): SshKeyRecord | undefined {
     id,
     name: name.trim(),
     privateKeyPath: privateKeyPath.trim(),
+  };
+}
+
+function sanitizeRemotePaths(value: unknown, limit: number) {
+  if (!Array.isArray(value)) return [];
+  const paths: string[] = [];
+  for (const item of value) {
+    const path =
+      typeof item === "string" ? normalizeRemoteDirectoryPath(item) : null;
+    if (!path || paths.includes(path)) continue;
+    paths.push(path);
+    if (paths.length >= limit) break;
+  }
+  return paths;
+}
+
+function sanitizeSftpLocation(
+  value: unknown,
+): SftpLocationRecord | undefined {
+  if (!isRecord(value)) return undefined;
+  const hostId = stringValue(value.hostId);
+  if (!hostId) return undefined;
+  return {
+    hostId,
+    bookmarks: sanitizeRemotePaths(value.bookmarks, MAX_SFTP_BOOKMARKS),
+    history: sanitizeRemotePaths(value.history, MAX_SFTP_PATH_HISTORY),
   };
 }
 
@@ -337,6 +370,7 @@ function sanitizeBackup(value: unknown): ConfigurationBackup | undefined {
     proxies: sanitizeList(value.proxies, sanitizeProxy),
     sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
     hostSort: sanitizeHostSortMode(value.hostSort),
+    sftpLocations: sanitizeList(value.sftpLocations, sanitizeSftpLocation),
   };
 }
 
@@ -398,6 +432,7 @@ export function migrateLegacyConfiguration(
     proxies: [],
     sshKeys: [],
     hostSort: "manual",
+    sftpLocations: [],
     settings: { ...DEFAULT_APP_SETTINGS },
     backups: [],
     trash: [],
@@ -422,6 +457,7 @@ function normalizeConfiguration(value: unknown): FineShellConfiguration {
     proxies: sanitizeList(value.proxies, sanitizeProxy),
     sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
     hostSort: sanitizeHostSortMode(value.hostSort),
+    sftpLocations: sanitizeList(value.sftpLocations, sanitizeSftpLocation),
     settings: sanitizeAppSettings(value.settings),
     backups: sanitizeList(value.backups, sanitizeBackup).slice(
       0,
@@ -446,13 +482,20 @@ function createBackup(
     proxies: configuration.proxies,
     sshKeys: configuration.sshKeys,
     hostSort: configuration.hostSort,
+    sftpLocations: configuration.sftpLocations,
   };
 }
 
 export function serializeConfigurationExport(
   configuration: Pick<
     FineShellConfiguration,
-    "hosts" | "history" | "proxies" | "sshKeys" | "hostSort" | "settings"
+    | "hosts"
+    | "history"
+    | "proxies"
+    | "sshKeys"
+    | "hostSort"
+    | "sftpLocations"
+    | "settings"
   >,
   now = new Date().toISOString(),
 ) {
@@ -468,6 +511,10 @@ export function serializeConfigurationExport(
     proxies: sanitizeList(configuration.proxies, sanitizeProxy),
     sshKeys: sanitizeList(configuration.sshKeys, sanitizeSshKey),
     hostSort: configuration.hostSort,
+    sftpLocations: sanitizeList(
+      configuration.sftpLocations,
+      sanitizeSftpLocation,
+    ),
     settings: sanitizeAppSettings(configuration.settings),
   };
   return `${JSON.stringify(exported, null, 2)}\n`;
@@ -496,6 +543,7 @@ export function parseConfigurationExport(contents: string) {
     proxies: sanitizeList(value.proxies, sanitizeProxy),
     sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
     hostSort: sanitizeHostSortMode(value.hostSort),
+    sftpLocations: sanitizeList(value.sftpLocations, sanitizeSftpLocation),
     settings: sanitizeAppSettings(value.settings),
   };
 }
@@ -653,7 +701,13 @@ export function updateStoredHostFingerprint(
 export function importConfiguration(
   imported: Pick<
     FineShellConfiguration,
-    "hosts" | "history" | "proxies" | "sshKeys" | "hostSort" | "settings"
+    | "hosts"
+    | "history"
+    | "proxies"
+    | "sshKeys"
+    | "hostSort"
+    | "sftpLocations"
+    | "settings"
   >,
 ) {
   return updateConfiguration((current) => ({
@@ -663,6 +717,7 @@ export function importConfiguration(
     proxies: imported.proxies,
     sshKeys: imported.sshKeys,
     hostSort: imported.hostSort,
+    sftpLocations: imported.sftpLocations,
     settings: imported.settings,
     backups: [
       createBackup(current, "导入配置前自动备份"),
@@ -683,6 +738,7 @@ export function restoreConfigurationBackup(backupId: string) {
       proxies: backup.proxies,
       sshKeys: backup.sshKeys,
       hostSort: backup.hostSort,
+      sftpLocations: backup.sftpLocations,
       backups: [
         createBackup(current, "恢复配置前自动备份"),
         ...current.backups,
@@ -764,29 +820,62 @@ export function restoreDeletedHost(deletedHostId: string) {
 }
 
 export function permanentlyDeleteHost(deletedHostId: string) {
-  return updateConfiguration((current) => ({
-    ...current,
-    trash: current.trash.filter((item) => item.id !== deletedHostId),
-  }));
+  return updateConfiguration((current) => {
+    const hostId = current.trash.find((item) => item.id === deletedHostId)?.host
+      .id;
+    return {
+      ...current,
+      sftpLocations: hostId
+        ? current.sftpLocations.filter((item) => item.hostId !== hostId)
+        : current.sftpLocations,
+      trash: current.trash.filter((item) => item.id !== deletedHostId),
+    };
+  });
 }
 
 export async function purgeExpiredDeletedHosts(now = new Date()) {
   const expiredHostIds: string[] = [];
-  const configuration = await updateConfiguration((current) => ({
-    ...current,
-    trash: current.trash.filter((item) => {
+  const configuration = await updateConfiguration((current) => {
+    const trash = current.trash.filter((item) => {
       if (!isDeletedHostExpired(item, now)) return true;
       if (!current.hosts.some((host) => host.id === item.host.id)) {
         expiredHostIds.push(item.host.id);
       }
       return false;
-    }),
-  }));
+    });
+    return {
+      ...current,
+      sftpLocations: current.sftpLocations.filter(
+        (item) => !expiredHostIds.includes(item.hostId),
+      ),
+      trash,
+    };
+  });
   return { configuration, expiredHostIds };
 }
 
 export function updateHostSortMode(hostSort: HostSortMode) {
   return updateConfiguration((current) => ({ ...current, hostSort }));
+}
+
+export function upsertSftpLocation(location: SftpLocationRecord) {
+  const sanitized = sanitizeSftpLocation(location);
+  if (!sanitized) return Promise.reject(new Error("SFTP 位置记录无效"));
+  return updateConfiguration((current) => ({
+    ...current,
+    sftpLocations:
+      sanitized.bookmarks.length || sanitized.history.length
+        ? current.sftpLocations.some(
+            (item) => item.hostId === sanitized.hostId,
+          )
+          ? current.sftpLocations.map((item) =>
+              item.hostId === sanitized.hostId ? sanitized : item,
+            )
+          : [...current.sftpLocations, sanitized]
+        : current.sftpLocations.filter(
+            (item) => item.hostId !== sanitized.hostId,
+          ),
+  }));
 }
 
 export function upsertProxy(proxy: ProxyRecord) {

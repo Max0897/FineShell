@@ -5,6 +5,53 @@ export function remoteParentPath(path: string) {
   return separator <= 0 ? "/" : normalized.slice(0, separator);
 }
 
+export function normalizeRemoteDirectoryPath(path: string) {
+  const trimmed = path.trim();
+  if (!trimmed.startsWith("/")) return null;
+  return trimmed === "/" ? "/" : trimmed.replace(/\/+$/, "");
+}
+
+export function addRemotePathHistory(
+  history: string[],
+  path: string,
+  limit: number,
+) {
+  const normalized = normalizeRemoteDirectoryPath(path);
+  if (!normalized) return history;
+  return [normalized, ...history.filter((item) => item !== normalized)].slice(
+    0,
+    limit,
+  );
+}
+
+export function setRemotePathBookmark(
+  bookmarks: string[],
+  path: string,
+  bookmarked: boolean,
+  limit: number,
+) {
+  const normalized = normalizeRemoteDirectoryPath(path);
+  if (!normalized) return bookmarks;
+  const remaining = bookmarks.filter((item) => item !== normalized);
+  return bookmarked ? [normalized, ...remaining].slice(0, limit) : remaining;
+}
+
+export function matchRemoteDirectoryPaths(
+  bookmarks: string[],
+  history: string[],
+  query: string,
+  limit = 12,
+) {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  return [...bookmarks, ...history]
+    .filter(
+      (path, index, paths) =>
+        paths.indexOf(path) === index &&
+        (!normalizedQuery || path.toLocaleLowerCase().includes(normalizedQuery)),
+    )
+    .slice(0, limit);
+}
+
 export function remoteJoinPath(directory: string, name: string) {
   if (directory === "/") return `/${name}`;
   return `${directory.replace(/\/+$/, "")}/${name}`;

@@ -262,6 +262,12 @@ export interface SftpEntry {
   permissions?: number;
 }
 
+export interface SftpLocationRecord {
+  hostId: string;
+  bookmarks: string[];
+  history: string[];
+}
+
 export interface SftpListResult {
   path: string;
   entries: SftpEntry[];

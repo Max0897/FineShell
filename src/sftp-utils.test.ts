@@ -2,11 +2,15 @@ import { describe, expect, test } from "bun:test";
 import {
   formatFileSize,
   formatPermissions,
+  addRemotePathHistory,
   isValidRemoteName,
   localFileName,
+  matchRemoteDirectoryPaths,
+  normalizeRemoteDirectoryPath,
   parsePermissions,
   remoteJoinPath,
   remoteParentPath,
+  setRemotePathBookmark,
 } from "./sftp-utils";
 
 describe("SFTP path helpers", () => {
@@ -24,6 +28,36 @@ describe("SFTP path helpers", () => {
   test("extracts file names from Unix and Windows paths", () => {
     expect(localFileName("/Users/test/report.txt")).toBe("report.txt");
     expect(localFileName("C:\\Users\\test\\report.txt")).toBe("report.txt");
+  });
+
+  test("normalizes, deduplicates and limits directory history", () => {
+    expect(normalizeRemoteDirectoryPath(" /var/log/// ")).toBe("/var/log");
+    expect(normalizeRemoteDirectoryPath("relative/path")).toBeNull();
+    expect(addRemotePathHistory(["/tmp", "/var/log"], "/tmp/", 2)).toEqual([
+      "/tmp",
+      "/var/log",
+    ]);
+    expect(addRemotePathHistory(["/tmp", "/var/log"], "/home", 2)).toEqual([
+      "/home",
+      "/tmp",
+    ]);
+  });
+
+  test("manages bookmarks and matches bookmarks before history", () => {
+    expect(setRemotePathBookmark(["/tmp"], "/var/www", true, 2)).toEqual([
+      "/var/www",
+      "/tmp",
+    ]);
+    expect(setRemotePathBookmark(["/tmp", "/var/www"], "/tmp", false, 2)).toEqual([
+      "/var/www",
+    ]);
+    expect(
+      matchRemoteDirectoryPaths(
+        ["/var/www"],
+        ["/tmp", "/var/log", "/var/www"],
+        "var",
+      ),
+    ).toEqual(["/var/www", "/var/log"]);
   });
 
   test("rejects names that escape the current directory", () => {

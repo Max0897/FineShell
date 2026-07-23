@@ -25,10 +25,11 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(11);
+    expect(configuration.schemaVersion).toBe(12);
     expect(configuration.proxies).toEqual([]);
     expect(configuration.sshKeys).toEqual([]);
     expect(configuration.hostSort).toBe("manual");
+    expect(configuration.sftpLocations).toEqual([]);
     expect(configuration.settings).toEqual(DEFAULT_APP_SETTINGS);
     expect(configuration.updatedAt).toBe("2026-07-22T00:00:00.000Z");
     expect(configuration.hosts).toEqual([
@@ -194,6 +195,13 @@ describe("configuration import and export", () => {
           } as never,
         ],
         hostSort: "manual",
+        sftpLocations: [
+          {
+            hostId: "host-1",
+            bookmarks: ["/var/www", "/var/www"],
+            history: ["/var/log", "relative/path"],
+          },
+        ],
         settings: DEFAULT_APP_SETTINGS,
       },
       "2026-07-22T00:00:00.000Z",
@@ -204,6 +212,7 @@ describe("configuration import and export", () => {
     expect(contents).toContain('"settings"');
     expect(contents).toContain('"proxies"');
     expect(contents).toContain('"sshKeys"');
+    expect(contents).toContain('"sftpLocations"');
     expect(contents).not.toContain("must-not-be-exported");
     expect(contents).not.toContain("key-passphrase-must-not-be-exported");
     const imported = parseConfigurationExport(contents);
@@ -227,6 +236,13 @@ describe("configuration import and export", () => {
         id: "ssh-key-1",
         name: "Production key",
         privateKeyPath: "/Users/demo/.ssh/id_ed25519",
+      },
+    ]);
+    expect(imported.sftpLocations).toEqual([
+      {
+        hostId: "host-1",
+        bookmarks: ["/var/www"],
+        history: ["/var/log"],
       },
     ]);
   });
@@ -256,6 +272,7 @@ describe("configuration import and export", () => {
     expect(imported.hostSort).toBe("manual");
     expect(imported.proxies).toEqual([]);
     expect(imported.sshKeys).toEqual([]);
+    expect(imported.sftpLocations).toEqual([]);
     expect(imported.settings).toEqual(DEFAULT_APP_SETTINGS);
   });
 
