@@ -227,7 +227,7 @@ body,
 .monitor-system-facts > div {
   min-width: 0;
   display: grid;
-  grid-template-columns: 66px minmax(0, 1fr);
+  grid-template-columns: 60px minmax(0, 1fr);
   gap: 8px;
   font-size: 12px;
   line-height: 18px;
