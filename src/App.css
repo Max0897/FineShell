@@ -177,15 +177,6 @@ body,
   overflow: auto;
 }
 
-.server-actions {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid #e5e6eb;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
 .server-monitor {
   display: flex;
   flex-direction: column;

@@ -7,7 +7,6 @@ import {
   useState,
 } from "react";
 import {
-  Button,
   Message,
   Modal,
   ResizeBox,
@@ -695,18 +694,6 @@ function App() {
             session={activeSession}
           />
         </Suspense>
-        {activeSession &&
-          (activeSession.status === "failed" ||
-            activeSession.status === "disconnected") && (
-            <div className="server-actions">
-              <Button
-                icon={<IconRefresh />}
-                onClick={() => reconnectSession(activeSession)}
-              >
-                重新连接
-              </Button>
-            </div>
-          )}
       </div>
     </aside>
   );
