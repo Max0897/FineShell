@@ -11,6 +11,7 @@ import {
   Modal,
   Progress,
   Space,
+  Spin,
   Table,
   Tooltip,
   Typography,
@@ -24,6 +25,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   IconArrowUp,
+  IconCode,
   IconDelete,
   IconDown,
   IconDownload,
@@ -106,6 +108,22 @@ interface LocalUploadFile {
   size: number;
 }
 
+interface RemoteTextFile {
+  path: string;
+  content: string;
+  size: number;
+  modifiedAt?: number;
+  permissions?: number;
+}
+
+interface TextEditorState {
+  entry: SftpEntry;
+  document: RemoteTextFile | null;
+  content: string;
+  loading: boolean;
+  saving: boolean;
+}
+
 const INITIAL_BROWSER: BrowserState = {
   status: "idle",
   path: "/",
@@ -114,6 +132,8 @@ const INITIAL_BROWSER: BrowserState = {
 };
 
 const MAX_CONCURRENT_TRANSFERS = 2;
+const REMOTE_TEXT_MAX_BYTES = 2 * 1024 * 1024;
+const REMOTE_TEXT_CONFLICT_ERROR = "远程文件已被其他程序修改";
 
 function createTransferId() {
   return `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -153,6 +173,7 @@ function SftpPanel({
   const [permissionEntries, setPermissionEntries] = useState<SftpEntry[]>([]);
   const [permissionValue, setPermissionValue] = useState("");
   const [operationLoading, setOperationLoading] = useState(false);
+  const [textEditor, setTextEditor] = useState<TextEditorState | null>(null);
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
   const [fileDropActive, setFileDropActive] = useState(false);
   const connectingRef = useRef(new Set<string>());
@@ -161,6 +182,7 @@ function SftpPanel({
   const browsersRef = useRef(browsers);
   const transfersRef = useRef(transfers);
   const dropZoneRef = useRef<HTMLDivElement>(null);
+  const textEditorRequestRef = useRef(0);
   const readyRef = useRef(false);
   const queueUploadPathsRef = useRef<(paths: string[]) => Promise<void>>(
     async () => undefined,
@@ -425,9 +447,20 @@ function SftpPanel({
       visibleEntries.filter((entry) => selectedEntryKeys.includes(entry.id)),
     [selectedEntryKeys, visibleEntries],
   );
+  const textEditorByteLength = useMemo(
+    () =>
+      textEditor ? new TextEncoder().encode(textEditor.content).byteLength : 0,
+    [textEditor],
+  );
+
   useEffect(() => {
     setSelectedEntryKeys([]);
   }, [browser?.path, session?.id]);
+
+  useEffect(() => {
+    textEditorRequestRef.current += 1;
+    setTextEditor(null);
+  }, [session?.id]);
 
   useEffect(() => {
     const visibleKeys = new Set(visibleEntries.map((entry) => entry.id));
@@ -1079,6 +1112,126 @@ function SftpPanel({
     }
   }
 
+  function resetTextEditor() {
+    textEditorRequestRef.current += 1;
+    setTextEditor(null);
+  }
+
+  function requestCloseTextEditor() {
+    if (!textEditor || textEditor.saving) return;
+    if (
+      textEditor.document &&
+      textEditor.content !== textEditor.document.content
+    ) {
+      Modal.confirm({
+        cancelText: "继续编辑",
+        content: "当前修改尚未保存，关闭后将丢失这些内容。",
+        okButtonProps: { status: "danger" },
+        okText: "放弃修改",
+        onOk: resetTextEditor,
+        title: "放弃未保存的修改？",
+      });
+      return;
+    }
+    resetTextEditor();
+  }
+
+  async function openTextEditor(entry: SftpEntry) {
+    if (!session || entry.kind !== "file") return;
+    const requestId = textEditorRequestRef.current + 1;
+    textEditorRequestRef.current = requestId;
+    setTextEditor({
+      entry,
+      document: null,
+      content: "",
+      loading: true,
+      saving: false,
+    });
+    try {
+      const document = await invoke<RemoteTextFile>("sftp_read_text_file", {
+        sessionId: session.id,
+        path: entry.path,
+      });
+      if (textEditorRequestRef.current !== requestId) return;
+      setTextEditor({
+        entry,
+        document,
+        content: document.content,
+        loading: false,
+        saving: false,
+      });
+    } catch (error) {
+      if (textEditorRequestRef.current !== requestId) return;
+      setTextEditor(null);
+      handleOperationError(error);
+    }
+  }
+
+  async function saveTextEditor(overwrite = false) {
+    if (
+      !session ||
+      !browser ||
+      !textEditor ||
+      textEditor.loading ||
+      textEditor.saving
+    ) {
+      return;
+    }
+    const document = textEditor.document;
+    if (!document) return;
+    if (textEditorByteLength > REMOTE_TEXT_MAX_BYTES) {
+      Message.error("编辑后的文本超过 2 MiB，无法保存");
+      return;
+    }
+    if (textEditor.content === document.content) {
+      return;
+    }
+
+    const editor = textEditor;
+    setTextEditor((current) =>
+      current
+        ? {
+            ...current,
+            saving: true,
+          }
+        : current,
+    );
+    try {
+      await invoke<RemoteTextFile>("sftp_write_text_file", {
+        sessionId: session.id,
+        path: editor.entry.path,
+        content: editor.content,
+        originalContent: document.content,
+        overwrite,
+      });
+      resetTextEditor();
+      Message.success(`已保存 ${editor.entry.name}`);
+      await loadDirectory(session.id, browser.path);
+    } catch (error) {
+      const message = String(error);
+      setTextEditor((current) =>
+        current
+          ? {
+              ...current,
+              saving: false,
+            }
+          : current,
+      );
+      if (!overwrite && message.includes(REMOTE_TEXT_CONFLICT_ERROR)) {
+        Modal.confirm({
+          cancelText: "取消",
+          content: "远程内容已发生变化。强制保存会覆盖其他程序写入的内容。",
+          okButtonProps: { status: "danger" },
+          okText: "覆盖保存",
+          onOk: () => saveTextEditor(true),
+          title: "远程文件已修改",
+        });
+      } else {
+        handleOperationError(error);
+      }
+    }
+  }
+
   function entryContextMenuItems(entries: SftpEntry[]): ContextMenuItem[] {
     const singleEntry = entries.length === 1 ? entries[0] : null;
     const menuItems: ContextMenuItem[] = [];
@@ -1092,6 +1245,15 @@ function SftpPanel({
         onClick: () => openDirectory(singleEntry),
       });
     } else if (singleEntry) {
+      if (singleEntry.kind === "file") {
+        menuItems.push({
+          key: "edit-text",
+          label: "编辑文本",
+          icon: <IconCode />,
+          disabled: operationLoading,
+          onClick: () => openTextEditor(singleEntry),
+        });
+      }
       menuItems.push({
         key: "download",
         label: "下载",
@@ -1417,7 +1579,13 @@ function SftpPanel({
               }
               onRow={(entry) => ({
                 "data-sftp-entry-id": entry.id,
-                onDoubleClick: () => openDirectory(entry),
+                onDoubleClick: () => {
+                  if (entry.kind === "directory") {
+                    openDirectory(entry);
+                  } else if (entry.kind === "file") {
+                    void openTextEditor(entry);
+                  }
+                },
               })}
               pagination={false}
               rowKey="id"
@@ -1596,6 +1764,76 @@ function SftpPanel({
           </div>
         )}
       </Drawer>
+      <Modal
+        cancelButtonProps={{ disabled: Boolean(textEditor?.saving) }}
+        className="sftp-text-editor-modal"
+        confirmLoading={Boolean(textEditor?.saving)}
+        maskClosable={false}
+        okButtonProps={{
+          disabled: Boolean(
+            textEditor?.loading ||
+              !textEditor?.document ||
+              textEditor.content === textEditor.document.content ||
+              textEditorByteLength > REMOTE_TEXT_MAX_BYTES,
+          ),
+        }}
+        okText="保存"
+        onCancel={requestCloseTextEditor}
+        onOk={() => void saveTextEditor()}
+        title={textEditor ? `编辑文本 - ${textEditor.entry.name}` : "编辑文本"}
+        visible={Boolean(textEditor)}
+      >
+        <div className="sftp-text-editor-body">
+          <div className="sftp-text-editor-meta">
+            <Typography.Text ellipsis={{ showTooltip: true }} type="secondary">
+              {textEditor?.entry.path ?? ""}
+            </Typography.Text>
+            <Typography.Text
+              type={
+                textEditorByteLength > REMOTE_TEXT_MAX_BYTES
+                  ? "error"
+                  : "secondary"
+              }
+            >
+              {formatFileSize(textEditorByteLength)} / 2 MiB
+            </Typography.Text>
+          </div>
+          <div className="sftp-text-editor-field">
+            <Input.TextArea
+              aria-label="远程文本内容"
+              className="sftp-text-editor-input"
+              disabled={Boolean(textEditor?.loading || textEditor?.saving)}
+              onChange={(content) =>
+                setTextEditor((current) =>
+                  current
+                    ? {
+                        ...current,
+                        content,
+                      }
+                    : current,
+                )
+              }
+              onKeyDown={(event) => {
+                if (
+                  (event.metaKey || event.ctrlKey) &&
+                  event.key.toLowerCase() === "s"
+                ) {
+                  event.preventDefault();
+                  void saveTextEditor();
+                }
+              }}
+              placeholder={textEditor?.loading ? "正在读取远程文件..." : ""}
+              spellCheck={false}
+              value={textEditor?.content ?? ""}
+            />
+            {textEditor?.loading && (
+              <div className="sftp-text-editor-loading">
+                <Spin />
+              </div>
+            )}
+          </div>
+        </div>
+      </Modal>
       <Modal
         confirmLoading={operationLoading}
         maskClosable={false}

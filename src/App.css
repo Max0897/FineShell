@@ -735,6 +735,70 @@ body,
   margin: 0;
 }
 
+.sftp-text-editor-modal {
+  width: min(960px, calc(100vw - 64px));
+}
+
+.sftp-text-editor-modal .arco-modal-content {
+  padding: 16px 20px;
+}
+
+.sftp-text-editor-body {
+  height: clamp(300px, calc(100vh - 250px), 560px);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sftp-text-editor-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sftp-text-editor-meta .arco-typography {
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.sftp-text-editor-meta .arco-typography:first-child {
+  flex: 1;
+}
+
+.sftp-text-editor-meta .arco-typography:last-child {
+  flex: 0 0 auto;
+}
+
+.sftp-text-editor-field {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+}
+
+.sftp-text-editor-input.arco-textarea {
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  resize: none;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 20px;
+  tab-size: 2;
+}
+
+.sftp-text-editor-loading {
+  position: absolute;
+  inset: 1px;
+  display: grid;
+  place-items: center;
+  background: #fff;
+}
+
 .sftp-transfer-drawer .arco-drawer-header-title {
   min-width: 0;
   flex: 1;

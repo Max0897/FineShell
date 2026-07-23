@@ -10,7 +10,7 @@ use std::{
         Arc, Condvar, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,8 @@ use crate::transport::ProxyConfig;
 const SFTP_TRANSFER_EVENT: &str = "sftp-transfer";
 const TRANSFER_BUFFER_SIZE: usize = 64 * 1024;
 const TRANSFER_CANCELLED_ERROR: &str = "传输已取消";
+const REMOTE_TEXT_MAX_BYTES: usize = 2 * 1024 * 1024;
+const REMOTE_TEXT_CONFLICT_ERROR: &str = "远程文件已被其他程序修改";
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +67,16 @@ pub(crate) struct SftpEntry {
 pub(crate) struct SftpListResult {
     path: String,
     entries: Vec<SftpEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SftpTextFile {
+    path: String,
+    content: String,
+    size: u64,
+    modified_at: Option<u64>,
+    permissions: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -119,6 +131,17 @@ enum SftpCommand {
         path: String,
         permissions: u32,
         reply: Sender<Result<(), String>>,
+    },
+    ReadTextFile {
+        path: String,
+        reply: Sender<Result<SftpTextFile, String>>,
+    },
+    WriteTextFile {
+        path: String,
+        content: String,
+        original_content: String,
+        overwrite: bool,
+        reply: Sender<Result<SftpTextFile, String>>,
     },
     Close,
 }
@@ -428,6 +451,207 @@ fn set_permissions(sftp: &Sftp, path: &str, permissions: u32) -> Result<(), Stri
         },
     )
     .map_err(|error| format!("修改远程项目权限失败：{error}"))
+}
+
+fn decode_remote_text(bytes: Vec<u8>) -> Result<String, String> {
+    if bytes.len() > REMOTE_TEXT_MAX_BYTES {
+        return Err("远程文本文件超过 2 MiB，无法直接编辑".to_string());
+    }
+    if bytes.contains(&0) {
+        return Err("该文件包含二进制内容，无法作为文本编辑".to_string());
+    }
+    String::from_utf8(bytes).map_err(|_| "该文件不是有效的 UTF-8 文本".to_string())
+}
+
+fn read_remote_text_file(sftp: &Sftp, path: &str) -> Result<SftpTextFile, String> {
+    let remote_path = Path::new(path);
+    let before = match sftp.lstat(remote_path) {
+        Ok(stat) => stat,
+        Err(read_error) => {
+            let backup_path = remote_text_backup_path(remote_path)?;
+            if !remote_exists(sftp, &backup_path) {
+                return Err(format!("无法读取远程文件信息：{read_error}"));
+            }
+            sftp.rename(&backup_path, remote_path, Some(RenameFlags::empty()))
+                .map_err(|restore_error| {
+                    format!(
+                        "远程编辑可能曾异常中断，无法从 {} 恢复原文件：{restore_error}",
+                        backup_path.display()
+                    )
+                })?;
+            sftp.lstat(remote_path)
+                .map_err(|error| format!("无法读取恢复后的远程文件信息：{error}"))?
+        }
+    };
+    if !before.is_file() {
+        return Err("仅支持打开普通文本文件".to_string());
+    }
+    if before.size.unwrap_or(0) > REMOTE_TEXT_MAX_BYTES as u64 {
+        return Err("远程文本文件超过 2 MiB，无法直接编辑".to_string());
+    }
+
+    let remote = sftp
+        .open(remote_path)
+        .map_err(|error| format!("无法打开远程文本文件：{error}"))?;
+    let mut bytes =
+        Vec::with_capacity(before.size.unwrap_or(0).min(REMOTE_TEXT_MAX_BYTES as u64) as usize);
+    remote
+        .take((REMOTE_TEXT_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("无法读取远程文本文件：{error}"))?;
+    let after = sftp
+        .lstat(remote_path)
+        .map_err(|error| format!("无法确认远程文件状态：{error}"))?;
+    if before.size != after.size || before.mtime != after.mtime {
+        return Err("远程文件在读取期间发生变化，请重新打开".to_string());
+    }
+
+    Ok(SftpTextFile {
+        path: path.to_string(),
+        size: bytes.len() as u64,
+        content: decode_remote_text(bytes)?,
+        modified_at: after.mtime,
+        permissions: after.perm.map(|value| value & 0o7777),
+    })
+}
+
+fn remote_text_temporary_path(remote_path: &Path) -> Result<PathBuf, String> {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("无法生成远程临时文件名：{error}"))?
+        .as_nanos();
+    remote_upload_temporary_path(
+        remote_path,
+        &format!("edit-{}-{suffix}", std::process::id()),
+    )
+}
+
+fn remote_text_backup_path(remote_path: &Path) -> Result<PathBuf, String> {
+    remote_upload_temporary_path(remote_path, "fineshell-edit-backup")
+}
+
+fn replace_remote_text_file(
+    sftp: &Sftp,
+    temporary_path: &Path,
+    remote_path: &Path,
+) -> Result<PathBuf, String> {
+    let backup_path = remote_text_backup_path(remote_path)?;
+    if remote_exists(sftp, &backup_path) {
+        sftp.unlink(&backup_path)
+            .map_err(|error| format!("无法清理上次远程编辑备份：{error}"))?;
+    }
+    sftp.rename(remote_path, &backup_path, Some(RenameFlags::empty()))
+        .map_err(|error| format!("无法备份原远程文本文件：{error}"))?;
+
+    if let Err(save_error) = sftp.rename(temporary_path, remote_path, Some(RenameFlags::empty())) {
+        return match sftp.rename(
+            &backup_path,
+            remote_path,
+            Some(RenameFlags::empty()),
+        ) {
+            Ok(()) => Err(format!("无法替换远程文本文件：{save_error}")),
+            Err(restore_error) => Err(format!(
+                "无法替换远程文本文件：{save_error}；原文件保留在 {}，自动恢复失败：{restore_error}",
+                backup_path.display()
+            )),
+        };
+    }
+    Ok(backup_path)
+}
+
+fn write_remote_text_file(
+    sftp: &Sftp,
+    path: &str,
+    content: String,
+    original_content: &str,
+    overwrite: bool,
+) -> Result<SftpTextFile, String> {
+    if content.len() > REMOTE_TEXT_MAX_BYTES {
+        return Err("编辑后的文本超过 2 MiB，无法保存".to_string());
+    }
+    if content.as_bytes().contains(&0) {
+        return Err("编辑后的文本包含空字符，无法保存".to_string());
+    }
+    if original_content.len() > REMOTE_TEXT_MAX_BYTES {
+        return Err("原始文本内容无效，请重新打开文件".to_string());
+    }
+
+    let current = read_remote_text_file(sftp, path)?;
+    if current.content != original_content && !overwrite {
+        return Err(REMOTE_TEXT_CONFLICT_ERROR.to_string());
+    }
+
+    let remote_path = Path::new(path);
+    let temporary_path = remote_text_temporary_path(remote_path)?;
+    let permissions = current.permissions.unwrap_or(0o644);
+    let result = (|| -> Result<SftpTextFile, String> {
+        let mut temporary = sftp
+            .open_mode(
+                &temporary_path,
+                OpenFlags::WRITE | OpenFlags::TRUNCATE | OpenFlags::EXCLUSIVE,
+                permissions as i32,
+                OpenType::File,
+            )
+            .map_err(|error| format!("无法创建远程编辑临时文件：{error}"))?;
+        temporary
+            .write_all(content.as_bytes())
+            .map_err(|error| format!("无法写入远程编辑临时文件：{error}"))?;
+        temporary
+            .flush()
+            .map_err(|error| format!("无法刷新远程编辑临时文件：{error}"))?;
+        drop(temporary);
+
+        sftp.setstat(
+            &temporary_path,
+            FileStat {
+                size: None,
+                uid: None,
+                gid: None,
+                perm: Some(permissions),
+                atime: None,
+                mtime: None,
+            },
+        )
+        .map_err(|error| format!("无法保留远程文件权限：{error}"))?;
+        let backup_path = replace_remote_text_file(sftp, &temporary_path, remote_path)?;
+
+        let verification = read_remote_text_file(sftp, path).and_then(|updated| {
+            if updated.content == content {
+                Ok(updated)
+            } else {
+                Err("远程文本文件保存后的内容校验失败".to_string())
+            }
+        });
+        match verification {
+            Ok(updated) => {
+                let _ = sftp.unlink(&backup_path);
+                Ok(updated)
+            }
+            Err(error) => {
+                if remote_exists(sftp, remote_path) {
+                    sftp.unlink(remote_path).map_err(|remove_error| {
+                        format!(
+                            "{error}；原文件保留在 {}，无法移除无效的新文件：{remove_error}",
+                            backup_path.display()
+                        )
+                    })?;
+                }
+                sftp.rename(&backup_path, remote_path, Some(RenameFlags::empty()))
+                    .map_err(|restore_error| {
+                        format!(
+                            "{error}；原文件保留在 {}，自动恢复失败：{restore_error}",
+                            backup_path.display()
+                        )
+                    })?;
+                Err(error)
+            }
+        }
+    })();
+
+    if result.is_err() {
+        let _ = sftp.unlink(&temporary_path);
+    }
+    result
 }
 
 fn shell_quote(value: &str) -> String {
@@ -893,6 +1117,24 @@ fn run_session(
             } => {
                 let _ = reply.send(set_permissions(&sftp, &path, permissions));
             }
+            SftpCommand::ReadTextFile { path, reply } => {
+                let _ = reply.send(read_remote_text_file(&sftp, &path));
+            }
+            SftpCommand::WriteTextFile {
+                path,
+                content,
+                original_content,
+                overwrite,
+                reply,
+            } => {
+                let _ = reply.send(write_remote_text_file(
+                    &sftp,
+                    &path,
+                    content,
+                    &original_content,
+                    overwrite,
+                ));
+            }
             SftpCommand::Close => break,
         }
     }
@@ -1144,6 +1386,39 @@ pub(crate) async fn sftp_set_permissions(
 }
 
 #[tauri::command]
+pub(crate) async fn sftp_read_text_file(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    path: String,
+) -> Result<SftpTextFile, String> {
+    dispatch(manager.inner().clone(), session_id, move |reply| {
+        SftpCommand::ReadTextFile { path, reply }
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_write_text_file(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    path: String,
+    content: String,
+    original_content: String,
+    overwrite: bool,
+) -> Result<SftpTextFile, String> {
+    dispatch(manager.inner().clone(), session_id, move |reply| {
+        SftpCommand::WriteTextFile {
+            path,
+            content,
+            original_content,
+            overwrite,
+            reply,
+        }
+    })
+    .await
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn sftp_upload(
     app: AppHandle,
@@ -1298,9 +1573,10 @@ mod tests {
     use ssh2::{FileStat, RenameFlags};
 
     use super::{
-        download_temporary_path, entry_kind, fast_delete_command, inspect_upload_paths,
+        decode_remote_text, download_temporary_path, entry_kind, fast_delete_command,
+        inspect_upload_paths, remote_text_backup_path, remote_text_temporary_path,
         remote_upload_temporary_path, replace_download_file, shell_quote, SftpCommand,
-        SftpSessionManager,
+        SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
     };
     use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
 
@@ -1377,6 +1653,40 @@ mod tests {
         assert_eq!(
             temporary,
             Path::new("/srv/releases/.archive.zip.transfer-123.part")
+        );
+    }
+
+    #[test]
+    fn validates_remote_text_editor_content() {
+        assert_eq!(
+            decode_remote_text("FineShell 中文\n".as_bytes().to_vec()).unwrap(),
+            "FineShell 中文\n"
+        );
+        assert_eq!(
+            decode_remote_text(b"text\0binary".to_vec()).unwrap_err(),
+            "该文件包含二进制内容，无法作为文本编辑"
+        );
+        assert_eq!(
+            decode_remote_text(vec![0xff, 0xfe]).unwrap_err(),
+            "该文件不是有效的 UTF-8 文本"
+        );
+        assert!(decode_remote_text(vec![b'a'; REMOTE_TEXT_MAX_BYTES + 1])
+            .unwrap_err()
+            .contains("2 MiB"));
+    }
+
+    #[test]
+    fn creates_a_hidden_remote_text_editor_temporary_path() {
+        let temporary = remote_text_temporary_path(Path::new("/tmp/config.toml")).unwrap();
+        let backup = remote_text_backup_path(Path::new("/tmp/config.toml")).unwrap();
+        let file_name = temporary.file_name().unwrap().to_string_lossy();
+
+        assert_eq!(temporary.parent(), Some(Path::new("/tmp")));
+        assert!(file_name.starts_with(".config.toml.edit-"));
+        assert!(file_name.ends_with(".part"));
+        assert_eq!(
+            backup,
+            Path::new("/tmp/.config.toml.fineshell-edit-backup.part")
         );
     }
 
@@ -1531,6 +1841,7 @@ mod tests {
         let source_path = format!("{directory}/source.txt");
         let renamed_path = format!("{directory}/renamed.txt");
         let content = b"FineShell live SFTP test\n";
+        let edited_content = "FineShell live text editor test\n";
 
         sftp.mkdir(Path::new(&directory), 0o755)
             .map_err(|error| format!("创建测试目录失败：{error}"))?;
@@ -1555,6 +1866,32 @@ mod tests {
                 return Err("目录列表没有返回测试文件".to_string());
             }
 
+            let opened = super::read_remote_text_file(&sftp, &source_path)?;
+            if opened.content.as_bytes() != content {
+                return Err("文本编辑器读取内容与上传内容不一致".to_string());
+            }
+            let saved = super::write_remote_text_file(
+                &sftp,
+                &source_path,
+                edited_content.to_string(),
+                &opened.content,
+                false,
+            )?;
+            if saved.content != edited_content {
+                return Err("文本编辑器保存内容无效".to_string());
+            }
+            let conflict = super::write_remote_text_file(
+                &sftp,
+                &source_path,
+                "should-not-overwrite\n".to_string(),
+                &opened.content,
+                false,
+            )
+            .unwrap_err();
+            if conflict != super::REMOTE_TEXT_CONFLICT_ERROR {
+                return Err(format!("文本编辑器冲突检测结果无效：{conflict}"));
+            }
+
             sftp.rename(
                 Path::new(&source_path),
                 Path::new(&renamed_path),
@@ -1568,7 +1905,7 @@ mod tests {
             remote
                 .read_to_end(&mut downloaded)
                 .map_err(|error| format!("读取测试文件失败：{error}"))?;
-            if downloaded != content {
+            if downloaded != edited_content.as_bytes() {
                 return Err("下载内容与上传内容不一致".to_string());
             }
             Ok(())

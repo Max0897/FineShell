@@ -22,45 +22,8 @@ export type SftpTransferStatus =
   | "failed"
   | "cancelled";
 
-export interface SftpTransferProgress {
-  status: SftpTransferStatus;
-  transferredBytes: number;
-  totalBytes: number;
-}
-
 export function isActiveSftpTransfer(status: SftpTransferStatus) {
   return status === "queued" || status === "running" || status === "paused";
-}
-
-export function summarizeSftpTransfers(transfers: SftpTransferProgress[]) {
-  const active = transfers.filter((transfer) =>
-    isActiveSftpTransfer(transfer.status),
-  ).length;
-  const completed = transfers.filter(
-    (transfer) => transfer.status === "completed",
-  ).length;
-  const totalBytes = transfers.reduce(
-    (total, transfer) => total + Math.max(0, transfer.totalBytes),
-    0,
-  );
-  const transferredBytes = transfers.reduce(
-    (total, transfer) =>
-      total +
-      Math.min(
-        Math.max(0, transfer.transferredBytes),
-        Math.max(0, transfer.totalBytes),
-      ),
-    0,
-  );
-  return {
-    active,
-    completed,
-    percent: totalBytes
-      ? Math.min(100, Math.round((transferredBytes / totalBytes) * 100))
-      : 0,
-    totalBytes,
-    transferredBytes,
-  };
 }
 
 export function isValidRemoteName(name: string) {
