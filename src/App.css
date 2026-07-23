@@ -730,22 +730,34 @@ body,
 }
 
 .sftp-transfer-row {
-  min-height: 76px;
-  padding: 10px 16px;
+  min-height: 88px;
+  padding: 14px 16px;
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) 28px;
-  align-items: start;
-  gap: 10px;
+  grid-template-columns: 44px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 12px;
   border-bottom: 1px solid #f2f3f5;
 }
 
 .sftp-transfer-direction {
+  width: 44px;
+  height: 44px;
   display: inline-flex;
-  padding-top: 2px;
-  color: #4e5969;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: #f2f3f5;
+  color: #165dff;
+  font-size: 20px;
+}
+
+.sftp-transfer-direction-download {
+  background: #e8ffea;
+  color: #00b42a;
 }
 
 .sftp-transfer-content,
+.sftp-transfer-title-row,
 .sftp-transfer-meta {
   min-width: 0;
 }
@@ -753,7 +765,12 @@ body,
 .sftp-transfer-content {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
+}
+
+.sftp-transfer-title-row {
+  display: flex;
+  align-items: center;
 }
 
 .sftp-transfer-meta {
@@ -763,22 +780,40 @@ body,
   gap: 12px;
 }
 
+.sftp-transfer-title-row .arco-typography,
 .sftp-transfer-meta .arco-typography,
 .sftp-transfer-error {
   margin: 0;
 }
 
-.sftp-transfer-meta .arco-typography:first-child {
+.sftp-transfer-file-name {
   min-width: 0;
   flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
 }
 
 .sftp-transfer-meta .arco-typography:last-child {
   flex: 0 0 auto;
 }
 
+.sftp-transfer-activity-completed {
+  color: #00b42a;
+}
+
 .sftp-transfer-row .arco-progress {
+  width: 100%;
   min-width: 0;
+  line-height: 1;
+}
+
+.sftp-transfer-row .arco-progress-line {
+  margin: 0;
+}
+
+.sftp-transfer-retry {
+  align-self: center;
 }
 
 .host-manager-panel {

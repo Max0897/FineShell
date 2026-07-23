@@ -86,6 +86,9 @@ interface TransferRecord extends SftpTransferPayload {
   localPath: string;
   remotePath: string;
   overwrite: boolean;
+  sampledAt: number;
+  sampledBytes: number;
+  bytesPerSecond: number;
 }
 
 const INITIAL_BROWSER: BrowserState = {
@@ -97,6 +100,12 @@ const INITIAL_BROWSER: BrowserState = {
 
 function createTransferId() {
   return `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function formatTransferSpeed(bytesPerSecond: number) {
+  return bytesPerSecond > 0
+    ? `${formatFileSize(bytesPerSecond)}/s`
+    : "正在计算";
 }
 
 function isSftpSessionFailure(message: string) {
@@ -272,16 +281,36 @@ function SftpPanel({
       setTransfers((current) => {
         const previous = current[payload.transferId];
         if (!previous) return current;
+        const now = Date.now();
+        const transferredBytes =
+          payload.status === "failed" && payload.transferredBytes === 0
+            ? previous.transferredBytes
+            : payload.transferredBytes;
+        const elapsedSeconds = (now - previous.sampledAt) / 1000;
+        const shouldSample =
+          transferredBytes >= previous.sampledBytes &&
+          (elapsedSeconds >= 0.25 || payload.status !== "running");
+        const currentSpeed = shouldSample
+          ? (transferredBytes - previous.sampledBytes) /
+            Math.max(elapsedSeconds, 0.001)
+          : previous.bytesPerSecond;
+        const bytesPerSecond = shouldSample
+          ? previous.bytesPerSecond > 0
+            ? previous.bytesPerSecond * 0.6 + currentSpeed * 0.4
+            : currentSpeed
+          : previous.bytesPerSecond;
         return {
           ...current,
           [payload.transferId]: {
             ...previous,
             ...payload,
-            transferredBytes:
-              payload.status === "failed" && payload.transferredBytes === 0
-                ? previous.transferredBytes
-                : payload.transferredBytes,
+            transferredBytes,
             totalBytes: payload.totalBytes || previous.totalBytes,
+            sampledAt: shouldSample ? now : previous.sampledAt,
+            sampledBytes: shouldSample
+              ? transferredBytes
+              : previous.sampledBytes,
+            bytesPerSecond,
           },
         };
       });
@@ -389,6 +418,9 @@ function SftpPanel({
       localPath,
       remotePath,
       overwrite,
+      sampledAt: Date.now(),
+      sampledBytes: 0,
+      bytesPerSecond: 0,
     };
     setTransfers((current) => ({ ...current, [transferId]: record }));
 
@@ -1030,18 +1062,23 @@ function SftpPanel({
                 : transfer.status === "completed"
                   ? 100
                   : 0;
-              const statusText =
+              const sizeText = transfer.totalBytes
+                ? `${formatFileSize(transfer.transferredBytes)} / ${formatFileSize(transfer.totalBytes)}`
+                : transfer.transferredBytes > 0
+                  ? formatFileSize(transfer.transferredBytes)
+                  : "等待传输";
+              const activityText =
                 transfer.status === "completed"
                   ? "已完成"
                   : transfer.status === "failed"
                     ? "传输失败"
-                    : transfer.totalBytes > 0
-                      ? `${formatFileSize(transfer.transferredBytes)} / ${formatFileSize(transfer.totalBytes)}`
-                      : "正在传输";
+                    : formatTransferSpeed(transfer.bytesPerSecond);
 
               return (
                 <div className="sftp-transfer-row" key={transfer.transferId}>
-                  <span className="sftp-transfer-direction">
+                  <span
+                    className={`sftp-transfer-direction sftp-transfer-direction-${transfer.direction}`}
+                  >
                     {transfer.direction === "upload" ? (
                       <IconUpload />
                     ) : (
@@ -1049,21 +1086,33 @@ function SftpPanel({
                     )}
                   </span>
                   <div className="sftp-transfer-content">
-                    <div className="sftp-transfer-meta">
-                      <Typography.Text ellipsis>
+                    <div className="sftp-transfer-title-row">
+                      <Typography.Text
+                        className="sftp-transfer-file-name"
+                        ellipsis={{ showTooltip: true }}
+                      >
                         {transfer.fileName}
                       </Typography.Text>
+                    </div>
+                    <div className="sftp-transfer-meta">
                       <Typography.Text type="secondary">
-                        {statusText}
+                        {sizeText}
+                      </Typography.Text>
+                      <Typography.Text
+                        className={`sftp-transfer-activity sftp-transfer-activity-${transfer.status}`}
+                        type={transfer.status === "failed" ? "error" : "secondary"}
+                      >
+                        {activityText}
                       </Typography.Text>
                     </div>
                     <Progress
                       percent={percent}
-                      showText
+                      showText={false}
                       size="small"
                       status={
                         transfer.status === "failed" ? "error" : "normal"
                       }
+                      strokeWidth={3}
                     />
                     {transfer.status === "failed" && transfer.error && (
                       <Typography.Text
@@ -1079,6 +1128,7 @@ function SftpPanel({
                     <Tooltip content="重试">
                       <Button
                         aria-label={`重试 ${transfer.fileName}`}
+                        className="sftp-transfer-retry"
                         icon={<IconRefresh />}
                         onClick={() => void retryTransfer(transfer)}
                         size="mini"
