@@ -735,46 +735,17 @@ body,
   margin: 0;
 }
 
-.sftp-transfer-drawer-toolbar {
-  min-height: 54px;
-  padding: 6px 16px;
+.sftp-transfer-drawer .arco-drawer-header-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.sftp-transfer-drawer-title {
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid #e5e6eb;
-}
-
-.sftp-transfer-summary {
-  min-width: 0;
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.sftp-transfer-summary > .arco-typography {
-  margin: 0;
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.sftp-transfer-summary-progress {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.sftp-transfer-summary-progress .arco-progress {
-  width: 120px;
-  margin: 0;
-}
-
-.sftp-transfer-summary-progress > .arco-typography {
-  margin: 0;
-  font-size: 12px;
-  line-height: 16px;
-  white-space: nowrap;
+  padding-right: 28px;
 }
 
 .sftp-transfer-empty {

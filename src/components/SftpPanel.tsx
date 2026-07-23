@@ -58,7 +58,6 @@ import {
   parsePermissions,
   remoteJoinPath,
   remoteParentPath,
-  summarizeSftpTransfers,
 } from "../sftp-utils";
 import type { SftpTransferStatus } from "../sftp-utils";
 import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
@@ -426,11 +425,6 @@ function SftpPanel({
       visibleEntries.filter((entry) => selectedEntryKeys.includes(entry.id)),
     [selectedEntryKeys, visibleEntries],
   );
-  const transferSummary = useMemo(
-    () => summarizeSftpTransfers(currentTransfers),
-    [currentTransfers],
-  );
-
   useEffect(() => {
     setSelectedEntryKeys([]);
   }, [browser?.path, session?.id]);
@@ -1445,34 +1439,9 @@ function SftpPanel({
         className="sftp-transfer-drawer"
         footer={null}
         onCancel={() => setTransferDrawerVisible(false)}
-        title="传输记录"
-        visible={transferDrawerVisible}
-        width={440}
-      >
-        {currentTransfers.length > 0 && (
-          <div className="sftp-transfer-drawer-toolbar">
-            <div className="sftp-transfer-summary">
-              <Typography.Text type="secondary">
-                已完成 {transferSummary.completed} / {currentTransfers.length}
-                {transferSummary.active > 0
-                  ? ` · 进行中 ${transferSummary.active}`
-                  : ""}
-              </Typography.Text>
-              {transferSummary.totalBytes > 0 && (
-                <div className="sftp-transfer-summary-progress">
-                  <Progress
-                    percent={transferSummary.percent}
-                    showText={false}
-                    size="small"
-                    strokeWidth={3}
-                  />
-                  <Typography.Text type="secondary">
-                    {formatFileSize(transferSummary.transferredBytes)} /{" "}
-                    {formatFileSize(transferSummary.totalBytes)}
-                  </Typography.Text>
-                </div>
-              )}
-            </div>
+        title={
+          <div className="sftp-transfer-drawer-title">
+            <span>传输记录</span>
             {currentTransfers.some(
               (item) => !isActiveSftpTransfer(item.status),
             ) && (
@@ -1487,7 +1456,10 @@ function SftpPanel({
               </Tooltip>
             )}
           </div>
-        )}
+        }
+        visible={transferDrawerVisible}
+        width={440}
+      >
         {currentTransfers.length === 0 ? (
           <div className="sftp-transfer-empty">
             <Empty description="暂无传输记录" />
