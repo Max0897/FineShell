@@ -19,6 +19,17 @@ describe("normalizeHostForm", () => {
       maxReconnectAttempts: 3,
       proxyId: "proxy-1",
       jumpHostId: "jump-1",
+      localPortForwards: [
+        {
+          id: "forward-1",
+          name: "  Web  ",
+          bindAddress: " 127.0.0.1 ",
+          bindPort: 8080,
+          targetAddress: " localhost ",
+          targetPort: 80,
+          enabled: true,
+        },
+      ],
       password: "secret",
       group: "  Linux  ",
       hostFingerprint: " SHA256:abc123 ",
@@ -38,6 +49,17 @@ describe("normalizeHostForm", () => {
       maxReconnectAttempts: 3,
       proxyId: "proxy-1",
       jumpHostId: "jump-1",
+      localPortForwards: [
+        {
+          id: "forward-1",
+          name: "Web",
+          bindAddress: "127.0.0.1",
+          bindPort: 8080,
+          targetAddress: "localhost",
+          targetPort: 80,
+          enabled: true,
+        },
+      ],
       group: "Linux",
       hostFingerprint: "SHA256:abc123",
     });

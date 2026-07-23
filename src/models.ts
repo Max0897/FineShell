@@ -21,6 +21,24 @@ export interface ProxyFormValues extends Omit<ProxyRecord, "id"> {
   password?: string;
 }
 
+export interface LocalPortForwardRule {
+  id: string;
+  name: string;
+  bindAddress: string;
+  bindPort: number;
+  targetAddress: string;
+  targetPort: number;
+  enabled: boolean;
+}
+
+export interface PortForwardStatus {
+  ruleId: string;
+  status: "active" | "stopped" | "failed";
+  bindAddress: string;
+  bindPort: number;
+  error?: string;
+}
+
 export interface HostRecord {
   id: string;
   name: string;
@@ -35,6 +53,7 @@ export interface HostRecord {
   maxReconnectAttempts: number;
   proxyId?: string;
   jumpHostId?: string;
+  localPortForwards?: LocalPortForwardRule[];
   group?: string;
   hostFingerprint?: string;
   lastConnectedAt?: string;
@@ -54,6 +73,7 @@ export interface HostFormValues {
   maxReconnectAttempts: number;
   proxyId?: string;
   jumpHostId?: string;
+  localPortForwards?: LocalPortForwardRule[];
   password?: string;
   group?: string;
   hostFingerprint?: string;
@@ -77,6 +97,7 @@ export interface ConnectionHistoryRecord extends QuickTarget {
   maxReconnectAttempts?: number;
   proxyId?: string;
   jumpHostId?: string;
+  localPortForwards?: LocalPortForwardRule[];
   connectedAt: string;
 }
 
@@ -102,6 +123,7 @@ export interface TerminalSession {
   error?: string;
   fingerprint?: string;
   reconnectAttempt?: number;
+  portForwardStatuses?: PortForwardStatus[];
 }
 
 export interface ServerMonitorSnapshot {
