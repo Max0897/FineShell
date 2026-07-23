@@ -783,8 +783,8 @@ function SftpPanel({
           key: "fast-delete",
           label:
             entries.length === 1
-              ? "快速删除"
-              : `快速删除所选（${entries.length}）`,
+              ? "删除(rm)"
+              : `删除所选(rm)（${entries.length}）`,
           icon: <IconThunderbolt />,
           disabled: operationLoading,
           danger: true,
