@@ -1912,7 +1912,6 @@ function SftpPanel({
             disabled={!ready}
             inputProps={{
               "aria-label": "远程目录路径",
-              className: "sftp-path",
               size: "small",
             }}
             onChange={(value) =>
