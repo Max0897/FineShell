@@ -573,6 +573,19 @@ body,
 .terminal-view .xterm {
   height: 100%;
   padding: 8px 0 4px 8px;
+  background: #191b20;
+}
+
+.terminal-view .xterm-viewport {
+  overflow: hidden;
+  background-color: #191b20;
+  scrollbar-width: none;
+}
+
+.terminal-view .xterm-viewport::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .terminal-view .xterm-scrollable-element {
