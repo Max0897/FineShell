@@ -17,8 +17,17 @@ import {
 } from "@arco-design/web-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { IconHome, IconRefresh } from "@arco-design/web-react/icon";
+import {
+  IconClose,
+  IconCloseCircle,
+  IconHome,
+  IconPoweroff,
+  IconRefresh,
+} from "@arco-design/web-react/icon";
 import type { HostRecord, ProxyRecord, TerminalSession } from "./models";
+import ContextMenu, {
+  type ContextMenuItem,
+} from "./components/ContextMenu";
 import HostManagerPanel from "./components/HostManagerPanel";
 import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
@@ -141,6 +150,8 @@ function App() {
   const reconnectTimersRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
   );
+  const manualReconnectsRef = useRef(new Set<string>());
+  const intentionallyDisconnectedRef = useRef(new Set<string>());
 
   const updateSession = useCallback(
     (sessionId: string, values: Partial<TerminalSession>) => {
@@ -181,6 +192,12 @@ function App() {
             rows: 24,
           },
         });
+        if (intentionallyDisconnectedRef.current.has(session.id)) {
+          void invoke("ssh_disconnect", { sessionId: session.id }).catch(
+            () => undefined,
+          );
+          return;
+        }
         if (result.status === "hostKeyVerificationRequired") {
           updateSession(session.id, {
             status: "connecting",
@@ -226,6 +243,7 @@ function App() {
         });
         await persistHostFingerprint(session.host, result.fingerprint);
       } catch (error) {
+        if (intentionallyDisconnectedRef.current.has(session.id)) return;
         if (!sessionsRef.current.some((item) => item.id === session.id)) {
           return;
         }
@@ -295,13 +313,40 @@ function App() {
   );
 
   const reconnectSession = useCallback(
-    (session: TerminalSession) => {
+    (requestedSession: TerminalSession) => {
+      const session =
+        sessionsRef.current.find((item) => item.id === requestedSession.id) ??
+        requestedSession;
+      if (
+        session.status === "connecting" ||
+        session.status === "reconnecting"
+      ) {
+        return;
+      }
+
       clearReconnectTimer(session.id);
+      intentionallyDisconnectedRef.current.delete(session.id);
       updateSession(session.id, {
         status: "reconnecting",
         error: undefined,
         reconnectAttempt: 0,
       });
+
+      if (session.status === "connected") {
+        manualReconnectsRef.current.add(session.id);
+        void invoke("ssh_disconnect", { sessionId: session.id }).catch(() => {
+          if (!manualReconnectsRef.current.delete(session.id)) return;
+          const latest = sessionsRef.current.find(
+            (item) => item.id === session.id,
+          );
+          if (latest) void connectSession(latest, 0);
+        });
+        void invoke("sftp_disconnect", { sessionId: session.id }).catch(
+          () => undefined,
+        );
+        return;
+      }
+
       void connectSession(
         {
           ...session,
@@ -325,6 +370,25 @@ function App() {
         (item) => item.id === payload.sessionId,
       );
       if (!session) return;
+      if (manualReconnectsRef.current.delete(session.id)) {
+        const reconnectingSession = {
+          ...session,
+          status: "reconnecting" as const,
+          error: undefined,
+          reconnectAttempt: 0,
+        };
+        updateSession(session.id, reconnectingSession);
+        void connectSession(reconnectingSession, 0);
+        return;
+      }
+      if (intentionallyDisconnectedRef.current.has(session.id)) {
+        updateSession(session.id, {
+          status: "disconnected",
+          error: undefined,
+          reconnectAttempt: 0,
+        });
+        return;
+      }
       if (payload.recoverable && session.host.autoReconnect) {
         const attempt = 1;
         const delaySeconds = reconnectDelaySeconds(attempt);
@@ -367,6 +431,8 @@ function App() {
     () => () => {
       reconnectTimersRef.current.forEach((timer) => clearTimeout(timer));
       reconnectTimersRef.current.clear();
+      manualReconnectsRef.current.clear();
+      intentionallyDisconnectedRef.current.clear();
       sessionsRef.current.forEach((session) => {
         void invoke("ssh_disconnect", { sessionId: session.id }).catch(
           () => undefined,
@@ -415,21 +481,106 @@ function App() {
   const activeSession =
     sessions.find((session) => session.id === activeSessionId) ?? null;
 
-  function closeSession(sessionId: string) {
+  function disconnectSession(sessionId: string) {
     clearReconnectTimer(sessionId);
-    const currentIndex = sessions.findIndex(
-      (session) => session.id === sessionId,
-    );
-    const remaining = sessions.filter((session) => session.id !== sessionId);
-    sessionsRef.current = remaining;
-    setSessions(remaining);
+    manualReconnectsRef.current.delete(sessionId);
+    intentionallyDisconnectedRef.current.add(sessionId);
+    updateSession(sessionId, {
+      status: "disconnected",
+      error: undefined,
+      reconnectAttempt: 0,
+    });
     void invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
     void invoke("sftp_disconnect", { sessionId }).catch(() => undefined);
+  }
 
-    if (activeSessionId === sessionId) {
+  function closeSessions(sessionIds: string[]) {
+    const closingIds = new Set(sessionIds);
+    if (closingIds.size === 0) return;
+
+    const current = sessionsRef.current;
+    closingIds.forEach((sessionId) => {
+      clearReconnectTimer(sessionId);
+      manualReconnectsRef.current.delete(sessionId);
+      intentionallyDisconnectedRef.current.delete(sessionId);
+      void invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
+      void invoke("sftp_disconnect", { sessionId }).catch(() => undefined);
+    });
+    const remaining = current.filter(
+      (session) => !closingIds.has(session.id),
+    );
+    sessionsRef.current = remaining;
+    setSessions(remaining);
+
+    setActiveSessionId((currentActiveId) => {
+      if (!currentActiveId || !closingIds.has(currentActiveId)) {
+        return currentActiveId;
+      }
+      const currentIndex = current.findIndex(
+        (session) => session.id === currentActiveId,
+      );
       const nextIndex = Math.max(0, currentIndex - 1);
-      setActiveSessionId(remaining[nextIndex]?.id ?? null);
-    }
+      return (
+        remaining[nextIndex]?.id ?? remaining[remaining.length - 1]?.id ?? null
+      );
+    });
+  }
+
+  function closeSession(sessionId: string) {
+    closeSessions([sessionId]);
+  }
+
+  function sessionContextMenuItems(
+    session: TerminalSession,
+  ): ContextMenuItem[] {
+    const canDisconnect =
+      session.status === "connecting" ||
+      session.status === "connected" ||
+      session.status === "reconnecting";
+    const canReconnect =
+      session.status !== "connecting" && session.status !== "reconnecting";
+
+    return [
+      {
+        key: "disconnect",
+        label: "断开连接",
+        icon: <IconPoweroff />,
+        disabled: !canDisconnect,
+        onClick: () => disconnectSession(session.id),
+      },
+      {
+        key: "reconnect",
+        label: "重新连接",
+        icon: <IconRefresh />,
+        disabled: !canReconnect,
+        onClick: () => reconnectSession(session),
+      },
+      {
+        key: "close",
+        label: "关闭标签",
+        icon: <IconClose />,
+        dividerBefore: true,
+        onClick: () => closeSession(session.id),
+      },
+      {
+        key: "close-others",
+        label: "关闭其他标签",
+        icon: <IconCloseCircle />,
+        disabled: sessions.length <= 1,
+        onClick: () =>
+          closeSessions(
+            sessions
+              .filter((item) => item.id !== session.id)
+              .map((item) => item.id),
+          ),
+      },
+      {
+        key: "close-all",
+        label: "关闭全部标签",
+        icon: <IconCloseCircle />,
+        onClick: () => closeSessions(sessions.map((item) => item.id)),
+      },
+    ];
   }
 
   const serverMonitorPanel = (
@@ -495,14 +646,23 @@ function App() {
             closable
             key={session.id}
             title={
-              <Tooltip content={sessionStatusLabel(session)}>
-                <span className="terminal-tab-title">
-                  <span
-                    className={`terminal-status-dot terminal-status-${session.status}`}
-                  />
-                  <span className="terminal-tab-name">{session.host.name}</span>
+              <ContextMenu items={sessionContextMenuItems(session)}>
+                <span
+                  className="terminal-tab-context-target"
+                  onContextMenu={() => setActiveSessionId(session.id)}
+                >
+                  <Tooltip content={sessionStatusLabel(session)}>
+                    <span className="terminal-tab-title">
+                      <span
+                        className={`terminal-status-dot terminal-status-${session.status}`}
+                      />
+                      <span className="terminal-tab-name">
+                        {session.host.name}
+                      </span>
+                    </span>
+                  </Tooltip>
                 </span>
-              </Tooltip>
+              </ContextMenu>
             }
           >
             <TerminalView

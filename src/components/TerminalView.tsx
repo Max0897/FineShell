@@ -67,9 +67,17 @@ function TerminalView({ active, settings, session }: TerminalViewProps) {
         // The tab may be transitioning between visible and hidden states.
       }
     };
-    const resizeObserver = new ResizeObserver(fit);
+    let fitFrame: number | undefined;
+    const scheduleFit = () => {
+      if (fitFrame !== undefined) return;
+      fitFrame = requestAnimationFrame(() => {
+        fitFrame = undefined;
+        fit();
+      });
+    };
+    const resizeObserver = new ResizeObserver(scheduleFit);
     resizeObserver.observe(container);
-    fit();
+    scheduleFit();
 
     const dataDisposable = terminal.onData((data) => {
       if (!connectedRef.current) return;
@@ -103,6 +111,7 @@ function TerminalView({ active, settings, session }: TerminalViewProps) {
       disposed = true;
       unlisten?.();
       resizeObserver.disconnect();
+      if (fitFrame !== undefined) cancelAnimationFrame(fitFrame);
       dataDisposable.dispose();
       resizeDisposable.dispose();
       terminal.dispose();
