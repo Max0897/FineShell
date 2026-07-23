@@ -36,6 +36,7 @@ struct ExternalEditHandle {
 enum ExternalEditControl {
     Overwrite(Sender<Result<(), String>>),
     Reload(Sender<Result<(), String>>),
+    Refresh(Sender<Result<(), String>>),
     Close,
 }
 
@@ -97,12 +98,13 @@ impl ExternalEditManager {
     fn action(&self, edit_id: &str, action: &str) -> Result<(), String> {
         let edit = self.get(edit_id)?;
         match action {
-            "overwrite" | "reload" => {
+            "overwrite" | "reload" | "refresh" => {
                 let (reply, receiver) = mpsc::channel();
-                let control = if action == "overwrite" {
-                    ExternalEditControl::Overwrite(reply)
-                } else {
-                    ExternalEditControl::Reload(reply)
+                let control = match action {
+                    "overwrite" => ExternalEditControl::Overwrite(reply),
+                    "reload" => ExternalEditControl::Reload(reply),
+                    "refresh" => ExternalEditControl::Refresh(reply),
+                    _ => unreachable!(),
                 };
                 edit.control
                     .send(control)
@@ -263,6 +265,51 @@ fn reload_local_file(
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ReopenDecision {
+    AdoptMatchingContent,
+    RefreshLocal,
+    SyncLocal,
+    Conflict,
+}
+
+fn reopen_decision(local: &str, original: &str, remote: &str) -> ReopenDecision {
+    if local == remote {
+        ReopenDecision::AdoptMatchingContent
+    } else if local == original {
+        ReopenDecision::RefreshLocal
+    } else if remote == original {
+        ReopenDecision::SyncLocal
+    } else {
+        ReopenDecision::Conflict
+    }
+}
+
+fn refresh_local_before_open(
+    app: &AppHandle,
+    edit: &ExternalEditHandle,
+    sftp: &SftpSessionManager,
+    original_content: &mut String,
+) -> Result<(), String> {
+    let local_content = read_local_text(&edit.local_path)?;
+    let remote = sftp.read_text_file(&edit.session_id, edit.remote_path.clone())?;
+    match reopen_decision(&local_content, original_content, &remote.content) {
+        ReopenDecision::AdoptMatchingContent => {
+            *original_content = remote.content;
+            emit_status(app, edit, "synced", None);
+            Ok(())
+        }
+        ReopenDecision::RefreshLocal => {
+            replace_local_text(&edit.local_path, &remote.content)?;
+            *original_content = remote.content;
+            emit_status(app, edit, "synced", None);
+            Ok(())
+        }
+        ReopenDecision::SyncLocal => sync_local_file(app, edit, sftp, original_content, false),
+        ReopenDecision::Conflict => Err(REMOTE_TEXT_CONFLICT_ERROR.to_string()),
+    }
+}
+
 struct ExternalEditWorker {
     app: AppHandle,
     registry: ExternalEditManager,
@@ -306,6 +353,23 @@ fn run_external_edit(worker: ExternalEditWorker) {
                         conflicted = false;
                     } else if let Err(error) = &result {
                         emit_status(&app, &edit, "failed", Some(error.clone()));
+                    }
+                    let _ = reply.send(result);
+                }
+                ExternalEditControl::Refresh(reply) => {
+                    let result =
+                        refresh_local_before_open(&app, &edit, &sftp, &mut original_content);
+                    if result.is_ok() {
+                        conflicted = false;
+                        pending_save = None;
+                    } else if let Err(error) = &result {
+                        conflicted = error.contains(REMOTE_TEXT_CONFLICT_ERROR);
+                        emit_status(
+                            &app,
+                            &edit,
+                            if conflicted { "conflict" } else { "failed" },
+                            Some(error.clone()),
+                        );
                     }
                     let _ = reply.send(result);
                 }
@@ -358,6 +422,11 @@ pub(crate) async fn sftp_start_external_edit(
     path: String,
 ) -> Result<ExternalEditResult, String> {
     if let Some(edit) = edits.existing(&session_id, &path) {
+        let manager = edits.inner().clone();
+        let edit_id = edit.edit_id.clone();
+        tauri::async_runtime::spawn_blocking(move || manager.action(&edit_id, "refresh"))
+            .await
+            .map_err(|error| format!("刷新外部编辑缓存任务异常结束：{error}"))??;
         return Ok(edit_result(&edit, false));
     }
 
@@ -506,5 +575,25 @@ mod tests {
         fs::write(&path, "FineShell 外部编辑").unwrap();
         assert_eq!(read_local_text(&path).unwrap(), "FineShell 外部编辑");
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn decides_how_to_refresh_a_reused_external_edit_cache() {
+        assert_eq!(
+            reopen_decision("same", "old", "same"),
+            ReopenDecision::AdoptMatchingContent
+        );
+        assert_eq!(
+            reopen_decision("old", "old", "remote update"),
+            ReopenDecision::RefreshLocal
+        );
+        assert_eq!(
+            reopen_decision("local update", "old", "old"),
+            ReopenDecision::SyncLocal
+        );
+        assert_eq!(
+            reopen_decision("local update", "old", "remote update"),
+            ReopenDecision::Conflict
+        );
     }
 }
