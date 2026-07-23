@@ -1267,9 +1267,9 @@ body,
 
 .host-editor-menu .arco-menu-item.arco-menu-selected::after {
   position: absolute;
-  top: 0;
+  top: 8px;
   right: -1px;
-  bottom: 0;
+  bottom: 8px;
   width: 2px;
   background: rgb(var(--primary-6));
   content: "";
