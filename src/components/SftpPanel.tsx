@@ -148,6 +148,7 @@ interface ExternalEditPayload {
   localPath: string;
   status: ExternalEditStatus;
   error?: string;
+  updatedAt?: number;
 }
 
 interface ExternalEditResult {
@@ -187,15 +188,29 @@ function isSftpSessionFailure(message: string) {
   );
 }
 
-function ExternalEditStatusIcon({ edit }: { edit: ExternalEditPayload }) {
-  const status = {
+function externalEditStatusMeta(status: ExternalEditStatus) {
+  return {
     watching: { label: "外部编辑中", tone: "active" },
     syncing: { label: "正在同步", tone: "syncing" },
     synced: { label: "已同步", tone: "synced" },
     conflict: { label: "同步冲突", tone: "conflict" },
     failed: { label: "同步失败", tone: "failed" },
     closed: { label: "已结束", tone: "closed" },
-  }[edit.status];
+  }[status];
+}
+
+function formatExternalEditTime(updatedAt?: number) {
+  if (!updatedAt) return "";
+  return new Date(updatedAt).toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function ExternalEditStatusIcon({ edit }: { edit: ExternalEditPayload }) {
+  const status = externalEditStatusMeta(edit.status);
 
   return (
     <Tooltip content={edit.error || status.label}>
@@ -498,20 +513,24 @@ function SftpPanel({
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<ExternalEditPayload>("sftp-external-edit", ({ payload }) => {
+      const record = { ...payload, updatedAt: Date.now() };
       setExternalEdits((current) => {
-        if (payload.status === "closed") {
-          const next = { ...current };
-          delete next[payload.editId];
-          return next;
-        }
-        return { ...current, [payload.editId]: payload };
+        const next = Object.fromEntries(
+          Object.entries(current).filter(
+            ([editId, edit]) =>
+              editId === payload.editId ||
+              edit.sessionId !== payload.sessionId ||
+              edit.remotePath !== payload.remotePath,
+          ),
+        );
+        return { ...next, [payload.editId]: record };
       });
 
       if (payload.status === "conflict") {
         if (payload.sessionId === sessionIdRef.current) {
-          setExternalEditConflict(payload);
+          setExternalEditConflict(record);
         }
-      } else if (payload.status === "synced") {
+      } else if (payload.status === "synced" || payload.status === "closed") {
         setExternalEditConflict((current) =>
           current?.editId === payload.editId ? null : current,
         );
@@ -549,6 +568,15 @@ function SftpPanel({
         .reverse(),
     [session?.id, transfers],
   );
+  const currentExternalEdits = useMemo(
+    () =>
+      Object.values(externalEdits)
+        .filter((edit) => edit.sessionId === session?.id)
+        .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
+    [externalEdits, session?.id],
+  );
+  const transferActivityCount =
+    currentTransfers.length + currentExternalEdits.length;
   const visibleEntries = useMemo(
     () =>
       (browser?.entries ?? []).filter(
@@ -592,7 +620,9 @@ function SftpPanel({
         render: (_, entry) => {
           const externalEdit = Object.values(externalEdits).find(
             (edit) =>
-              edit.sessionId === session?.id && edit.remotePath === entry.path,
+              edit.sessionId === session?.id &&
+              edit.remotePath === entry.path &&
+              edit.status !== "closed",
           );
           return (
             <div className="sftp-name-cell">
@@ -999,6 +1029,14 @@ function SftpPanel({
         ),
       ),
     );
+    setExternalEdits((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(
+          ([, edit]) =>
+            edit.sessionId !== session.id || edit.status !== "closed",
+        ),
+      ),
+    );
   }
 
   function handleOperationError(error: unknown) {
@@ -1356,7 +1394,9 @@ function SftpPanel({
   function externalEditForEntry(entry: SftpEntry) {
     return Object.values(externalEdits).find(
       (edit) =>
-        edit.sessionId === session?.id && edit.remotePath === entry.path,
+        edit.sessionId === session?.id &&
+        edit.remotePath === entry.path &&
+        edit.status !== "closed",
     );
   }
 
@@ -1437,6 +1477,14 @@ function SftpPanel({
       Message.success(`已停止外部编辑：${edit.fileName}`);
     } catch (error) {
       handleOperationError(error);
+    }
+  }
+
+  async function reopenExternalEditLocalFile(edit: ExternalEditPayload) {
+    try {
+      await openPath(edit.localPath);
+    } catch (error) {
+      Message.error(`无法打开本地编辑副本：${String(error)}`);
     }
   }
 
@@ -1798,7 +1846,7 @@ function SftpPanel({
             上传
           </Button>
           <Tooltip content="传输记录">
-            <Badge count={currentTransfers.length} maxCount={99}>
+            <Badge count={transferActivityCount} maxCount={99}>
               <Button
                 aria-label="打开传输记录"
                 icon={<IconHistory />}
@@ -1875,12 +1923,12 @@ function SftpPanel({
         title={
           <div className="sftp-transfer-drawer-title">
             <span>传输记录</span>
-            {currentTransfers.some(
+            {(currentTransfers.some(
               (item) => !isActiveSftpTransfer(item.status),
-            ) && (
-              <Tooltip content="清除已结束任务">
+            ) || currentExternalEdits.some((item) => item.status === "closed")) && (
+              <Tooltip content="清除已结束记录">
                 <Button
-                  aria-label="清除已结束传输任务"
+                  aria-label="清除已结束传输和同步记录"
                   icon={<IconDelete />}
                   onClick={clearFinishedTransfers}
                   size="mini"
@@ -1893,7 +1941,7 @@ function SftpPanel({
         visible={transferDrawerVisible}
         width={440}
       >
-        {currentTransfers.length === 0 ? (
+        {transferActivityCount === 0 ? (
           <div className="sftp-transfer-empty">
             <Empty description="暂无传输记录" />
           </div>
@@ -2019,6 +2067,97 @@ function SftpPanel({
                           icon={<IconRefresh />}
                           onClick={() => void retryTransfer(transfer)}
                           size="mini"
+                        />
+                      </Tooltip>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {currentExternalEdits.map((edit) => {
+              const status = externalEditStatusMeta(edit.status);
+              const hasProblem =
+                edit.status === "conflict" || edit.status === "failed";
+              const updatedAt = formatExternalEditTime(edit.updatedAt);
+              return (
+                <div
+                  className="sftp-transfer-row sftp-sync-row"
+                  key={edit.editId}
+                >
+                  <span
+                    className={`sftp-transfer-direction sftp-transfer-direction-sync sftp-transfer-direction-sync-${status.tone}`}
+                  >
+                    {hasProblem ? (
+                      <IconExclamationCircle />
+                    ) : (
+                      <IconSync />
+                    )}
+                  </span>
+                  <div className="sftp-transfer-content">
+                    <div className="sftp-transfer-title-row">
+                      <Typography.Text
+                        className="sftp-transfer-file-name"
+                        ellipsis={{ showTooltip: true }}
+                      >
+                        {edit.fileName}
+                      </Typography.Text>
+                    </div>
+                    <div className="sftp-transfer-meta">
+                      <Typography.Text
+                        className="sftp-sync-path"
+                        ellipsis={{ showTooltip: true }}
+                        type="secondary"
+                      >
+                        {edit.remotePath}
+                      </Typography.Text>
+                      <Typography.Text
+                        className={`sftp-transfer-activity sftp-sync-activity-${status.tone}`}
+                        type={edit.status === "failed" ? "error" : "secondary"}
+                      >
+                        {updatedAt
+                          ? `${status.label} · ${updatedAt}`
+                          : status.label}
+                      </Typography.Text>
+                    </div>
+                    {hasProblem && edit.error && (
+                      <Typography.Text
+                        className="sftp-transfer-error"
+                        ellipsis={{ showTooltip: true }}
+                        type={edit.status === "failed" ? "error" : "secondary"}
+                      >
+                        {edit.error}
+                      </Typography.Text>
+                    )}
+                  </div>
+                  <div className="sftp-transfer-actions">
+                    <Tooltip content="打开本地副本">
+                      <Button
+                        aria-label={`打开 ${edit.fileName} 的本地副本`}
+                        icon={<IconLaunch />}
+                        onClick={() => void reopenExternalEditLocalFile(edit)}
+                        size="mini"
+                        type="text"
+                      />
+                    </Tooltip>
+                    {hasProblem && edit.status !== "closed" && (
+                      <Tooltip content="处理同步问题">
+                        <Button
+                          aria-label={`处理 ${edit.fileName} 的同步问题`}
+                          icon={<IconExclamationCircle />}
+                          onClick={() => setExternalEditConflict(edit)}
+                          size="mini"
+                          type="text"
+                        />
+                      </Tooltip>
+                    )}
+                    {edit.status !== "closed" && (
+                      <Tooltip content="停止外部编辑">
+                        <Button
+                          aria-label={`停止外部编辑 ${edit.fileName}`}
+                          icon={<IconStop />}
+                          onClick={() => void stopExternalEdit(edit)}
+                          size="mini"
+                          type="text"
                         />
                       </Tooltip>
                     )}

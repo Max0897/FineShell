@@ -854,6 +854,8 @@ body,
 }
 
 .sftp-transfer-list {
+  display: flex;
+  flex-direction: column;
   overflow: auto;
 }
 
@@ -861,7 +863,7 @@ body,
   min-height: 64px;
   padding: 8px 16px;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 56px;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   border-bottom: 1px solid #f2f3f5;
@@ -879,6 +881,27 @@ body,
 
 .sftp-transfer-direction-download {
   color: #00b42a;
+}
+
+.sftp-transfer-direction-sync-active,
+.sftp-transfer-direction-sync-syncing {
+  color: #165dff;
+}
+
+.sftp-transfer-direction-sync-synced {
+  color: #00b42a;
+}
+
+.sftp-transfer-direction-sync-conflict {
+  color: #ff7d00;
+}
+
+.sftp-transfer-direction-sync-failed {
+  color: #f53f3f;
+}
+
+.sftp-transfer-direction-sync-closed {
+  color: #86909c;
 }
 
 .sftp-transfer-content,
@@ -929,6 +952,28 @@ body,
   flex: 0 0 auto;
 }
 
+.sftp-sync-path {
+  min-width: 0;
+  flex: 1;
+}
+
+.sftp-sync-activity-active,
+.sftp-sync-activity-syncing {
+  color: #165dff;
+}
+
+.sftp-sync-activity-synced {
+  color: #00b42a;
+}
+
+.sftp-sync-activity-conflict {
+  color: #ff7d00;
+}
+
+.sftp-sync-activity-closed {
+  color: #86909c;
+}
+
 .sftp-transfer-activity-completed {
   color: #00b42a;
 }
@@ -957,6 +1002,11 @@ body,
   align-items: center;
   justify-content: flex-end;
   align-self: center;
+}
+
+.sftp-sync-row {
+  min-height: 60px;
+  order: -1;
 }
 
 .sftp-transfer-actions:empty {
