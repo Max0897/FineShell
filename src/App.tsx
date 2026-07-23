@@ -27,6 +27,7 @@ import {
 import type {
   HostRecord,
   JumpHostConnection,
+  PortForwardStatus,
   ProxyRecord,
   TerminalSession,
 } from "./models";
@@ -57,6 +58,7 @@ interface SshConnectResult {
   status: "connected" | "hostKeyVerificationRequired";
   fingerprint: string;
   expectedFingerprint: string | null;
+  portForwards: PortForwardStatus[];
 }
 
 interface SshStatusPayload {
@@ -64,6 +66,10 @@ interface SshStatusPayload {
   status: "disconnected";
   error?: string;
   recoverable: boolean;
+}
+
+interface PortForwardStatusPayload extends PortForwardStatus {
+  sessionId: string;
 }
 
 async function persistHostFingerprint(host: HostRecord, fingerprint: string) {
@@ -174,6 +180,31 @@ function App() {
     [],
   );
 
+  const updatePortForwardStatus = useCallback(
+    (sessionId: string, status: PortForwardStatus) => {
+      setSessions((current) => {
+        const next = current.map((session) => {
+          if (session.id !== sessionId) return session;
+          const statuses = session.portForwardStatuses ?? [];
+          const exists = statuses.some(
+            (item) => item.ruleId === status.ruleId,
+          );
+          return {
+            ...session,
+            portForwardStatuses: exists
+              ? statuses.map((item) =>
+                  item.ruleId === status.ruleId ? status : item,
+                )
+              : [...statuses, status],
+          };
+        });
+        sessionsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
   const clearReconnectTimer = useCallback((sessionId: string) => {
     const timer = reconnectTimersRef.current.get(sessionId);
     if (timer) clearTimeout(timer);
@@ -197,6 +228,7 @@ function App() {
             expectedFingerprint: session.host.hostFingerprint,
             proxy: session.proxy,
             jumpHost: jumpHostRequest(session.jumpHost),
+            localPortForwards: session.host.localPortForwards ?? [],
             cols: 80,
             rows: 24,
           },
@@ -249,6 +281,7 @@ function App() {
             hostFingerprint: result.fingerprint,
           },
           reconnectAttempt: 0,
+          portForwardStatuses: result.portForwards,
         });
         await persistHostFingerprint(session.host, result.fingerprint);
       } catch (error) {
@@ -378,7 +411,8 @@ function App() {
     if (!isTauri()) return;
 
     let disposed = false;
-    let unlisten: (() => void) | undefined;
+    let unlistenStatus: (() => void) | undefined;
+    let unlistenPortForward: (() => void) | undefined;
     void listen<SshStatusPayload>("ssh-status", ({ payload }) => {
       const session = sessionsRef.current.find(
         (item) => item.id === payload.sessionId,
@@ -400,6 +434,13 @@ function App() {
           status: "disconnected",
           error: undefined,
           reconnectAttempt: 0,
+          portForwardStatuses: (session.portForwardStatuses ?? []).map(
+            (status) => ({
+              ...status,
+              status: "stopped" as const,
+              error: undefined,
+            }),
+          ),
         });
         return;
       }
@@ -426,20 +467,47 @@ function App() {
         status: payload.status,
         error: payload.error,
         reconnectAttempt: 0,
+        portForwardStatuses: (session.portForwardStatuses ?? []).map(
+          (status) => ({
+            ...status,
+            status: "stopped" as const,
+            error: undefined,
+          }),
+        ),
       });
     }).then((stopListening) => {
       if (disposed) {
         stopListening();
       } else {
-        unlisten = stopListening;
+        unlistenStatus = stopListening;
+      }
+    });
+
+    void listen<PortForwardStatusPayload>(
+      "port-forward-status",
+      ({ payload }) => {
+        const { sessionId, ...status } = payload;
+        updatePortForwardStatus(sessionId, status);
+      },
+    ).then((stopListening) => {
+      if (disposed) {
+        stopListening();
+      } else {
+        unlistenPortForward = stopListening;
       }
     });
 
     return () => {
       disposed = true;
-      unlisten?.();
+      unlistenStatus?.();
+      unlistenPortForward?.();
     };
-  }, [clearReconnectTimer, connectSession, updateSession]);
+  }, [
+    clearReconnectTimer,
+    connectSession,
+    updatePortForwardStatus,
+    updateSession,
+  ]);
 
   useEffect(
     () => () => {
@@ -503,6 +571,14 @@ function App() {
       status: "disconnected",
       error: undefined,
       reconnectAttempt: 0,
+      portForwardStatuses: (
+        sessionsRef.current.find((session) => session.id === sessionId)
+          ?.portForwardStatuses ?? []
+      ).map((status) => ({
+        ...status,
+        status: "stopped" as const,
+        error: undefined,
+      })),
     });
     void invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
     void invoke("sftp_disconnect", { sessionId }).catch(() => undefined);
@@ -608,6 +684,9 @@ function App() {
           }
         >
           <ServerMonitorPanel
+            onPortForwardStatusChange={(status) =>
+              activeSession && updatePortForwardStatus(activeSession.id, status)
+            }
             refreshIntervalSeconds={settings.monitorRefreshIntervalSeconds}
             session={activeSession}
           />

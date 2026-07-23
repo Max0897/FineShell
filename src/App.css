@@ -390,6 +390,30 @@ body,
   white-space: nowrap;
 }
 
+.port-forward-drawer .arco-drawer-body {
+  overflow-x: hidden;
+  padding: 16px;
+}
+
+.port-forward-runtime-summary {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.port-forward-runtime-summary > .arco-typography:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.port-forward-drawer .arco-table-cell {
+  white-space: nowrap;
+}
+
 .terminal-tabs {
   height: 100%;
   display: flex;

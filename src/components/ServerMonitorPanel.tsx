@@ -19,6 +19,7 @@ import type { TableColumnProps } from "@arco-design/web-react";
 import {
   IconBranch,
   IconApps,
+  IconLink,
   IconRefresh,
   IconWifi,
 } from "@arco-design/web-react/icon";
@@ -33,6 +34,7 @@ import type {
   NetworkConnectionsResult,
   NetworkPingResult,
   NetworkTraceResult,
+  PortForwardStatus,
 } from "../models";
 import {
   appendMonitorHistory,
@@ -45,10 +47,12 @@ import {
   normalizeMonitorPercent,
 } from "../monitor-utils";
 import ServerProcessDrawer from "./ServerProcessDrawer";
+import PortForwardDrawer from "./PortForwardDrawer";
 
 interface ServerMonitorPanelProps {
   refreshIntervalSeconds: number;
   session: TerminalSession | null;
+  onPortForwardStatusChange: (status: PortForwardStatus) => void;
 }
 
 function enforcePercentTooltipContent(content?: ITooltipLineActual[]) {
@@ -115,12 +119,15 @@ function tooltipRate(datum?: Record<string, unknown>) {
 function ServerMonitorPanel({
   refreshIntervalSeconds,
   session,
+  onPortForwardStatusChange,
 }: ServerMonitorPanelProps) {
   const [snapshot, setSnapshot] = useState<ServerMonitorSnapshot | null>(null);
   const [history, setHistory] = useState<ServerMonitorHistoryPoint[]>([]);
   const [error, setError] = useState<string>();
   const [diagnosticsVisible, setDiagnosticsVisible] = useState(false);
   const [processDrawerVisible, setProcessDrawerVisible] = useState(false);
+  const [portForwardDrawerVisible, setPortForwardDrawerVisible] =
+    useState(false);
   const [pingTarget, setPingTarget] = useState("1.1.1.1");
   const [pingResult, setPingResult] = useState<NetworkPingResult | null>(null);
   const [pingLoading, setPingLoading] = useState(false);
@@ -148,6 +155,7 @@ function ServerMonitorPanel({
     setTraceError(undefined);
     setDiagnosticsVisible(false);
     setProcessDrawerVisible(false);
+    setPortForwardDrawerVisible(false);
     const sessionId = session?.id;
     if (!sessionId || session.status !== "connected") {
       return;
@@ -382,6 +390,16 @@ function ServerMonitorPanel({
               disabled={!connected}
               icon={<IconApps />}
               onClick={() => setProcessDrawerVisible(true)}
+              size="mini"
+              type="text"
+            />
+          </Tooltip>
+          <Tooltip content="端口转发">
+            <Button
+              aria-label="打开端口转发"
+              disabled={!session}
+              icon={<IconLink />}
+              onClick={() => setPortForwardDrawerVisible(true)}
               size="mini"
               type="text"
             />
@@ -784,11 +802,19 @@ function ServerMonitorPanel({
         </section>
       </Drawer>
       {session && (
-        <ServerProcessDrawer
-          onCancel={() => setProcessDrawerVisible(false)}
-          session={session}
-          visible={processDrawerVisible}
-        />
+        <>
+          <ServerProcessDrawer
+            onCancel={() => setProcessDrawerVisible(false)}
+            session={session}
+            visible={processDrawerVisible}
+          />
+          <PortForwardDrawer
+            onCancel={() => setPortForwardDrawerVisible(false)}
+            onStatusChange={onPortForwardStatusChange}
+            session={session}
+            visible={portForwardDrawerVisible}
+          />
+        </>
       )}
     </section>
   );
