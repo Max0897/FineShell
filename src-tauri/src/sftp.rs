@@ -13,7 +13,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use ssh2::{FileStat, FileType, RenameFlags, Session, Sftp};
+use ssh2::{FileStat, FileType, OpenFlags, OpenType, RenameFlags, Session, Sftp};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
@@ -86,6 +86,10 @@ enum SftpCommand {
         path: String,
         reply: Sender<Result<(), String>>,
     },
+    CreateFile {
+        path: String,
+        reply: Sender<Result<(), String>>,
+    },
     Rename {
         source_path: String,
         target_path: String,
@@ -94,6 +98,15 @@ enum SftpCommand {
     },
     Delete {
         path: String,
+        reply: Sender<Result<(), String>>,
+    },
+    FastDelete {
+        paths: Vec<String>,
+        reply: Sender<Result<(), String>>,
+    },
+    SetPermissions {
+        path: String,
+        permissions: u32,
         reply: Sender<Result<(), String>>,
     },
     Upload {
@@ -251,6 +264,102 @@ fn list_directory(sftp: &Sftp, path: &str) -> Result<SftpListResult, String> {
 
 fn remote_exists(sftp: &Sftp, path: &Path) -> bool {
     sftp.lstat(path).is_ok()
+}
+
+fn create_empty_file(sftp: &Sftp, path: &str) -> Result<(), String> {
+    sftp.open_mode(
+        Path::new(path),
+        OpenFlags::WRITE | OpenFlags::EXCLUSIVE,
+        0o644,
+        OpenType::File,
+    )
+    .map(|_| ())
+    .map_err(|error| format!("新建远程文件失败：{error}"))
+}
+
+fn set_permissions(sftp: &Sftp, path: &str, permissions: u32) -> Result<(), String> {
+    if permissions > 0o7777 {
+        return Err("文件权限必须是 000 到 7777 的八进制值".to_string());
+    }
+
+    let current = sftp
+        .lstat(Path::new(path))
+        .map_err(|error| format!("无法读取远程项目信息：{error}"))?;
+    let file_type = current.perm.unwrap_or(0) & !0o7777;
+    sftp.setstat(
+        Path::new(path),
+        FileStat {
+            size: None,
+            uid: None,
+            gid: None,
+            perm: Some(file_type | permissions),
+            atime: None,
+            mtime: None,
+        },
+    )
+    .map_err(|error| format!("修改远程项目权限失败：{error}"))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn fast_delete_command(paths: &[String]) -> Result<String, String> {
+    if paths.is_empty() {
+        return Err("没有选择需要快速删除的项目".to_string());
+    }
+
+    let mut quoted_paths = Vec::with_capacity(paths.len());
+    for path in paths {
+        if path.contains('\0') || !path.starts_with('/') {
+            return Err("快速删除只允许使用有效的绝对路径".to_string());
+        }
+
+        let mut has_name = false;
+        for component in path.split('/') {
+            match component {
+                "" | "." => {}
+                ".." => return Err("快速删除路径不能包含上级目录".to_string()),
+                _ => has_name = true,
+            }
+        }
+        if !has_name {
+            return Err("快速删除禁止操作远程根目录".to_string());
+        }
+        quoted_paths.push(shell_quote(path));
+    }
+
+    Ok(format!("rm -rf -- {} 2>&1", quoted_paths.join(" ")))
+}
+
+fn fast_delete(session: &Session, paths: &[String]) -> Result<(), String> {
+    let command = fast_delete_command(paths)?;
+    let mut channel = session
+        .channel_session()
+        .map_err(|error| format!("无法创建快速删除通道：{error}"))?;
+    channel
+        .exec(&command)
+        .map_err(|error| format!("无法执行快速删除命令：{error}"))?;
+    let mut output = String::new();
+    channel
+        .read_to_string(&mut output)
+        .map_err(|error| format!("无法读取快速删除结果：{error}"))?;
+    channel
+        .wait_close()
+        .map_err(|error| format!("快速删除通道关闭失败：{error}"))?;
+    let exit_status = channel
+        .exit_status()
+        .map_err(|error| format!("无法读取快速删除命令状态：{error}"))?;
+    if exit_status == 0 {
+        Ok(())
+    } else {
+        let detail = output.trim();
+        Err(if detail.is_empty() {
+            format!("快速删除命令异常退出：{exit_status}")
+        } else {
+            format!("快速删除失败：{detail}")
+        })
+    }
 }
 
 fn emit_transfer(app: &AppHandle, payload: SftpTransferPayload) {
@@ -452,6 +561,9 @@ fn run_session(
                     .map_err(|error| format!("新建远程目录失败：{error}"));
                 let _ = reply.send(result);
             }
+            SftpCommand::CreateFile { path, reply } => {
+                let _ = reply.send(create_empty_file(&sftp, &path));
+            }
             SftpCommand::Rename {
                 source_path,
                 target_path,
@@ -486,6 +598,16 @@ fn run_session(
                         }
                     });
                 let _ = reply.send(result);
+            }
+            SftpCommand::FastDelete { paths, reply } => {
+                let _ = reply.send(fast_delete(&session, &paths));
+            }
+            SftpCommand::SetPermissions {
+                path,
+                permissions,
+                reply,
+            } => {
+                let _ = reply.send(set_permissions(&sftp, &path, permissions));
             }
             SftpCommand::Upload {
                 transfer_id,
@@ -677,6 +799,18 @@ pub(crate) async fn sftp_create_directory(
 }
 
 #[tauri::command]
+pub(crate) async fn sftp_create_file(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    dispatch(manager.inner().clone(), session_id, move |reply| {
+        SftpCommand::CreateFile { path, reply }
+    })
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn sftp_rename(
     manager: State<'_, SftpSessionManager>,
     session_id: String,
@@ -703,6 +837,35 @@ pub(crate) async fn sftp_delete(
 ) -> Result<(), String> {
     dispatch(manager.inner().clone(), session_id, move |reply| {
         SftpCommand::Delete { path, reply }
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_fast_delete(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    dispatch(manager.inner().clone(), session_id, move |reply| {
+        SftpCommand::FastDelete { paths, reply }
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_set_permissions(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    path: String,
+    permissions: u32,
+) -> Result<(), String> {
+    dispatch(manager.inner().clone(), session_id, move |reply| {
+        SftpCommand::SetPermissions {
+            path,
+            permissions,
+            reply,
+        }
     })
     .await
 }
@@ -770,7 +933,7 @@ mod tests {
 
     use ssh2::{FileStat, RenameFlags};
 
-    use super::{entry_kind, SftpCommand, SftpSessionManager};
+    use super::{entry_kind, fast_delete_command, shell_quote, SftpCommand, SftpSessionManager};
     use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
 
     #[test]
@@ -790,6 +953,27 @@ mod tests {
 
         assert_eq!(entry_kind(&directory), "directory");
         assert_eq!(entry_kind(&file), "file");
+    }
+
+    #[test]
+    fn quotes_fast_delete_paths_without_shell_expansion() {
+        assert_eq!(
+            shell_quote("/tmp/report's draft"),
+            "'/tmp/report'\"'\"'s draft'"
+        );
+        assert_eq!(
+            fast_delete_command(&["/tmp/a b".to_string(), "/tmp/$HOME".to_string()]).unwrap(),
+            "rm -rf -- '/tmp/a b' '/tmp/$HOME' 2>&1"
+        );
+    }
+
+    #[test]
+    fn protects_invalid_fast_delete_targets() {
+        assert!(fast_delete_command(&[]).is_err());
+        assert!(fast_delete_command(&["/".to_string()]).is_err());
+        assert!(fast_delete_command(&["/./".to_string()]).is_err());
+        assert!(fast_delete_command(&["/tmp/../data".to_string()]).is_err());
+        assert!(fast_delete_command(&["relative/path".to_string()]).is_err());
     }
 
     #[test]
