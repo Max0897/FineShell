@@ -66,6 +66,9 @@ function HostEditorModal({
   const [remotePortForwards, setRemotePortForwards] = useState(
     host?.remotePortForwards ?? [],
   );
+  const [dynamicPortForwards, setDynamicPortForwards] = useState(
+    host?.dynamicPortForwards ?? [],
+  );
 
   useEffect(() => {
     if (visible) {
@@ -74,6 +77,7 @@ function HostEditorModal({
       setJumpHostId(host?.jumpHostId);
       setLocalPortForwards(host?.localPortForwards ?? []);
       setRemotePortForwards(host?.remotePortForwards ?? []);
+      setDynamicPortForwards(host?.dynamicPortForwards ?? []);
     }
   }, [visible, host?.id]);
 
@@ -127,6 +131,7 @@ function HostEditorModal({
       hostFingerprint: targetUnchanged ? host.hostFingerprint : undefined,
       localPortForwards,
       remotePortForwards,
+      dynamicPortForwards,
     });
   };
 
@@ -300,7 +305,9 @@ function HostEditorModal({
           <Tabs.TabPane key="forwards" title="端口转发">
             <div className="host-editor-tab-pane">
               <PortForwardRulesEditor
+                dynamicRules={dynamicPortForwards}
                 localRules={localPortForwards}
+                onDynamicChange={setDynamicPortForwards}
                 onLocalChange={setLocalPortForwards}
                 onRemoteChange={setRemotePortForwards}
                 remoteRules={remotePortForwards}
