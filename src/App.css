@@ -994,6 +994,16 @@ body,
   overflow: visible;
 }
 
+.sftp-create-menu-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sftp-create-menu-label > .arco-icon {
+  margin-right: 0 !important;
+}
+
 .app-context-menu-danger,
 .app-context-menu-danger .arco-icon {
   color: #f53f3f;

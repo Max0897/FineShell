@@ -3,8 +3,10 @@ import {
   Badge,
   Button,
   Drawer,
+  Dropdown,
   Empty,
   Input,
+  Menu,
   Message,
   Modal,
   Progress,
@@ -20,6 +22,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   IconArrowUp,
   IconDelete,
+  IconDown,
   IconDownload,
   IconEdit,
   IconFile,
@@ -885,14 +888,38 @@ function SftpPanel({
           value={connected ? browser?.inputPath ?? "/" : ""}
         />
         <Space size="mini">
-          <Button
+          <Dropdown.Button
+            buttonProps={{ icon: <IconFolderAdd /> }}
             disabled={!ready}
-            icon={<IconFolderAdd />}
+            droplist={
+              <Menu
+                className="sftp-create-menu"
+                onClickMenuItem={(key) =>
+                  openCreateDialog(key === "file" ? "file" : "directory")
+                }
+                selectable={false}
+              >
+                <Menu.Item key="file">
+                  <span className="sftp-create-menu-label">
+                    <IconFile />
+                    新建文件
+                  </span>
+                </Menu.Item>
+                <Menu.Item key="directory">
+                  <span className="sftp-create-menu-label">
+                    <IconFolderAdd />
+                    新建目录
+                  </span>
+                </Menu.Item>
+              </Menu>
+            }
+            icon={<IconDown />}
             onClick={() => openCreateDialog("directory")}
             size="mini"
+            trigger="click"
           >
-            新建目录
-          </Button>
+            新建
+          </Dropdown.Button>
           <Button
             disabled={!ready}
             icon={<IconUpload />}
