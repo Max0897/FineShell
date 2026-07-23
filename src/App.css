@@ -730,29 +730,26 @@ body,
 }
 
 .sftp-transfer-row {
-  min-height: 88px;
-  padding: 14px 16px;
+  min-height: 64px;
+  padding: 8px 16px;
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) 28px;
+  grid-template-columns: 24px minmax(0, 1fr) 24px;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   border-bottom: 1px solid #f2f3f5;
 }
 
 .sftp-transfer-direction {
-  width: 44px;
-  height: 44px;
+  width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
-  background: #f2f3f5;
   color: #165dff;
-  font-size: 20px;
+  font-size: 16px;
 }
 
 .sftp-transfer-direction-download {
-  background: #e8ffea;
   color: #00b42a;
 }
 
@@ -765,7 +762,7 @@ body,
 .sftp-transfer-content {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .sftp-transfer-title-row {
@@ -789,9 +786,15 @@ body,
 .sftp-transfer-file-name {
   min-width: 0;
   flex: 1;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
-  line-height: 20px;
+  line-height: 18px;
+}
+
+.sftp-transfer-meta .arco-typography,
+.sftp-transfer-error {
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .sftp-transfer-meta .arco-typography:last-child {
