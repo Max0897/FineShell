@@ -601,6 +601,9 @@ function App() {
       clearReconnectTimer(sessionId);
       manualReconnectsRef.current.delete(sessionId);
       intentionallyDisconnectedRef.current.delete(sessionId);
+      void invoke("sftp_close_external_edits", { sessionId }).catch(
+        () => undefined,
+      );
       void invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
       void invoke("sftp_disconnect", { sessionId }).catch(() => undefined);
     });

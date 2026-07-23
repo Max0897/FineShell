@@ -62,10 +62,29 @@ struct ExternalEditPayload {
 pub(crate) struct ExternalEditResult {
     edit_id: String,
     local_path: String,
-    created: bool,
 }
 
 impl ExternalEditManager {
+    pub(crate) fn close_session(&self, session_id: &str) -> Result<usize, String> {
+        let closing = {
+            let mut edits = self
+                .edits
+                .lock()
+                .map_err(|_| "外部编辑任务状态不可用".to_string())?;
+            let closing = edits
+                .values()
+                .filter(|edit| edit.session_id == session_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            edits.retain(|_, edit| edit.session_id != session_id);
+            closing
+        };
+        for edit in &closing {
+            let _ = edit.control.send(ExternalEditControl::Close);
+        }
+        Ok(closing.len())
+    }
+
     fn existing(&self, session_id: &str, remote_path: &str) -> Option<ExternalEditHandle> {
         self.edits.lock().ok()?.values().find_map(|edit| {
             (edit.session_id == session_id && edit.remote_path == remote_path).then(|| edit.clone())
@@ -113,20 +132,15 @@ impl ExternalEditManager {
                     .recv()
                     .map_err(|_| "外部编辑操作没有返回结果".to_string())?
             }
-            "close" => edit
-                .control
-                .send(ExternalEditControl::Close)
-                .map_err(|_| "外部编辑任务已停止".to_string()),
             _ => Err("未知的外部编辑操作".to_string()),
         }
     }
 }
 
-fn edit_result(edit: &ExternalEditHandle, created: bool) -> ExternalEditResult {
+fn edit_result(edit: &ExternalEditHandle) -> ExternalEditResult {
     ExternalEditResult {
         edit_id: edit.edit_id.clone(),
         local_path: edit.local_path.to_string_lossy().into_owned(),
-        created,
     }
 }
 
@@ -427,7 +441,7 @@ pub(crate) async fn sftp_start_external_edit(
         tauri::async_runtime::spawn_blocking(move || manager.action(&edit_id, "refresh"))
             .await
             .map_err(|error| format!("刷新外部编辑缓存任务异常结束：{error}"))??;
-        return Ok(edit_result(&edit, false));
+        return Ok(edit_result(&edit));
     }
 
     let worker_sftp = sftp.inner().clone();
@@ -493,7 +507,7 @@ pub(crate) async fn sftp_start_external_edit(
         return Err(format!("无法启动外部编辑监听线程：{error}"));
     }
 
-    Ok(edit_result(&edit, true))
+    Ok(edit_result(&edit))
 }
 
 #[tauri::command]
@@ -506,6 +520,14 @@ pub(crate) async fn sftp_external_edit_action(
     tauri::async_runtime::spawn_blocking(move || manager.action(&edit_id, &action))
         .await
         .map_err(|error| format!("外部编辑操作异常结束：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) fn sftp_close_external_edits(
+    edits: State<'_, ExternalEditManager>,
+    session_id: String,
+) -> Result<usize, String> {
+    edits.close_session(&session_id)
 }
 
 #[tauri::command]
@@ -595,5 +617,36 @@ mod tests {
             reopen_decision("local update", "old", "remote update"),
             ReopenDecision::Conflict
         );
+    }
+
+    #[test]
+    fn closes_only_external_edits_owned_by_the_requested_session() {
+        let manager = ExternalEditManager::default();
+        let (first_sender, first_receiver) = mpsc::channel();
+        let (second_sender, second_receiver) = mpsc::channel();
+        for (edit_id, session_id, control) in [
+            ("edit-1", "session-1", first_sender),
+            ("edit-2", "session-2", second_sender),
+        ] {
+            manager
+                .insert(ExternalEditHandle {
+                    edit_id: edit_id.to_string(),
+                    session_id: session_id.to_string(),
+                    remote_path: "/tmp/test.txt".to_string(),
+                    file_name: "test.txt".to_string(),
+                    local_path: PathBuf::from("/tmp/test.txt"),
+                    control,
+                })
+                .unwrap();
+        }
+
+        assert_eq!(manager.close_session("session-1").unwrap(), 1);
+        assert!(matches!(
+            first_receiver.recv(),
+            Ok(ExternalEditControl::Close)
+        ));
+        assert!(second_receiver.try_recv().is_err());
+        assert!(manager.get("edit-1").is_err());
+        assert!(manager.get("edit-2").is_ok());
     }
 }

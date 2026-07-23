@@ -63,6 +63,7 @@ pub fn run() {
             sftp::sftp_write_text_file,
             external_edit::sftp_start_external_edit,
             external_edit::sftp_external_edit_action,
+            external_edit::sftp_close_external_edits,
             external_edit::sftp_launch_external_editor,
             sftp::sftp_upload,
             sftp::sftp_download,

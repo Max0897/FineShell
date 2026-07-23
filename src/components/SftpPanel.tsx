@@ -154,7 +154,6 @@ interface ExternalEditPayload {
 interface ExternalEditResult {
   editId: string;
   localPath: string;
-  created: boolean;
 }
 
 const INITIAL_BROWSER: BrowserState = {
@@ -515,6 +514,11 @@ function SftpPanel({
     void listen<ExternalEditPayload>("sftp-external-edit", ({ payload }) => {
       const record = { ...payload, updatedAt: Date.now() };
       setExternalEdits((current) => {
+        if (payload.status === "closed") {
+          const next = { ...current };
+          delete next[payload.editId];
+          return next;
+        }
         const next = Object.fromEntries(
           Object.entries(current).filter(
             ([editId, edit]) =>
@@ -1029,14 +1033,6 @@ function SftpPanel({
         ),
       ),
     );
-    setExternalEdits((current) =>
-      Object.fromEntries(
-        Object.entries(current).filter(
-          ([, edit]) =>
-            edit.sessionId !== session.id || edit.status !== "closed",
-        ),
-      ),
-    );
   }
 
   function handleOperationError(error: unknown) {
@@ -1402,9 +1398,8 @@ function SftpPanel({
 
   async function openExternalEditor(entry: SftpEntry, editorPath?: string) {
     if (!session || entry.kind !== "file") return;
-    let edit: ExternalEditResult | null = null;
     try {
-      edit = await invoke<ExternalEditResult>("sftp_start_external_edit", {
+      const edit = await invoke<ExternalEditResult>("sftp_start_external_edit", {
         sessionId: session.id,
         path: entry.path,
       });
@@ -1418,12 +1413,6 @@ function SftpPanel({
       }
       Message.success(`已打开 ${entry.name}，保存后将自动同步`);
     } catch (error) {
-      if (edit?.created) {
-        await invoke("sftp_external_edit_action", {
-          editId: edit.editId,
-          action: "close",
-        }).catch(() => undefined);
-      }
       handleOperationError(error);
     }
   }
@@ -1462,21 +1451,6 @@ function SftpPanel({
       handleOperationError(error);
     } finally {
       setExternalEditActionLoading(false);
-    }
-  }
-
-  async function stopExternalEdit(edit: ExternalEditPayload) {
-    try {
-      await invoke("sftp_external_edit_action", {
-        editId: edit.editId,
-        action: "close",
-      });
-      setExternalEditConflict((current) =>
-        current?.editId === edit.editId ? null : current,
-      );
-      Message.success(`已停止外部编辑：${edit.fileName}`);
-    } catch (error) {
-      handleOperationError(error);
     }
   }
 
@@ -1546,17 +1520,6 @@ function SftpPanel({
             icon: <IconExclamationCircle />,
             dividerBefore: true,
             onClick: () => setExternalEditConflict(activeEdit),
-          });
-        }
-        if (activeEdit) {
-          openItems.push({
-            key: "stop-external-edit",
-            label: "停止外部编辑",
-            icon: <IconStop />,
-            dividerBefore:
-              activeEdit.status !== "conflict" &&
-              activeEdit.status !== "failed",
-            onClick: () => stopExternalEdit(activeEdit),
           });
         }
         menuItems.push({
@@ -1923,9 +1886,9 @@ function SftpPanel({
         title={
           <div className="sftp-transfer-drawer-title">
             <span>传输记录</span>
-            {(currentTransfers.some(
+            {currentTransfers.some(
               (item) => !isActiveSftpTransfer(item.status),
-            ) || currentExternalEdits.some((item) => item.status === "closed")) && (
+            ) && (
               <Tooltip content="清除已结束记录">
                 <Button
                   aria-label="清除已结束传输和同步记录"
@@ -2139,23 +2102,12 @@ function SftpPanel({
                         type="text"
                       />
                     </Tooltip>
-                    {hasProblem && edit.status !== "closed" && (
+                    {hasProblem && (
                       <Tooltip content="处理同步问题">
                         <Button
                           aria-label={`处理 ${edit.fileName} 的同步问题`}
                           icon={<IconExclamationCircle />}
                           onClick={() => setExternalEditConflict(edit)}
-                          size="mini"
-                          type="text"
-                        />
-                      </Tooltip>
-                    )}
-                    {edit.status !== "closed" && (
-                      <Tooltip content="停止外部编辑">
-                        <Button
-                          aria-label={`停止外部编辑 ${edit.fileName}`}
-                          icon={<IconStop />}
-                          onClick={() => void stopExternalEdit(edit)}
                           size="mini"
                           type="text"
                         />
