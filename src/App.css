@@ -624,6 +624,10 @@ body,
   cursor: default;
 }
 
+.sftp-table .arco-table-row-checked > .arco-table-td {
+  background: #e8f3ff;
+}
+
 .sftp-table tbody > .arco-table-tr:last-child > .arco-table-td,
 .sftp-table .arco-table-empty-row > .arco-table-td {
   border-bottom: 0;
@@ -929,6 +933,17 @@ body,
 
 .host-more-delete,
 .host-more-delete .arco-icon {
+  color: #f53f3f;
+}
+
+.app-context-menu {
+  min-width: 150px;
+  border: 1px solid #e5e6eb;
+  box-shadow: none;
+}
+
+.app-context-menu-danger,
+.app-context-menu-danger .arco-icon {
   color: #f53f3f;
 }
 

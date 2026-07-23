@@ -7,7 +7,6 @@ import {
   Input,
   Message,
   Modal,
-  Popconfirm,
   Progress,
   Space,
   Table,
@@ -36,6 +35,8 @@ import type {
   SftpListResult,
   TerminalSession,
 } from "../models";
+import ContextMenu from "./ContextMenu";
+import type { ContextMenuItem } from "./ContextMenu";
 import {
   formatFileSize,
   formatPermissions,
@@ -111,6 +112,7 @@ function SftpPanel({
   const [renamingEntry, setRenamingEntry] = useState<SftpEntry | null>(null);
   const [renameName, setRenameName] = useState("");
   const [operationLoading, setOperationLoading] = useState(false);
+  const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
 
@@ -305,6 +307,18 @@ function SftpPanel({
     [browser?.entries, showHiddenFiles],
   );
 
+  useEffect(() => {
+    setSelectedEntryKeys([]);
+  }, [browser?.path, session?.id]);
+
+  useEffect(() => {
+    const visibleKeys = new Set(visibleEntries.map((entry) => entry.id));
+    setSelectedEntryKeys((current) => {
+      const next = current.filter((key) => visibleKeys.has(key));
+      return next.length === current.length ? current : next;
+    });
+  }, [visibleEntries]);
+
   const columns = useMemo<TableColumnProps<SftpEntry>[]>(
     () => [
       {
@@ -336,63 +350,8 @@ function SftpPanel({
         width: 150,
         render: (value) => formatRemoteTime(value),
       },
-      {
-        title: "操作",
-        width: 126,
-        render: (_, entry) => (
-          <Space size="mini">
-            {entry.kind !== "directory" && (
-              <Tooltip content="下载">
-                <Button
-                  aria-label={`下载 ${entry.name}`}
-                  disabled={!ready}
-                  icon={<IconDownload />}
-                  onClick={() => void downloadEntry(entry)}
-                  size="mini"
-                />
-              </Tooltip>
-            )}
-            <Tooltip content="重命名">
-              <Button
-                aria-label={`重命名 ${entry.name}`}
-                disabled={!ready}
-                icon={<IconEdit />}
-                onClick={() => openRenameDialog(entry)}
-                size="mini"
-              />
-            </Tooltip>
-            {confirmFileDelete ? (
-              <Popconfirm
-                content={`删除“${entry.name}”？${entry.kind === "directory" ? "目录必须为空。" : ""}`}
-                onOk={() => deleteEntry(entry)}
-              >
-                <Tooltip content="删除">
-                  <Button
-                    aria-label={`删除 ${entry.name}`}
-                    disabled={!ready}
-                    icon={<IconDelete />}
-                    size="mini"
-                    status="danger"
-                  />
-                </Tooltip>
-              </Popconfirm>
-            ) : (
-              <Tooltip content="删除">
-                <Button
-                  aria-label={`删除 ${entry.name}`}
-                  disabled={!ready}
-                  icon={<IconDelete />}
-                  onClick={() => void deleteEntry(entry).catch(() => undefined)}
-                  size="mini"
-                  status="danger"
-                />
-              </Tooltip>
-            )}
-          </Space>
-        ),
-      },
     ],
-    [browser, confirmFileDelete, ready, session],
+    [],
   );
 
   async function runTransfer(
@@ -597,19 +556,119 @@ function SftpPanel({
     }
   }
 
-  async function deleteEntry(entry: SftpEntry) {
-    if (!session || !browser) return;
+  async function deleteEntries(entries: SftpEntry[]) {
+    if (!session || !browser || entries.length === 0) return;
+    let deletedCount = 0;
     try {
-      await invoke("sftp_delete", {
-        sessionId: session.id,
-        path: entry.path,
-      });
-      Message.success(`已删除 ${entry.name}`);
-      await loadDirectory(session.id, browser.path);
+      for (const entry of entries) {
+        await invoke("sftp_delete", {
+          sessionId: session.id,
+          path: entry.path,
+        });
+        deletedCount += 1;
+      }
+      setSelectedEntryKeys([]);
+      Message.success(
+        entries.length === 1
+          ? `已删除 ${entries[0].name}`
+          : `已删除 ${entries.length} 个项目`,
+      );
     } catch (error) {
       handleOperationError(error);
       throw error;
+    } finally {
+      if (deletedCount > 0) {
+        await loadDirectory(session.id, browser.path);
+      }
     }
+  }
+
+  function requestDeleteEntries(entries: SftpEntry[]) {
+    const execute = () => deleteEntries(entries).catch(() => undefined);
+    if (!confirmFileDelete) {
+      void execute();
+      return;
+    }
+
+    const containsDirectory = entries.some(
+      (entry) => entry.kind === "directory",
+    );
+    Modal.confirm({
+      cancelText: "取消",
+      content:
+        entries.length === 1
+          ? `删除“${entries[0].name}”？${containsDirectory ? "目录必须为空。" : ""}`
+          : `删除选中的 ${entries.length} 个项目？${containsDirectory ? "目录必须为空。" : ""}`,
+      okButtonProps: { status: "danger" },
+      okText: "删除",
+      onOk: execute,
+      title: "确认删除",
+    });
+  }
+
+  function entryContextMenuItems(entries: SftpEntry[]): ContextMenuItem[] {
+    const singleEntry = entries.length === 1 ? entries[0] : null;
+    const menuItems: ContextMenuItem[] = [];
+
+    if (singleEntry?.kind === "directory") {
+      menuItems.push({
+        key: "open",
+        label: "打开",
+        icon: <IconFolder />,
+        disabled: operationLoading,
+        onClick: () => openDirectory(singleEntry),
+      });
+    } else if (singleEntry) {
+      menuItems.push({
+        key: "download",
+        label: "下载",
+        icon: <IconDownload />,
+        disabled: operationLoading,
+        onClick: () => downloadEntry(singleEntry),
+      });
+    }
+
+    if (singleEntry) {
+      menuItems.push({
+        key: "rename",
+        label: "重命名",
+        icon: <IconEdit />,
+        disabled: operationLoading,
+        onClick: () => openRenameDialog(singleEntry),
+      });
+    }
+
+    menuItems.push({
+      key: "delete",
+      label: entries.length === 1 ? "删除" : `删除所选（${entries.length}）`,
+      icon: <IconDelete />,
+      disabled: operationLoading,
+      danger: true,
+      onClick: () => requestDeleteEntries(entries),
+    });
+
+    return menuItems;
+  }
+
+  function resolveEntryContextMenu(
+    event: React.MouseEvent<HTMLElement>,
+  ): ContextMenuItem[] {
+    if (!ready || !(event.target instanceof Element)) return [];
+    const row = event.target.closest<HTMLElement>("[data-sftp-entry-id]");
+    const entry = visibleEntries.find(
+      (candidate) => candidate.id === row?.dataset.sftpEntryId,
+    );
+    if (!entry) return [];
+
+    const entries = selectedEntryKeys.includes(entry.id)
+      ? visibleEntries.filter((candidate) =>
+          selectedEntryKeys.includes(candidate.id),
+        )
+      : [entry];
+    if (!selectedEntryKeys.includes(entry.id)) {
+      setSelectedEntryKeys([entry.id]);
+    }
+    return entryContextMenuItems(entries);
   }
 
   async function retryConnection() {
@@ -716,24 +775,35 @@ function SftpPanel({
           </div>
         </div>
       ) : (
-        <div className="sftp-table-container">
-          <Table
-            border={false}
-            className="sftp-table"
-            columns={columns}
-            data={ready ? visibleEntries : []}
-            loading={Boolean(connected && busy)}
-            noDataElement={
-              <Empty description={ready ? "目录为空" : "暂无文件"} />
-            }
-            onRow={(entry) => ({
-              onDoubleClick: () => openDirectory(entry),
-            })}
-            pagination={false}
-            rowKey="id"
-            size="small"
-          />
-        </div>
+        <ContextMenu resolveItems={resolveEntryContextMenu}>
+          <div className="sftp-table-container">
+            <Table
+              border={false}
+              className="sftp-table"
+              columns={columns}
+              data={ready ? visibleEntries : []}
+              loading={Boolean(connected && busy)}
+              noDataElement={
+                <Empty description={ready ? "目录为空" : "暂无文件"} />
+              }
+              onRow={(entry) => ({
+                "data-sftp-entry-id": entry.id,
+                onDoubleClick: () => openDirectory(entry),
+              })}
+              pagination={false}
+              rowKey="id"
+              rowSelection={{
+                checkAll: true,
+                columnWidth: 42,
+                onChange: (keys) =>
+                  setSelectedEntryKeys(keys.map((key) => String(key))),
+                selectedRowKeys: selectedEntryKeys,
+                type: "checkbox",
+              }}
+              size="small"
+            />
+          </div>
+        </ContextMenu>
       )}
       <Drawer
         bodyStyle={{ padding: 0 }}
