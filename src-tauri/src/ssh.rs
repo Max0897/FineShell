@@ -1968,9 +1968,10 @@ mod tests {
 
     use super::{
         connect_authenticated_session, connect_handshaken_session, disconnect_status,
-        loopback_pair, open_local_forward_connection, start_local_forward, validate_fingerprint,
-        validate_remote_forward_rule, verify_fingerprint, FingerprintVerification, JumpHostConfig,
-        LocalPortForwardRule, RemotePortForwardRule, SessionCommand, SshAuthConfig, SshAuthMethod,
+        loopback_pair, open_local_forward_connection, start_local_forward, start_remote_forward,
+        validate_fingerprint, validate_remote_forward_rule, verify_fingerprint,
+        FingerprintVerification, ForwardConnection, JumpHostConfig, LocalPortForwardRule,
+        PortForwardKind, RemotePortForwardRule, SessionCommand, SshAuthConfig, SshAuthMethod,
         SshSessionManager,
     };
 
@@ -2147,6 +2148,142 @@ mod tests {
         Err(format!(
             "未收到有效的 SSH 服务标识：{}",
             String::from_utf8_lossy(&banner)
+        ))
+    }
+
+    #[test]
+    #[ignore = "requires FINESHELL_LIVE_* environment variables and a stored password"]
+    fn forwards_a_live_remote_listener_to_a_local_target() -> Result<(), String> {
+        let host_id = std::env::var("FINESHELL_LIVE_HOST_ID")
+            .map_err(|_| "缺少 FINESHELL_LIVE_HOST_ID".to_string())?;
+        let address = std::env::var("FINESHELL_LIVE_ADDRESS")
+            .map_err(|_| "缺少 FINESHELL_LIVE_ADDRESS".to_string())?;
+        let port = std::env::var("FINESHELL_LIVE_PORT")
+            .unwrap_or_else(|_| "22".to_string())
+            .parse::<u16>()
+            .map_err(|error| format!("FINESHELL_LIVE_PORT 无效：{error}"))?;
+        let remote_port = std::env::var("FINESHELL_LIVE_REMOTE_FORWARD_PORT")
+            .unwrap_or_else(|_| "49123".to_string())
+            .parse::<u16>()
+            .map_err(|error| format!("FINESHELL_LIVE_REMOTE_FORWARD_PORT 无效：{error}"))?;
+        let username =
+            std::env::var("FINESHELL_LIVE_USERNAME").unwrap_or_else(|_| "root".to_string());
+        let config = SshAuthConfig {
+            host_id,
+            address,
+            port,
+            username,
+            auth_method: SshAuthMethod::Password,
+            private_key_path: None,
+            connect_timeout_seconds: 10,
+            keep_alive_interval_seconds: 5,
+            expected_fingerprint: std::env::var("FINESHELL_LIVE_FINGERPRINT").ok(),
+            proxy: None,
+            jump_host: None,
+        };
+        let (session, _) = connect_authenticated_session(&config, &AtomicBool::new(false))?;
+
+        let local_target = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|error| format!("创建本地测试服务失败：{error}"))?;
+        let local_target_port = local_target
+            .local_addr()
+            .map_err(|error| format!("读取本地测试服务端口失败：{error}"))?
+            .port();
+        local_target
+            .set_nonblocking(true)
+            .map_err(|error| format!("设置本地测试服务非阻塞模式失败：{error}"))?;
+        let target_worker = std::thread::spawn(move || -> Result<(), String> {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match local_target.accept() {
+                    Ok((mut socket, _)) => {
+                        socket
+                            .write_all(b"fineshell-remote-forward-ok")
+                            .map_err(|error| format!("写入本地测试响应失败：{error}"))?;
+                        return Ok(());
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return Err("等待远程转发连接本地目标超时".to_string());
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => return Err(format!("接受远程转发连接失败：{error}")),
+                }
+            }
+        });
+
+        let (mut forward, _) = start_remote_forward(
+            &session,
+            RemotePortForwardRule {
+                id: "live-remote-forward".to_string(),
+                name: "Remote preview".to_string(),
+                bind_address: "127.0.0.1".to_string(),
+                bind_port: remote_port,
+                target_address: "127.0.0.1".to_string(),
+                target_port: local_target_port,
+                enabled: true,
+            },
+        )?;
+        let mut command = session
+            .channel_session()
+            .map_err(|error| format!("创建远程转发测试命令通道失败：{error}"))?;
+        command
+            .exec(&format!(
+                "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/{remote_port}; head -c 27 <&3'"
+            ))
+            .map_err(|error| format!("触发远程转发连接失败：{error}"))?;
+        session.set_blocking(false);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let remote_channel = loop {
+            match forward.listener.accept() {
+                Ok(channel) => break channel,
+                Err(error) => {
+                    let message = error.to_string();
+                    let io_error: std::io::Error = error.into();
+                    if io_error.kind() != std::io::ErrorKind::WouldBlock {
+                        return Err(format!("接受远程监听连接失败：{message}"));
+                    }
+                    if Instant::now() >= deadline {
+                        return Err("等待远程监听连接超时".to_string());
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        };
+        let target_socket = TcpStream::connect(("127.0.0.1", local_target_port))
+            .map_err(|error| format!("连接本地测试目标失败：{error}"))?;
+        let mut relay = ForwardConnection::new(
+            "live-remote-forward".to_string(),
+            PortForwardKind::Remote,
+            target_socket,
+            remote_channel,
+        )?;
+        let mut output = Vec::new();
+        let mut buffer = [0_u8; 256];
+        while Instant::now() < deadline {
+            let _ = relay.poll()?;
+            match command.read(&mut buffer) {
+                Ok(0) => {}
+                Ok(size) => {
+                    output.extend_from_slice(&buffer[..size]);
+                    if output == b"fineshell-remote-forward-ok" {
+                        target_worker
+                            .join()
+                            .map_err(|_| "本地测试服务线程异常结束".to_string())??;
+                        return Ok(());
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(format!("读取远程转发测试结果失败：{error}")),
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        Err(format!(
+            "未收到有效的远程转发响应：{}",
+            String::from_utf8_lossy(&output)
         ))
     }
 
