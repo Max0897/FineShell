@@ -624,6 +624,11 @@ body,
   cursor: default;
 }
 
+.sftp-table tbody > .arco-table-tr {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .sftp-table .arco-table-row-checked > .arco-table-td {
   background: #e8f3ff;
 }
