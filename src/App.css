@@ -1239,6 +1239,7 @@ body,
 .host-editor-tabs > .arco-tabs-header-nav {
   flex: 0 0 88px;
   width: 88px;
+  margin-left: -20px;
 }
 
 .host-editor-tabs
