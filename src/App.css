@@ -414,6 +414,7 @@ body,
 }
 
 .terminal-tabs {
+  --terminal-tab-height: 40px;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -421,8 +422,8 @@ body,
 }
 
 .terminal-tabs > .arco-tabs-header-nav {
-  flex: 0 0 40px;
-  height: 40px;
+  flex: 0 0 var(--terminal-tab-height);
+  height: var(--terminal-tab-height);
   margin: 0;
   padding: 0 8px;
   background: #f2f2f2;
@@ -433,7 +434,7 @@ body,
 }
 
 .terminal-tabs > .arco-tabs-header-nav .arco-tabs-header-scroll {
-  height: 40px;
+  height: var(--terminal-tab-height);
 }
 
 .terminal-tabs .arco-tabs-header-wrapper,
@@ -445,7 +446,7 @@ body,
   position: relative;
   box-sizing: border-box;
   max-width: 220px;
-  height: 40px;
+  height: var(--terminal-tab-height);
   margin: 0 !important;
   padding: 0 14px !important;
   border: 0 !important;
@@ -486,7 +487,7 @@ body,
 }
 
 .terminal-tabs .arco-tabs-header-title-text {
-  height: 100%;
+  height: var(--terminal-tab-height);
   min-width: 0;
   display: inline-flex;
   align-items: center;
@@ -521,8 +522,8 @@ body,
 }
 
 .terminal-tabs .arco-tabs-add-icon {
-  width: 40px;
-  height: 40px !important;
+  width: var(--terminal-tab-height);
+  height: var(--terminal-tab-height) !important;
   padding: 0 !important;
   color: #4e5969;
   cursor: pointer;
@@ -537,7 +538,7 @@ body,
 }
 
 .terminal-tab-label {
-  height: 100%;
+  height: var(--terminal-tab-height);
   min-width: 0;
   display: inline-flex;
   align-items: center;
