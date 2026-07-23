@@ -989,6 +989,11 @@ body,
   box-shadow: none;
 }
 
+.sftp-context-menu {
+  max-height: none;
+  overflow: visible;
+}
+
 .app-context-menu-danger,
 .app-context-menu-danger .arco-icon {
   color: #f53f3f;

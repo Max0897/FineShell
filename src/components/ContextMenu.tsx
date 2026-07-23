@@ -26,6 +26,7 @@ interface ContextMenuProps {
   children: ReactElement<ContextMenuChildProps>;
   disabled?: boolean;
   items?: ContextMenuItem[];
+  menuClassName?: string;
   resolveItems?: (event: MouseEvent<HTMLElement>) => ContextMenuItem[];
 }
 
@@ -86,6 +87,7 @@ function ContextMenu({
   children,
   disabled = false,
   items = [],
+  menuClassName,
   resolveItems,
 }: ContextMenuProps) {
   const [activeItems, setActiveItems] = useState(items);
@@ -112,7 +114,9 @@ function ContextMenu({
       disabled={disabled}
       droplist={
         <Menu
-          className="app-context-menu"
+          className={
+            ["app-context-menu", menuClassName].filter(Boolean).join(" ")
+          }
           onClickMenuItem={(key) => {
             const item = findMenuItem(activeItems, key);
             if (!item?.onClick || item.disabled) return false;

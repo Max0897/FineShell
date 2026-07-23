@@ -924,7 +924,10 @@ function SftpPanel({
           </div>
         </div>
       ) : (
-        <ContextMenu resolveItems={resolveEntryContextMenu}>
+        <ContextMenu
+          menuClassName="sftp-context-menu"
+          resolveItems={resolveEntryContextMenu}
+        >
           <div className="sftp-table-container">
             <Table
               border={false}
