@@ -665,6 +665,25 @@ body,
   position: relative;
 }
 
+.sftp-file-drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #165dff;
+  font-size: 14px;
+  background: rgb(255 255 255 / 94%);
+  border: 1px dashed #165dff;
+  pointer-events: none;
+}
+
+.sftp-file-drop-overlay svg {
+  font-size: 18px;
+}
+
 .sftp-table {
   min-width: 0;
 }
@@ -717,12 +736,45 @@ body,
 }
 
 .sftp-transfer-drawer-toolbar {
-  min-height: 42px;
-  padding: 0 16px;
+  min-height: 54px;
+  padding: 6px 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #e5e6eb;
+}
+
+.sftp-transfer-summary {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sftp-transfer-summary > .arco-typography {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.sftp-transfer-summary-progress {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sftp-transfer-summary-progress .arco-progress {
+  width: 120px;
+  margin: 0;
+}
+
+.sftp-transfer-summary-progress > .arco-typography {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
 }
 
 .sftp-transfer-empty {

@@ -18,6 +18,9 @@ import {
 import type { TableColumnProps } from "@arco-design/web-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { join } from "@tauri-apps/api/path";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   IconArrowUp,
@@ -49,23 +52,19 @@ import {
   formatFileSize,
   formatPermissions,
   formatRemoteTime,
+  isActiveSftpTransfer,
   isValidRemoteName,
   localFileName,
   parsePermissions,
   remoteJoinPath,
   remoteParentPath,
+  summarizeSftpTransfers,
 } from "../sftp-utils";
+import type { SftpTransferStatus } from "../sftp-utils";
 import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
 type CreateEntryKind = "file" | "directory";
-type TransferStatus =
-  | "queued"
-  | "running"
-  | "paused"
-  | "completed"
-  | "failed"
-  | "cancelled";
 
 interface BrowserState {
   status: BrowserStatus;
@@ -88,18 +87,24 @@ interface SftpTransferPayload {
   fileName: string;
   transferredBytes: number;
   totalBytes: number;
-  status: Exclude<TransferStatus, "queued">;
+  status: Exclude<SftpTransferStatus, "queued">;
   error?: string;
 }
 
 interface TransferRecord extends Omit<SftpTransferPayload, "status"> {
-  status: TransferStatus;
+  status: SftpTransferStatus;
   localPath: string;
   remotePath: string;
   overwrite: boolean;
   sampledAt: number;
   sampledBytes: number;
   bytesPerSecond: number;
+}
+
+interface LocalUploadFile {
+  path: string;
+  name: string;
+  size: number;
 }
 
 const INITIAL_BROWSER: BrowserState = {
@@ -119,10 +124,6 @@ function formatTransferSpeed(bytesPerSecond: number) {
   return bytesPerSecond > 0
     ? `${formatFileSize(bytesPerSecond)}/s`
     : "正在计算";
-}
-
-function isActiveTransfer(status: TransferStatus) {
-  return status === "queued" || status === "running" || status === "paused";
 }
 
 function isTransferCancellation(message: string) {
@@ -154,11 +155,17 @@ function SftpPanel({
   const [permissionValue, setPermissionValue] = useState("");
   const [operationLoading, setOperationLoading] = useState(false);
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
+  const [fileDropActive, setFileDropActive] = useState(false);
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
   const startingTransfersRef = useRef(new Set<string>());
   const browsersRef = useRef(browsers);
   const transfersRef = useRef(transfers);
+  const dropZoneRef = useRef<HTMLDivElement>(null);
+  const readyRef = useRef(false);
+  const queueUploadPathsRef = useRef<(paths: string[]) => Promise<void>>(
+    async () => undefined,
+  );
 
   useEffect(() => {
     browsersRef.current = browsers;
@@ -301,7 +308,7 @@ function SftpPanel({
           Object.entries(current).map(([transferId, transfer]) => {
             if (
               transfer.sessionId === session.id &&
-              isActiveTransfer(transfer.status)
+              isActiveSftpTransfer(transfer.status)
             ) {
               startingTransfersRef.current.delete(transferId);
               return [
@@ -338,6 +345,9 @@ function SftpPanel({
           previous.status === "cancelled" &&
           payload.status !== "cancelled"
         ) {
+          return current;
+        }
+        if (previous.status === "paused" && payload.status === "running") {
           return current;
         }
         const now = Date.now();
@@ -394,6 +404,7 @@ function SftpPanel({
   const browser = session ? browsers[session.id] ?? INITIAL_BROWSER : null;
   const connected = session?.status === "connected";
   const ready = Boolean(connected && browser?.status === "ready");
+  readyRef.current = ready;
   const busy =
     browser?.status === "connecting" || browser?.status === "loading";
   const currentTransfers = useMemo(
@@ -409,6 +420,15 @@ function SftpPanel({
         (entry) => showHiddenFiles || !entry.name.startsWith("."),
       ),
     [browser?.entries, showHiddenFiles],
+  );
+  const selectedEntries = useMemo(
+    () =>
+      visibleEntries.filter((entry) => selectedEntryKeys.includes(entry.id)),
+    [selectedEntryKeys, visibleEntries],
+  );
+  const transferSummary = useMemo(
+    () => summarizeSftpTransfers(currentTransfers),
+    [currentTransfers],
   );
 
   useEffect(() => {
@@ -552,6 +572,7 @@ function SftpPanel({
     remotePath: string,
     overwrite: boolean,
     transferId = createTransferId(),
+    totalBytes = 0,
   ) {
     if (!session) return;
     const fileName =
@@ -564,7 +585,7 @@ function SftpPanel({
       direction,
       fileName,
       transferredBytes: 0,
-      totalBytes: 0,
+      totalBytes,
       status: "queued",
       localPath,
       remotePath,
@@ -576,30 +597,99 @@ function SftpPanel({
     setTransfers((current) => ({ ...current, [transferId]: record }));
   }
 
-  async function chooseUploadFile() {
-    if (!session || !browser || !ready) return;
-    const selected = await open({
-      directory: false,
-      multiple: false,
-      title: "选择上传文件",
-    });
-    if (typeof selected !== "string") return;
-
-    const fileName = localFileName(selected);
-    const remotePath = remoteJoinPath(browser.path, fileName);
-    const existing = browser.entries.find((entry) => entry.name === fileName);
-    if (existing) {
+  function confirmBatchOverwrite(title: string, content: string) {
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (value: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
       Modal.confirm({
-        title: "覆盖远程文件？",
-        content: `“${fileName}”已存在，继续上传将覆盖它。`,
-        okText: "覆盖",
+        title,
+        content,
+        okText: "继续",
         cancelText: "取消",
-        onOk: () => runTransfer("upload", selected, remotePath, true),
+        onOk: () => finish(true),
+        onCancel: () => finish(false),
       });
+    });
+  }
+
+  async function queueUploadPaths(paths: string[]) {
+    if (!session || !browser || !ready) return;
+    let inspected: LocalUploadFile[];
+    try {
+      inspected = await invoke<LocalUploadFile[]>(
+        "sftp_inspect_upload_paths",
+        { paths },
+      );
+    } catch (error) {
+      Message.error(String(error));
+      return;
+    }
+    if (inspected.length < paths.length) {
+      Message.warning(`已跳过 ${paths.length - inspected.length} 个目录或无效路径`);
+    }
+    if (inspected.length === 0) {
+      Message.warning("没有可上传的文件");
       return;
     }
 
-    await runTransfer("upload", selected, remotePath, false);
+    const uniqueFiles = new Map<string, LocalUploadFile>();
+    for (const file of inspected) {
+      if (!uniqueFiles.has(file.name)) {
+        uniqueFiles.set(file.name, file);
+      }
+    }
+    if (uniqueFiles.size < inspected.length) {
+      Message.warning(`已跳过 ${inspected.length - uniqueFiles.size} 个同名文件`);
+    }
+    const files = [...uniqueFiles.values()];
+    const existingNames = new Set(browser.entries.map((entry) => entry.name));
+    const conflictCount = files.filter((file) =>
+      existingNames.has(file.name),
+    ).length;
+    if (
+      conflictCount > 0 &&
+      !(await confirmBatchOverwrite(
+        "覆盖远程文件？",
+        `有 ${conflictCount} 个同名文件，继续后将统一覆盖。`,
+      ))
+    ) {
+      return;
+    }
+
+    for (const file of files) {
+      runTransfer(
+        "upload",
+        file.path,
+        remoteJoinPath(browser.path, file.name),
+        existingNames.has(file.name),
+        undefined,
+        file.size,
+      );
+    }
+    Message.info(`已加入 ${files.length} 个上传任务`);
+  }
+
+  queueUploadPathsRef.current = queueUploadPaths;
+
+  async function chooseUploadFiles() {
+    if (!session || !browser || !ready) return;
+    const selected = await open({
+      directory: false,
+      multiple: true,
+      title: "选择上传文件（可多选）",
+    });
+    const paths = Array.isArray(selected)
+      ? selected
+      : typeof selected === "string"
+        ? [selected]
+        : [];
+    if (paths.length > 0) {
+      await queueUploadPaths(paths);
+    }
   }
 
   async function downloadEntry(entry: SftpEntry) {
@@ -609,7 +699,49 @@ function SftpPanel({
       title: `下载 ${entry.name}`,
     });
     if (!target) return;
-    await runTransfer("download", target, entry.path, true);
+    runTransfer("download", target, entry.path, true, undefined, entry.size);
+  }
+
+  async function downloadEntries(entries: SftpEntry[]) {
+    const files = entries.filter((entry) => entry.kind !== "directory");
+    if (files.length === 0) {
+      Message.warning("请选择需要下载的文件");
+      return;
+    }
+    if (files.length < entries.length) {
+      Message.warning(`已跳过 ${entries.length - files.length} 个目录`);
+    }
+    if (files.length === 1) {
+      await downloadEntry(files[0]);
+      return;
+    }
+    const targetDirectory = await open({
+      directory: true,
+      multiple: false,
+      title: `选择 ${files.length} 个文件的下载目录`,
+    });
+    if (typeof targetDirectory !== "string") return;
+    if (
+      !(await confirmBatchOverwrite(
+        "开始批量下载？",
+        `将下载 ${files.length} 个文件，同名本地文件将统一覆盖。`,
+      ))
+    ) {
+      return;
+    }
+
+    for (const entry of files) {
+      runTransfer(
+        "download",
+        await join(targetDirectory, entry.name),
+        entry.path,
+        true,
+        undefined,
+        entry.size,
+      );
+    }
+    setSelectedEntryKeys([]);
+    Message.info(`已加入 ${files.length} 个下载任务`);
   }
 
   async function retryTransfer(transfer: TransferRecord) {
@@ -619,6 +751,7 @@ function SftpPanel({
       transfer.remotePath,
       transfer.overwrite,
       transfer.transferId,
+      transfer.totalBytes,
     );
   }
 
@@ -692,7 +825,7 @@ function SftpPanel({
       });
       setTransfers((current) => {
         const previous = current[transfer.transferId];
-        if (!previous || !isActiveTransfer(previous.status)) return current;
+        if (!previous || !isActiveSftpTransfer(previous.status)) return current;
         return {
           ...current,
           [transfer.transferId]: {
@@ -714,7 +847,7 @@ function SftpPanel({
         Object.entries(current).filter(
           ([, transfer]) =>
             transfer.sessionId !== session.id ||
-            isActiveTransfer(transfer.status),
+            isActiveSftpTransfer(transfer.status),
         ),
       ),
     );
@@ -972,6 +1105,17 @@ function SftpPanel({
         disabled: operationLoading,
         onClick: () => downloadEntry(singleEntry),
       });
+    } else if (entries.some((entry) => entry.kind !== "directory")) {
+      const fileCount = entries.filter(
+        (entry) => entry.kind !== "directory",
+      ).length;
+      menuItems.push({
+        key: "download-selected",
+        label: `下载所选（${fileCount}）`,
+        icon: <IconDownload />,
+        disabled: operationLoading,
+        onClick: () => downloadEntries(entries),
+      });
     }
 
     if (singleEntry) {
@@ -1077,6 +1221,58 @@ function SftpPanel({
     void loadDirectory(session.id, entry.path);
   }
 
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    let scaleFactor = 1;
+
+    void getCurrentWindow()
+      .scaleFactor()
+      .then((value) => {
+        scaleFactor = value;
+      });
+    void getCurrentWebview()
+      .onDragDropEvent(({ payload }) => {
+        if (payload.type === "leave") {
+          setFileDropActive(false);
+          return;
+        }
+        const rect = dropZoneRef.current?.getBoundingClientRect();
+        const position = payload.position;
+        const x = position.x / scaleFactor;
+        const y = position.y / scaleFactor;
+        const inside = Boolean(
+          readyRef.current &&
+            rect &&
+            x >= rect.left &&
+            x <= rect.right &&
+            y >= rect.top &&
+            y <= rect.bottom,
+        );
+        if (payload.type === "drop") {
+          setFileDropActive(false);
+          if (inside) {
+            void queueUploadPathsRef.current(payload.paths);
+          }
+          return;
+        }
+        setFileDropActive(inside);
+      })
+      .then((stopListening) => {
+        if (disposed) {
+          stopListening();
+        } else {
+          unlisten = stopListening;
+        }
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   return (
     <section className="panel sftp-panel">
       <div className="panel-toolbar sftp-toolbar">
@@ -1159,10 +1355,22 @@ function SftpPanel({
           >
             新建
           </Dropdown.Button>
+          <Tooltip content="下载所选文件">
+            <Button
+              aria-label="下载所选文件"
+              disabled={
+                !ready ||
+                !selectedEntries.some((entry) => entry.kind !== "directory")
+              }
+              icon={<IconDownload />}
+              onClick={() => void downloadEntries(selectedEntries)}
+              size="mini"
+            />
+          </Tooltip>
           <Button
             disabled={!ready}
             icon={<IconUpload />}
-            onClick={() => void chooseUploadFile()}
+            onClick={() => void chooseUploadFiles()}
             size="mini"
             type="primary"
           >
@@ -1194,7 +1402,16 @@ function SftpPanel({
           menuClassName="sftp-context-menu"
           resolveItems={resolveEntryContextMenu}
         >
-          <div className="sftp-table-container">
+          <div
+            className={`sftp-table-container${fileDropActive ? " sftp-table-container-drop-active" : ""}`}
+            ref={dropZoneRef}
+          >
+            {fileDropActive && (
+              <div className="sftp-file-drop-overlay">
+                <IconUpload />
+                <span>释放以上传文件</span>
+              </div>
+            )}
             <Table
               border={false}
               className="sftp-table"
@@ -1234,10 +1451,31 @@ function SftpPanel({
       >
         {currentTransfers.length > 0 && (
           <div className="sftp-transfer-drawer-toolbar">
-            <Typography.Text type="secondary">
-              共 {currentTransfers.length} 条
-            </Typography.Text>
-            {currentTransfers.some((item) => item.status !== "running") && (
+            <div className="sftp-transfer-summary">
+              <Typography.Text type="secondary">
+                已完成 {transferSummary.completed} / {currentTransfers.length}
+                {transferSummary.active > 0
+                  ? ` · 进行中 ${transferSummary.active}`
+                  : ""}
+              </Typography.Text>
+              {transferSummary.totalBytes > 0 && (
+                <div className="sftp-transfer-summary-progress">
+                  <Progress
+                    percent={transferSummary.percent}
+                    showText={false}
+                    size="small"
+                    strokeWidth={3}
+                  />
+                  <Typography.Text type="secondary">
+                    {formatFileSize(transferSummary.transferredBytes)} /{" "}
+                    {formatFileSize(transferSummary.totalBytes)}
+                  </Typography.Text>
+                </div>
+              )}
+            </div>
+            {currentTransfers.some(
+              (item) => !isActiveSftpTransfer(item.status),
+            ) && (
               <Tooltip content="清除已结束任务">
                 <Button
                   aria-label="清除已结束传输任务"
@@ -1358,7 +1596,7 @@ function SftpPanel({
                         />
                       </Tooltip>
                     )}
-                    {isActiveTransfer(transfer.status) && (
+                    {isActiveSftpTransfer(transfer.status) && (
                       <Tooltip content="取消">
                         <Button
                           aria-label={`取消 ${transfer.fileName}`}

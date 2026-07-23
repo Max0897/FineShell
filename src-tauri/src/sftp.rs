@@ -67,6 +67,14 @@ pub(crate) struct SftpListResult {
     entries: Vec<SftpEntry>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalUploadFile {
+    path: String,
+    name: String,
+    size: u64,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SftpTransferPayload {
@@ -365,6 +373,27 @@ fn list_directory(sftp: &Sftp, path: &str) -> Result<SftpListResult, String> {
 
 fn remote_exists(sftp: &Sftp, path: &Path) -> bool {
     sftp.lstat(path).is_ok()
+}
+
+fn inspect_upload_paths(paths: Vec<String>) -> Result<Vec<LocalUploadFile>, String> {
+    if paths.is_empty() {
+        return Err("没有选择需要上传的文件".to_string());
+    }
+    Ok(paths
+        .into_iter()
+        .filter_map(|path| {
+            let local_path = Path::new(&path);
+            let metadata = local_path.metadata().ok()?;
+            if !metadata.is_file() {
+                return None;
+            }
+            Some(LocalUploadFile {
+                name: local_path.file_name()?.to_string_lossy().into_owned(),
+                path,
+                size: metadata.len(),
+            })
+        })
+        .collect())
 }
 
 fn create_empty_file(sftp: &Sftp, path: &str) -> Result<(), String> {
@@ -1024,6 +1053,13 @@ pub(crate) async fn sftp_list(
 }
 
 #[tauri::command]
+pub(crate) fn sftp_inspect_upload_paths(
+    paths: Vec<String>,
+) -> Result<Vec<LocalUploadFile>, String> {
+    inspect_upload_paths(paths)
+}
+
+#[tauri::command]
 pub(crate) async fn sftp_create_directory(
     manager: State<'_, SftpSessionManager>,
     session_id: String,
@@ -1262,8 +1298,9 @@ mod tests {
     use ssh2::{FileStat, RenameFlags};
 
     use super::{
-        download_temporary_path, entry_kind, fast_delete_command, remote_upload_temporary_path,
-        replace_download_file, shell_quote, SftpCommand, SftpSessionManager,
+        download_temporary_path, entry_kind, fast_delete_command, inspect_upload_paths,
+        remote_upload_temporary_path, replace_download_file, shell_quote, SftpCommand,
+        SftpSessionManager,
     };
     use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
 
@@ -1341,6 +1378,33 @@ mod tests {
             temporary,
             Path::new("/srv/releases/.archive.zip.transfer-123.part")
         );
+    }
+
+    #[test]
+    fn keeps_only_regular_files_for_batch_uploads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "fineshell-upload-inspect-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let file = directory.join("report.txt");
+        fs::write(&file, b"report").unwrap();
+
+        let inspected = inspect_upload_paths(vec![
+            file.to_string_lossy().into_owned(),
+            directory.to_string_lossy().into_owned(),
+            directory.join("missing.txt").to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(inspected.len(), 1);
+        assert_eq!(inspected[0].name, "report.txt");
+        assert_eq!(inspected[0].size, 6);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -50,6 +50,7 @@ pub fn run() {
             ssh::ssh_disconnect,
             sftp::sftp_connect,
             sftp::sftp_list,
+            sftp::sftp_inspect_upload_paths,
             sftp::sftp_create_directory,
             sftp::sftp_create_file,
             sftp::sftp_rename,

@@ -7,6 +7,7 @@ import {
   parsePermissions,
   remoteJoinPath,
   remoteParentPath,
+  summarizeSftpTransfers,
 } from "./sftp-utils";
 
 describe("SFTP path helpers", () => {
@@ -47,5 +48,21 @@ describe("SFTP display helpers", () => {
     expect(parsePermissions(" 4755 ")).toBe(0o4755);
     expect(parsePermissions("99")).toBeNull();
     expect(parsePermissions("888")).toBeNull();
+  });
+
+  test("summarizes queued and completed transfer progress", () => {
+    expect(
+      summarizeSftpTransfers([
+        { status: "completed", transferredBytes: 100, totalBytes: 100 },
+        { status: "running", transferredBytes: 40, totalBytes: 100 },
+        { status: "queued", transferredBytes: 0, totalBytes: 100 },
+      ]),
+    ).toEqual({
+      active: 2,
+      completed: 1,
+      percent: 47,
+      totalBytes: 300,
+      transferredBytes: 140,
+    });
   });
 });
