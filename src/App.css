@@ -602,6 +602,16 @@ body,
   width: 6px !important;
 }
 
+.terminal-view .xterm-scrollable-element > .scrollbar.vertical {
+  right: 4px !important;
+}
+
+.terminal-view .xterm-scrollable-element > .scrollbar.vertical > .slider,
+.terminal-view .xterm-scrollable-element > .scrollbar.vertical > .slider:hover,
+.terminal-view .xterm-scrollable-element > .scrollbar.vertical > .slider.active {
+  background: #c9cdd4 !important;
+}
+
 .terminal-view .xterm-scrollable-element > .scrollbar.vertical > .slider {
   border-radius: 3px;
 }
