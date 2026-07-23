@@ -552,6 +552,11 @@ body,
   flex: 0 0 auto;
 }
 
+.terminal-tab-label-home {
+  height: calc(var(--terminal-tab-height) - 8px);
+  margin-block: 4px;
+}
+
 .terminal-tab-name {
   overflow: hidden;
   text-overflow: ellipsis;

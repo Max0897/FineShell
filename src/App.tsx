@@ -718,7 +718,7 @@ function App() {
           closable={false}
           key={HOME_TAB_ID}
           title={
-            <span className="terminal-tab-label">
+            <span className="terminal-tab-label terminal-tab-label-home">
               <IconHome />
               <span className="terminal-tab-name">首页</span>
             </span>
