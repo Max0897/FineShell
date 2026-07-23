@@ -1194,6 +1194,14 @@ body,
   margin-bottom: 12px;
 }
 
+.port-forward-kind-tabs > .arco-tabs-header-nav {
+  margin: 0 0 12px;
+}
+
+.port-forward-kind-tabs > .arco-tabs-content {
+  padding: 0;
+}
+
 .port-forward-rules-editor .arco-table-container {
   border-bottom: 0;
 }

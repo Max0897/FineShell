@@ -63,6 +63,9 @@ function HostEditorModal({
   const [localPortForwards, setLocalPortForwards] = useState(
     host?.localPortForwards ?? [],
   );
+  const [remotePortForwards, setRemotePortForwards] = useState(
+    host?.remotePortForwards ?? [],
+  );
 
   useEffect(() => {
     if (visible) {
@@ -70,6 +73,7 @@ function HostEditorModal({
       setProxyId(host?.proxyId);
       setJumpHostId(host?.jumpHostId);
       setLocalPortForwards(host?.localPortForwards ?? []);
+      setRemotePortForwards(host?.remotePortForwards ?? []);
     }
   }, [visible, host?.id]);
 
@@ -122,6 +126,7 @@ function HostEditorModal({
         connectionDefaults.defaultMaxReconnectAttempts,
       hostFingerprint: targetUnchanged ? host.hostFingerprint : undefined,
       localPortForwards,
+      remotePortForwards,
     });
   };
 
@@ -295,8 +300,10 @@ function HostEditorModal({
           <Tabs.TabPane key="forwards" title="端口转发">
             <div className="host-editor-tab-pane">
               <PortForwardRulesEditor
-                onChange={setLocalPortForwards}
-                rules={localPortForwards}
+                localRules={localPortForwards}
+                onLocalChange={setLocalPortForwards}
+                onRemoteChange={setRemotePortForwards}
+                remoteRules={remotePortForwards}
               />
             </div>
           </Tabs.TabPane>
