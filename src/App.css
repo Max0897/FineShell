@@ -952,6 +952,16 @@ body,
   color: #f53f3f;
 }
 
+.app-context-menu-divider {
+  border-top: 1px solid #f2f3f5;
+}
+
+.app-context-menu-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 @media (max-width: 760px) {
   .manager-toolbar,
   .manager-toolbar-filters {

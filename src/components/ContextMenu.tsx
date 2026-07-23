@@ -13,7 +13,9 @@ export interface ContextMenuItem {
   icon?: ReactNode;
   disabled?: boolean;
   danger?: boolean;
-  onClick: () => void | Promise<void>;
+  dividerBefore?: boolean;
+  children?: ContextMenuItem[];
+  onClick?: () => void | Promise<void>;
 }
 
 interface ContextMenuChildProps {
@@ -25,6 +27,57 @@ interface ContextMenuProps {
   disabled?: boolean;
   items?: ContextMenuItem[];
   resolveItems?: (event: MouseEvent<HTMLElement>) => ContextMenuItem[];
+}
+
+function findMenuItem(
+  items: ContextMenuItem[],
+  key: string,
+): ContextMenuItem | undefined {
+  for (const item of items) {
+    if (item.key === key) return item;
+    const child = item.children && findMenuItem(item.children, key);
+    if (child) return child;
+  }
+  return undefined;
+}
+
+function menuItemClassName(item: ContextMenuItem) {
+  return [
+    item.danger ? "app-context-menu-danger" : "",
+    item.dividerBefore ? "app-context-menu-divider" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function renderMenuItem(item: ContextMenuItem): ReactNode {
+  if (item.children?.length) {
+    return (
+      <Menu.SubMenu
+        className={menuItemClassName(item) || undefined}
+        key={item.key}
+        title={
+          <span className="app-context-menu-label">
+            {item.icon}
+            {item.label}
+          </span>
+        }
+      >
+        {item.children.map(renderMenuItem)}
+      </Menu.SubMenu>
+    );
+  }
+
+  return (
+    <Menu.Item
+      className={menuItemClassName(item) || undefined}
+      disabled={item.disabled}
+      key={item.key}
+    >
+      {item.icon}
+      {item.label}
+    </Menu.Item>
+  );
 }
 
 function ContextMenu({
@@ -59,22 +112,13 @@ function ContextMenu({
         <Menu
           className="app-context-menu"
           onClickMenuItem={(key) => {
-            const item = activeItems.find((candidate) => candidate.key === key);
-            if (!item || item.disabled) return false;
+            const item = findMenuItem(activeItems, key);
+            if (!item?.onClick || item.disabled) return false;
             return item.onClick();
           }}
           selectable={false}
         >
-          {activeItems.map((item) => (
-            <Menu.Item
-              className={item.danger ? "app-context-menu-danger" : undefined}
-              disabled={item.disabled}
-              key={item.key}
-            >
-              {item.icon}
-              {item.label}
-            </Menu.Item>
-          ))}
+          {activeItems.map(renderMenuItem)}
         </Menu>
       }
       onVisibleChange={(visible) => {
