@@ -150,15 +150,6 @@ function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function targetKey(
-  target: Pick<
-    HostRecord,
-    "address" | "port" | "username" | "proxyId" | "jumpHostId"
-  >,
-) {
-  return `${target.username}@${target.address}:${target.port}#${target.proxyId ?? "direct"}#${target.jumpHostId ?? "no-jump"}`;
-}
-
 function App() {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -341,15 +332,6 @@ function App() {
       jumpHost?: JumpHostConnection,
     ) => {
       const normalizedHost = withHostDefaults(host);
-      const identity = targetKey(normalizedHost);
-      const existing = sessionsRef.current.find(
-        (session) => targetKey(session.host) === identity,
-      );
-      if (existing) {
-        setActiveSessionId(existing.id);
-        return;
-      }
-
       const session: TerminalSession = {
         id: createId("session"),
         host: normalizedHost,
