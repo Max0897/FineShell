@@ -4,10 +4,10 @@ import {
   Form,
   Input,
   InputNumber,
+  Menu,
   Modal,
   Select,
   Space,
-  Tabs,
   Tooltip,
   Typography,
 } from "@arco-design/web-react";
@@ -50,6 +50,8 @@ interface HostEditorModalProps {
   onSubmit: (values: HostFormValues) => void;
 }
 
+type HostEditorSection = "basic" | "route" | "forwards";
+
 function HostEditorModal({
   connectionDefaults,
   host,
@@ -66,7 +68,8 @@ function HostEditorModal({
     host?.authMethod ?? "password",
   );
   const [sshKeyId, setSshKeyId] = useState(host?.sshKeyId);
-  const [activeTab, setActiveTab] = useState("basic");
+  const [activeSection, setActiveSection] =
+    useState<HostEditorSection>("basic");
   const [proxyId, setProxyId] = useState(host?.proxyId);
   const [jumpHostId, setJumpHostId] = useState(host?.jumpHostId);
   const [localPortForwards, setLocalPortForwards] = useState(
@@ -81,7 +84,7 @@ function HostEditorModal({
 
   useEffect(() => {
     if (visible) {
-      setActiveTab("basic");
+      setActiveSection("basic");
       setSshKeyId(host?.sshKeyId);
       setProxyId(host?.proxyId);
       setJumpHostId(host?.jumpHostId);
@@ -162,18 +165,25 @@ function HostEditorModal({
         initialValues={initialValues}
         layout="vertical"
         onSubmit={submitHost}
-        onSubmitFailed={() => setActiveTab("basic")}
+        onSubmitFailed={() => setActiveSection("basic")}
       >
-        <Tabs
-          activeTab={activeTab}
-          animation={false}
-          className="host-editor-tabs"
-          onChange={setActiveTab}
-          tabPosition="left"
-          type="line"
-        >
-          <Tabs.TabPane key="basic" title="基础信息">
-            <div className="host-editor-tab-pane">
+        <div className="host-editor-layout">
+          <Menu
+            className="host-editor-menu"
+            onClickMenuItem={(key) =>
+              setActiveSection(key as HostEditorSection)
+            }
+            selectedKeys={[activeSection]}
+          >
+            <Menu.Item key="basic">基础信息</Menu.Item>
+            <Menu.Item key="route">连接链路</Menu.Item>
+            <Menu.Item key="forwards">端口转发</Menu.Item>
+          </Menu>
+          <div className="host-editor-content">
+            <section
+              className="host-editor-tab-pane"
+              hidden={activeSection !== "basic"}
+            >
               <div className="host-form-row">
                 <Form.Item
                   field="name"
@@ -290,10 +300,11 @@ function HostEditorModal({
                   ) : null}
                 </>
               ) : null}
-            </div>
-          </Tabs.TabPane>
-          <Tabs.TabPane key="route" title="连接链路">
-            <div className="host-editor-tab-pane">
+            </section>
+            <section
+              className="host-editor-tab-pane"
+              hidden={activeSection !== "route"}
+            >
               <Form.Item field="proxyId" label="代理">
                 <Select
                   allowClear
@@ -336,10 +347,11 @@ function HostEditorModal({
                   showSearch
                 />
               </Form.Item>
-            </div>
-          </Tabs.TabPane>
-          <Tabs.TabPane key="forwards" title="端口转发">
-            <div className="host-editor-tab-pane">
+            </section>
+            <section
+              className="host-editor-tab-pane"
+              hidden={activeSection !== "forwards"}
+            >
               <PortForwardRulesEditor
                 dynamicRules={dynamicPortForwards}
                 localRules={localPortForwards}
@@ -348,9 +360,9 @@ function HostEditorModal({
                 onRemoteChange={setRemotePortForwards}
                 remoteRules={remotePortForwards}
               />
-            </div>
-          </Tabs.TabPane>
-        </Tabs>
+            </section>
+          </div>
+        </div>
         <div className="modal-actions">
           <Space>
             <Button onClick={onCancel}>取消</Button>

@@ -1232,20 +1232,50 @@ body,
   overflow: auto;
 }
 
-.host-editor-tabs {
+.host-editor-layout {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
   height: clamp(340px, calc(100vh - 210px), 460px);
+  min-width: 0;
 }
 
-.host-editor-tabs > .arco-tabs-header-nav {
-  flex: 0 0 88px;
-  width: 88px;
+.host-editor-menu.arco-menu {
+  width: 100%;
+  height: 100%;
+  border-right: 1px solid #e5e6eb;
+  background: transparent;
 }
 
-.host-editor-tabs > .arco-tabs-header-nav .arco-tabs-header-ink {
-  right: 4px;
+.host-editor-menu.arco-menu-vertical .arco-menu-inner {
+  padding: 0;
+  overflow: visible;
 }
 
-.host-editor-tabs > .arco-tabs-content {
+.host-editor-menu.arco-menu-vertical .arco-menu-item {
+  position: relative;
+  height: 40px;
+  margin: 0 0 4px;
+  padding: 0 16px;
+  overflow: visible;
+  line-height: 40px;
+  border-radius: 0;
+}
+
+.host-editor-menu.arco-menu-light .arco-menu-item.arco-menu-selected {
+  background: transparent;
+}
+
+.host-editor-menu .arco-menu-item.arco-menu-selected::after {
+  position: absolute;
+  top: 0;
+  right: -1px;
+  bottom: 0;
+  width: 2px;
+  background: rgb(var(--primary-6));
+  content: "";
+}
+
+.host-editor-content {
   min-width: 0;
   padding-left: 16px;
   overflow: auto;
