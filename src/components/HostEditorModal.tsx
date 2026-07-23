@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Button,
   Form,
@@ -7,6 +7,7 @@ import {
   Modal,
   Select,
   Space,
+  Tabs,
   Tooltip,
 } from "@arco-design/web-react";
 import { IconFolder } from "@arco-design/web-react/icon";
@@ -53,6 +54,14 @@ function HostEditorModal({
   const [authMethod, setAuthMethod] = useState(
     host?.authMethod ?? "password",
   );
+  const [activeTab, setActiveTab] = useState("basic");
+
+  useEffect(() => {
+    if (visible) {
+      setActiveTab("basic");
+    }
+  }, [visible, host?.id]);
+
   const initialValues: HostEditorValues = host
     ? {
         name: host.name,
@@ -117,107 +126,127 @@ function HostEditorModal({
         initialValues={initialValues}
         layout="vertical"
         onSubmit={submitHost}
+        onSubmitFailed={() => setActiveTab("basic")}
       >
-        <div className="host-form-row">
-          <Form.Item
-            field="name"
-            label="名称"
-            rules={[{ required: true, message: "请输入主机名称" }]}
-          >
-            <Input autoFocus placeholder="例如：生产服务器" />
-          </Form.Item>
-          <Form.Item field="group" label="分组">
-            <Input placeholder="可选" />
-          </Form.Item>
-        </div>
-        <div className="host-form-row">
-          <Form.Item
-            field="address"
-            label="主机地址"
-            rules={[{ required: true, message: "请输入 IP 地址或域名" }]}
-          >
-            <Input placeholder="192.168.1.10 或 server.example.com" />
-          </Form.Item>
-          <Form.Item
-            field="port"
-            label="SSH 端口"
-            rules={[{ required: true, message: "请输入端口" }]}
-          >
-            <InputNumber max={65535} min={1} mode="button" />
-          </Form.Item>
-        </div>
-        <Form.Item
-          field="username"
-          label="用户名"
-          rules={[{ required: true, message: "请输入用户名" }]}
+        <Tabs
+          activeTab={activeTab}
+          animation={false}
+          className="host-editor-tabs"
+          onChange={setActiveTab}
+          tabPosition="left"
+          type="line"
         >
-          <Input placeholder="root" />
-        </Form.Item>
-        <Form.Item field="authMethod" label="认证方式">
-          <Select
-            onChange={setAuthMethod}
-            options={[
-              { label: "密码认证", value: "password" },
-              { label: "私钥认证", value: "privateKey" },
-            ]}
-          />
-        </Form.Item>
-        {authMethod === "password" ? (
-          <Form.Item
-            field="password"
-            label="密码"
-            rules={
-              host?.authMethod === "password"
-                ? undefined
-                : [{ required: true, message: "请输入登录密码" }]
-            }
-          >
-            <Input.Password
-              placeholder={host ? "留空则保留原密码" : "登录密码"}
-            />
-          </Form.Item>
-        ) : (
-          <>
-            <Form.Item
-              field="privateKeyPath"
-              label="私钥文件"
-              rules={[{ required: true, message: "请选择私钥文件" }]}
-            >
-              <Input.Search
-                onSearch={() =>
-                  void onChoosePrivateKey().then((path) => {
-                    if (path) form.setFieldValue("privateKeyPath", path);
-                  })
-                }
-                placeholder="选择或输入私钥文件路径"
-                searchButton={
-                  <Tooltip content="选择私钥文件">
-                    <IconFolder />
-                  </Tooltip>
-                }
-              />
-            </Form.Item>
-            <Form.Item field="privateKeyPassphrase" label="私钥口令">
-              <Input.Password
-                placeholder={
-                  host?.authMethod === "privateKey"
-                    ? "留空则保留原口令"
-                    : "没有口令可留空"
-                }
-              />
-            </Form.Item>
-          </>
-        )}
-        <Form.Item field="proxyId" label="代理">
-          <Select
-            allowClear
-            options={proxies.map((proxy) => ({
-              label: `${proxy.name} · ${proxy.type === "socks5" ? "SOCKS5" : "HTTP"}`,
-              value: proxy.id,
-            }))}
-            placeholder="直连"
-          />
-        </Form.Item>
+          <Tabs.TabPane key="basic" title="基础信息">
+            <div className="host-editor-tab-pane">
+              <div className="host-form-row">
+                <Form.Item
+                  field="name"
+                  label="名称"
+                  rules={[{ required: true, message: "请输入主机名称" }]}
+                >
+                  <Input autoFocus placeholder="例如：生产服务器" />
+                </Form.Item>
+                <Form.Item field="group" label="分组">
+                  <Input placeholder="可选" />
+                </Form.Item>
+              </div>
+              <div className="host-form-row">
+                <Form.Item
+                  field="address"
+                  label="主机地址"
+                  rules={[{ required: true, message: "请输入 IP 地址或域名" }]}
+                >
+                  <Input placeholder="192.168.1.10 或 server.example.com" />
+                </Form.Item>
+                <Form.Item
+                  field="port"
+                  label="SSH 端口"
+                  rules={[{ required: true, message: "请输入端口" }]}
+                >
+                  <InputNumber max={65535} min={1} mode="button" />
+                </Form.Item>
+              </div>
+              <Form.Item
+                field="username"
+                label="用户名"
+                rules={[{ required: true, message: "请输入用户名" }]}
+              >
+                <Input placeholder="root" />
+              </Form.Item>
+              <Form.Item field="authMethod" label="认证方式">
+                <Select
+                  onChange={setAuthMethod}
+                  options={[
+                    { label: "密码认证", value: "password" },
+                    { label: "私钥认证", value: "privateKey" },
+                  ]}
+                />
+              </Form.Item>
+              {authMethod === "password" ? (
+                <Form.Item
+                  field="password"
+                  label="密码"
+                  rules={
+                    host?.authMethod === "password"
+                      ? undefined
+                      : [{ required: true, message: "请输入登录密码" }]
+                  }
+                >
+                  <Input.Password
+                    placeholder={host ? "留空则保留原密码" : "登录密码"}
+                  />
+                </Form.Item>
+              ) : (
+                <>
+                  <Form.Item
+                    field="privateKeyPath"
+                    label="私钥文件"
+                    rules={[{ required: true, message: "请选择私钥文件" }]}
+                  >
+                    <Input.Search
+                      onSearch={() =>
+                        void onChoosePrivateKey().then((path) => {
+                          if (path) {
+                            form.setFieldValue("privateKeyPath", path);
+                          }
+                        })
+                      }
+                      placeholder="选择或输入私钥文件路径"
+                      searchButton={
+                        <Tooltip content="选择私钥文件">
+                          <IconFolder />
+                        </Tooltip>
+                      }
+                    />
+                  </Form.Item>
+                  <Form.Item field="privateKeyPassphrase" label="私钥口令">
+                    <Input.Password
+                      placeholder={
+                        host?.authMethod === "privateKey"
+                          ? "留空则保留原口令"
+                          : "没有口令可留空"
+                      }
+                    />
+                  </Form.Item>
+                </>
+              )}
+            </div>
+          </Tabs.TabPane>
+          <Tabs.TabPane key="route" title="连接链路">
+            <div className="host-editor-tab-pane">
+              <Form.Item field="proxyId" label="代理">
+                <Select
+                  allowClear
+                  options={proxies.map((proxy) => ({
+                    label: `${proxy.name} · ${proxy.type === "socks5" ? "SOCKS5" : "HTTP"}`,
+                    value: proxy.id,
+                  }))}
+                  placeholder="直连"
+                />
+              </Form.Item>
+            </div>
+          </Tabs.TabPane>
+        </Tabs>
         <div className="modal-actions">
           <Space>
             <Button onClick={onCancel}>取消</Button>

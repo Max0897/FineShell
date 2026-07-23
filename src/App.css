@@ -1138,6 +1138,32 @@ body,
   overflow: auto;
 }
 
+.host-editor-tabs {
+  height: min(390px, calc(100vh - 240px));
+  min-height: 280px;
+}
+
+.host-editor-tabs > .arco-tabs-header-nav {
+  flex: 0 0 88px;
+  width: 88px;
+}
+
+.host-editor-tabs > .arco-tabs-content {
+  min-width: 0;
+  padding-left: 16px;
+  overflow: auto;
+}
+
+.host-editor-tab-pane {
+  min-width: 0;
+  padding-right: 4px;
+}
+
+.host-editor-modal .modal-actions {
+  padding-top: 16px;
+  border-top: 1px solid #f2f3f5;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
