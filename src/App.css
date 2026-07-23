@@ -537,7 +537,6 @@ body,
 }
 
 .terminal-tab-title {
-  height: 100%;
   min-width: 0;
   display: inline-flex;
   align-items: center;
@@ -551,7 +550,7 @@ body,
   flex: 0 0 auto;
 }
 
-.terminal-tab-context-target {
+.terminal-tab-label-frame {
   height: 100%;
   min-width: 0;
   display: inline-flex;
