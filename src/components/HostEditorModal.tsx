@@ -13,6 +13,7 @@ import {
 import { IconFolder } from "@arco-design/web-react/icon";
 import type { HostFormValues, HostRecord, ProxyRecord } from "../models";
 import type { AppSettings } from "../app-settings";
+import PortForwardRulesEditor from "./PortForwardRulesEditor";
 
 type ConnectionDefaults = Pick<
   AppSettings,
@@ -59,12 +60,16 @@ function HostEditorModal({
   const [activeTab, setActiveTab] = useState("basic");
   const [proxyId, setProxyId] = useState(host?.proxyId);
   const [jumpHostId, setJumpHostId] = useState(host?.jumpHostId);
+  const [localPortForwards, setLocalPortForwards] = useState(
+    host?.localPortForwards ?? [],
+  );
 
   useEffect(() => {
     if (visible) {
       setActiveTab("basic");
       setProxyId(host?.proxyId);
       setJumpHostId(host?.jumpHostId);
+      setLocalPortForwards(host?.localPortForwards ?? []);
     }
   }, [visible, host?.id]);
 
@@ -116,6 +121,7 @@ function HostEditorModal({
         host?.maxReconnectAttempts ??
         connectionDefaults.defaultMaxReconnectAttempts,
       hostFingerprint: targetUnchanged ? host.hostFingerprint : undefined,
+      localPortForwards,
     });
   };
 
@@ -284,6 +290,14 @@ function HostEditorModal({
                   showSearch
                 />
               </Form.Item>
+            </div>
+          </Tabs.TabPane>
+          <Tabs.TabPane key="forwards" title="端口转发">
+            <div className="host-editor-tab-pane">
+              <PortForwardRulesEditor
+                onChange={setLocalPortForwards}
+                rules={localPortForwards}
+              />
             </div>
           </Tabs.TabPane>
         </Tabs>

@@ -1163,6 +1163,27 @@ body,
   border-top: 1px solid #f2f3f5;
 }
 
+.port-forward-rules-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.port-forward-rules-editor .arco-table-container {
+  border-bottom: 0;
+}
+
+.port-forward-rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  gap: 12px;
+}
+
+.port-forward-rule-row .arco-input-number {
+  width: 100%;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

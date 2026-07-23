@@ -406,6 +406,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       maxReconnectAttempts: host.maxReconnectAttempts,
       proxyId: host.proxyId,
       jumpHostId: host.jumpHostId,
+      localPortForwards: host.localPortForwards,
       connectedAt: now,
     };
 
@@ -497,6 +498,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
           record.maxReconnectAttempts ?? settings.defaultMaxReconnectAttempts,
         proxyId: record.proxyId,
         jumpHostId: record.jumpHostId,
+        localPortForwards: record.localPortForwards,
       },
     );
   }
