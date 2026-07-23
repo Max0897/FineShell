@@ -2329,18 +2329,23 @@ mod tests {
     use std::{
         io::{Read, Write},
         net::{TcpListener, TcpStream},
-        sync::atomic::{AtomicBool, Ordering},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        },
         time::{Duration, Instant},
     };
 
+    use crate::dynamic_forward::{self, DynamicConnectRequest, DynamicConnectionResult};
+
     use super::{
         connect_authenticated_session, connect_handshaken_session, disconnect_status,
-        loopback_pair, open_local_forward_connection, start_dynamic_forward, start_local_forward,
-        start_remote_forward, validate_dynamic_forward_rule, validate_fingerprint,
-        validate_remote_forward_rule, verify_fingerprint, DynamicPortForwardRule,
-        FingerprintVerification, ForwardConnection, JumpHostConfig, LocalPortForwardRule,
-        PortForwardKind, RemotePortForwardRule, SessionCommand, SshAuthConfig, SshAuthMethod,
-        SshSessionManager,
+        loopback_pair, open_dynamic_forward_channel, open_local_forward_connection,
+        start_dynamic_forward, start_local_forward, start_remote_forward,
+        validate_dynamic_forward_rule, validate_fingerprint, validate_remote_forward_rule,
+        verify_fingerprint, DynamicPortForwardRule, FingerprintVerification, ForwardConnection,
+        JumpHostConfig, LocalPortForwardRule, PortForwardKind, RemotePortForwardRule,
+        SessionCommand, SshAuthConfig, SshAuthMethod, SshSessionManager,
     };
 
     #[test]
@@ -2548,6 +2553,160 @@ mod tests {
             "未收到有效的 SSH 服务标识：{}",
             String::from_utf8_lossy(&banner)
         ))
+    }
+
+    #[test]
+    #[ignore = "requires FINESHELL_LIVE_* environment variables and a stored password"]
+    fn forwards_a_live_ssh_banner_through_a_dynamic_socks5_listener() -> Result<(), String> {
+        let host_id = std::env::var("FINESHELL_LIVE_HOST_ID")
+            .map_err(|_| "缺少 FINESHELL_LIVE_HOST_ID".to_string())?;
+        let address = std::env::var("FINESHELL_LIVE_ADDRESS")
+            .map_err(|_| "缺少 FINESHELL_LIVE_ADDRESS".to_string())?;
+        let port = std::env::var("FINESHELL_LIVE_PORT")
+            .unwrap_or_else(|_| "22".to_string())
+            .parse::<u16>()
+            .map_err(|error| format!("FINESHELL_LIVE_PORT 无效：{error}"))?;
+        let username =
+            std::env::var("FINESHELL_LIVE_USERNAME").unwrap_or_else(|_| "root".to_string());
+        let config = SshAuthConfig {
+            host_id,
+            address: address.clone(),
+            port,
+            username,
+            auth_method: SshAuthMethod::Password,
+            private_key_path: None,
+            connect_timeout_seconds: 10,
+            keep_alive_interval_seconds: 5,
+            expected_fingerprint: std::env::var("FINESHELL_LIVE_FINGERPRINT").ok(),
+            proxy: None,
+            jump_host: None,
+        };
+        let (session, _) = connect_authenticated_session(&config, &AtomicBool::new(false))?;
+        let available = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|error| format!("查找动态转发测试端口失败：{error}"))?;
+        let bind_port = available
+            .local_addr()
+            .map_err(|error| format!("读取动态转发测试端口失败：{error}"))?
+            .port();
+        drop(available);
+        let (forward, _) = start_dynamic_forward(DynamicPortForwardRule {
+            id: "live-dynamic-forward".to_string(),
+            name: "SOCKS5 SSH banner".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port,
+            enabled: true,
+        })?;
+        let listener_endpoint = forward
+            .listener
+            .local_addr()
+            .map_err(|error| format!("读取动态转发监听地址失败：{error}"))?;
+        let target_address = address.clone();
+        let (client_sender, client_receiver) = mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let result = (|| -> Result<Vec<u8>, String> {
+                let mut socket = TcpStream::connect(listener_endpoint)
+                    .map_err(|error| format!("连接 SOCKS5 测试监听失败：{error}"))?;
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .map_err(|error| format!("设置 SOCKS5 测试读取超时失败：{error}"))?;
+                socket
+                    .write_all(&[5, 1, 0])
+                    .map_err(|error| format!("发送 SOCKS5 协商请求失败：{error}"))?;
+                let mut greeting = [0_u8; 2];
+                socket
+                    .read_exact(&mut greeting)
+                    .map_err(|error| format!("读取 SOCKS5 协商响应失败：{error}"))?;
+                if greeting != [5, 0] {
+                    return Err(format!("SOCKS5 协商响应无效：{greeting:?}"));
+                }
+
+                let target = target_address.as_bytes();
+                if target.len() > u8::MAX as usize {
+                    return Err("SOCKS5 测试目标地址过长".to_string());
+                }
+                let mut request = vec![5, 1, 0, 3, target.len() as u8];
+                request.extend_from_slice(target);
+                request.extend_from_slice(&port.to_be_bytes());
+                socket
+                    .write_all(&request)
+                    .map_err(|error| format!("发送 SOCKS5 CONNECT 请求失败：{error}"))?;
+                let mut response = [0_u8; 10];
+                socket
+                    .read_exact(&mut response)
+                    .map_err(|error| format!("读取 SOCKS5 CONNECT 响应失败：{error}"))?;
+                if response[0] != 5 || response[1] != 0 {
+                    return Err(format!("SOCKS5 CONNECT 被拒绝：{response:?}"));
+                }
+
+                let mut banner = Vec::new();
+                let mut buffer = [0_u8; 256];
+                loop {
+                    let size = socket
+                        .read(&mut buffer)
+                        .map_err(|error| format!("读取动态转发后的 SSH 标识失败：{error}"))?;
+                    if size == 0 {
+                        break;
+                    }
+                    banner.extend_from_slice(&buffer[..size]);
+                    if banner.starts_with(b"SSH-") && banner.contains(&b'\n') {
+                        return Ok(banner);
+                    }
+                }
+                Err(format!(
+                    "未收到有效的 SSH 服务标识：{}",
+                    String::from_utf8_lossy(&banner)
+                ))
+            })();
+            let _ = client_sender.send(result);
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(12);
+        let (request_sender, request_receiver) = mpsc::channel::<DynamicConnectRequest>();
+        let (result_sender, result_receiver) = mpsc::channel::<DynamicConnectionResult>();
+        let mut relay = None;
+        while Instant::now() < deadline {
+            match forward.listener.accept() {
+                Ok((socket, peer)) => dynamic_forward::spawn_socks5_handshake(
+                    forward.rule.id.clone(),
+                    socket,
+                    peer,
+                    request_sender.clone(),
+                    result_sender.clone(),
+                )?,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(format!("接受动态转发连接失败：{error}")),
+            }
+            while let Ok(request) = request_receiver.try_recv() {
+                let channel = open_dynamic_forward_channel(
+                    &session,
+                    &request.target_address,
+                    request.target_port,
+                    request.peer,
+                );
+                let _ = request.response.send(channel);
+            }
+            while let Ok(result) = result_receiver.try_recv() {
+                let (socket, channel) = result.result?;
+                relay = Some(ForwardConnection::new(
+                    result.rule_id,
+                    PortForwardKind::Dynamic,
+                    socket,
+                    channel,
+                )?);
+            }
+            if let Some(relay) = relay.as_mut() {
+                let _ = relay.poll()?;
+            }
+            if let Ok(result) = client_receiver.try_recv() {
+                let banner = result?;
+                if banner.starts_with(b"SSH-") {
+                    return Ok(());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        Err("动态 SOCKS5 转发在线验收超时".to_string())
     }
 
     #[test]
