@@ -4,6 +4,7 @@ import {
   formatPermissions,
   isValidRemoteName,
   localFileName,
+  parsePermissions,
   remoteJoinPath,
   remoteParentPath,
 } from "./sftp-utils";
@@ -39,5 +40,12 @@ describe("SFTP display helpers", () => {
     expect(formatFileSize(1024)).toBe("1.00 KB");
     expect(formatFileSize(10 * 1024 * 1024)).toBe("10.0 MB");
     expect(formatPermissions(0o100755)).toBe("755");
+  });
+
+  test("parses only three or four digit octal permissions", () => {
+    expect(parsePermissions("755")).toBe(0o755);
+    expect(parsePermissions(" 4755 ")).toBe(0o4755);
+    expect(parsePermissions("99")).toBeNull();
+    expect(parsePermissions("888")).toBeNull();
   });
 });

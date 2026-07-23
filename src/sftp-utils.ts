@@ -55,3 +55,9 @@ export function formatPermissions(permissions?: number) {
   if (permissions === undefined) return "-";
   return (permissions & 0o7777).toString(8).padStart(3, "0");
 }
+
+export function parsePermissions(value: string) {
+  const normalized = value.trim();
+  if (!/^[0-7]{3,4}$/.test(normalized)) return null;
+  return Number.parseInt(normalized, 8);
+}

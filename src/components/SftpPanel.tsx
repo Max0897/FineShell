@@ -26,7 +26,10 @@ import {
   IconFolder,
   IconFolderAdd,
   IconHistory,
+  IconLock,
+  IconPlus,
   IconRefresh,
+  IconThunderbolt,
   IconUpload,
 } from "@arco-design/web-react/icon";
 import type {
@@ -43,11 +46,13 @@ import {
   formatRemoteTime,
   isValidRemoteName,
   localFileName,
+  parsePermissions,
   remoteJoinPath,
   remoteParentPath,
 } from "../sftp-utils";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
+type CreateEntryKind = "file" | "directory";
 
 interface BrowserState {
   status: BrowserStatus;
@@ -107,10 +112,13 @@ function SftpPanel({
     {},
   );
   const [transferDrawerVisible, setTransferDrawerVisible] = useState(false);
-  const [newDirectoryVisible, setNewDirectoryVisible] = useState(false);
-  const [newDirectoryName, setNewDirectoryName] = useState("");
+  const [creatingEntryKind, setCreatingEntryKind] =
+    useState<CreateEntryKind | null>(null);
+  const [newEntryName, setNewEntryName] = useState("");
   const [renamingEntry, setRenamingEntry] = useState<SftpEntry | null>(null);
   const [renameName, setRenameName] = useState("");
+  const [permissionEntries, setPermissionEntries] = useState<SftpEntry[]>([]);
+  const [permissionValue, setPermissionValue] = useState("");
   const [operationLoading, setOperationLoading] = useState(false);
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
   const connectingRef = useRef(new Set<string>());
@@ -480,23 +488,35 @@ function SftpPanel({
     Message.error(message);
   }
 
-  async function createDirectory() {
-    if (!session || !browser) return;
-    const name = newDirectoryName.trim();
+  function openCreateDialog(kind: CreateEntryKind) {
+    setCreatingEntryKind(kind);
+    setNewEntryName("");
+  }
+
+  async function createEntry() {
+    if (!session || !browser || !creatingEntryKind) return;
+    const name = newEntryName.trim();
     if (!isValidRemoteName(name)) {
-      Message.warning("目录名称不能为空，且不能包含路径分隔符");
+      Message.warning("名称不能为空，且不能包含路径分隔符");
       return;
     }
 
     setOperationLoading(true);
     try {
-      await invoke("sftp_create_directory", {
-        sessionId: session.id,
-        path: remoteJoinPath(browser.path, name),
-      });
-      setNewDirectoryVisible(false);
-      setNewDirectoryName("");
-      Message.success(`已新建目录 ${name}`);
+      await invoke(
+        creatingEntryKind === "directory"
+          ? "sftp_create_directory"
+          : "sftp_create_file",
+        {
+          sessionId: session.id,
+          path: remoteJoinPath(browser.path, name),
+        },
+      );
+      Message.success(
+        `已新建${creatingEntryKind === "directory" ? "目录" : "文件"} ${name}`,
+      );
+      setCreatingEntryKind(null);
+      setNewEntryName("");
       await loadDirectory(session.id, browser.path);
     } catch (error) {
       handleOperationError(error);
@@ -606,6 +626,91 @@ function SftpPanel({
     });
   }
 
+  async function fastDeleteEntries(entries: SftpEntry[]) {
+    if (!session || !browser || entries.length === 0) return;
+    setOperationLoading(true);
+    try {
+      await invoke("sftp_fast_delete", {
+        sessionId: session.id,
+        paths: entries.map((entry) => entry.path),
+      });
+      setSelectedEntryKeys([]);
+      Message.success(
+        entries.length === 1
+          ? `已快速删除 ${entries[0].name}`
+          : `已快速删除 ${entries.length} 个项目`,
+      );
+      await loadDirectory(session.id, browser.path);
+    } catch (error) {
+      handleOperationError(error);
+    } finally {
+      setOperationLoading(false);
+    }
+  }
+
+  function requestFastDelete(entries: SftpEntry[]) {
+    Modal.confirm({
+      cancelText: "取消",
+      content:
+        entries.length === 1
+          ? `将通过 rm -rf 永久删除“${entries[0].name}”，目录中的内容也会被删除。`
+          : `将通过 rm -rf 永久删除选中的 ${entries.length} 个项目，目录中的内容也会被删除。`,
+      okButtonProps: { status: "danger" },
+      okText: "快速删除",
+      onOk: () => fastDeleteEntries(entries),
+      title: "确认快速删除",
+    });
+  }
+
+  function openPermissionsDialog(entries: SftpEntry[]) {
+    const firstPermissions = entries[0]?.permissions;
+    const samePermissions = entries.every(
+      (entry) => entry.permissions === firstPermissions,
+    );
+    setPermissionEntries(entries);
+    setPermissionValue(
+      samePermissions && firstPermissions !== undefined
+        ? formatPermissions(firstPermissions)
+        : "",
+    );
+  }
+
+  async function updatePermissions() {
+    if (!session || !browser || permissionEntries.length === 0) return;
+    const permissions = parsePermissions(permissionValue);
+    if (permissions === null) {
+      Message.warning("请输入 3 到 4 位八进制权限");
+      return;
+    }
+
+    setOperationLoading(true);
+    let updatedCount = 0;
+    try {
+      for (const entry of permissionEntries) {
+        await invoke("sftp_set_permissions", {
+          sessionId: session.id,
+          path: entry.path,
+          permissions,
+        });
+        updatedCount += 1;
+      }
+      Message.success(
+        permissionEntries.length === 1
+          ? `已修改 ${permissionEntries[0].name} 的权限`
+          : `已修改 ${permissionEntries.length} 个项目的权限`,
+      );
+      setPermissionEntries([]);
+      setPermissionValue("");
+    } catch (error) {
+      handleOperationError(error);
+    } finally {
+      if (updatedCount > 0) {
+        await loadDirectory(session.id, browser.path);
+      }
+      setOperationLoading(false);
+    }
+  }
+
   function entryContextMenuItems(entries: SftpEntry[]): ContextMenuItem[] {
     const singleEntry = entries.length === 1 ? entries[0] : null;
     const menuItems: ContextMenuItem[] = [];
@@ -638,14 +743,79 @@ function SftpPanel({
       });
     }
 
-    menuItems.push({
-      key: "delete",
-      label: entries.length === 1 ? "删除" : `删除所选（${entries.length}）`,
-      icon: <IconDelete />,
-      disabled: operationLoading,
-      danger: true,
-      onClick: () => requestDeleteEntries(entries),
-    });
+    menuItems.push(
+      {
+        key: "create",
+        label: "新建",
+        icon: <IconPlus />,
+        children: [
+          {
+            key: "create-file",
+            label: "文件",
+            icon: <IconFile />,
+            disabled: operationLoading,
+            onClick: () => openCreateDialog("file"),
+          },
+          {
+            key: "create-directory",
+            label: "文件夹",
+            icon: <IconFolderAdd />,
+            disabled: operationLoading,
+            onClick: () => openCreateDialog("directory"),
+          },
+        ],
+      },
+      {
+        key: "refresh",
+        label: "刷新",
+        icon: <IconRefresh />,
+        disabled: operationLoading,
+        onClick: () => {
+          if (session && browser) {
+            return loadDirectory(session.id, browser.path);
+          }
+        },
+      },
+    );
+
+    if (entries.length > 0) {
+      menuItems.push({
+        key: "permissions",
+        label:
+          entries.length === 1
+            ? "文件权限"
+            : `修改所选权限（${entries.length}）`,
+        icon: <IconLock />,
+        disabled: operationLoading,
+        onClick: () => openPermissionsDialog(entries),
+      });
+    }
+
+    if (entries.length > 0) {
+      menuItems.push(
+        {
+          key: "delete",
+          label:
+            entries.length === 1 ? "删除" : `删除所选（${entries.length}）`,
+          icon: <IconDelete />,
+          disabled: operationLoading,
+          danger: true,
+          dividerBefore: true,
+          onClick: () => requestDeleteEntries(entries),
+        },
+        {
+          key: "fast-delete",
+          label:
+            entries.length === 1
+              ? "快速删除"
+              : `快速删除所选（${entries.length}）`,
+          icon: <IconThunderbolt />,
+          disabled: operationLoading,
+          danger: true,
+          onClick: () => requestFastDelete(entries),
+        },
+      );
+    }
 
     return menuItems;
   }
@@ -658,7 +828,10 @@ function SftpPanel({
     const entry = visibleEntries.find(
       (candidate) => candidate.id === row?.dataset.sftpEntryId,
     );
-    if (!entry) return [];
+    if (!entry) {
+      setSelectedEntryKeys([]);
+      return entryContextMenuItems([]);
+    }
 
     const entries = selectedEntryKeys.includes(entry.id)
       ? visibleEntries.filter((candidate) =>
@@ -739,7 +912,7 @@ function SftpPanel({
           <Button
             disabled={!ready}
             icon={<IconFolderAdd />}
-            onClick={() => setNewDirectoryVisible(true)}
+            onClick={() => openCreateDialog("directory")}
             size="mini"
           >
             新建目录
@@ -914,19 +1087,53 @@ function SftpPanel({
         confirmLoading={operationLoading}
         maskClosable={false}
         onCancel={() => {
-          setNewDirectoryVisible(false);
-          setNewDirectoryName("");
+          setCreatingEntryKind(null);
+          setNewEntryName("");
         }}
-        onOk={() => void createDirectory()}
-        title="新建目录"
-        visible={newDirectoryVisible}
+        onOk={() => void createEntry()}
+        title={creatingEntryKind === "directory" ? "新建文件夹" : "新建文件"}
+        visible={Boolean(creatingEntryKind)}
       >
         <Input
           autoFocus
-          onChange={setNewDirectoryName}
-          onPressEnter={() => void createDirectory()}
-          placeholder="目录名称"
-          value={newDirectoryName}
+          onChange={setNewEntryName}
+          onPressEnter={() => void createEntry()}
+          placeholder={
+            creatingEntryKind === "directory" ? "文件夹名称" : "文件名称"
+          }
+          value={newEntryName}
+        />
+      </Modal>
+      <Modal
+        confirmLoading={operationLoading}
+        maskClosable={false}
+        onCancel={() => {
+          setPermissionEntries([]);
+          setPermissionValue("");
+        }}
+        onOk={() => void updatePermissions()}
+        title={
+          permissionEntries.length === 1
+            ? `文件权限 - ${permissionEntries[0].name}`
+            : `修改 ${permissionEntries.length} 个项目的权限`
+        }
+        visible={permissionEntries.length > 0}
+      >
+        <Input
+          addBefore="权限"
+          autoFocus
+          maxLength={4}
+          onChange={(value) =>
+            setPermissionValue(value.replace(/[^0-7]/g, "").slice(0, 4))
+          }
+          onPressEnter={() => void updatePermissions()}
+          placeholder="755"
+          status={
+            permissionValue && parsePermissions(permissionValue) === null
+              ? "error"
+              : undefined
+          }
+          value={permissionValue}
         />
       </Modal>
       <Modal
