@@ -757,11 +757,6 @@ function SftpPanel({
       ),
     [browser?.entries, showHiddenFiles],
   );
-  const selectedEntries = useMemo(
-    () =>
-      visibleEntries.filter((entry) => selectedEntryKeys.includes(entry.id)),
-    [selectedEntryKeys, visibleEntries],
-  );
   const textEditorByteLength = useMemo(
     () =>
       textEditor ? new TextEncoder().encode(textEditor.content).byteLength : 0,
@@ -2396,18 +2391,6 @@ function SftpPanel({
               onClick={() =>
                 browser && void requestPaste(browser.path, currentClipboard)
               }
-              size="mini"
-            />
-          </Tooltip>
-          <Tooltip content="下载所选文件">
-            <Button
-              aria-label="下载所选文件"
-              disabled={
-                !ready ||
-                !selectedEntries.some((entry) => entry.kind !== "directory")
-              }
-              icon={<IconDownload />}
-              onClick={() => void downloadEntries(selectedEntries)}
               size="mini"
             />
           </Tooltip>
