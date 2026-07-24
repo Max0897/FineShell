@@ -742,25 +742,27 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
             </Tooltip>
           </div>
         </div>
-        <Table
-          border={false}
-          className="host-tree-table"
-          columns={hostColumns}
-          data={hostTableRows}
-          defaultExpandAllRows
-          expandProps={{ expandRowByClick: true }}
-          indentSize={20}
-          loading={configurationLoading}
-          noDataElement={
-            <Empty description={keyword ? "没有匹配的主机" : "暂无主机"} />
-          }
-          pagination={false}
-          rowClassName={(row) =>
-            row.type === "group" ? "host-table-group-row" : ""
-          }
-          rowKey="id"
-          size="small"
-        />
+        <div className="host-tree-table-container">
+          <Table
+            border={false}
+            className="host-tree-table"
+            columns={hostColumns}
+            data={hostTableRows}
+            defaultExpandAllRows
+            expandProps={{ expandRowByClick: true }}
+            indentSize={20}
+            loading={configurationLoading}
+            noDataElement={
+              <Empty description={keyword ? "没有匹配的主机" : "暂无主机"} />
+            }
+            pagination={false}
+            rowClassName={(row) =>
+              row.type === "group" ? "host-table-group-row" : ""
+            }
+            rowKey="id"
+            size="small"
+          />
+        </div>
       </section>
 
       <Modal

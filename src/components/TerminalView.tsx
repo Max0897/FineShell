@@ -35,7 +35,7 @@ import {
   TERMINAL_FONT_FAMILIES,
   type AppSettings,
 } from "../app-settings";
-import { decodeSshOutput } from "../terminal-utils";
+import { decodeSshOutput, terminalStatusNoticeKey } from "../terminal-utils";
 import { TERMINAL_THEMES } from "../terminal-themes";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import { listenProtocolEvent } from "../tauri-protocol";
@@ -101,6 +101,7 @@ function TerminalView({
   const connectedRef = useRef(session.status === "connected");
   const settingsRef = useRef(settings);
   const searchVisibleRef = useRef(false);
+  const lastStatusNoticeRef = useRef<string>();
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
@@ -138,6 +139,7 @@ function TerminalView({
     terminal.loadAddon(searchAddon);
     terminal.open(container);
     terminalRef.current = terminal;
+    lastStatusNoticeRef.current = undefined;
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
 
@@ -343,6 +345,13 @@ function TerminalView({
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) return;
+
+    const noticeKey = terminalStatusNoticeKey(
+      session.status,
+      session.error,
+    );
+    if (lastStatusNoticeRef.current === noticeKey) return;
+    lastStatusNoticeRef.current = noticeKey;
 
     if (session.status === "connecting") {
       terminal.writeln(

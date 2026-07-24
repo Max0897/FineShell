@@ -5,6 +5,7 @@ import {
   reconnectDelaySeconds,
   sessionTabName,
   sshCredentialId,
+  terminalStatusNoticeKey,
 } from "./terminal-utils";
 
 describe("decodeSshOutput", () => {
@@ -21,6 +22,21 @@ describe("reconnectDelaySeconds", () => {
     expect(reconnectDelaySeconds(2)).toBe(2);
     expect(reconnectDelaySeconds(3)).toBe(4);
     expect(reconnectDelaySeconds(10)).toBe(30);
+  });
+});
+
+describe("terminalStatusNoticeKey", () => {
+  test("deduplicates connecting updates while preserving terminal errors", () => {
+    expect(terminalStatusNoticeKey("connecting")).toBe("connecting");
+    expect(terminalStatusNoticeKey("connecting", "等待确认主机指纹")).toBe(
+      "connecting",
+    );
+    expect(terminalStatusNoticeKey("failed", "认证失败")).toBe(
+      "failed:认证失败",
+    );
+    expect(terminalStatusNoticeKey("disconnected", "网络中断")).toBe(
+      "disconnected:网络中断",
+    );
   });
 });
 

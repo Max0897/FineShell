@@ -244,6 +244,21 @@ body,
   border-top: 1px solid #f2f3f5;
 }
 
+.monitor-chart-section-action {
+  margin: 0 -6px;
+  padding: 12px 6px 0;
+  cursor: pointer;
+}
+
+.monitor-chart-section-action:focus-visible {
+  outline: 1px solid #165dff;
+  outline-offset: 2px;
+}
+
+.monitor-chart-section-action[aria-disabled="true"] {
+  cursor: default;
+}
+
 .monitor-chart {
   width: 100% !important;
   min-width: 0;
@@ -1829,14 +1844,34 @@ body.sftp-remote-dragging * {
   height: 100%;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .manager-toolbar {
+  flex: 0 0 auto;
   margin-bottom: 16px;
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto;
   gap: 12px;
+}
+
+.host-tree-table-container {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.host-tree-table .arco-table-content-scroll {
+  overflow: visible;
+}
+
+.host-tree-table thead > .arco-table-tr > .arco-table-th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #f7f8fa;
 }
 
 .manager-toolbar-actions {
