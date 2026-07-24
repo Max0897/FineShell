@@ -16,6 +16,26 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
 bun run tauri dev
 ```
 
+## 分支策略
+
+- `main` 只接收已经通过 CI 的合并结果，不直接在该分支开发。
+- 新功能和常规开发使用 `feature/<名称>`，问题修复使用 `fix/<名称>`，不使用 `codex/` 前缀。
+- 开发完成后向 `main` 创建 Pull Request；CI 会自动执行前端测试、构建、Rust 测试和 Clippy。
+
+## 版本发布
+
+发布前需要同步修改 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 中的版本。版本合并到 `main` 后，推送对应标签即可触发安装包构建和 GitHub Release：
+
+```bash
+bun run release:check -- v0.1.0
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+也可以从 GitHub Actions 的 `Release` 工作流手动运行，但必须选择 `main` 并输入与应用版本一致的标签。工作流会生成 macOS Apple Silicon/Intel DMG、Linux AppImage/DEB 以及 Windows NSIS/MSI；全部构建成功后才会公开 Release。
+
+当前 macOS 包使用 ad-hoc 签名，Windows 包未配置商业代码签名证书，安装时可能出现系统安全提示。正式分发前应配置 Apple 公证和 Windows 代码签名。
+
 可选的 SFTP 在线测试会使用系统凭据库中已保存的主机密码，并在远端 `/tmp` 创建和清理随机测试目录：
 
 ```bash

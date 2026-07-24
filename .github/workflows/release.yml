@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "版本标签，例如 v0.1.0（必须与应用版本一致）"
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - name: Require manual releases from main
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "Manual releases must run from main." >&2
+          exit 1
+      - name: Verify release commit belongs to main
+        run: |
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - id: version
+        name: Validate application version
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+        run: |
+          bun scripts/check-release-version.ts "$RELEASE_TAG"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: validate
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            rustTargets: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg
+            appleSigningIdentity: "-"
+          - name: macOS Intel
+            platform: macos-latest
+            rustTargets: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles dmg
+            appleSigningIdentity: "-"
+          - name: Linux x64
+            platform: ubuntu-22.04
+            rustTargets: ""
+            args: --bundles appimage,deb
+            appleSigningIdentity: ""
+          - name: Windows x64
+            platform: windows-latest
+            rustTargets: ""
+            args: --bundles nsis,msi
+            appleSigningIdentity: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Linux system dependencies
+        if: startsWith(matrix.platform, 'ubuntu-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf \
+            xdg-utils
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustTargets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+      - name: Build installers and upload release assets
+        uses: tauri-apps/tauri-action@v1
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ matrix.appleSigningIdentity }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: ${{ matrix.args }}
+          generateReleaseNotes: true
+          prerelease: ${{ contains(needs.validate.outputs.release_tag, '-') }}
+          releaseAssetNamePattern: "[name]_[version]_[platform]_[arch][setup][ext]"
+          releaseBody: |
+            请根据操作系统和处理器架构下载对应的 FineShell 安装包。
+          releaseDraft: true
+          releaseName: FineShell ${{ needs.validate.outputs.release_tag }}
+          retryAttempts: 2
+          tagName: ${{ needs.validate.outputs.release_tag }}
+          tauriScript: bun tauri
+
+  publish:
+    name: Publish release
+    needs:
+      - validate
+      - build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish completed release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false
