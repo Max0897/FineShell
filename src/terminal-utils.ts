@@ -1,4 +1,8 @@
-import type { HostRecord, JumpHostConnection } from "./models";
+import type {
+  HostRecord,
+  JumpHostConnection,
+  TerminalSessionStatus,
+} from "./models";
 
 interface SessionTabTarget {
   id: string;
@@ -13,6 +17,15 @@ export function decodeSshOutput(value: string) {
 
 export function reconnectDelaySeconds(attempt: number) {
   return Math.min(30, 2 ** Math.max(0, Math.floor(attempt) - 1));
+}
+
+export function terminalStatusNoticeKey(
+  status: TerminalSessionStatus,
+  error?: string,
+) {
+  return status === "failed" || status === "disconnected"
+    ? `${status}:${error ?? ""}`
+    : status;
 }
 
 export function sessionTabName(
