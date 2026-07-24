@@ -119,6 +119,12 @@ enum SftpCommand {
         overwrite: bool,
         reply: Sender<Result<(), String>>,
     },
+    Copy {
+        source_path: String,
+        target_path: String,
+        overwrite: bool,
+        reply: Sender<Result<(), String>>,
+    },
     Delete {
         path: String,
         reply: Sender<Result<(), String>>,
@@ -487,6 +493,233 @@ fn set_permissions(sftp: &Sftp, path: &str, permissions: u32) -> Result<(), Stri
         },
     )
     .map_err(|error| format!("修改远程项目权限失败：{error}"))
+}
+
+fn normalize_remote_operation_path(path: &str) -> Result<String, String> {
+    if path.contains('\0') || !path.starts_with('/') {
+        return Err("文件操作只允许使用有效的远程绝对路径".to_string());
+    }
+
+    let mut segments = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" => {}
+            "." | ".." => return Err("文件操作路径不能包含相对路径片段".to_string()),
+            value => segments.push(value),
+        }
+    }
+    Ok(if segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    })
+}
+
+fn is_remote_descendant(parent: &str, candidate: &str) -> bool {
+    candidate
+        .strip_prefix(parent)
+        .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn copy_remote_file(
+    sftp: &Sftp,
+    source_path: &Path,
+    target_path: &Path,
+    source_stat: &FileStat,
+    overwrite: bool,
+) -> Result<(), String> {
+    let target_exists = sftp.lstat(target_path).ok();
+    if target_exists.is_some() && !overwrite {
+        return Err("远程目标已存在，需要确认覆盖".to_string());
+    }
+    if target_exists.as_ref().is_some_and(FileStat::is_dir) {
+        return Err("无法用文件覆盖同名目录".to_string());
+    }
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("无法生成远程复制临时文件名：{error}"))?
+        .as_nanos();
+    let temporary_path = remote_upload_temporary_path(
+        target_path,
+        &format!("copy-{}-{suffix}", std::process::id()),
+    )?;
+    if remote_exists(sftp, &temporary_path) {
+        sftp.unlink(&temporary_path)
+            .map_err(|error| format!("无法清理远程复制临时文件：{error}"))?;
+    }
+
+    let result = (|| -> Result<(), String> {
+        let mut source = sftp
+            .open(source_path)
+            .map_err(|error| format!("无法打开待复制的远程文件：{error}"))?;
+        let permissions = (source_stat.perm.unwrap_or(0o644) & 0o7777) as i32;
+        let mut target = sftp
+            .open_mode(
+                &temporary_path,
+                OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUSIVE,
+                permissions,
+                OpenType::File,
+            )
+            .map_err(|error| format!("无法创建远程复制临时文件：{error}"))?;
+        let mut buffer = vec![0_u8; TRANSFER_BUFFER_SIZE];
+        loop {
+            let size = source
+                .read(&mut buffer)
+                .map_err(|error| format!("读取待复制的远程文件失败：{error}"))?;
+            if size == 0 {
+                break;
+            }
+            target
+                .write_all(&buffer[..size])
+                .map_err(|error| format!("写入远程复制文件失败：{error}"))?;
+        }
+        target
+            .flush()
+            .map_err(|error| format!("刷新远程复制文件失败：{error}"))?;
+        drop(target);
+        sftp.setstat(
+            &temporary_path,
+            FileStat {
+                size: None,
+                uid: None,
+                gid: None,
+                perm: source_stat.perm,
+                atime: source_stat.atime,
+                mtime: source_stat.mtime,
+            },
+        )
+        .map_err(|error| format!("无法保留远程文件属性：{error}"))?;
+        let flags = if target_exists.is_some() {
+            RenameFlags::OVERWRITE
+        } else {
+            RenameFlags::empty()
+        };
+        sftp.rename(&temporary_path, target_path, Some(flags))
+            .map_err(|error| format!("无法保存远程复制文件：{error}"))
+    })();
+
+    if result.is_err() {
+        let _ = sftp.unlink(&temporary_path);
+    }
+    result
+}
+
+fn copy_remote_directory(
+    sftp: &Sftp,
+    source_path: &Path,
+    target_path: &Path,
+    source_stat: &FileStat,
+    overwrite: bool,
+) -> Result<(), String> {
+    match sftp.lstat(target_path) {
+        Ok(_) if !overwrite => {
+            return Err("远程目标已存在，需要确认覆盖".to_string());
+        }
+        Ok(target_stat) if !target_stat.is_dir() => {
+            return Err("无法用目录覆盖同名文件".to_string());
+        }
+        Ok(_) => {}
+        Err(_) => sftp
+            .mkdir(
+                target_path,
+                (source_stat.perm.unwrap_or(0o755) & 0o7777) as i32,
+            )
+            .map_err(|error| format!("无法创建远程目标目录：{error}"))?,
+    }
+
+    let entries = sftp
+        .readdir(source_path)
+        .map_err(|error| format!("无法读取待复制的远程目录：{error}"))?;
+    for (child_source, child_stat) in entries {
+        let Some(name) = child_source.file_name() else {
+            continue;
+        };
+        if name == "." || name == ".." {
+            continue;
+        }
+        let child_target = target_path.join(name);
+        copy_remote_entry_inner(sftp, &child_source, &child_target, &child_stat, overwrite)?;
+    }
+    sftp.setstat(
+        target_path,
+        FileStat {
+            size: None,
+            uid: None,
+            gid: None,
+            perm: source_stat.perm,
+            atime: source_stat.atime,
+            mtime: source_stat.mtime,
+        },
+    )
+    .map_err(|error| format!("无法保留远程目录属性：{error}"))
+}
+
+fn copy_remote_symlink(
+    sftp: &Sftp,
+    source_path: &Path,
+    target_path: &Path,
+    overwrite: bool,
+) -> Result<(), String> {
+    if let Ok(target_stat) = sftp.lstat(target_path) {
+        if !overwrite {
+            return Err("远程目标已存在，需要确认覆盖".to_string());
+        }
+        if target_stat.is_dir() {
+            return Err("无法用符号链接覆盖同名目录".to_string());
+        }
+        sftp.unlink(target_path)
+            .map_err(|error| format!("无法移除同名远程项目：{error}"))?;
+    }
+    let link_target = sftp
+        .readlink(source_path)
+        .map_err(|error| format!("无法读取远程符号链接：{error}"))?;
+    sftp.symlink(&link_target, target_path)
+        .map_err(|error| format!("无法复制远程符号链接：{error}"))
+}
+
+fn copy_remote_entry_inner(
+    sftp: &Sftp,
+    source_path: &Path,
+    target_path: &Path,
+    source_stat: &FileStat,
+    overwrite: bool,
+) -> Result<(), String> {
+    if source_stat.is_dir() {
+        copy_remote_directory(sftp, source_path, target_path, source_stat, overwrite)
+    } else if source_stat.is_file() {
+        copy_remote_file(sftp, source_path, target_path, source_stat, overwrite)
+    } else if source_stat.file_type() == FileType::Symlink {
+        copy_remote_symlink(sftp, source_path, target_path, overwrite)
+    } else {
+        Err("暂不支持复制该类型的远程项目".to_string())
+    }
+}
+
+fn copy_remote_entry(
+    sftp: &Sftp,
+    source_path: &str,
+    target_path: &str,
+    overwrite: bool,
+) -> Result<(), String> {
+    let source_path = normalize_remote_operation_path(source_path)?;
+    let target_path = normalize_remote_operation_path(target_path)?;
+    if source_path == "/" || target_path == "/" {
+        return Err("禁止复制远程根目录".to_string());
+    }
+    if source_path == target_path {
+        return Err("源项目与目标项目不能相同".to_string());
+    }
+
+    let source = Path::new(&source_path);
+    let target = Path::new(&target_path);
+    let source_stat = sftp
+        .lstat(source)
+        .map_err(|error| format!("无法读取待复制的远程项目信息：{error}"))?;
+    if source_stat.is_dir() && is_remote_descendant(&source_path, &target_path) {
+        return Err("不能将目录复制到其自身内部".to_string());
+    }
+    copy_remote_entry_inner(sftp, source, target, &source_stat, overwrite)
 }
 
 fn decode_remote_text(bytes: Vec<u8>) -> Result<String, String> {
@@ -1128,6 +1361,19 @@ fn run_session(
                     .map_err(|error| format!("重命名远程项目失败：{error}"));
                 let _ = reply.send(result);
             }
+            SftpCommand::Copy {
+                source_path,
+                target_path,
+                overwrite,
+                reply,
+            } => {
+                let _ = reply.send(copy_remote_entry(
+                    &sftp,
+                    &source_path,
+                    &target_path,
+                    overwrite,
+                ));
+            }
             SftpCommand::Delete { path, reply } => {
                 let result = sftp
                     .lstat(Path::new(&path))
@@ -1381,6 +1627,25 @@ pub(crate) async fn sftp_rename(
 }
 
 #[tauri::command]
+pub(crate) async fn sftp_copy(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    source_path: String,
+    target_path: String,
+    overwrite: bool,
+) -> Result<(), String> {
+    dispatch(manager.inner().clone(), session_id, move |reply| {
+        SftpCommand::Copy {
+            source_path,
+            target_path,
+            overwrite,
+            reply,
+        }
+    })
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn sftp_delete(
     manager: State<'_, SftpSessionManager>,
     session_id: String,
@@ -1610,9 +1875,9 @@ mod tests {
 
     use super::{
         decode_remote_text, download_temporary_path, entry_kind, fast_delete_command,
-        inspect_upload_paths, remote_text_backup_path, remote_text_temporary_path,
-        remote_upload_temporary_path, replace_download_file, shell_quote, SftpCommand,
-        SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
+        inspect_upload_paths, is_remote_descendant, normalize_remote_operation_path,
+        remote_text_backup_path, remote_text_temporary_path, remote_upload_temporary_path,
+        replace_download_file, shell_quote, SftpCommand, SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
     };
     use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
 
@@ -1670,6 +1935,19 @@ mod tests {
         assert!(fast_delete_command(&["/./".to_string()]).is_err());
         assert!(fast_delete_command(&["/tmp/../data".to_string()]).is_err());
         assert!(fast_delete_command(&["relative/path".to_string()]).is_err());
+    }
+
+    #[test]
+    fn validates_remote_copy_paths_and_descendants() {
+        assert_eq!(
+            normalize_remote_operation_path("/srv//releases/archive.zip").unwrap(),
+            "/srv/releases/archive.zip"
+        );
+        assert!(normalize_remote_operation_path("relative/path").is_err());
+        assert!(normalize_remote_operation_path("/srv/../root").is_err());
+        assert!(is_remote_descendant("/srv/releases", "/srv/releases/2026"));
+        assert!(!is_remote_descendant("/srv/releases", "/srv/releases-old"));
+        assert!(!is_remote_descendant("/srv/releases", "/srv/releases"));
     }
 
     #[test]

@@ -56,6 +56,7 @@ pub fn run() {
             sftp::sftp_create_directory,
             sftp::sftp_create_file,
             sftp::sftp_rename,
+            sftp::sftp_copy,
             sftp::sftp_delete,
             sftp::sftp_fast_delete,
             sftp::sftp_set_permissions,
