@@ -4,6 +4,9 @@ import "@arco-design/web-react/dist/css/arco.css";
 import { isTauri } from "@tauri-apps/api/core";
 import App from "./App";
 import SettingsWindow from "./components/SettingsWindow";
+import { installGlobalDiagnostics } from "./diagnostics";
+
+installGlobalDiagnostics();
 
 if (isTauri()) {
   document.addEventListener("contextmenu", (event) => event.preventDefault());

@@ -23,7 +23,7 @@ import {
   IconRefresh,
   IconWifi,
 } from "@arco-design/web-react/icon";
-import { invoke } from "@tauri-apps/api/core";
+import { diagnosticInvoke as invoke } from "../diagnostics";
 import type { ITooltipLineActual } from "@visactor/vchart";
 import { AreaChart, BarChart } from "@visactor/react-vchart";
 import type {

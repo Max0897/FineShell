@@ -17,11 +17,15 @@ describe("app settings", () => {
 
   test("bounds numeric values and preserves supported preferences", () => {
     const settings = sanitizeAppSettings({
+      terminalColorScheme: "solarizedDark",
       terminalFontFamily: "menlo",
       terminalFontSize: 99,
+      terminalLineHeight: 9,
       terminalCursorStyle: "bar",
       terminalCursorBlink: false,
       terminalScrollback: 200,
+      terminalCopyOnSelect: true,
+      terminalRightClickAction: "paste",
       showHiddenFiles: false,
       confirmFileDelete: false,
       externalEditorPath: "  /Applications/Visual Studio Code.app  ",
@@ -31,14 +35,21 @@ describe("app settings", () => {
       defaultKeepAliveIntervalSeconds: 30,
       defaultAutoReconnect: false,
       defaultMaxReconnectAttempts: 20,
+      connectionHistoryLimit: 100,
+      connectionHistoryRetentionDays: 30,
+      diagnosticLogLevel: "debug",
     });
 
     expect(settings).toMatchObject({
+      terminalColorScheme: "solarizedDark",
       terminalFontFamily: "menlo",
       terminalFontSize: 24,
+      terminalLineHeight: 2,
       terminalCursorStyle: "bar",
       terminalCursorBlink: false,
       terminalScrollback: 1_000,
+      terminalCopyOnSelect: true,
+      terminalRightClickAction: "paste",
       showHiddenFiles: false,
       confirmFileDelete: false,
       externalEditorPath: "/Applications/Visual Studio Code.app",
@@ -48,6 +59,9 @@ describe("app settings", () => {
       defaultKeepAliveIntervalSeconds: 30,
       defaultAutoReconnect: false,
       defaultMaxReconnectAttempts: 10,
+      connectionHistoryLimit: 100,
+      connectionHistoryRetentionDays: 30,
+      diagnosticLogLevel: "debug",
     });
   });
 

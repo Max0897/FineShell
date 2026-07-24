@@ -1,12 +1,25 @@
 export type TerminalFontFamily = "system" | "menlo" | "consolas";
 export type TerminalCursorStyle = "block" | "underline" | "bar";
+export type TerminalColorScheme =
+  | "fineshellDark"
+  | "graphiteLight"
+  | "solarizedDark"
+  | "dracula";
+export type TerminalRightClickAction = "menu" | "paste";
+export type ConnectionHistoryLimit = 0 | 20 | 50 | 100;
+export type ConnectionHistoryRetentionDays = 0 | 7 | 30 | 90;
+export type DiagnosticLogLevel = "debug" | "info" | "warn" | "error";
 
 export interface AppSettings {
+  terminalColorScheme: TerminalColorScheme;
   terminalFontFamily: TerminalFontFamily;
   terminalFontSize: number;
+  terminalLineHeight: number;
   terminalCursorStyle: TerminalCursorStyle;
   terminalCursorBlink: boolean;
   terminalScrollback: number;
+  terminalCopyOnSelect: boolean;
+  terminalRightClickAction: TerminalRightClickAction;
   showHiddenFiles: boolean;
   confirmFileDelete: boolean;
   externalEditorPath: string;
@@ -16,14 +29,21 @@ export interface AppSettings {
   defaultKeepAliveIntervalSeconds: number;
   defaultAutoReconnect: boolean;
   defaultMaxReconnectAttempts: number;
+  connectionHistoryLimit: ConnectionHistoryLimit;
+  connectionHistoryRetentionDays: ConnectionHistoryRetentionDays;
+  diagnosticLogLevel: DiagnosticLogLevel;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
+  terminalColorScheme: "fineshellDark",
   terminalFontFamily: "system",
   terminalFontSize: 13,
+  terminalLineHeight: 1.2,
   terminalCursorStyle: "block",
   terminalCursorBlink: true,
   terminalScrollback: 5_000,
+  terminalCopyOnSelect: false,
+  terminalRightClickAction: "menu",
   showHiddenFiles: true,
   confirmFileDelete: true,
   externalEditorPath: "",
@@ -33,6 +53,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultKeepAliveIntervalSeconds: 15,
   defaultAutoReconnect: true,
   defaultMaxReconnectAttempts: 3,
+  connectionHistoryLimit: 50,
+  connectionHistoryRetentionDays: 0,
+  diagnosticLogLevel: "info",
 };
 
 export const TERMINAL_FONT_FAMILIES: Record<TerminalFontFamily, string> = {
@@ -62,13 +85,39 @@ function numberValue(
     : fallback;
 }
 
+function decimalValue(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.round(Math.min(max, Math.max(min, value)) * 10) / 10;
+}
+
 function stringValue(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function connectionHistoryLimitValue(value: unknown): ConnectionHistoryLimit {
+  return value === 0 || value === 20 || value === 100 ? value : 50;
+}
+
+function connectionHistoryRetentionDaysValue(
+  value: unknown,
+): ConnectionHistoryRetentionDays {
+  return value === 7 || value === 30 || value === 90 ? value : 0;
 }
 
 export function sanitizeAppSettings(value: unknown): AppSettings {
   const settings = isRecord(value) ? value : {};
   return {
+    terminalColorScheme:
+      settings.terminalColorScheme === "graphiteLight" ||
+      settings.terminalColorScheme === "solarizedDark" ||
+      settings.terminalColorScheme === "dracula"
+        ? settings.terminalColorScheme
+        : DEFAULT_APP_SETTINGS.terminalColorScheme,
     terminalFontFamily:
       settings.terminalFontFamily === "menlo" ||
       settings.terminalFontFamily === "consolas"
@@ -79,6 +128,12 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
       DEFAULT_APP_SETTINGS.terminalFontSize,
       10,
       24,
+    ),
+    terminalLineHeight: decimalValue(
+      settings.terminalLineHeight,
+      DEFAULT_APP_SETTINGS.terminalLineHeight,
+      1,
+      2,
     ),
     terminalCursorStyle:
       settings.terminalCursorStyle === "underline" ||
@@ -95,6 +150,14 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
       1_000,
       100_000,
     ),
+    terminalCopyOnSelect: booleanValue(
+      settings.terminalCopyOnSelect,
+      DEFAULT_APP_SETTINGS.terminalCopyOnSelect,
+    ),
+    terminalRightClickAction:
+      settings.terminalRightClickAction === "paste"
+        ? "paste"
+        : DEFAULT_APP_SETTINGS.terminalRightClickAction,
     showHiddenFiles: booleanValue(
       settings.showHiddenFiles,
       DEFAULT_APP_SETTINGS.showHiddenFiles,
@@ -133,6 +196,18 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
       1,
       10,
     ),
+    connectionHistoryLimit: connectionHistoryLimitValue(
+      settings.connectionHistoryLimit,
+    ),
+    connectionHistoryRetentionDays: connectionHistoryRetentionDaysValue(
+      settings.connectionHistoryRetentionDays,
+    ),
+    diagnosticLogLevel:
+      settings.diagnosticLogLevel === "debug" ||
+      settings.diagnosticLogLevel === "warn" ||
+      settings.diagnosticLogLevel === "error"
+        ? settings.diagnosticLogLevel
+        : DEFAULT_APP_SETTINGS.diagnosticLogLevel,
   };
 }
 

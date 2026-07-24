@@ -20,7 +20,10 @@ import {
   IconCloud,
   IconCommand,
   IconLock,
+  IconHistory,
+  IconSafe,
   IconSave,
+  IconSettings,
   IconStorage,
   IconThunderbolt,
 } from "@arco-design/web-react/icon";
@@ -33,7 +36,15 @@ import {
   type AppSettings,
 } from "../app-settings";
 import { loadConfiguration, updateAppSettings } from "../config-database";
+import {
+  configureDiagnosticLogging,
+  recordDiagnostic,
+} from "../diagnostics";
+import { TERMINAL_THEMES } from "../terminal-themes";
+import AdvancedSettings from "./AdvancedSettings";
 import ConfigurationMaintenance from "./ConfigurationMaintenance";
+import KnownHostSettings from "./KnownHostSettings";
+import PrivacySettings from "./PrivacySettings";
 import ProxySettings from "./ProxySettings";
 import QuickCommandSettings from "./QuickCommandSettings";
 import SshKeySettings from "./SshKeySettings";
@@ -45,6 +56,9 @@ type SettingsSection =
   | "monitor"
   | "connection"
   | "sshKeys"
+  | "knownHosts"
+  | "privacy"
+  | "advanced"
   | "proxies"
   | "backups"
   | "trash";
@@ -88,7 +102,12 @@ function SettingsWindow() {
         setSavedSettings(configuration.settings);
       })
       .catch((error) => {
-        if (!disposed) Message.error(String(error));
+        if (!disposed) {
+          recordDiagnostic("error", "configuration", "设置窗口读取配置失败", {
+            error: String(error),
+          });
+          Message.error(String(error));
+        }
       })
       .finally(() => {
         if (!disposed) setLoading(false);
@@ -97,6 +116,12 @@ function SettingsWindow() {
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    void configureDiagnosticLogging(savedSettings.diagnosticLogLevel).catch(
+      () => undefined,
+    );
+  }, [savedSettings.diagnosticLogLevel]);
 
   const updateSetting = <Key extends keyof AppSettings>(
     key: Key,
@@ -116,6 +141,9 @@ function SettingsWindow() {
       }
       Message.success("设置已保存");
     } catch (error) {
+      recordDiagnostic("error", "configuration", "应用设置保存失败", {
+        error: String(error),
+      });
       Message.error(String(error));
     } finally {
       setSaving(false);
@@ -147,6 +175,35 @@ function SettingsWindow() {
           <>
             <Typography.Title heading={5}>终端</Typography.Title>
             <div className="settings-group">
+              <SettingRow
+                control={
+                  <Select
+                    aria-label="终端配色方案"
+                    onChange={(value) =>
+                      updateSetting(
+                        "terminalColorScheme",
+                        value as AppSettings["terminalColorScheme"],
+                      )
+                    }
+                    options={Object.entries(TERMINAL_THEMES).map(
+                      ([value, definition]) => ({
+                        label: (
+                          <span className="terminal-theme-option">
+                            <span
+                              className="terminal-theme-swatch"
+                              style={{ background: definition.swatch }}
+                            />
+                            {definition.label}
+                          </span>
+                        ),
+                        value,
+                      }),
+                    )}
+                    value={settings.terminalColorScheme}
+                  />
+                }
+                label="配色方案"
+              />
               <SettingRow
                 control={
                   <Select
@@ -182,6 +239,23 @@ function SettingsWindow() {
                   />
                 }
                 label="字号"
+              />
+              <SettingRow
+                control={
+                  <InputNumber
+                    aria-label="终端行高"
+                    max={2}
+                    min={1}
+                    mode="button"
+                    onChange={(value) =>
+                      updateSetting("terminalLineHeight", value)
+                    }
+                    precision={1}
+                    step={0.1}
+                    value={settings.terminalLineHeight}
+                  />
+                }
+                label="行高"
               />
               <SettingRow
                 control={
@@ -231,6 +305,36 @@ function SettingsWindow() {
                   />
                 }
                 label="回滚行数"
+              />
+              <SettingRow
+                control={
+                  <Switch
+                    checked={settings.terminalCopyOnSelect}
+                    onChange={(value) =>
+                      updateSetting("terminalCopyOnSelect", value)
+                    }
+                  />
+                }
+                label="选中后复制"
+              />
+              <SettingRow
+                control={
+                  <Select
+                    aria-label="终端右键行为"
+                    onChange={(value) =>
+                      updateSetting(
+                        "terminalRightClickAction",
+                        value as AppSettings["terminalRightClickAction"],
+                      )
+                    }
+                    options={[
+                      { label: "显示操作菜单", value: "menu" },
+                      { label: "直接粘贴", value: "paste" },
+                    ]}
+                    value={settings.terminalRightClickAction}
+                  />
+                }
+                label="右键行为"
               />
             </div>
           </>
@@ -395,6 +499,23 @@ function SettingsWindow() {
         return <ProxySettings />;
       case "sshKeys":
         return <SshKeySettings />;
+      case "knownHosts":
+        return <KnownHostSettings />;
+      case "privacy":
+        return (
+          <PrivacySettings
+            savedSettings={savedSettings}
+            settings={settings}
+            updateSetting={updateSetting}
+          />
+        );
+      case "advanced":
+        return (
+          <AdvancedSettings
+            settings={settings}
+            updateSetting={updateSetting}
+          />
+        );
       case "backups":
         return (
           <ConfigurationMaintenance
@@ -447,6 +568,18 @@ function SettingsWindow() {
             <IconLock />
             密钥
           </Menu.Item>
+          <Menu.Item key="knownHosts">
+            <IconSafe />
+            已知主机
+          </Menu.Item>
+          <Menu.Item key="privacy">
+            <IconHistory />
+            隐私与清理
+          </Menu.Item>
+          <Menu.Item key="advanced">
+            <IconSettings />
+            高级
+          </Menu.Item>
           <Menu.Item key="backups">
             <IconSave />
             备份与恢复
@@ -468,6 +601,7 @@ function SettingsWindow() {
         {activeSection !== "proxies" &&
           activeSection !== "quickCommands" &&
           activeSection !== "sshKeys" &&
+          activeSection !== "knownHosts" &&
           activeSection !== "backups" &&
           activeSection !== "trash" && (
           <footer className="settings-footer">

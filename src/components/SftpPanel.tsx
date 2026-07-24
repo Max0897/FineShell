@@ -19,13 +19,14 @@ import {
   Typography,
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { join } from "@tauri-apps/api/path";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { diagnosticInvoke as invoke, recordDiagnostic } from "../diagnostics";
 import {
   IconApps,
   IconArrowUp,
@@ -597,6 +598,13 @@ function SftpPanel({
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<SftpTransferPayload>("sftp-transfer", ({ payload }) => {
+      if (payload.status === "failed") {
+        recordDiagnostic("error", "sftp.transfer", "SFTP 传输失败", {
+          error: payload.error,
+          sessionId: payload.sessionId,
+          transferId: payload.transferId,
+        });
+      }
       setTransfers((current) => {
         const previous = current[payload.transferId];
         if (!previous) return current;
@@ -697,6 +705,10 @@ function SftpPanel({
         payload.sessionId === sessionIdRef.current &&
         payload.error
       ) {
+        recordDiagnostic("error", "sftp.externalEdit", "外部编辑同步失败", {
+          error: payload.error,
+          sessionId: payload.sessionId,
+        });
         Message.error(payload.error);
       }
     }).then((stopListening) => {

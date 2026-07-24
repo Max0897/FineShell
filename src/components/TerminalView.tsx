@@ -1,23 +1,28 @@
 import {
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   useEffect,
   useRef,
   useState,
 } from "react";
-import {
-  Button,
-  Input,
-  Tooltip,
-} from "@arco-design/web-react";
+import { Button, Input, Message, Tooltip } from "@arco-design/web-react";
 import type { RefInputType } from "@arco-design/web-react/es/Input";
 import {
   IconClose,
+  IconCopy,
   IconDown,
+  IconPaste,
   IconSearch,
+  IconSelectAll,
   IconUp,
 } from "@arco-design/web-react/icon";
-import { invoke } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  readText as readClipboardText,
+  writeText as writeClipboardText,
+} from "@tauri-apps/plugin-clipboard-manager";
 import { FitAddon } from "@xterm/addon-fit";
 import {
   SearchAddon,
@@ -32,6 +37,9 @@ import {
   type AppSettings,
 } from "../app-settings";
 import { decodeSshOutput } from "../terminal-utils";
+import { TERMINAL_THEMES } from "../terminal-themes";
+import { diagnosticInvoke as invoke } from "../diagnostics";
+import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 interface TerminalViewProps {
   active: boolean;
@@ -72,6 +80,18 @@ function searchOptions(
   };
 }
 
+async function readClipboard() {
+  if (isTauri()) return readClipboardText();
+  if (!navigator.clipboard) throw new Error("当前环境无法读取剪贴板");
+  return navigator.clipboard.readText();
+}
+
+async function writeClipboard(value: string) {
+  if (isTauri()) return writeClipboardText(value);
+  if (!navigator.clipboard) throw new Error("当前环境无法写入剪贴板");
+  return navigator.clipboard.writeText(value);
+}
+
 function TerminalView({
   active,
   focusRequest,
@@ -84,6 +104,7 @@ function TerminalView({
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<RefInputType>(null);
   const connectedRef = useRef(session.status === "connected");
+  const settingsRef = useRef(settings);
   const searchVisibleRef = useRef(false);
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -92,6 +113,7 @@ function TerminalView({
     useState<ISearchResultChangeEvent>(EMPTY_SEARCH_RESULT);
 
   searchVisibleRef.current = searchVisible;
+  settingsRef.current = settings;
 
   useEffect(() => {
     connectedRef.current = session.status === "connected";
@@ -108,21 +130,12 @@ function TerminalView({
       cursorStyle: settings.terminalCursorStyle,
       fontFamily: TERMINAL_FONT_FAMILIES[settings.terminalFontFamily],
       fontSize: settings.terminalFontSize,
-      lineHeight: 1.2,
+      lineHeight: settings.terminalLineHeight,
       overviewRuler: {
         width: 6,
       },
       scrollback: settings.terminalScrollback,
-      theme: {
-        background: "#191b20",
-        foreground: "#d7dae0",
-        cursor: "#23c343",
-        cursorAccent: "#191b20",
-        scrollbarSliderActiveBackground: "#4e5969",
-        scrollbarSliderBackground: "#c9cdd4",
-        scrollbarSliderHoverBackground: "#86909c",
-        selectionBackground: "#3b4354",
-      },
+      theme: TERMINAL_THEMES[settings.terminalColorScheme].theme,
     });
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon({ highlightLimit: 1000 });
@@ -169,6 +182,15 @@ function TerminalView({
     const searchDisposable = searchAddon.onDidChangeResults((result) => {
       setSearchResult(result);
     });
+    const selectionDisposable = terminal.onSelectionChange(() => {
+      if (
+        !settingsRef.current.terminalCopyOnSelect ||
+        !terminal.hasSelection()
+      ) {
+        return;
+      }
+      void writeClipboard(terminal.getSelection()).catch(() => undefined);
+    });
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -192,6 +214,7 @@ function TerminalView({
       dataDisposable.dispose();
       resizeDisposable.dispose();
       searchDisposable.dispose();
+      selectionDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -241,7 +264,10 @@ function TerminalView({
     terminal.options.fontFamily =
       TERMINAL_FONT_FAMILIES[settings.terminalFontFamily];
     terminal.options.fontSize = settings.terminalFontSize;
+    terminal.options.lineHeight = settings.terminalLineHeight;
     terminal.options.scrollback = settings.terminalScrollback;
+    terminal.options.theme =
+      TERMINAL_THEMES[settings.terminalColorScheme].theme;
     requestAnimationFrame(() => {
       try {
         fitAddon.fit();
@@ -252,8 +278,10 @@ function TerminalView({
   }, [
     settings.terminalCursorBlink,
     settings.terminalCursorStyle,
+    settings.terminalColorScheme,
     settings.terminalFontFamily,
     settings.terminalFontSize,
+    settings.terminalLineHeight,
     settings.terminalScrollback,
   ]);
 
@@ -373,12 +401,88 @@ function TerminalView({
     }
   }
 
+  async function copyTerminalSelection() {
+    const terminal = terminalRef.current;
+    if (!terminal?.hasSelection()) return;
+    try {
+      await writeClipboard(terminal.getSelection());
+    } catch {
+      Message.error("无法写入剪贴板");
+    } finally {
+      terminal.focus();
+    }
+  }
+
+  async function pasteTerminalClipboard() {
+    const terminal = terminalRef.current;
+    if (!terminal || !connectedRef.current) return;
+    try {
+      const value = await readClipboard();
+      if (value) terminal.paste(value);
+    } catch {
+      Message.error("无法读取剪贴板");
+    } finally {
+      terminal.focus();
+    }
+  }
+
+  function terminalContextMenuItems(): ContextMenuItem[] {
+    const terminal = terminalRef.current;
+    return [
+      {
+        key: "copy",
+        label: "复制",
+        icon: <IconCopy />,
+        disabled: !terminal?.hasSelection(),
+        onClick: copyTerminalSelection,
+      },
+      {
+        key: "paste",
+        label: "粘贴",
+        icon: <IconPaste />,
+        disabled: !connectedRef.current,
+        onClick: pasteTerminalClipboard,
+      },
+      {
+        key: "select-all",
+        label: "全选",
+        icon: <IconSelectAll />,
+        dividerBefore: true,
+        onClick: () => terminal?.selectAll(),
+      },
+    ];
+  }
+
+  function handleTerminalContextMenu(event: ReactMouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (settingsRef.current.terminalRightClickAction === "paste") {
+      void pasteTerminalClipboard();
+    }
+  }
+
   const currentSearchResult =
     searchResult.resultIndex >= 0 ? searchResult.resultIndex + 1 : 0;
+  const terminalTheme = TERMINAL_THEMES[settings.terminalColorScheme].theme;
 
   return (
-    <div className="terminal-view" onKeyDownCapture={handleKeyDown}>
-      <div className="terminal-host" ref={containerRef} />
+    <div
+      className="terminal-view"
+      onKeyDownCapture={handleKeyDown}
+      style={
+        { "--terminal-background": terminalTheme.background } as CSSProperties
+      }
+    >
+      <ContextMenu
+        disabled={settings.terminalRightClickAction === "paste"}
+        menuClassName="terminal-context-menu"
+        resolveItems={terminalContextMenuItems}
+      >
+        <div
+          className="terminal-host"
+          onContextMenu={handleTerminalContextMenu}
+          ref={containerRef}
+        />
+      </ContextMenu>
       {searchVisible && (
         <div className="terminal-search-bar" role="search">
           <Input

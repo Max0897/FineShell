@@ -2,6 +2,28 @@ const SSH_PASSWORD_SERVICE: &str = "com.fineshell.app.ssh";
 const SSH_PRIVATE_KEY_PASSPHRASE_SERVICE: &str = "com.fineshell.app.ssh-key-passphrase";
 const PROXY_PASSWORD_SERVICE: &str = "com.fineshell.app.proxy";
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CredentialProbe {
+    kind: String,
+    owner_id: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CredentialProbeResult {
+    kind: String,
+    owner_id: String,
+    exists: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CopyHostCredentialsResult {
+    password_copied: bool,
+    passphrase_copied: bool,
+}
+
 fn password_entry(host_id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(SSH_PASSWORD_SERVICE, host_id)
         .map_err(|error| format!("无法访问系统凭据库：{error}"))
@@ -72,7 +94,7 @@ fn copy_optional_credential(
 pub(crate) fn copy_host_credentials(
     source_host_id: String,
     target_host_id: String,
-) -> Result<(), String> {
+) -> Result<CopyHostCredentialsResult, String> {
     validate_copy_ids(&source_host_id, &target_host_id)?;
 
     let password_copied = copy_optional_credential(
@@ -87,16 +109,56 @@ pub(crate) fn copy_host_credentials(
             "私钥口令",
         )
     })();
-    if let Err(error) = passphrase_result {
-        if password_copied {
-            if let Ok(entry) = password_entry(&target_host_id) {
-                let _ = entry.delete_credential();
+    let passphrase_copied = match passphrase_result {
+        Ok(copied) => copied,
+        Err(error) => {
+            if password_copied {
+                if let Ok(entry) = password_entry(&target_host_id) {
+                    let _ = entry.delete_credential();
+                }
             }
+            return Err(error);
         }
-        return Err(error);
-    }
+    };
 
-    Ok(())
+    Ok(CopyHostCredentialsResult {
+        password_copied,
+        passphrase_copied,
+    })
+}
+
+fn credential_exists(probe: &CredentialProbe) -> Result<bool, String> {
+    if probe.owner_id.trim().is_empty() {
+        return Err("凭据归属标识不能为空".to_string());
+    }
+    let entry = match probe.kind.as_str() {
+        "hostPassword" => password_entry(&probe.owner_id)?,
+        "privateKeyPassphrase" => private_key_passphrase_entry(&probe.owner_id)?,
+        "proxyPassword" => proxy_password_entry(&probe.owner_id)?,
+        _ => return Err("不支持的凭据类型".to_string()),
+    };
+    match entry.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(error) => Err(format!("检查系统凭据失败：{error}")),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn inspect_credentials(
+    probes: Vec<CredentialProbe>,
+) -> Result<Vec<CredentialProbeResult>, String> {
+    probes
+        .into_iter()
+        .map(|probe| {
+            let exists = credential_exists(&probe)?;
+            Ok(CredentialProbeResult {
+                kind: probe.kind,
+                owner_id: probe.owner_id,
+                exists,
+            })
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -161,12 +223,21 @@ pub(crate) fn delete_proxy_password(proxy_id: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_copy_ids;
+    use super::{credential_exists, validate_copy_ids, CredentialProbe};
 
     #[test]
     fn validates_credential_copy_identifiers() {
         assert!(validate_copy_ids("source", "target").is_ok());
         assert!(validate_copy_ids("", "target").is_err());
         assert!(validate_copy_ids("same", "same").is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_credential_probe_kind_without_accessing_keychain() {
+        let result = credential_exists(&CredentialProbe {
+            kind: "unknown".to_string(),
+            owner_id: "owner".to_string(),
+        });
+        assert_eq!(result.unwrap_err(), "不支持的凭据类型");
     }
 }

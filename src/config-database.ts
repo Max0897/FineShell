@@ -9,6 +9,7 @@ import type {
   DynamicPortForwardRule,
   HostRecord,
   HostSortMode,
+  KnownHostRecord,
   LocalPortForwardRule,
   ProxyRecord,
   QuickCommandRecord,
@@ -16,7 +17,21 @@ import type {
   SftpLocationRecord,
   SshKeyRecord,
 } from "./models";
+import {
+  deriveKnownHostRecords,
+  knownHostRecordId,
+  knownHostTargetKey,
+  normalizeHostFingerprint,
+  removeKnownHostTrust,
+  upsertKnownHostRecord,
+} from "./known-hosts";
 import { normalizeRemoteDirectoryPath } from "./sftp-utils";
+import { applyConnectionHistoryPolicy } from "./connection-history";
+import {
+  sanitizeCredentialReference,
+  type CredentialKind,
+  type CredentialReferenceRecord,
+} from "./credential-registry";
 
 const DATABASE_NAME = "fineshell.config";
 const DATABASE_VERSION = 1;
@@ -25,8 +40,8 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 13;
-export const CONFIGURATION_EXPORT_VERSION = 11;
+export const CONFIGURATION_SCHEMA_VERSION = 17;
+export const CONFIGURATION_EXPORT_VERSION = 15;
 export const MAX_CONFIGURATION_BACKUPS = 10;
 export const TRASH_RETENTION_DAYS = 30;
 export const MAX_SFTP_BOOKMARKS = 20;
@@ -43,6 +58,8 @@ export interface ConfigurationBackup {
   quickCommands: QuickCommandRecord[];
   hostSort: HostSortMode;
   sftpLocations: SftpLocationRecord[];
+  knownHosts?: KnownHostRecord[];
+  settings?: AppSettings;
 }
 
 export interface DeletedHostRecord {
@@ -62,7 +79,9 @@ export interface FineShellConfiguration {
   quickCommands: QuickCommandRecord[];
   hostSort: HostSortMode;
   sftpLocations: SftpLocationRecord[];
+  knownHosts: KnownHostRecord[];
   settings: AppSettings;
+  credentialReferences: CredentialReferenceRecord[];
   backups: ConfigurationBackup[];
   trash: DeletedHostRecord[];
   updatedAt: string;
@@ -79,6 +98,7 @@ export interface FineShellConfigurationExport {
   quickCommands: QuickCommandRecord[];
   hostSort: HostSortMode;
   sftpLocations: SftpLocationRecord[];
+  knownHosts: KnownHostRecord[];
   settings: AppSettings;
 }
 
@@ -374,6 +394,78 @@ function sanitizeHistoryRecord(
   };
 }
 
+function sanitizeKnownHost(value: unknown): KnownHostRecord | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const address = stringValue(value.address)?.trim();
+  const fingerprint = normalizeHostFingerprint(
+    stringValue(value.fingerprint) ?? "",
+  );
+  if (!address || !fingerprint) return undefined;
+
+  const port = numberValue(value.port, 22, 1, 65_535);
+  const fallbackTime = new Date().toISOString();
+  const lastVerifiedAtValue = stringValue(value.lastVerifiedAt);
+  const lastVerifiedAt =
+    lastVerifiedAtValue && Number.isFinite(Date.parse(lastVerifiedAtValue))
+      ? lastVerifiedAtValue
+      : fallbackTime;
+  const firstSeenAtValue = stringValue(value.firstSeenAt);
+  const firstSeenAt =
+    firstSeenAtValue && Number.isFinite(Date.parse(firstSeenAtValue))
+      ? firstSeenAtValue
+      : lastVerifiedAt;
+
+  return {
+    id: stringValue(value.id) ?? knownHostRecordId(address, port),
+    address,
+    port,
+    fingerprint,
+    firstSeenAt:
+      Date.parse(firstSeenAt) <= Date.parse(lastVerifiedAt)
+        ? firstSeenAt
+        : lastVerifiedAt,
+    lastVerifiedAt,
+  };
+}
+
+function sanitizeKnownHosts(value: unknown) {
+  const records = sanitizeList(value, sanitizeKnownHost).sort(
+    (left, right) =>
+      Date.parse(left.lastVerifiedAt) - Date.parse(right.lastVerifiedAt),
+  );
+  let deduplicated: KnownHostRecord[] = [];
+  for (const record of records) {
+    const targetKey = knownHostTargetKey(record.address, record.port);
+    const existing = deduplicated.find(
+      (item) => knownHostTargetKey(item.address, item.port) === targetKey,
+    );
+    deduplicated = upsertKnownHostRecord(
+      deduplicated,
+      record,
+      record.fingerprint,
+      record.lastVerifiedAt,
+    );
+    deduplicated = deduplicated.map((item) =>
+      knownHostTargetKey(item.address, item.port) === targetKey &&
+      item.fingerprint === record.fingerprint
+        ? {
+            ...item,
+            id: existing?.id ?? record.id,
+            firstSeenAt:
+              Date.parse(record.firstSeenAt) < Date.parse(item.firstSeenAt)
+                ? record.firstSeenAt
+                : item.firstSeenAt,
+          }
+        : item,
+    );
+  }
+  return deduplicated.sort(
+    (left, right) =>
+      Date.parse(right.lastVerifiedAt) - Date.parse(left.lastVerifiedAt),
+  );
+}
+
 function sanitizeBackup(value: unknown): ConfigurationBackup | undefined {
   if (!isRecord(value)) return undefined;
 
@@ -382,17 +474,28 @@ function sanitizeBackup(value: unknown): ConfigurationBackup | undefined {
   const reason = stringValue(value.reason);
   if (!id || !createdAt || !reason) return undefined;
 
+  const settings = isRecord(value.settings)
+    ? sanitizeAppSettings(value.settings)
+    : undefined;
   return {
     id,
     createdAt,
     reason,
     hosts: sanitizeList(value.hosts, sanitizeHost),
-    history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
+    history: applyConnectionHistoryPolicy(
+      sanitizeList(value.history, sanitizeHistoryRecord),
+      settings ?? DEFAULT_APP_SETTINGS,
+      new Date(createdAt),
+    ),
     proxies: sanitizeList(value.proxies, sanitizeProxy),
     sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
     quickCommands: sanitizeList(value.quickCommands, sanitizeQuickCommand),
     hostSort: sanitizeHostSortMode(value.hostSort),
     sftpLocations: sanitizeList(value.sftpLocations, sanitizeSftpLocation),
+    knownHosts: Array.isArray(value.knownHosts)
+      ? sanitizeKnownHosts(value.knownHosts)
+      : undefined,
+    settings,
   };
 }
 
@@ -443,20 +546,25 @@ export function migrateLegacyConfiguration(
   storedHistory: string | null,
   now = new Date().toISOString(),
 ): FineShellConfiguration {
+  const hosts = sanitizeList(parseLegacyList(storedHosts), sanitizeHost);
+  const history = applyConnectionHistoryPolicy(
+    sanitizeList(parseLegacyList(storedHistory), sanitizeHistoryRecord),
+    DEFAULT_APP_SETTINGS,
+    new Date(now),
+  );
   return {
     id: CONFIGURATION_ID,
     schemaVersion: CONFIGURATION_SCHEMA_VERSION,
-    hosts: sanitizeList(parseLegacyList(storedHosts), sanitizeHost),
-    history: sanitizeList(
-      parseLegacyList(storedHistory),
-      sanitizeHistoryRecord,
-    ).slice(0, 50),
+    hosts,
+    history,
     proxies: [],
     sshKeys: [],
     quickCommands: [],
     hostSort: "manual",
     sftpLocations: [],
+    knownHosts: deriveKnownHostRecords(hosts, history, now),
     settings: { ...DEFAULT_APP_SETTINGS },
+    credentialReferences: [],
     backups: [],
     trash: [],
     updatedAt: now,
@@ -472,23 +580,38 @@ function normalizeConfiguration(value: unknown): FineShellConfiguration {
     throw new Error("配置由更高版本的 FineShell 创建，当前版本无法读取");
   }
 
+  const hosts = sanitizeList(value.hosts, sanitizeHost);
+  const settings = sanitizeAppSettings(value.settings);
+  const updatedAt = stringValue(value.updatedAt) ?? new Date().toISOString();
+  const history = applyConnectionHistoryPolicy(
+    sanitizeList(value.history, sanitizeHistoryRecord),
+    settings,
+    new Date(),
+  );
   return {
     id: CONFIGURATION_ID,
     schemaVersion: CONFIGURATION_SCHEMA_VERSION,
-    hosts: sanitizeList(value.hosts, sanitizeHost),
-    history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
+    hosts,
+    history,
     proxies: sanitizeList(value.proxies, sanitizeProxy),
     sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
     quickCommands: sanitizeList(value.quickCommands, sanitizeQuickCommand),
     hostSort: sanitizeHostSortMode(value.hostSort),
     sftpLocations: sanitizeList(value.sftpLocations, sanitizeSftpLocation),
-    settings: sanitizeAppSettings(value.settings),
+    knownHosts: Array.isArray(value.knownHosts)
+      ? sanitizeKnownHosts(value.knownHosts)
+      : deriveKnownHostRecords(hosts, history, updatedAt),
+    settings,
+    credentialReferences: sanitizeList(
+      value.credentialReferences,
+      sanitizeCredentialReference,
+    ),
     backups: sanitizeList(value.backups, sanitizeBackup).slice(
       0,
       MAX_CONFIGURATION_BACKUPS,
     ),
     trash: sanitizeList(value.trash, sanitizeDeletedHost),
-    updatedAt: stringValue(value.updatedAt) ?? new Date().toISOString(),
+    updatedAt,
   };
 }
 
@@ -508,6 +631,8 @@ function createBackup(
     quickCommands: configuration.quickCommands,
     hostSort: configuration.hostSort,
     sftpLocations: configuration.sftpLocations,
+    knownHosts: configuration.knownHosts,
+    settings: configuration.settings,
   };
 }
 
@@ -521,19 +646,22 @@ export function serializeConfigurationExport(
     | "quickCommands"
     | "hostSort"
     | "sftpLocations"
+    | "knownHosts"
     | "settings"
   >,
   now = new Date().toISOString(),
 ) {
+  const settings = sanitizeAppSettings(configuration.settings);
   const exported: FineShellConfigurationExport = {
     format: "fineshell-config",
     schemaVersion: CONFIGURATION_EXPORT_VERSION,
     exportedAt: now,
     hosts: sanitizeList(configuration.hosts, sanitizeHost),
-    history: sanitizeList(
-      configuration.history,
-      sanitizeHistoryRecord,
-    ).slice(0, 50),
+    history: applyConnectionHistoryPolicy(
+      sanitizeList(configuration.history, sanitizeHistoryRecord),
+      settings,
+      new Date(now),
+    ),
     proxies: sanitizeList(configuration.proxies, sanitizeProxy),
     sshKeys: sanitizeList(configuration.sshKeys, sanitizeSshKey),
     quickCommands: sanitizeList(
@@ -545,7 +673,8 @@ export function serializeConfigurationExport(
       configuration.sftpLocations,
       sanitizeSftpLocation,
     ),
-    settings: sanitizeAppSettings(configuration.settings),
+    knownHosts: sanitizeKnownHosts(configuration.knownHosts),
+    settings,
   };
   return `${JSON.stringify(exported, null, 2)}\n`;
 }
@@ -567,15 +696,30 @@ export function parseConfigurationExport(contents: string) {
     throw new Error("配置文件版本不受支持");
   }
 
+  const hosts = sanitizeList(value.hosts, sanitizeHost);
+  const settings = sanitizeAppSettings(value.settings);
+  const exportedAt = stringValue(value.exportedAt) ?? new Date().toISOString();
+  const history = applyConnectionHistoryPolicy(
+    sanitizeList(value.history, sanitizeHistoryRecord),
+    settings,
+    new Date(),
+  );
   return {
-    hosts: sanitizeList(value.hosts, sanitizeHost),
-    history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
+    hosts,
+    history,
     proxies: sanitizeList(value.proxies, sanitizeProxy),
     sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
     quickCommands: sanitizeList(value.quickCommands, sanitizeQuickCommand),
     hostSort: sanitizeHostSortMode(value.hostSort),
     sftpLocations: sanitizeList(value.sftpLocations, sanitizeSftpLocation),
-    settings: sanitizeAppSettings(value.settings),
+    knownHosts: Array.isArray(value.knownHosts)
+      ? sanitizeKnownHosts(value.knownHosts)
+      : deriveKnownHostRecords(
+          hosts,
+          history,
+          exportedAt,
+        ),
+    settings,
   };
 }
 
@@ -709,24 +853,47 @@ export function replaceConfigurationContent(
 export function updateStoredHostFingerprint(
   host: Pick<HostRecord, "id" | "address" | "port" | "username">,
   fingerprint: string,
+  verifiedAt = new Date().toISOString(),
 ) {
+  const normalizedFingerprint = normalizeHostFingerprint(fingerprint);
+  if (!normalizedFingerprint) {
+    return Promise.reject(new Error("主机指纹不能为空"));
+  }
+  const targetKey = knownHostTargetKey(host.address, host.port);
   return updateConfiguration((current) => ({
     ...current,
-    hosts: host.id.startsWith("quick-")
-      ? current.hosts
-      : current.hosts.map((item) =>
-          item.id === host.id
-            ? { ...item, hostFingerprint: fingerprint }
-            : item,
-        ),
-    history: current.history.map((item) =>
-      item.username === host.username &&
-      item.address === host.address &&
-      item.port === host.port
-        ? { ...item, hostFingerprint: fingerprint }
+    hosts: current.hosts.map((item) =>
+      knownHostTargetKey(item.address, item.port) === targetKey
+        ? { ...item, hostFingerprint: normalizedFingerprint }
         : item,
     ),
+    history: current.history.map((item) =>
+      knownHostTargetKey(item.address, item.port) === targetKey
+        ? { ...item, hostFingerprint: normalizedFingerprint }
+        : item,
+    ),
+    knownHosts: upsertKnownHostRecord(
+      current.knownHosts,
+      host,
+      normalizedFingerprint,
+      verifiedAt,
+    ),
   }));
+}
+
+export function removeKnownHostFingerprints(knownHostIds: string[]) {
+  return updateConfiguration((current) => {
+    const next = removeKnownHostTrust(
+      current.knownHosts,
+      current.hosts,
+      current.history,
+      knownHostIds,
+    );
+    return {
+      ...current,
+      ...next,
+    };
+  });
 }
 
 export function importConfiguration(
@@ -739,6 +906,7 @@ export function importConfiguration(
     | "quickCommands"
     | "hostSort"
     | "sftpLocations"
+    | "knownHosts"
     | "settings"
   >,
 ) {
@@ -751,6 +919,7 @@ export function importConfiguration(
     quickCommands: imported.quickCommands,
     hostSort: imported.hostSort,
     sftpLocations: imported.sftpLocations,
+    knownHosts: imported.knownHosts,
     settings: imported.settings,
     backups: [
       createBackup(current, "导入配置前自动备份"),
@@ -773,6 +942,14 @@ export function restoreConfigurationBackup(backupId: string) {
       quickCommands: backup.quickCommands,
       hostSort: backup.hostSort,
       sftpLocations: backup.sftpLocations,
+      knownHosts:
+        backup.knownHosts ??
+        deriveKnownHostRecords(
+          backup.hosts,
+          backup.history,
+          backup.createdAt,
+        ),
+      settings: backup.settings ?? current.settings,
       backups: [
         createBackup(current, "恢复配置前自动备份"),
         ...current.backups,
@@ -994,8 +1171,55 @@ export function deleteQuickCommand(commandId: string) {
 }
 
 export function updateAppSettings(settings: AppSettings) {
+  return updateConfiguration((current) => {
+    const sanitized = sanitizeAppSettings(settings);
+    return {
+      ...current,
+      history: applyConnectionHistoryPolicy(current.history, sanitized),
+      settings: sanitized,
+    };
+  });
+}
+
+export function clearConnectionHistory() {
+  return updateConfiguration((current) => ({ ...current, history: [] }));
+}
+
+export function upsertCredentialReference(
+  reference: CredentialReferenceRecord,
+) {
+  const sanitized = sanitizeCredentialReference(reference);
+  if (!sanitized) return Promise.reject(new Error("凭据索引无效"));
   return updateConfiguration((current) => ({
     ...current,
-    settings: sanitizeAppSettings(settings),
+    credentialReferences: current.credentialReferences.some(
+      (item) => item.id === sanitized.id,
+    )
+      ? current.credentialReferences.map((item) =>
+          item.id === sanitized.id ? sanitized : item,
+        )
+      : [...current.credentialReferences, sanitized],
+  }));
+}
+
+export function replaceCredentialReferences(
+  references: CredentialReferenceRecord[],
+) {
+  return updateConfiguration((current) => ({
+    ...current,
+    credentialReferences: references,
+  }));
+}
+
+export function removeCredentialReference(
+  kind: CredentialKind,
+  ownerId: string,
+) {
+  const id = `${kind}:${ownerId}`;
+  return updateConfiguration((current) => ({
+    ...current,
+    credentialReferences: current.credentialReferences.filter(
+      (item) => item.id !== id,
+    ),
   }));
 }

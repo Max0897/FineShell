@@ -15,9 +15,10 @@ import {
   Typography,
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
   IconDelete,
   IconCopy,
@@ -55,10 +56,17 @@ import {
   loadConfiguration,
   moveHostToTrash,
   purgeExpiredDeletedHosts,
+  removeCredentialReference,
   replaceConfigurationContent,
+  upsertCredentialReference,
   updateHostSortMode,
 } from "../config-database";
 import type { AppSettings } from "../app-settings";
+import { applyConnectionHistoryPolicy } from "../connection-history";
+import {
+  connectionTargetKey,
+  createCredentialReference,
+} from "../credential-registry";
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -70,8 +78,8 @@ async function storeHostPassword(hostId: string, password: string) {
 }
 
 async function removeHostPassword(hostId: string) {
-  if (!isTauri()) return;
-  await invoke("delete_host_password", { hostId });
+  if (isTauri()) await invoke("delete_host_password", { hostId });
+  await removeCredentialReference("hostPassword", hostId);
 }
 
 async function storePrivateKeyPassphrase(hostId: string, passphrase: string) {
@@ -80,8 +88,10 @@ async function storePrivateKeyPassphrase(hostId: string, passphrase: string) {
 }
 
 async function removePrivateKeyPassphrase(hostId: string) {
-  if (!isTauri()) return;
-  await invoke("delete_private_key_passphrase", { hostId });
+  if (isTauri()) {
+    await invoke("delete_private_key_passphrase", { hostId });
+  }
+  await removeCredentialReference("privateKeyPassphrase", hostId);
 }
 
 async function choosePrivateKeyPath() {
@@ -92,15 +102,6 @@ async function choosePrivateKeyPath() {
     title: "选择 SSH 私钥",
   });
   return typeof selected === "string" ? selected : undefined;
-}
-
-function targetKey(
-  target: Pick<
-    HostRecord,
-    "address" | "port" | "username" | "proxyId" | "jumpHostId"
-  >,
-) {
-  return `${target.username}@${target.address}:${target.port}#${target.proxyId ?? "direct"}#${target.jumpHostId ?? "no-jump"}`;
 }
 
 function formatTime(value?: string) {
@@ -281,12 +282,26 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       return;
     }
 
+    let passwordStored = false;
+    let passphraseStored = false;
     try {
-      if (password) await storeHostPassword(hostId, password);
+      if (password) {
+        await storeHostPassword(hostId, password);
+        passwordStored = true;
+      }
       if (privateKeyPassphrase) {
         await storePrivateKeyPassphrase(hostId, privateKeyPassphrase);
+        passphraseStored = true;
       }
     } catch {
+      if (!editingHost) {
+        await Promise.allSettled([
+          ...(passwordStored ? [removeHostPassword(hostId)] : []),
+          ...(passphraseStored
+            ? [removePrivateKeyPassphrase(hostId)]
+            : []),
+        ]);
+      }
       Message.error("认证凭据保存失败，请检查系统凭据库权限");
       return;
     }
@@ -300,8 +315,43 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       await replaceConfigurationContent(nextHosts, history);
       setHosts(nextHosts);
     } catch {
+      if (!editingHost) {
+        await Promise.allSettled([
+          ...(passwordStored ? [removeHostPassword(hostId)] : []),
+          ...(passphraseStored
+            ? [removePrivateKeyPassphrase(hostId)]
+            : []),
+        ]);
+      }
       Message.error("主机配置保存失败");
       return;
+    }
+    const indexed = await Promise.allSettled([
+      ...(password
+        ? [
+            upsertCredentialReference(
+              createCredentialReference(
+                "hostPassword",
+                hostId,
+                `主机：${normalized.name}`,
+              ),
+            ),
+          ]
+        : []),
+      ...(privateKeyPassphrase
+        ? [
+            upsertCredentialReference(
+              createCredentialReference(
+                "privateKeyPassphrase",
+                hostId,
+                `主机：${normalized.name}`,
+              ),
+            ),
+          ]
+        : []),
+    ]);
+    if (indexed.some((result) => result.status === "rejected")) {
+      Message.warning("主机已保存，但凭据索引更新失败，可在隐私与清理中重新扫描");
     }
 
     Message.success(editingHost ? "主机信息已更新" : "主机已添加");
@@ -334,11 +384,32 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     setConfigurationAction(true);
     try {
       if (isTauri()) {
-        await invoke("copy_host_credentials", {
+        const result = await invoke<{
+          passwordCopied: boolean;
+          passphraseCopied: boolean;
+        }>("copy_host_credentials", {
           sourceHostId: host.id,
           targetHostId: copiedHost.id,
         });
         credentialsCopied = true;
+        if (result.passwordCopied) {
+          await upsertCredentialReference(
+            createCredentialReference(
+              "hostPassword",
+              copiedHost.id,
+              `主机：${copiedHost.name}`,
+            ),
+          );
+        }
+        if (result.passphraseCopied) {
+          await upsertCredentialReference(
+            createCredentialReference(
+              "privateKeyPassphrase",
+              copiedHost.id,
+              `主机：${copiedHost.name}`,
+            ),
+          );
+        }
       }
 
       const nextHosts = [...hosts, copiedHost];
@@ -415,7 +486,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       return;
     }
     const now = new Date().toISOString();
-    const identity = targetKey(host);
+    const identity = connectionTargetKey(host);
     const storedConnectedHost = { ...host, lastConnectedAt: now };
     const connectedHost = { ...resolvedHost, lastConnectedAt: now };
     const historyRecord: ConnectionHistoryRecord = {
@@ -443,10 +514,14 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     const nextHosts = hosts.map((item) =>
       item.id === host.id ? storedConnectedHost : item,
     );
-    const nextHistory = [
-      historyRecord,
-      ...history.filter((item) => targetKey(item) !== identity),
-    ].slice(0, 50);
+    const nextHistory = applyConnectionHistoryPolicy(
+      [
+        historyRecord,
+        ...history.filter((item) => connectionTargetKey(item) !== identity),
+      ],
+      settings,
+      new Date(now),
+    );
     try {
       await replaceConfigurationContent(nextHosts, nextHistory);
       setHosts(nextHosts);
@@ -478,7 +553,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       username: quickTarget.username.trim() || "root",
     };
     const host: HostRecord = {
-      id: `quick-${targetKey({ ...normalized, proxyId: quickProxyId })}`,
+      id: `quick-${connectionTargetKey({ ...normalized, proxyId: quickProxyId })}`,
       name: normalized.address,
       authMethod: quickAuthMethod,
       sshKeyId:
@@ -491,13 +566,27 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       ...normalized,
     };
 
+    let quickPasswordStored = false;
     try {
       if (quickAuthMethod === "password") {
         await storeHostPassword(host.id, quickPassword);
+        quickPasswordStored = true;
+        await upsertCredentialReference(
+          createCredentialReference(
+            "hostPassword",
+            host.id,
+            `快速连接：${host.username}@${host.address}:${host.port}`,
+          ),
+        ).catch(() => {
+          Message.warning("凭据索引更新失败，可在隐私与清理中重新扫描");
+        });
       }
       setQuickPassword("");
       await sendConnection(host);
     } catch {
+      if (quickPasswordStored) {
+        await removeHostPassword(host.id).catch(() => undefined);
+      }
       Message.error("认证凭据保存失败，请检查系统凭据库权限");
     }
   }
@@ -506,7 +595,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     const savedHost = hosts.find((host) => host.id === record.hostId);
     void sendConnection(
       savedHost ?? {
-        id: `quick-${targetKey(record)}`,
+        id: `quick-${connectionTargetKey(record)}`,
         name: record.name,
         address: record.address,
         port: record.port,

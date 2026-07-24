@@ -1,5 +1,6 @@
 mod config_files;
 mod credentials;
+mod diagnostics;
 mod dynamic_forward;
 mod external_edit;
 mod monitor;
@@ -13,10 +14,17 @@ mod transport;
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(sftp::SftpSessionManager::default())
+        .manage(diagnostics::DiagnosticLogState::default())
         .manage(external_edit::ExternalEditManager::default())
         .manage(ssh::SshSessionManager::default())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
+
+    let builder = builder.setup(|app| {
+        diagnostics::record_startup(app.handle());
+        Ok(())
+    });
 
     #[cfg(desktop)]
     let builder = builder
@@ -30,10 +38,16 @@ pub fn run() {
             credentials::store_host_password,
             credentials::delete_host_password,
             credentials::copy_host_credentials,
+            credentials::inspect_credentials,
             credentials::store_private_key_passphrase,
             credentials::delete_private_key_passphrase,
             credentials::store_proxy_password,
             credentials::delete_proxy_password,
+            diagnostics::diagnostic_set_level,
+            diagnostics::diagnostic_record,
+            diagnostics::diagnostic_summary,
+            diagnostics::diagnostic_clear,
+            diagnostics::diagnostic_export,
             ssh::ssh_connect,
             ssh::ssh_write,
             ssh::ssh_resize,

@@ -31,6 +31,15 @@ export interface SshKeyFormValues extends Omit<SshKeyRecord, "id"> {
   passphrase?: string;
 }
 
+export interface KnownHostRecord {
+  id: string;
+  address: string;
+  port: number;
+  fingerprint: string;
+  firstSeenAt: string;
+  lastVerifiedAt: string;
+}
+
 export interface QuickCommandRecord {
   id: string;
   name: string;

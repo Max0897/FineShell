@@ -25,12 +25,14 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(13);
+    expect(configuration.schemaVersion).toBe(17);
     expect(configuration.proxies).toEqual([]);
     expect(configuration.sshKeys).toEqual([]);
     expect(configuration.quickCommands).toEqual([]);
     expect(configuration.hostSort).toBe("manual");
     expect(configuration.sftpLocations).toEqual([]);
+    expect(configuration.knownHosts).toEqual([]);
+    expect(configuration.credentialReferences).toEqual([]);
     expect(configuration.settings).toEqual(DEFAULT_APP_SETTINGS);
     expect(configuration.updatedAt).toBe("2026-07-22T00:00:00.000Z");
     expect(configuration.hosts).toEqual([
@@ -77,7 +79,8 @@ describe("migrateLegacyConfiguration", () => {
 
     expect(configuration.hosts).toHaveLength(0);
     expect(configuration.history).toHaveLength(50);
-    expect(configuration.history[0].id).toBe("history-0");
+    expect(configuration.history[0].id).toBe("history-54");
+    expect(configuration.history[49].id).toBe("history-5");
   });
 
   test("recovers from invalid legacy JSON", () => {
@@ -212,6 +215,16 @@ describe("configuration import and export", () => {
             history: ["/var/log", "relative/path"],
           },
         ],
+        knownHosts: [
+          {
+            id: "known-host-1",
+            address: "server.example.com",
+            port: 22,
+            fingerprint: "SHA256:abc123",
+            firstSeenAt: "2026-07-20T00:00:00.000Z",
+            lastVerifiedAt: "2026-07-22T00:00:00.000Z",
+          },
+        ],
         settings: DEFAULT_APP_SETTINGS,
       },
       "2026-07-22T00:00:00.000Z",
@@ -224,6 +237,8 @@ describe("configuration import and export", () => {
     expect(contents).toContain('"sshKeys"');
     expect(contents).toContain('"quickCommands"');
     expect(contents).toContain('"sftpLocations"');
+    expect(contents).toContain('"knownHosts"');
+    expect(contents).not.toContain("credentialReferences");
     expect(contents).not.toContain("must-not-be-exported");
     expect(contents).not.toContain("key-passphrase-must-not-be-exported");
     const imported = parseConfigurationExport(contents);
@@ -265,6 +280,17 @@ describe("configuration import and export", () => {
         description: "读取文件末尾内容",
       },
     ]);
+    expect(imported.knownHosts).toEqual([
+      {
+        id: "known-host-1",
+        address: "server.example.com",
+        port: 22,
+        fingerprint: "SHA256:abc123",
+        firstSeenAt: "2026-07-20T00:00:00.000Z",
+        lastVerifiedAt: "2026-07-22T00:00:00.000Z",
+      },
+    ]);
+    expect(imported.settings).toEqual(DEFAULT_APP_SETTINGS);
   });
 
   test("rejects unrelated and newer configuration documents", () => {
@@ -294,7 +320,42 @@ describe("configuration import and export", () => {
     expect(imported.sshKeys).toEqual([]);
     expect(imported.quickCommands).toEqual([]);
     expect(imported.sftpLocations).toEqual([]);
+    expect(imported.knownHosts).toEqual([]);
     expect(imported.settings).toEqual(DEFAULT_APP_SETTINGS);
+  });
+
+  test("derives known hosts from exports created before centralized management", () => {
+    const imported = parseConfigurationExport(
+      JSON.stringify({
+        format: "fineshell-config",
+        schemaVersion: 12,
+        exportedAt: "2026-07-22T00:00:00.000Z",
+        hosts: [
+          {
+            id: "host-1",
+            name: "Server",
+            address: "server.example.com",
+            port: 22,
+            username: "root",
+            authMethod: "password",
+            hostFingerprint: "legacy-fingerprint",
+            lastConnectedAt: "2026-07-21T00:00:00.000Z",
+          },
+        ],
+        history: [],
+      }),
+    );
+
+    expect(imported.knownHosts).toEqual([
+      {
+        id: "known-host-server.example.com%3A22",
+        address: "server.example.com",
+        port: 22,
+        fingerprint: "SHA256:legacy-fingerprint",
+        firstSeenAt: "2026-07-21T00:00:00.000Z",
+        lastVerifiedAt: "2026-07-21T00:00:00.000Z",
+      },
+    ]);
   });
 
   test("preserves SSH Agent authentication during import", () => {

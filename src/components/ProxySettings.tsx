@@ -19,13 +19,17 @@ import {
   IconEdit,
   IconPlus,
 } from "@arco-design/web-react/icon";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
+import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
   deleteProxy,
   loadConfiguration,
+  removeCredentialReference,
+  upsertCredentialReference,
   upsertProxy,
 } from "../config-database";
+import { createCredentialReference } from "../credential-registry";
 import type {
   ProxyFormValues,
   ProxyRecord,
@@ -42,8 +46,8 @@ async function storeProxyPassword(proxyId: string, password: string) {
 }
 
 async function removeProxyPassword(proxyId: string) {
-  if (!isTauri()) return;
-  await invoke("delete_proxy_password", { proxyId });
+  if (isTauri()) await invoke("delete_proxy_password", { proxyId });
+  await removeCredentialReference("proxyPassword", proxyId);
 }
 
 interface ProxyEditorModalProps {
@@ -239,6 +243,17 @@ function ProxySettings() {
       }
       const configuration = await upsertProxy(proxy);
       setProxies(configuration.proxies);
+      if (username && password) {
+        await upsertCredentialReference(
+          createCredentialReference(
+            "proxyPassword",
+            proxyId,
+            `代理：${proxy.name}`,
+          ),
+        ).catch(() => {
+          Message.warning("代理已保存，但凭据索引更新失败，可重新扫描");
+        });
+      }
       if (!username) await removeProxyPassword(proxyId);
       await notifyMainWindow();
       setEditorVisible(false);

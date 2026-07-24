@@ -19,14 +19,18 @@ import {
   IconFolder,
   IconPlus,
 } from "@arco-design/web-react/icon";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
   deleteSshKey,
   loadConfiguration,
+  removeCredentialReference,
+  upsertCredentialReference,
   upsertSshKey,
 } from "../config-database";
+import { createCredentialReference } from "../credential-registry";
 import type { SshKeyFormValues, SshKeyRecord } from "../models";
 
 function createSshKeyId() {
@@ -52,8 +56,10 @@ async function storePassphrase(sshKeyId: string, passphrase: string) {
 }
 
 async function removePassphrase(sshKeyId: string) {
-  if (!isTauri()) return;
-  await invoke("delete_private_key_passphrase", { hostId: sshKeyId });
+  if (isTauri()) {
+    await invoke("delete_private_key_passphrase", { hostId: sshKeyId });
+  }
+  await removeCredentialReference("privateKeyPassphrase", sshKeyId);
 }
 
 interface SshKeyEditorModalProps {
@@ -224,6 +230,17 @@ function SshKeySettings() {
       }
       const configuration = await upsertSshKey(sshKey);
       setSshKeys(configuration.sshKeys);
+      if (values.passphrase) {
+        await upsertCredentialReference(
+          createCredentialReference(
+            "privateKeyPassphrase",
+            sshKeyId,
+            `密钥：${sshKey.name}`,
+          ),
+        ).catch(() => {
+          Message.warning("密钥已保存，但凭据索引更新失败，可重新扫描");
+        });
+      }
       await notifyMainWindow();
       setEditorVisible(false);
       setEditingSshKey(null);

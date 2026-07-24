@@ -676,7 +676,7 @@ body,
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #191b20;
+  background: var(--terminal-background, #191b20);
 }
 
 .terminal-host {
@@ -687,12 +687,12 @@ body,
 .terminal-view .xterm {
   height: 100%;
   padding: 8px 0 4px 8px;
-  background: #191b20;
+  background: var(--terminal-background, #191b20);
 }
 
 .terminal-view .xterm-viewport {
   overflow: hidden;
-  background-color: #191b20;
+  background-color: var(--terminal-background, #191b20);
   scrollbar-width: none;
 }
 
@@ -1470,6 +1470,21 @@ body.sftp-remote-dragging * {
   width: 180px;
 }
 
+.terminal-theme-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.terminal-theme-swatch {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border: 1px solid #c9cdd4;
+  border-radius: 2px;
+}
+
 .settings-editor-picker .arco-input {
   width: 220px;
 }
@@ -1525,6 +1540,167 @@ body.sftp-remote-dragging * {
 
 .ssh-key-settings-heading > .arco-typography {
   margin: 0;
+}
+
+.known-host-settings-heading {
+  margin-bottom: 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.known-host-settings-heading > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.known-host-settings-heading .arco-typography {
+  margin: 0;
+}
+
+.known-host-search {
+  margin-bottom: 16px;
+}
+
+.known-host-target-cell,
+.known-host-fingerprint-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.known-host-target-cell > .arco-typography,
+.known-host-fingerprint-cell > .arco-typography {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.known-host-fingerprint-cell > .arco-typography:first-child {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.known-host-fingerprint-cell > .arco-typography:last-child {
+  font-size: 12px;
+}
+
+.known-host-settings tbody > .arco-table-tr:last-child > .arco-table-td,
+.known-host-settings .arco-table-empty-row > .arco-table-td {
+  border-bottom: 0;
+}
+
+.privacy-settings > .arco-typography {
+  margin: 0 0 24px;
+}
+
+.privacy-section {
+  width: 100%;
+  max-width: 760px;
+  margin-bottom: 32px;
+}
+
+.privacy-section-heading {
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.privacy-section-heading > div:first-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.privacy-section-heading .arco-typography {
+  margin: 0;
+}
+
+.privacy-history-settings {
+  max-width: none;
+}
+
+.privacy-section > .arco-alert {
+  margin-bottom: 12px;
+}
+
+.advanced-settings > .arco-typography {
+  margin: 0 0 24px;
+}
+
+.advanced-section {
+  width: 100%;
+  max-width: 760px;
+}
+
+.advanced-section-heading {
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.advanced-section-heading > div:first-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.advanced-section-heading .arco-typography {
+  margin: 0;
+}
+
+.advanced-log-settings {
+  max-width: none;
+  margin-bottom: 16px;
+}
+
+.advanced-section > .arco-alert {
+  margin-bottom: 16px;
+}
+
+.diagnostic-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid #e5e6eb;
+  border-bottom: 1px solid #e5e6eb;
+}
+
+.diagnostic-summary > div {
+  min-width: 0;
+  min-height: 64px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+
+.diagnostic-summary .arco-typography {
+  margin: 0;
+}
+
+.diagnostic-summary-time {
+  grid-column: 1 / -1;
+  border-top: 1px solid #e5e6eb;
+}
+
+.advanced-log-actions {
+  margin-top: 16px;
+}
+
+.credential-cleanup-table tbody > .arco-table-tr:last-child > .arco-table-td,
+.credential-cleanup-table .arco-table-empty-row > .arco-table-td {
+  border-bottom: 0;
 }
 
 .quick-command-settings-heading {

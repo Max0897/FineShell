@@ -16,10 +16,11 @@ import {
   IconImport,
   IconUndo,
 } from "@arco-design/web-react/icon";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AppSettings } from "../app-settings";
+import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
   type ConfigurationBackup,
   type DeletedHostRecord,
@@ -28,6 +29,7 @@ import {
   parseConfigurationExport,
   permanentlyDeleteHost,
   purgeExpiredDeletedHosts,
+  removeCredentialReference,
   restoreConfigurationBackup,
   restoreDeletedHost,
   serializeConfigurationExport,
@@ -48,10 +50,17 @@ function formatTime(value: string) {
 }
 
 async function removeHostCredentials(hostId: string) {
-  if (!isTauri()) return [];
   return Promise.allSettled([
-    invoke("delete_host_password", { hostId }),
-    invoke("delete_private_key_passphrase", { hostId }),
+    (async () => {
+      if (isTauri()) await invoke("delete_host_password", { hostId });
+      await removeCredentialReference("hostPassword", hostId);
+    })(),
+    (async () => {
+      if (isTauri()) {
+        await invoke("delete_private_key_passphrase", { hostId });
+      }
+      await removeCredentialReference("privateKeyPassphrase", hostId);
+    })(),
   ]);
 }
 

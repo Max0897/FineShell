@@ -20,7 +20,7 @@ import {
   IconStop,
   IconThunderbolt,
 } from "@arco-design/web-react/icon";
-import { invoke } from "@tauri-apps/api/core";
+import { diagnosticInvoke as invoke } from "../diagnostics";
 import type {
   ServerProcess,
   ServerProcessListResult,

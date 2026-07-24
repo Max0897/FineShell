@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import {
+  Alert,
   Button,
   Message,
   Modal,
@@ -15,8 +16,8 @@ import {
   Tooltip,
   Typography,
 } from "@arco-design/web-react";
-import { invoke, isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { isTauri } from "@tauri-apps/api/core";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import {
   IconClose,
   IconCloseCircle,
@@ -41,6 +42,7 @@ import QuickCommandDrawer from "./components/QuickCommandDrawer";
 import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
 import { withHostDefaults } from "./host-storage";
+import { knownHostTargetKey } from "./known-hosts";
 import {
   loadConfiguration,
   updateStoredHostFingerprint,
@@ -56,6 +58,11 @@ import {
   sessionTabName,
   sshCredentialId,
 } from "./terminal-utils";
+import {
+  configureDiagnosticLogging,
+  diagnosticInvoke as invoke,
+  recordDiagnostic,
+} from "./diagnostics";
 import "./App.css";
 
 const ServerMonitorPanel = lazy(
@@ -83,6 +90,12 @@ interface PortForwardStatusPayload extends PortForwardStatus {
 async function persistHostFingerprint(host: HostRecord, fingerprint: string) {
   try {
     await updateStoredHostFingerprint(host, fingerprint);
+    if (isTauri()) {
+      await Promise.all([
+        emitTo("main", "configuration:changed").catch(() => undefined),
+        emitTo("settings", "configuration:changed").catch(() => undefined),
+      ]);
+    }
   } catch {
     // Configuration persistence must not interrupt an active SSH connection.
   }
@@ -103,14 +116,26 @@ function confirmHostFingerprint(host: HostRecord, result: SshConnectResult) {
       className: "fingerprint-confirm-modal",
       content: (
         <div className="fingerprint-confirm-content">
-          <Typography.Text>
-            {changed
-              ? `服务器 ${host.name} 返回的主机指纹与已保存值不同。`
-              : `首次连接 ${host.name}，请核对服务器主机指纹。`}
-          </Typography.Text>
+          <Alert
+            content={
+              changed
+                ? "服务器返回的指纹与已保存记录不同。确认服务器密钥确实已更换后再继续。"
+                : "首次连接该服务器，请先通过可信渠道核对指纹。"
+            }
+            showIcon
+            type={changed ? "error" : "warning"}
+          />
+          <div className="fingerprint-row">
+            <Typography.Text type="secondary">服务器</Typography.Text>
+            <Typography.Text className="fingerprint-value">
+              {host.address.includes(":")
+                ? `[${host.address}]:${host.port}`
+                : `${host.address}:${host.port}`}
+            </Typography.Text>
+          </div>
           {result.expectedFingerprint && (
             <div className="fingerprint-row">
-              <Typography.Text type="secondary">已保存</Typography.Text>
+              <Typography.Text type="secondary">原指纹</Typography.Text>
               <Typography.Text className="fingerprint-value">
                 {result.expectedFingerprint}
               </Typography.Text>
@@ -118,7 +143,7 @@ function confirmHostFingerprint(host: HostRecord, result: SshConnectResult) {
           )}
           <div className="fingerprint-row">
             <Typography.Text type="secondary">
-              {changed ? "服务器返回" : "SHA256"}
+              {changed ? "新指纹" : "SHA256"}
             </Typography.Text>
             <Typography.Text className="fingerprint-value">
               {result.fingerprint}
@@ -219,6 +244,11 @@ function App() {
 
   const connectSession = useCallback(
     async function connect(session: TerminalSession, reconnectAttempt = 0) {
+      recordDiagnostic("info", "ssh.session", "开始建立 SSH 会话", {
+        authentication: session.host.authMethod,
+        reconnectAttempt,
+        sessionId: session.id,
+      });
       try {
         const result = await invoke<SshConnectResult>("ssh_connect", {
           request: {
@@ -292,12 +322,20 @@ function App() {
           portForwardStatuses: result.portForwards,
         });
         await persistHostFingerprint(session.host, result.fingerprint);
+        recordDiagnostic("info", "ssh.session", "SSH 会话连接成功", {
+          sessionId: session.id,
+        });
       } catch (error) {
         if (intentionallyDisconnectedRef.current.has(session.id)) return;
         if (!sessionsRef.current.some((item) => item.id === session.id)) {
           return;
         }
         const message = String(error);
+        recordDiagnostic("error", "ssh.session", "SSH 会话连接失败", {
+          error: message,
+          reconnectAttempt,
+          sessionId: session.id,
+        });
         if (
           reconnectAttempt > 0 &&
           session.host.autoReconnect &&
@@ -417,6 +455,19 @@ function App() {
         (item) => item.id === payload.sessionId,
       );
       if (!session) return;
+      if (payload.error) {
+        recordDiagnostic(
+          payload.recoverable ? "warn" : "error",
+          "ssh.session",
+          "SSH 会话状态异常",
+          {
+            error: payload.error,
+            recoverable: payload.recoverable,
+            sessionId: payload.sessionId,
+            status: payload.status,
+          },
+        );
+      }
       if (manualReconnectsRef.current.delete(session.id)) {
         const reconnectingSession = {
           ...session,
@@ -534,8 +585,13 @@ function App() {
         setSettings(configuration.settings);
         setQuickCommands(configuration.quickCommands);
       })
-      .catch(() => {
-        if (!disposed) Message.warning("设置读取失败，已使用默认值");
+      .catch((error) => {
+        if (!disposed) {
+          recordDiagnostic("warn", "configuration", "应用设置读取失败", {
+            error: String(error),
+          });
+          Message.warning("设置读取失败，已使用默认值");
+        }
       })
       .finally(() => {
         window.requestAnimationFrame(() => {
@@ -552,16 +608,53 @@ function App() {
   }, []);
 
   useEffect(() => {
+    void configureDiagnosticLogging(settings.diagnosticLogLevel).catch(
+      (error) => {
+        recordDiagnostic("warn", "diagnostics", "日志级别同步失败", {
+          error: String(error),
+        });
+      },
+    );
+  }, [settings.diagnosticLogLevel]);
+
+  useEffect(() => {
     if (!isTauri()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen("configuration:changed", () => {
       void loadConfiguration()
         .then((configuration) => {
-          if (!disposed) setQuickCommands(configuration.quickCommands);
+          if (disposed) return;
+          setQuickCommands(configuration.quickCommands);
+          setSessions((current) => {
+            const next = current.map((session) => {
+              const targetKey = knownHostTargetKey(
+                session.host.address,
+                session.host.port,
+              );
+              const knownHost = configuration.knownHosts.find(
+                (record) =>
+                  knownHostTargetKey(record.address, record.port) === targetKey,
+              );
+              return {
+                ...session,
+                host: {
+                  ...session.host,
+                  hostFingerprint: knownHost?.fingerprint,
+                },
+              };
+            });
+            sessionsRef.current = next;
+            return next;
+          });
         })
-        .catch(() => {
-          if (!disposed) Message.warning("快捷命令读取失败");
+        .catch((error) => {
+          if (!disposed) {
+            recordDiagnostic("warn", "configuration", "配置刷新失败", {
+              error: String(error),
+            });
+            Message.warning("快捷命令读取失败");
+          }
         });
     }).then((stopListening) => {
       if (disposed) stopListening();
