@@ -90,8 +90,7 @@ fn copy_optional_credential(
     }
 }
 
-#[tauri::command]
-pub(crate) fn copy_host_credentials(
+fn copy_host_credentials_inner(
     source_host_id: String,
     target_host_id: String,
 ) -> Result<CopyHostCredentialsResult, String> {
@@ -144,8 +143,7 @@ fn credential_exists(probe: &CredentialProbe) -> Result<bool, String> {
     }
 }
 
-#[tauri::command]
-pub(crate) fn inspect_credentials(
+fn inspect_credentials_inner(
     probes: Vec<CredentialProbe>,
 ) -> Result<Vec<CredentialProbeResult>, String> {
     probes
@@ -161,8 +159,7 @@ pub(crate) fn inspect_credentials(
         .collect()
 }
 
-#[tauri::command]
-pub(crate) fn store_host_password(host_id: String, password: String) -> Result<(), String> {
+fn store_host_password_inner(host_id: String, password: String) -> Result<(), String> {
     if host_id.trim().is_empty() || password.is_empty() {
         return Err("主机标识和密码不能为空".to_string());
     }
@@ -172,19 +169,14 @@ pub(crate) fn store_host_password(host_id: String, password: String) -> Result<(
         .map_err(|error| format!("保存登录密码失败：{error}"))
 }
 
-#[tauri::command]
-pub(crate) fn delete_host_password(host_id: String) -> Result<(), String> {
+fn delete_host_password_inner(host_id: String) -> Result<(), String> {
     match password_entry(&host_id)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("删除登录密码失败：{error}")),
     }
 }
 
-#[tauri::command]
-pub(crate) fn store_private_key_passphrase(
-    host_id: String,
-    passphrase: String,
-) -> Result<(), String> {
+fn store_private_key_passphrase_inner(host_id: String, passphrase: String) -> Result<(), String> {
     if host_id.trim().is_empty() || passphrase.is_empty() {
         return Err("主机标识和私钥口令不能为空".to_string());
     }
@@ -194,16 +186,14 @@ pub(crate) fn store_private_key_passphrase(
         .map_err(|error| format!("保存私钥口令失败：{error}"))
 }
 
-#[tauri::command]
-pub(crate) fn delete_private_key_passphrase(host_id: String) -> Result<(), String> {
+fn delete_private_key_passphrase_inner(host_id: String) -> Result<(), String> {
     match private_key_passphrase_entry(&host_id)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("删除私钥口令失败：{error}")),
     }
 }
 
-#[tauri::command]
-pub(crate) fn store_proxy_password(proxy_id: String, password: String) -> Result<(), String> {
+fn store_proxy_password_inner(proxy_id: String, password: String) -> Result<(), String> {
     if proxy_id.trim().is_empty() || password.is_empty() {
         return Err("代理标识和密码不能为空".to_string());
     }
@@ -213,12 +203,90 @@ pub(crate) fn store_proxy_password(proxy_id: String, password: String) -> Result
         .map_err(|error| format!("保存代理密码失败：{error}"))
 }
 
-#[tauri::command]
-pub(crate) fn delete_proxy_password(proxy_id: String) -> Result<(), String> {
+fn delete_proxy_password_inner(proxy_id: String) -> Result<(), String> {
     match proxy_password_entry(&proxy_id)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("删除代理密码失败：{error}")),
     }
+}
+
+fn structured<T>(
+    operation: &'static str,
+    result: Result<T, String>,
+) -> crate::protocol::CommandResult<T> {
+    result.map_err(|error| crate::protocol::CommandError::from_message(operation, error))
+}
+
+#[tauri::command]
+pub(crate) fn copy_host_credentials(
+    source_host_id: String,
+    target_host_id: String,
+) -> crate::protocol::CommandResult<CopyHostCredentialsResult> {
+    structured(
+        "copy_host_credentials",
+        copy_host_credentials_inner(source_host_id, target_host_id),
+    )
+}
+
+#[tauri::command]
+pub(crate) fn inspect_credentials(
+    probes: Vec<CredentialProbe>,
+) -> crate::protocol::CommandResult<Vec<CredentialProbeResult>> {
+    structured("inspect_credentials", inspect_credentials_inner(probes))
+}
+
+#[tauri::command]
+pub(crate) fn store_host_password(
+    host_id: String,
+    password: String,
+) -> crate::protocol::CommandResult<()> {
+    structured(
+        "store_host_password",
+        store_host_password_inner(host_id, password),
+    )
+}
+
+#[tauri::command]
+pub(crate) fn delete_host_password(host_id: String) -> crate::protocol::CommandResult<()> {
+    structured("delete_host_password", delete_host_password_inner(host_id))
+}
+
+#[tauri::command]
+pub(crate) fn store_private_key_passphrase(
+    host_id: String,
+    passphrase: String,
+) -> crate::protocol::CommandResult<()> {
+    structured(
+        "store_private_key_passphrase",
+        store_private_key_passphrase_inner(host_id, passphrase),
+    )
+}
+
+#[tauri::command]
+pub(crate) fn delete_private_key_passphrase(host_id: String) -> crate::protocol::CommandResult<()> {
+    structured(
+        "delete_private_key_passphrase",
+        delete_private_key_passphrase_inner(host_id),
+    )
+}
+
+#[tauri::command]
+pub(crate) fn store_proxy_password(
+    proxy_id: String,
+    password: String,
+) -> crate::protocol::CommandResult<()> {
+    structured(
+        "store_proxy_password",
+        store_proxy_password_inner(proxy_id, password),
+    )
+}
+
+#[tauri::command]
+pub(crate) fn delete_proxy_password(proxy_id: String) -> crate::protocol::CommandResult<()> {
+    structured(
+        "delete_proxy_password",
+        delete_proxy_password_inner(proxy_id),
+    )
 }
 
 #[cfg(test)]

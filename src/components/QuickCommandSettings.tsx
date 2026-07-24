@@ -20,7 +20,6 @@ import {
   IconQuestionCircle,
 } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
 import {
   deleteQuickCommand,
   loadConfiguration,
@@ -30,6 +29,10 @@ import type {
   QuickCommandFormValues,
   QuickCommandRecord,
 } from "../models";
+import {
+  emitProtocolEventTo,
+  listenProtocolEvent,
+} from "../tauri-protocol";
 
 function createQuickCommandId() {
   return `command-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -149,7 +152,7 @@ function QuickCommandSettings() {
     if (!isTauri()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen("configuration:changed", () => {
+    void listenProtocolEvent("configuration:changed", () => {
       void refresh().catch((error) => Message.error(String(error)));
     }).then((stopListening) => {
       if (disposed) stopListening();
@@ -163,7 +166,9 @@ function QuickCommandSettings() {
 
   const notifyMainWindow = async () => {
     if (!isTauri()) return;
-    await emitTo("main", "configuration:changed").catch(() => undefined);
+    await emitProtocolEventTo("main", "configuration:changed").catch(
+      () => undefined,
+    );
   };
 
   const saveCommand = async (values: QuickCommandFormValues) => {

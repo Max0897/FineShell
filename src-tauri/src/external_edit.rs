@@ -16,11 +16,11 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::protocol::EXTERNAL_EDIT_EVENT;
 use crate::sftp::{
     SftpSessionManager, SftpTextFile, REMOTE_TEXT_CONFLICT_ERROR, REMOTE_TEXT_MAX_BYTES,
 };
 
-const EXTERNAL_EDIT_EVENT: &str = "sftp-external-edit";
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(700);
 
 #[derive(Clone)]

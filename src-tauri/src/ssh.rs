@@ -23,11 +23,8 @@ use crate::monitor::{
     self, NetworkConnectionsResult, NetworkPingResult, NetworkTraceResult, ServerMonitorSnapshot,
     ServerProcessListResult,
 };
+use crate::protocol::{PORT_FORWARD_STATUS_EVENT, SSH_OUTPUT_EVENT, SSH_STATUS_EVENT};
 use crate::transport::{self, ProxyConfig};
-
-const SSH_OUTPUT_EVENT: &str = "ssh-output";
-const SSH_STATUS_EVENT: &str = "ssh-status";
-const PORT_FORWARD_STATUS_EVENT: &str = "port-forward-status";
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

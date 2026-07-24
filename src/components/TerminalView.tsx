@@ -18,7 +18,6 @@ import {
   IconUp,
 } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import {
   readText as readClipboardText,
   writeText as writeClipboardText,
@@ -39,6 +38,7 @@ import {
 import { decodeSshOutput } from "../terminal-utils";
 import { TERMINAL_THEMES } from "../terminal-themes";
 import { diagnosticInvoke as invoke } from "../diagnostics";
+import { listenProtocolEvent } from "../tauri-protocol";
 import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 interface TerminalViewProps {
@@ -46,11 +46,6 @@ interface TerminalViewProps {
   focusRequest: number;
   settings: AppSettings;
   session: TerminalSession;
-}
-
-interface SshOutputPayload {
-  sessionId: string;
-  data: string;
 }
 
 const EMPTY_SEARCH_RESULT: ISearchResultChangeEvent = {
@@ -194,7 +189,7 @@ function TerminalView({
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen<SshOutputPayload>("ssh-output", ({ payload }) => {
+    void listenProtocolEvent("ssh-output", ({ payload }) => {
       if (payload.sessionId === session.id) {
         terminal.write(decodeSshOutput(payload.data));
       }

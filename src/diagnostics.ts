@@ -1,5 +1,11 @@
 import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
 import type { DiagnosticLogLevel } from "./app-settings";
+import {
+  commandErrorMessage,
+  FineShellCommandError,
+  invokeProtocolCommand,
+  type TauriCommand,
+} from "./tauri-protocol";
 
 export type { DiagnosticLogLevel } from "./app-settings";
 
@@ -26,7 +32,7 @@ interface DiagnosticRecordInput {
 }
 
 const LOCAL_CAPACITY = 1_000;
-const HIGH_FREQUENCY_COMMANDS = new Set([
+const HIGH_FREQUENCY_COMMANDS = new Set<TauriCommand>([
   "ssh_monitor_snapshot",
   "ssh_resize",
   "ssh_write",
@@ -127,7 +133,7 @@ export function recordDiagnostic(
 }
 
 export async function diagnosticInvoke<T>(
-  command: string,
+  command: TauriCommand,
   args?: Record<string, unknown>,
 ): Promise<T> {
   const startedAt = performance.now();
@@ -138,7 +144,7 @@ export async function diagnosticInvoke<T>(
     });
   }
   try {
-    const result = await tauriInvoke<T>(command, args);
+    const result = await invokeProtocolCommand<T>(command, args);
     if (recordLifecycle) {
       recordDiagnostic("debug", "tauri.command", "桌面命令调用完成", {
         durationMs: Math.round(performance.now() - startedAt),
@@ -148,7 +154,10 @@ export async function diagnosticInvoke<T>(
     return result;
   } catch (error) {
     recordDiagnostic("error", "tauri.command", "桌面命令调用失败", {
-      error: String(error),
+      error:
+        error instanceof FineShellCommandError
+          ? error.toJSON()
+          : commandErrorMessage(error),
       operation: command,
     });
     throw error;

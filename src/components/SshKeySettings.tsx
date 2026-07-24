@@ -20,7 +20,6 @@ import {
   IconPlus,
 } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
@@ -32,6 +31,10 @@ import {
 } from "../config-database";
 import { createCredentialReference } from "../credential-registry";
 import type { SshKeyFormValues, SshKeyRecord } from "../models";
+import {
+  emitProtocolEventTo,
+  listenProtocolEvent,
+} from "../tauri-protocol";
 
 function createSshKeyId() {
   return `ssh-key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -197,7 +200,7 @@ function SshKeySettings() {
     if (!isTauri()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen("configuration:changed", () => {
+    void listenProtocolEvent("configuration:changed", () => {
       void refresh().catch((error) => Message.error(String(error)));
     }).then((stopListening) => {
       if (disposed) stopListening();
@@ -211,7 +214,9 @@ function SshKeySettings() {
 
   const notifyMainWindow = async () => {
     if (!isTauri()) return;
-    await emitTo("main", "configuration:changed").catch(() => undefined);
+    await emitProtocolEventTo("main", "configuration:changed").catch(
+      () => undefined,
+    );
   };
 
   const saveSshKey = async (values: SshKeyFormValues) => {

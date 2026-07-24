@@ -13,7 +13,6 @@ import {
 import type { TableColumnProps } from "@arco-design/web-react";
 import { IconCopy, IconDelete, IconSearch } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   loadConfiguration,
@@ -21,6 +20,10 @@ import {
 } from "../config-database";
 import { knownHostTargetKey } from "../known-hosts";
 import type { HostRecord, KnownHostRecord } from "../models";
+import {
+  emitProtocolEventTo,
+  listenProtocolEvent,
+} from "../tauri-protocol";
 
 interface KnownHostView extends KnownHostRecord {
   linkedHostNames: string[];
@@ -80,7 +83,7 @@ function KnownHostSettings() {
     if (!isTauri()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen("configuration:changed", () => {
+    void listenProtocolEvent("configuration:changed", () => {
       void refresh().catch((error) => Message.error(String(error)));
     }).then((stopListening) => {
       if (disposed) stopListening();
@@ -132,7 +135,9 @@ function KnownHostSettings() {
 
   async function notifyConfigurationChanged() {
     if (!isTauri()) return;
-    await emitTo("main", "configuration:changed").catch(() => undefined);
+    await emitProtocolEventTo("main", "configuration:changed").catch(
+      () => undefined,
+    );
   }
 
   async function removeRecords(ids: string[], successMessage: string) {

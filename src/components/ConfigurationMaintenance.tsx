@@ -17,7 +17,6 @@ import {
   IconUndo,
 } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { AppSettings } from "../app-settings";
 import { diagnosticInvoke as invoke } from "../diagnostics";
@@ -34,6 +33,10 @@ import {
   restoreDeletedHost,
   serializeConfigurationExport,
 } from "../config-database";
+import {
+  emitProtocolEventTo,
+  listenProtocolEvent,
+} from "../tauri-protocol";
 
 interface ConfigurationMaintenanceProps {
   onConfigurationImported?: (settings: AppSettings) => void;
@@ -67,8 +70,10 @@ async function removeHostCredentials(hostId: string) {
 async function notifyMainWindow(settings?: AppSettings) {
   if (!isTauri()) return;
   await Promise.allSettled([
-    emitTo("main", "configuration:changed"),
-    ...(settings ? [emitTo("main", "settings:changed", settings)] : []),
+    emitProtocolEventTo("main", "configuration:changed"),
+    ...(settings
+      ? [emitProtocolEventTo("main", "settings:changed", settings)]
+      : []),
   ]);
 }
 
@@ -123,7 +128,7 @@ function ConfigurationMaintenance({
     if (!isTauri()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen("configuration:changed", () => {
+    void listenProtocolEvent("configuration:changed", () => {
       void refresh().catch((error) => Message.error(String(error)));
     }).then((stopListening) => {
       if (disposed) {

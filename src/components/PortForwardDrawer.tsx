@@ -16,6 +16,10 @@ import {
   IconPlayArrow,
 } from "@arco-design/web-react/icon";
 import { diagnosticInvoke as invoke } from "../diagnostics";
+import {
+  commandErrorMessage,
+  type TauriCommand,
+} from "../tauri-protocol";
 import type {
   DynamicPortForwardRule,
   LocalPortForwardRule,
@@ -111,17 +115,17 @@ function PortForwardDrawer({
     const key = statusKey(rule.kind, rule.id);
     setPendingRuleKey(key);
     try {
-      const command = running
+      const command: TauriCommand = running
         ? {
             local: "ssh_stop_local_forward",
             remote: "ssh_stop_remote_forward",
             dynamic: "ssh_stop_dynamic_forward",
-          }[rule.kind]
+          }[rule.kind] as TauriCommand
         : {
             local: "ssh_start_local_forward",
             remote: "ssh_start_remote_forward",
             dynamic: "ssh_start_dynamic_forward",
-          }[rule.kind];
+          }[rule.kind] as TauriCommand;
       const status = running
         ? await invoke<PortForwardStatus>(command, {
             sessionId: session.id,
@@ -133,7 +137,7 @@ function PortForwardDrawer({
           });
       onStatusChange(status);
     } catch (error) {
-      Message.error(String(error));
+      Message.error(commandErrorMessage(error));
     } finally {
       setPendingRuleKey(undefined);
     }

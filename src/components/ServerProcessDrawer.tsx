@@ -32,6 +32,7 @@ import {
   formatProcessElapsed,
   formatProcessPercent,
 } from "../process-utils";
+import { commandErrorMessage } from "../tauri-protocol";
 
 interface ServerProcessDrawerProps {
   onCancel: () => void;
@@ -96,7 +97,7 @@ function ServerProcessDrawer({
         setError(undefined);
       } catch (processError) {
         if (requestVersion === requestVersionRef.current) {
-          setError(String(processError));
+          setError(commandErrorMessage(processError));
         }
       } finally {
         if (requestVersion === requestVersionRef.current) {
@@ -158,7 +159,7 @@ function ServerProcessDrawer({
         );
         await loadProcesses(false);
       } catch (signalError) {
-        setError(String(signalError));
+        setError(commandErrorMessage(signalError));
       } finally {
         setSignalingProcess(null);
       }

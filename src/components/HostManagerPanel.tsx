@@ -16,9 +16,12 @@ import {
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { diagnosticInvoke as invoke } from "../diagnostics";
+import {
+  emitProtocolEventTo,
+  listenProtocolEvent,
+} from "../tauri-protocol";
 import {
   IconDelete,
   IconCopy,
@@ -196,7 +199,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     if (!isTauri()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen("configuration:changed", () => {
+    void listenProtocolEvent("configuration:changed", () => {
       void loadConfiguration()
         .then((configuration) => {
           if (disposed) return;
@@ -366,7 +369,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       const next = await moveHostToTrash(host.id);
       setHosts(next.hosts);
       if (isTauri()) {
-        await emitTo("settings", "configuration:changed").catch(
+        await emitProtocolEventTo("settings", "configuration:changed").catch(
           () => undefined,
         );
       }

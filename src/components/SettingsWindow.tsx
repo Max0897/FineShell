@@ -28,7 +28,6 @@ import {
   IconThunderbolt,
 } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
-import { emitTo } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   DEFAULT_APP_SETTINGS,
@@ -40,6 +39,7 @@ import {
   configureDiagnosticLogging,
   recordDiagnostic,
 } from "../diagnostics";
+import { emitProtocolEventTo } from "../tauri-protocol";
 import { TERMINAL_THEMES } from "../terminal-themes";
 import AdvancedSettings from "./AdvancedSettings";
 import ConfigurationMaintenance from "./ConfigurationMaintenance";
@@ -137,7 +137,11 @@ function SettingsWindow() {
       setSettings(configuration.settings);
       setSavedSettings(configuration.settings);
       if (isTauri()) {
-        await emitTo("main", "settings:changed", configuration.settings);
+        await emitProtocolEventTo(
+          "main",
+          "settings:changed",
+          configuration.settings,
+        );
       }
       Message.success("设置已保存");
     } catch (error) {

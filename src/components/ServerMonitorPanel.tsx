@@ -48,6 +48,7 @@ import {
 } from "../monitor-utils";
 import ServerProcessDrawer from "./ServerProcessDrawer";
 import PortForwardDrawer from "./PortForwardDrawer";
+import { commandErrorMessage } from "../tauri-protocol";
 
 interface ServerMonitorPanelProps {
   refreshIntervalSeconds: number;
@@ -174,7 +175,7 @@ function ServerMonitorPanel({
         setHistory((current) => appendMonitorHistory(current, next));
         setError(undefined);
       } catch (collectionError) {
-        if (!disposed) setError(String(collectionError));
+        if (!disposed) setError(commandErrorMessage(collectionError));
       } finally {
         if (!disposed) {
           timer = setTimeout(collect, refreshIntervalSeconds * 1_000);
@@ -203,7 +204,7 @@ function ServerMonitorPanel({
       setPingResult(result);
     } catch (pingFailure) {
       setPingResult(null);
-      setPingError(String(pingFailure));
+      setPingError(commandErrorMessage(pingFailure));
     } finally {
       setPingLoading(false);
     }
@@ -221,7 +222,7 @@ function ServerMonitorPanel({
       setConnectionsResult(result);
     } catch (connectionFailure) {
       setConnectionsResult(null);
-      setConnectionsError(String(connectionFailure));
+      setConnectionsError(commandErrorMessage(connectionFailure));
     } finally {
       setConnectionsLoading(false);
     }
@@ -240,7 +241,7 @@ function ServerMonitorPanel({
       setTraceResult(result);
     } catch (traceFailure) {
       setTraceResult(null);
-      setTraceError(String(traceFailure));
+      setTraceError(commandErrorMessage(traceFailure));
     } finally {
       setTraceLoading(false);
     }

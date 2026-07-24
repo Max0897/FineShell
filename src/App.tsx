@@ -17,7 +17,6 @@ import {
   Typography,
 } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
 import {
   IconClose,
   IconCloseCircle,
@@ -63,37 +62,31 @@ import {
   diagnosticInvoke as invoke,
   recordDiagnostic,
 } from "./diagnostics";
+import {
+  commandErrorMessage,
+  emitProtocolEventTo,
+  FineShellCommandError,
+  listenProtocolEvent,
+  type SshConnectResult,
+  verifyProtocolVersion,
+} from "./tauri-protocol";
 import "./App.css";
 
 const ServerMonitorPanel = lazy(
   () => import("./components/ServerMonitorPanel"),
 );
 
-interface SshConnectResult {
-  status: "connected" | "hostKeyVerificationRequired";
-  fingerprint: string;
-  expectedFingerprint: string | null;
-  portForwards: PortForwardStatus[];
-}
-
-interface SshStatusPayload {
-  sessionId: string;
-  status: "disconnected";
-  error?: string;
-  recoverable: boolean;
-}
-
-interface PortForwardStatusPayload extends PortForwardStatus {
-  sessionId: string;
-}
-
 async function persistHostFingerprint(host: HostRecord, fingerprint: string) {
   try {
     await updateStoredHostFingerprint(host, fingerprint);
     if (isTauri()) {
       await Promise.all([
-        emitTo("main", "configuration:changed").catch(() => undefined),
-        emitTo("settings", "configuration:changed").catch(() => undefined),
+        emitProtocolEventTo("main", "configuration:changed").catch(
+          () => undefined,
+        ),
+        emitProtocolEventTo("settings", "configuration:changed").catch(
+          () => undefined,
+        ),
       ]);
     }
   } catch {
@@ -330,7 +323,7 @@ function App() {
         if (!sessionsRef.current.some((item) => item.id === session.id)) {
           return;
         }
-        const message = String(error);
+        const message = commandErrorMessage(error);
         recordDiagnostic("error", "ssh.session", "SSH 会话连接失败", {
           error: message,
           reconnectAttempt,
@@ -450,7 +443,7 @@ function App() {
     let disposed = false;
     let unlistenStatus: (() => void) | undefined;
     let unlistenPortForward: (() => void) | undefined;
-    void listen<SshStatusPayload>("ssh-status", ({ payload }) => {
+    void listenProtocolEvent("ssh-status", ({ payload }) => {
       const session = sessionsRef.current.find(
         (item) => item.id === payload.sessionId,
       );
@@ -533,7 +526,7 @@ function App() {
       }
     });
 
-    void listen<PortForwardStatusPayload>(
+    void listenProtocolEvent(
       "port-forward-status",
       ({ payload }) => {
         const { sessionId, ...status } = payload;
@@ -579,7 +572,11 @@ function App() {
 
   useEffect(() => {
     let disposed = false;
-    void loadConfiguration()
+    const protocolReady = isTauri()
+      ? verifyProtocolVersion().then(() => undefined)
+      : Promise.resolve();
+    void protocolReady
+      .then(() => loadConfiguration())
       .then((configuration) => {
         if (disposed) return;
         setSettings(configuration.settings);
@@ -587,10 +584,18 @@ function App() {
       })
       .catch((error) => {
         if (!disposed) {
+          const message = commandErrorMessage(error);
           recordDiagnostic("warn", "configuration", "应用设置读取失败", {
-            error: String(error),
+            error: message,
           });
-          Message.warning("设置读取失败，已使用默认值");
+          if (
+            error instanceof FineShellCommandError &&
+            error.operation === "protocol_version"
+          ) {
+            Message.error(message);
+          } else {
+            Message.warning("设置读取失败，已使用默认值");
+          }
         }
       })
       .finally(() => {
@@ -611,7 +616,7 @@ function App() {
     void configureDiagnosticLogging(settings.diagnosticLogLevel).catch(
       (error) => {
         recordDiagnostic("warn", "diagnostics", "日志级别同步失败", {
-          error: String(error),
+          error: commandErrorMessage(error),
         });
       },
     );
@@ -621,7 +626,7 @@ function App() {
     if (!isTauri()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen("configuration:changed", () => {
+    void listenProtocolEvent("configuration:changed", () => {
       void loadConfiguration()
         .then((configuration) => {
           if (disposed) return;
@@ -651,7 +656,7 @@ function App() {
         .catch((error) => {
           if (!disposed) {
             recordDiagnostic("warn", "configuration", "配置刷新失败", {
-              error: String(error),
+              error: commandErrorMessage(error),
             });
             Message.warning("快捷命令读取失败");
           }
@@ -670,7 +675,7 @@ function App() {
     if (!isTauri()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen<AppSettings>("settings:changed", ({ payload }) => {
+    void listenProtocolEvent("settings:changed", ({ payload }) => {
       setSettings(sanitizeAppSettings(payload));
     }).then((stopListening) => {
       if (disposed) {

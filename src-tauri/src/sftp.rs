@@ -17,10 +17,10 @@ use serde::{Deserialize, Serialize};
 use ssh2::{FileStat, FileType, OpenFlags, OpenType, RenameFlags, Session, Sftp};
 use tauri::{AppHandle, Emitter, State};
 
+use crate::protocol::SFTP_TRANSFER_EVENT;
 use crate::ssh::{connect_authenticated_session, JumpHostConfig, SshAuthConfig, SshAuthMethod};
 use crate::transport::ProxyConfig;
 
-const SFTP_TRANSFER_EVENT: &str = "sftp-transfer";
 const TRANSFER_BUFFER_SIZE: usize = 64 * 1024;
 const TRANSFER_CANCELLED_ERROR: &str = "传输已取消";
 pub(crate) const REMOTE_TEXT_MAX_BYTES: usize = 2 * 1024 * 1024;

@@ -6,6 +6,7 @@ mod external_edit;
 mod monitor;
 #[cfg(desktop)]
 mod native_menu;
+mod protocol;
 mod sftp;
 mod ssh;
 mod transport;
@@ -33,6 +34,7 @@ pub fn run() {
 
     builder
         .invoke_handler(tauri::generate_handler![
+            protocol::protocol_version,
             config_files::read_config_file,
             config_files::write_config_file,
             credentials::store_host_password,

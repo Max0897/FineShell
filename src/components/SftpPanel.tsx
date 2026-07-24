@@ -20,7 +20,6 @@ import {
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { join } from "@tauri-apps/api/path";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -91,6 +90,14 @@ import {
 } from "../sftp-utils";
 import type { SftpTransferStatus } from "../sftp-utils";
 import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
+import {
+  commandErrorMessage,
+  listenProtocolEvent,
+  type ExternalEditStatus,
+  type ExternalEditPayload,
+  type ExternalEditResult,
+  type SftpTransferPayload,
+} from "../tauri-protocol";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
 type CreateEntryKind = "file" | "directory";
@@ -124,17 +131,6 @@ interface SftpPanelProps {
   showHiddenFiles: boolean;
 }
 
-interface SftpTransferPayload {
-  sessionId: string;
-  transferId: string;
-  direction: "upload" | "download";
-  fileName: string;
-  transferredBytes: number;
-  totalBytes: number;
-  status: Exclude<SftpTransferStatus, "queued">;
-  error?: string;
-}
-
 interface TransferRecord extends Omit<SftpTransferPayload, "status"> {
   status: SftpTransferStatus;
   localPath: string;
@@ -165,30 +161,6 @@ interface TextEditorState {
   content: string;
   loading: boolean;
   saving: boolean;
-}
-
-type ExternalEditStatus =
-  | "watching"
-  | "syncing"
-  | "synced"
-  | "conflict"
-  | "failed"
-  | "closed";
-
-interface ExternalEditPayload {
-  editId: string;
-  sessionId: string;
-  remotePath: string;
-  fileName: string;
-  localPath: string;
-  status: ExternalEditStatus;
-  error?: string;
-  updatedAt?: number;
-}
-
-interface ExternalEditResult {
-  editId: string;
-  localPath: string;
 }
 
 const INITIAL_BROWSER: BrowserState = {
@@ -462,7 +434,7 @@ function SftpPanel({
         });
         recordVisitedPath(sessionId, result.path);
       } catch (error) {
-        const message = String(error);
+        const message = commandErrorMessage(error);
         if (initial) {
           updateBrowser(sessionId, { status: "failed", error: message });
         } else {
@@ -528,7 +500,7 @@ function SftpPanel({
       } catch (error) {
         updateBrowser(currentSession.id, {
           status: "failed",
-          error: String(error),
+          error: commandErrorMessage(error),
         });
       } finally {
         connectingRef.current.delete(currentSession.id);
@@ -597,7 +569,7 @@ function SftpPanel({
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen<SftpTransferPayload>("sftp-transfer", ({ payload }) => {
+    void listenProtocolEvent("sftp-transfer", ({ payload }) => {
       if (payload.status === "failed") {
         recordDiagnostic("error", "sftp.transfer", "SFTP 传输失败", {
           error: payload.error,
@@ -673,7 +645,7 @@ function SftpPanel({
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen<ExternalEditPayload>("sftp-external-edit", ({ payload }) => {
+    void listenProtocolEvent("sftp-external-edit", ({ payload }) => {
       const record = { ...payload, updatedAt: Date.now() };
       setExternalEdits((current) => {
         if (payload.status === "closed") {
@@ -926,7 +898,7 @@ function SftpPanel({
           await loadDirectory(transfer.sessionId, currentBrowser.path);
         }
       } catch (error) {
-        const message = String(error);
+        const message = commandErrorMessage(error);
         const cancelled =
           isTransferCancellation(message) ||
           transfersRef.current[transfer.transferId]?.status === "cancelled";
@@ -1052,7 +1024,7 @@ function SftpPanel({
         { paths },
       );
     } catch (error) {
-      Message.error(String(error));
+      Message.error(commandErrorMessage(error));
       return;
     }
     if (inspected.length < paths.length) {
@@ -1202,7 +1174,7 @@ function SftpPanel({
         };
       });
     } catch (error) {
-      Message.error(String(error));
+      Message.error(commandErrorMessage(error));
     }
   }
 
@@ -1227,7 +1199,7 @@ function SftpPanel({
         };
       });
     } catch (error) {
-      Message.error(String(error));
+      Message.error(commandErrorMessage(error));
     }
   }
 
@@ -1263,7 +1235,7 @@ function SftpPanel({
         };
       });
     } catch (error) {
-      Message.error(String(error));
+      Message.error(commandErrorMessage(error));
     }
   }
 
@@ -1281,7 +1253,7 @@ function SftpPanel({
   }
 
   function handleOperationError(error: unknown) {
-    const message = String(error);
+    const message = commandErrorMessage(error);
     if (session && isSftpSessionFailure(message)) {
       connectedHomesRef.current.delete(session.id);
       updateBrowser(session.id, { status: "failed", error: message });
@@ -1370,7 +1342,7 @@ function SftpPanel({
           completedSourcePaths.add(entry.path);
           succeeded += 1;
         } catch (error) {
-          failures.push(`${entry.name}：${String(error)}`);
+          failures.push(`${entry.name}：${commandErrorMessage(error)}`);
         }
       }
 
@@ -1781,7 +1753,7 @@ function SftpPanel({
       Message.success(`已保存 ${editor.entry.name}`);
       await loadDirectory(session.id, browser.path);
     } catch (error) {
-      const message = String(error);
+      const message = commandErrorMessage(error);
       setTextEditor((current) =>
         current
           ? {
@@ -1876,7 +1848,7 @@ function SftpPanel({
     try {
       await openPath(edit.localPath);
     } catch (error) {
-      Message.error(`无法打开本地编辑副本：${String(error)}`);
+      Message.error(`无法打开本地编辑副本：${commandErrorMessage(error)}`);
     }
   }
 

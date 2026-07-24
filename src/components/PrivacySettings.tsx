@@ -13,7 +13,6 @@ import {
 import type { TableColumnProps } from "@arco-design/web-react";
 import { IconDelete, IconRefresh } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
-import { emitTo } from "@tauri-apps/api/event";
 import type { AppSettings } from "../app-settings";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
@@ -30,6 +29,7 @@ import {
   type CredentialProbeResult,
   type CredentialReferenceRecord,
 } from "../credential-registry";
+import { emitProtocolEventTo } from "../tauri-protocol";
 
 interface PrivacySettingsProps {
   savedSettings: AppSettings;
@@ -128,7 +128,9 @@ function PrivacySettings({
       await clearConnectionHistory();
       setHistoryCount(0);
       if (isTauri()) {
-        await emitTo("main", "configuration:changed").catch(() => undefined);
+        await emitProtocolEventTo("main", "configuration:changed").catch(
+          () => undefined,
+        );
       }
       Message.success("连接历史已清空");
       setHasScanned(false);
