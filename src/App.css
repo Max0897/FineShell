@@ -811,12 +811,30 @@ body,
   user-select: none;
 }
 
+.sftp-table tbody > .arco-table-tr[draggable="true"] {
+  cursor: grab;
+}
+
+.sftp-table tbody > .arco-table-tr[draggable="true"]:active {
+  cursor: grabbing;
+}
+
 .sftp-table .arco-table-row-checked > .arco-table-td {
   background: #e8f3ff;
 }
 
 .sftp-table .sftp-row-cut > .arco-table-td {
   opacity: 0.52;
+}
+
+.sftp-table .sftp-row-drop-target > .arco-table-td {
+  background: #e8f3ff;
+  border-top: 1px solid #165dff;
+  border-bottom: 1px solid #165dff;
+}
+
+.sftp-table .sftp-row-drop-target .sftp-name-cell > svg {
+  color: #165dff;
 }
 
 .sftp-table tbody > .arco-table-tr:last-child > .arco-table-td,

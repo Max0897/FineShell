@@ -722,6 +722,78 @@ fn copy_remote_entry(
     copy_remote_entry_inner(sftp, source, target, &source_stat, overwrite)
 }
 
+fn remove_remote_entry_recursive(sftp: &Sftp, path: &Path) -> Result<(), String> {
+    let stat = sftp
+        .lstat(path)
+        .map_err(|error| format!("无法读取待移除的远程项目信息：{error}"))?;
+    if !stat.is_dir() {
+        return sftp
+            .unlink(path)
+            .map_err(|error| format!("无法移除远程文件：{error}"));
+    }
+
+    let entries = sftp
+        .readdir(path)
+        .map_err(|error| format!("无法读取待移除的远程目录：{error}"))?;
+    for (child_path, _) in entries {
+        let Some(name) = child_path.file_name() else {
+            continue;
+        };
+        if name == "." || name == ".." {
+            continue;
+        }
+        remove_remote_entry_recursive(sftp, &child_path)?;
+    }
+    sftp.rmdir(path)
+        .map_err(|error| format!("无法移除远程目录：{error}"))
+}
+
+fn move_remote_entry(
+    sftp: &Sftp,
+    source_path: &str,
+    target_path: &str,
+    overwrite: bool,
+) -> Result<(), String> {
+    let source_path = normalize_remote_operation_path(source_path)?;
+    let target_path = normalize_remote_operation_path(target_path)?;
+    if source_path == "/" || target_path == "/" {
+        return Err("禁止移动远程根目录".to_string());
+    }
+    if source_path == target_path {
+        return Err("源项目与目标项目不能相同".to_string());
+    }
+
+    let source = Path::new(&source_path);
+    let target = Path::new(&target_path);
+    let source_stat = sftp
+        .lstat(source)
+        .map_err(|error| format!("无法读取待移动的远程项目信息：{error}"))?;
+    if source_stat.is_dir() && is_remote_descendant(&source_path, &target_path) {
+        return Err("不能将目录移动到其自身内部".to_string());
+    }
+    if remote_exists(sftp, target) && !overwrite {
+        return Err("远程目标已存在，需要确认覆盖".to_string());
+    }
+
+    let flags = if overwrite {
+        RenameFlags::OVERWRITE
+    } else {
+        RenameFlags::empty()
+    };
+    match sftp.rename(source, target, Some(flags)) {
+        Ok(()) => Ok(()),
+        Err(rename_error) => {
+            copy_remote_entry(sftp, &source_path, &target_path, overwrite).map_err(
+                |copy_error| {
+                    format!("移动远程项目失败：{rename_error}；复制回退失败：{copy_error}")
+                },
+            )?;
+            remove_remote_entry_recursive(sftp, source)
+                .map_err(|remove_error| format!("目标项目已复制，但无法删除源项目：{remove_error}"))
+        }
+    }
+}
+
 fn decode_remote_text(bytes: Vec<u8>) -> Result<String, String> {
     if bytes.len() > REMOTE_TEXT_MAX_BYTES {
         return Err("远程文本文件超过 2 MiB，无法直接编辑".to_string());
@@ -1347,19 +1419,12 @@ fn run_session(
                 overwrite,
                 reply,
             } => {
-                let flags = if overwrite {
-                    RenameFlags::OVERWRITE
-                } else {
-                    RenameFlags::empty()
-                };
-                let result = sftp
-                    .rename(
-                        Path::new(&source_path),
-                        Path::new(&target_path),
-                        Some(flags),
-                    )
-                    .map_err(|error| format!("重命名远程项目失败：{error}"));
-                let _ = reply.send(result);
+                let _ = reply.send(move_remote_entry(
+                    &sftp,
+                    &source_path,
+                    &target_path,
+                    overwrite,
+                ));
             }
             SftpCommand::Copy {
                 source_path,
@@ -1871,7 +1936,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use ssh2::{FileStat, RenameFlags};
+    use ssh2::FileStat;
 
     use super::{
         decode_remote_text, download_temporary_path, entry_kind, fast_delete_command,
@@ -2153,7 +2218,12 @@ mod tests {
             .as_millis();
         let directory = format!("/tmp/fineshell-live-{}-{suffix}", std::process::id());
         let source_path = format!("{directory}/source.txt");
+        let copied_path = format!("{directory}/copied.txt");
         let renamed_path = format!("{directory}/renamed.txt");
+        let source_directory = format!("{directory}/source-dir");
+        let source_nested_path = format!("{source_directory}/nested.txt");
+        let copied_directory = format!("{directory}/copied-dir");
+        let copied_nested_path = format!("{copied_directory}/nested.txt");
         let content = b"FineShell live SFTP test\n";
         let edited_content = "FineShell live text editor test\n";
 
@@ -2194,6 +2264,29 @@ mod tests {
             if saved.content != edited_content {
                 return Err("文本编辑器保存内容无效".to_string());
             }
+            super::copy_remote_entry(&sftp, &source_path, &copied_path, false)?;
+            let copied = super::read_remote_text_file(&sftp, &copied_path)?;
+            if copied.content != edited_content {
+                return Err("复制后的远程文件内容不一致".to_string());
+            }
+            if super::copy_remote_entry(&sftp, &source_path, &copied_path, false).is_ok() {
+                return Err("复制到同名目标时没有阻止未确认的覆盖".to_string());
+            }
+
+            sftp.mkdir(Path::new(&source_directory), 0o750)
+                .map_err(|error| format!("创建待复制目录失败：{error}"))?;
+            let mut nested = sftp
+                .create(Path::new(&source_nested_path))
+                .map_err(|error| format!("创建待复制目录中的文件失败：{error}"))?;
+            nested
+                .write_all(content)
+                .map_err(|error| format!("写入待复制目录中的文件失败：{error}"))?;
+            drop(nested);
+            super::copy_remote_entry(&sftp, &source_directory, &copied_directory, false)?;
+            let copied_nested = super::read_remote_text_file(&sftp, &copied_nested_path)?;
+            if copied_nested.content.as_bytes() != content {
+                return Err("递归复制后的远程文件内容不一致".to_string());
+            }
             let conflict = super::write_remote_text_file(
                 &sftp,
                 &source_path,
@@ -2206,12 +2299,7 @@ mod tests {
                 return Err(format!("文本编辑器冲突检测结果无效：{conflict}"));
             }
 
-            sftp.rename(
-                Path::new(&source_path),
-                Path::new(&renamed_path),
-                Some(RenameFlags::empty()),
-            )
-            .map_err(|error| format!("重命名测试文件失败：{error}"))?;
+            super::move_remote_entry(&sftp, &source_path, &renamed_path, false)?;
             let mut remote = sftp
                 .open(Path::new(&renamed_path))
                 .map_err(|error| format!("打开测试文件失败：{error}"))?;
@@ -2226,7 +2314,12 @@ mod tests {
         })();
 
         let _ = sftp.unlink(Path::new(&source_path));
+        let _ = sftp.unlink(Path::new(&copied_path));
         let _ = sftp.unlink(Path::new(&renamed_path));
+        let _ = sftp.unlink(Path::new(&source_nested_path));
+        let _ = sftp.unlink(Path::new(&copied_nested_path));
+        let _ = sftp.rmdir(Path::new(&source_directory));
+        let _ = sftp.rmdir(Path::new(&copied_directory));
         let _ = sftp.rmdir(Path::new(&directory));
         result
     }
