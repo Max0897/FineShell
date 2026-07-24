@@ -811,12 +811,56 @@ body,
   user-select: none;
 }
 
-.sftp-table tbody > .arco-table-tr[draggable="true"] {
+.sftp-name-cell.is-draggable {
   cursor: grab;
+  touch-action: none;
 }
 
-.sftp-table tbody > .arco-table-tr[draggable="true"]:active {
+.sftp-name-cell.is-draggable:active {
   cursor: grabbing;
+}
+
+body.sftp-remote-dragging,
+body.sftp-remote-dragging * {
+  cursor: grabbing !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
+.sftp-remote-drag-preview {
+  position: fixed;
+  z-index: 1101;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  max-width: 280px;
+  height: 30px;
+  padding: 0 10px;
+  color: #1d2129;
+  font-size: 13px;
+  white-space: nowrap;
+  background: #fff;
+  border: 1px solid #c9cdd4;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.sftp-remote-drag-preview > span:not(.sftp-remote-drag-count) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sftp-remote-drag-count {
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  background: #165dff;
+  border-radius: 9px;
 }
 
 .sftp-table .arco-table-row-checked > .arco-table-td {

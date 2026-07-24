@@ -303,6 +303,13 @@ function SftpPanel({
     useState(false);
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
   const [remoteDropTargetPath, setRemoteDropTargetPath] = useState<string>();
+  const [remoteDragPreview, setRemoteDragPreview] = useState<{
+    count: number;
+    kind: SftpEntry["kind"];
+    label: string;
+    x: number;
+    y: number;
+  }>();
   const [clipboards, setClipboards] = useState<Record<string, SftpClipboard>>(
     {},
   );
@@ -319,7 +326,13 @@ function SftpPanel({
   const browsersRef = useRef(browsers);
   const transfersRef = useRef(transfers);
   const dropZoneRef = useRef<HTMLDivElement>(null);
-  const draggedRemoteEntriesRef = useRef<SftpEntry[]>([]);
+  const remotePointerDragRef = useRef<{
+    active: boolean;
+    entries: SftpEntry[];
+    pointerId: number;
+    startX: number;
+    startY: number;
+  }>();
   const textEditorRequestRef = useRef(0);
   const sessionIdRef = useRef(session?.id);
   const sessionHostIdsRef = useRef(new Map<string, string>());
@@ -766,7 +779,9 @@ function SftpPanel({
   useEffect(() => {
     setSelectedEntryKeys([]);
     setRemoteDropTargetPath(undefined);
-    draggedRemoteEntriesRef.current = [];
+    setRemoteDragPreview(undefined);
+    remotePointerDragRef.current = undefined;
+    document.body.classList.remove("sftp-remote-dragging");
   }, [browser?.path, session?.id]);
 
   useEffect(() => {
@@ -834,7 +849,13 @@ function SftpPanel({
               edit.status !== "closed",
           );
           return (
-            <div className="sftp-name-cell">
+            <div
+              className={`sftp-name-cell${ready && !operationLoading ? " is-draggable" : ""}`}
+              onPointerCancel={cancelRemotePointerDrag}
+              onPointerDown={(event) => startRemotePointerDrag(event, entry)}
+              onPointerMove={moveRemotePointerDrag}
+              onPointerUp={finishRemotePointerDrag}
+            >
               {entry.kind === "directory" ? <IconFolder /> : <IconFile />}
               <Typography.Text ellipsis>{entry.name}</Typography.Text>
               {externalEdit && <ExternalEditStatusIcon edit={externalEdit} />}
@@ -862,7 +883,14 @@ function SftpPanel({
         render: (value) => formatRemoteTime(value),
       },
     ],
-    [externalEdits, session?.id],
+    [
+      externalEdits,
+      operationLoading,
+      ready,
+      selectedEntryKeys,
+      session?.id,
+      visibleEntries,
+    ],
   );
 
   const executeTransfer = useCallback(
@@ -2089,64 +2117,114 @@ function SftpPanel({
     );
   }
 
-  function startRemoteEntryDrag(
-    event: React.DragEvent<HTMLElement>,
+  function startRemotePointerDrag(
+    event: React.PointerEvent<HTMLElement>,
     entry: SftpEntry,
   ) {
+    if (event.button !== 0 || !ready || operationLoading) return;
     const entries = remoteDragEntries(entry);
-    draggedRemoteEntriesRef.current = entries.map((item) => ({ ...item }));
-    if (!selectedEntryKeys.includes(entry.id)) {
-      setSelectedEntryKeys([entry.id]);
-    }
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData(
-      "application/x-fineshell-sftp",
-      JSON.stringify(entries.map((item) => item.path)),
+    remotePointerDragRef.current = {
+      active: false,
+      entries: entries.map((item) => ({ ...item })),
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function remoteDirectoryAtPoint(clientX: number, clientY: number) {
+    const target = document.elementFromPoint(clientX, clientY);
+    const row = target?.closest<HTMLElement>("[data-sftp-entry-id]");
+    const entry = visibleEntries.find(
+      (candidate) => candidate.id === row?.dataset.sftpEntryId,
     );
-    event.dataTransfer.setData(
-      "text/plain",
-      entries.map((item) => item.path).join("\n"),
+    return entry?.kind === "directory" ? entry : undefined;
+  }
+
+  function clearRemotePointerDrag() {
+    remotePointerDragRef.current = undefined;
+    setRemoteDropTargetPath(undefined);
+    setRemoteDragPreview(undefined);
+    document.body.classList.remove("sftp-remote-dragging");
+  }
+
+  function moveRemotePointerDrag(event: React.PointerEvent<HTMLElement>) {
+    const drag = remotePointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    if (!drag.active) {
+      const distance = Math.hypot(
+        event.clientX - drag.startX,
+        event.clientY - drag.startY,
+      );
+      if (distance < 5) return;
+      drag.active = true;
+      const firstEntry = drag.entries[0];
+      setRemoteDragPreview({
+        count: drag.entries.length,
+        kind: firstEntry?.kind ?? "file",
+        label: firstEntry?.name ?? "远程项目",
+        x: event.clientX,
+        y: event.clientY,
+      });
+      if (firstEntry && !selectedEntryKeys.includes(firstEntry.id)) {
+        setSelectedEntryKeys([firstEntry.id]);
+      }
+      document.body.classList.add("sftp-remote-dragging");
+    }
+
+    event.preventDefault();
+    const target = remoteDirectoryAtPoint(event.clientX, event.clientY);
+    const targetPath =
+      target && canDropRemoteEntries(drag.entries, target.path)
+        ? target.path
+        : undefined;
+    setRemoteDropTargetPath((current) =>
+      current === targetPath ? current : targetPath,
     );
+    setRemoteDragPreview({
+      count: drag.entries.length,
+      kind: drag.entries[0]?.kind ?? "file",
+      label: drag.entries[0]?.name ?? "远程项目",
+      x: event.clientX,
+      y: event.clientY,
+    });
   }
 
-  function dragRemoteEntriesOverDirectory(
-    event: React.DragEvent<HTMLElement>,
-    targetDirectory: string,
-  ) {
-    const entries = draggedRemoteEntriesRef.current;
-    if (
-      entries.length === 0 ||
-      !canDropRemoteEntries(entries, targetDirectory)
-    ) {
-      return;
+  function finishRemotePointerDrag(event: React.PointerEvent<HTMLElement>) {
+    const drag = remotePointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    setRemoteDropTargetPath(targetDirectory);
-  }
-
-  function dropRemoteEntries(
-    event: React.DragEvent<HTMLElement>,
-    targetDirectory: string,
-  ) {
-    const entries = draggedRemoteEntriesRef.current;
-    if (
-      entries.length === 0 ||
-      !canDropRemoteEntries(entries, targetDirectory)
-    ) {
-      return;
+    const target = drag.active
+      ? remoteDirectoryAtPoint(event.clientX, event.clientY)
+      : undefined;
+    const shouldMove =
+      target && canDropRemoteEntries(drag.entries, target.path);
+    if (drag.active) {
+      event.preventDefault();
+      event.stopPropagation();
     }
-    event.preventDefault();
-    event.stopPropagation();
-    draggedRemoteEntriesRef.current = [];
-    setRemoteDropTargetPath(undefined);
-    void requestPaste(targetDirectory, { mode: "cut", entries });
+    clearRemotePointerDrag();
+    if (shouldMove && target) {
+      void requestPaste(target.path, { mode: "cut", entries: drag.entries });
+    }
   }
 
-  function finishRemoteEntryDrag() {
-    draggedRemoteEntriesRef.current = [];
-    setRemoteDropTargetPath(undefined);
+  function cancelRemotePointerDrag(event: React.PointerEvent<HTMLElement>) {
+    const drag = remotePointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    clearRemotePointerDrag();
   }
+
+  useEffect(
+    () => () => {
+      document.body.classList.remove("sftp-remote-dragging");
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -2450,31 +2528,6 @@ function SftpPanel({
               }
               onRow={(entry) => ({
                 "data-sftp-entry-id": entry.id,
-                draggable: ready && !operationLoading,
-                onDragEnd: finishRemoteEntryDrag,
-                onDragLeave: (event: React.DragEvent<HTMLElement>) => {
-                  if (
-                    event.relatedTarget instanceof Node &&
-                    event.currentTarget.contains(event.relatedTarget)
-                  ) {
-                    return;
-                  }
-                  setRemoteDropTargetPath((current) =>
-                    current === entry.path ? undefined : current,
-                  );
-                },
-                onDragOver: (event: React.DragEvent<HTMLElement>) => {
-                  if (entry.kind === "directory") {
-                    dragRemoteEntriesOverDirectory(event, entry.path);
-                  }
-                },
-                onDragStart: (event: React.DragEvent<HTMLElement>) =>
-                  startRemoteEntryDrag(event, entry),
-                onDrop: (event: React.DragEvent<HTMLElement>) => {
-                  if (entry.kind === "directory") {
-                    dropRemoteEntries(event, entry.path);
-                  }
-                },
                 onDoubleClick: () => {
                   if (entry.kind === "directory") {
                     openDirectory(entry);
@@ -2505,6 +2558,27 @@ function SftpPanel({
               }}
               size="small"
             />
+            {remoteDragPreview && (
+              <div
+                className="sftp-remote-drag-preview"
+                style={{
+                  left: remoteDragPreview.x + 12,
+                  top: remoteDragPreview.y + 12,
+                }}
+              >
+                {remoteDragPreview.kind === "directory" ? (
+                  <IconFolder />
+                ) : (
+                  <IconFile />
+                )}
+                <span>{remoteDragPreview.label}</span>
+                {remoteDragPreview.count > 1 && (
+                  <span className="sftp-remote-drag-count">
+                    {remoteDragPreview.count}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </ContextMenu>
       )}
