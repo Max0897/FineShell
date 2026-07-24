@@ -117,6 +117,16 @@ function ServerProcessDrawer({
   }, [session.id]);
 
   useEffect(() => {
+    requestVersionRef.current += 1;
+    loadingRef.current = false;
+    setLoading(false);
+    if (visible) {
+      setError(undefined);
+      setSignalingProcess(null);
+    }
+  }, [visible]);
+
+  useEffect(() => {
     if (!visible || session.status !== "connected") return;
     void loadProcesses();
     if (!autoRefresh) return;

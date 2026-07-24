@@ -54,19 +54,41 @@ const PROCESS_LIST_COMMAND: &str = r#"
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
 LC_ALL=C
 export PATH LC_ALL
-ps_command=$(command -v ps 2>/dev/null)
+ps_command=''
+for candidate in /usr/bin/ps /bin/ps /usr/local/bin/ps; do
+  if "$candidate" -eo pid=,ppid=,user=,stat=,pcpu=,pmem=,rss=,etimes=,comm=,args= --sort=-pcpu >/dev/null 2>&1; then
+    ps_command=$candidate
+    break
+  fi
+done
 if [ -z "$ps_command" ]; then
-  printf '__FINESHELL_PS_MISSING__\n'
-  exit 127
+  candidate=$(command -v ps 2>/dev/null)
+  if [ -n "$candidate" ] && "$candidate" -eo pid=,ppid=,user=,stat=,pcpu=,pmem=,rss=,etimes=,comm=,args= --sort=-pcpu >/dev/null 2>&1; then
+    ps_command=$candidate
+  fi
 fi
-awk_command=$(command -v awk 2>/dev/null)
+if [ -z "$ps_command" ]; then
+  if command -v ps >/dev/null 2>&1; then
+    printf '__FINESHELL_PS_UNSUPPORTED__\n'
+    exit 2
+  else
+    printf '__FINESHELL_PS_MISSING__\n'
+    exit 127
+  fi
+fi
+awk_command=''
+for candidate in /usr/bin/awk /bin/awk /usr/local/bin/awk; do
+  if "$candidate" 'BEGIN { exit 0 }' </dev/null >/dev/null 2>&1; then
+    awk_command=$candidate
+    break
+  fi
+done
+if [ -z "$awk_command" ]; then
+  awk_command=$(command -v awk 2>/dev/null)
+fi
 if [ -z "$awk_command" ]; then
   printf '__FINESHELL_AWK_MISSING__\n'
   exit 127
-fi
-if ! "$ps_command" -eo pid=,ppid=,user=,stat=,pcpu=,pmem=,rss=,etimes=,comm=,args= --sort=-pcpu >/dev/null 2>&1; then
-  printf '__FINESHELL_PS_UNSUPPORTED__\n'
-  exit 2
 fi
 "$ps_command" -eo pid=,ppid=,user=,stat=,pcpu=,pmem=,rss=,etimes=,comm=,args= --sort=-pcpu 2>/dev/null | "$awk_command" 'NR <= 500 { print } END { if (NR > 500) print "__FINESHELL_TRUNCATED__" }'
 "#;
@@ -610,13 +632,14 @@ pub(crate) fn collect_processes(session: &Session) -> Result<ServerProcessListRe
 }
 
 fn process_list_error(output: &str, exit_status: i32) -> Option<String> {
-    if output.contains("__FINESHELL_PS_MISSING__") {
+    let has_marker = |marker: &str| output.lines().any(|line| line.trim() == marker);
+    if has_marker("__FINESHELL_PS_MISSING__") {
         return Some("远程服务器未安装 ps 命令".to_string());
     }
-    if output.contains("__FINESHELL_AWK_MISSING__") {
+    if has_marker("__FINESHELL_AWK_MISSING__") {
         return Some("远程服务器未安装 awk 命令，无法解析进程数据".to_string());
     }
-    if output.contains("__FINESHELL_PS_UNSUPPORTED__") {
+    if has_marker("__FINESHELL_PS_UNSUPPORTED__") {
         return Some("远程服务器的 ps 命令不支持进程监控所需字段".to_string());
     }
     (exit_status != 0).then(|| format!("进程采集命令异常退出：{exit_status}"))
@@ -907,6 +930,13 @@ rtt min/avg/max/mdev = 4.800/5.100/5.400/0.245 ms
         assert_eq!(
             process_list_error("", 127),
             Some("进程采集命令异常退出：127".to_string())
+        );
+        assert_eq!(
+            process_list_error(
+                "123 1 root S 0.0 0.0 1024 1 bash bash -c printf '__FINESHELL_PS_MISSING__'\n",
+                0,
+            ),
+            None
         );
         assert_eq!(process_list_error("", 0), None);
     }
