@@ -157,7 +157,7 @@ function AdvancedSettings({ settings, updateSetting }: AdvancedSettingsProps) {
           type="info"
         />
 
-        <Spin loading={loading}>
+        <Spin className="diagnostic-summary-loading" loading={loading}>
           <div className="diagnostic-summary">
             <div>
               <Typography.Text type="secondary">记录</Typography.Text>
@@ -179,38 +179,40 @@ function AdvancedSettings({ settings, updateSetting }: AdvancedSettingsProps) {
                 {LEVEL_LABELS[summary?.level ?? settings.diagnosticLogLevel]}
               </Typography.Text>
             </div>
-            <div className="diagnostic-summary-time">
-              <Typography.Text type="secondary">最近记录</Typography.Text>
-              <Typography.Text>
-                {formatDiagnosticTime(summary?.latestAt)}
-              </Typography.Text>
-            </div>
           </div>
         </Spin>
 
-        <Space className="advanced-log-actions">
-          <Button
-            icon={<IconDownload />}
-            loading={exporting}
-            onClick={() => void exportLogs()}
-            type="primary"
-          >
-            导出日志
-          </Button>
-          <Popconfirm
-            disabled={!summary?.total}
-            onOk={() => clearLogs()}
-            title="清空本次运行产生的全部诊断日志？"
-          >
+        <div className="advanced-log-footer">
+          <div className="diagnostic-summary-time">
+            <Typography.Text type="secondary">最近记录</Typography.Text>
+            <Typography.Text>
+              {formatDiagnosticTime(summary?.latestAt)}
+            </Typography.Text>
+          </div>
+          <Space className="advanced-log-actions">
             <Button
-              disabled={!summary?.total}
-              icon={<IconDelete />}
-              loading={clearing}
+              icon={<IconDownload />}
+              loading={exporting}
+              onClick={() => void exportLogs()}
+              type="primary"
             >
-              清空
+              导出日志
             </Button>
-          </Popconfirm>
-        </Space>
+            <Popconfirm
+              disabled={!summary?.total}
+              onOk={() => clearLogs()}
+              title="清空本次运行产生的全部诊断日志？"
+            >
+              <Button
+                disabled={!summary?.total}
+                icon={<IconDelete />}
+                loading={clearing}
+              >
+                清空
+              </Button>
+            </Popconfirm>
+          </Space>
+        </div>
       </section>
     </div>
   );
