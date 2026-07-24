@@ -57,6 +57,33 @@ export function remoteJoinPath(directory: string, name: string) {
   return `${directory.replace(/\/+$/, "")}/${name}`;
 }
 
+export function isRemotePathDescendant(parent: string, candidate: string) {
+  const normalizedParent = parent.replace(/\/+$/, "") || "/";
+  const normalizedCandidate = candidate.replace(/\/+$/, "") || "/";
+  if (normalizedParent === "/") {
+    return normalizedCandidate !== "/" && normalizedCandidate.startsWith("/");
+  }
+  return normalizedCandidate.startsWith(`${normalizedParent}/`);
+}
+
+export function nextAvailableRemoteName(
+  name: string,
+  unavailableNames: ReadonlySet<string>,
+) {
+  if (!unavailableNames.has(name)) return name;
+  const extensionIndex = name.lastIndexOf(".");
+  const hasExtension = extensionIndex > 0 && extensionIndex < name.length - 1;
+  const base = hasExtension ? name.slice(0, extensionIndex) : name;
+  const extension = hasExtension ? name.slice(extensionIndex) : "";
+  let index = 1;
+  let candidate = `${base} (${index})${extension}`;
+  while (unavailableNames.has(candidate)) {
+    index += 1;
+    candidate = `${base} (${index})${extension}`;
+  }
+  return candidate;
+}
+
 export function localFileName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }

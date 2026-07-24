@@ -815,6 +815,10 @@ body,
   background: #e8f3ff;
 }
 
+.sftp-table .sftp-row-cut > .arco-table-td {
+  opacity: 0.52;
+}
+
 .sftp-table tbody > .arco-table-tr:last-child > .arco-table-td,
 .sftp-table .arco-table-empty-row > .arco-table-td {
   border-bottom: 0;
@@ -834,6 +838,16 @@ body,
 
 .sftp-name-cell .arco-typography {
   min-width: 0;
+  margin: 0;
+}
+
+.sftp-paste-conflict {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sftp-paste-conflict > .arco-typography {
   margin: 0;
 }
 

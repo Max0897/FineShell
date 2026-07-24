@@ -11,6 +11,7 @@ import {
   Message,
   Modal,
   Progress,
+  Radio,
   Space,
   Spin,
   Table,
@@ -31,6 +32,7 @@ import {
   IconBook,
   IconCode,
   IconClose,
+  IconCopy,
   IconDelete,
   IconDown,
   IconDownload,
@@ -44,8 +46,10 @@ import {
   IconLock,
   IconLaunch,
   IconPause,
+  IconPaste,
   IconPlayArrow,
   IconRefresh,
+  IconScissor,
   IconStar,
   IconStarFill,
   IconStop,
@@ -73,10 +77,12 @@ import {
   formatPermissions,
   formatRemoteTime,
   addRemotePathHistory,
+  isRemotePathDescendant,
   isActiveSftpTransfer,
   isValidRemoteName,
   localFileName,
   matchRemoteDirectoryPaths,
+  nextAvailableRemoteName,
   parsePermissions,
   remoteJoinPath,
   remoteParentPath,
@@ -87,6 +93,8 @@ import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
 type CreateEntryKind = "file" | "directory";
+type SftpClipboardMode = "copy" | "cut";
+type PasteConflictPolicy = "overwrite" | "skip" | "rename";
 
 interface BrowserState {
   status: BrowserStatus;
@@ -94,6 +102,17 @@ interface BrowserState {
   inputPath: string;
   entries: SftpEntry[];
   error?: string;
+}
+
+interface SftpClipboard {
+  mode: SftpClipboardMode;
+  entries: SftpEntry[];
+}
+
+interface PendingPaste {
+  targetDirectory: string;
+  clipboard: SftpClipboard;
+  conflictCount: number;
 }
 
 interface SftpPanelProps {
@@ -283,6 +302,12 @@ function SftpPanel({
   const [externalEditActionLoading, setExternalEditActionLoading] =
     useState(false);
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
+  const [clipboards, setClipboards] = useState<Record<string, SftpClipboard>>(
+    {},
+  );
+  const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
+  const [pasteConflictPolicy, setPasteConflictPolicy] =
+    useState<PasteConflictPolicy>("rename");
   const [fileDropActive, setFileDropActive] = useState(false);
   const [sftpLocations, setSftpLocations] = useState<
     Record<string, SftpLocationRecord>
@@ -542,6 +567,12 @@ function SftpPanel({
         entries: [],
         error: undefined,
       });
+      setClipboards((current) => {
+        if (!current[session.id]) return current;
+        const next = { ...current };
+        delete next[session.id];
+        return next;
+      });
     }
   }, [browsers, connectAndLoad, session, updateBrowser]);
 
@@ -707,6 +738,16 @@ function SftpPanel({
   );
   const transferActivityCount =
     currentTransfers.length + currentExternalEdits.length;
+  const currentClipboard = session ? clipboards[session.id] : undefined;
+  const cutEntryPaths = useMemo(
+    () =>
+      new Set(
+        currentClipboard?.mode === "cut"
+          ? currentClipboard.entries.map((entry) => entry.path)
+          : [],
+      ),
+    [currentClipboard],
+  );
   const visibleEntries = useMemo(
     () =>
       (browser?.entries ?? []).filter(
@@ -1207,6 +1248,179 @@ function SftpPanel({
       updateBrowser(session.id, { status: "failed", error: message });
     }
     Message.error(message);
+  }
+
+  function storeClipboard(
+    entries: SftpEntry[],
+    mode: SftpClipboardMode,
+  ) {
+    if (!session || entries.length === 0) return;
+    setClipboards((current) => ({
+      ...current,
+      [session.id]: {
+        mode,
+        entries: entries.map((entry) => ({ ...entry })),
+      },
+    }));
+    Message.success(
+      `${mode === "copy" ? "已复制" : "已剪切"} ${entries.length} 个项目`,
+    );
+  }
+
+  async function pasteClipboard(
+    clipboard: SftpClipboard,
+    targetDirectory: string,
+    conflictPolicy: PasteConflictPolicy,
+  ) {
+    if (!session || !browser || clipboard.entries.length === 0) return;
+    const sessionId = session.id;
+    const invalidDirectory = clipboard.entries.find(
+      (entry) =>
+        entry.kind === "directory" &&
+        (entry.path === targetDirectory ||
+          isRemotePathDescendant(entry.path, targetDirectory)),
+    );
+    if (invalidDirectory) {
+      Message.warning(`不能将“${invalidDirectory.name}”放到其自身内部`);
+      return;
+    }
+
+    setOperationLoading(true);
+    let succeeded = 0;
+    let skipped = 0;
+    const completedSourcePaths = new Set<string>();
+    const failures: string[] = [];
+    try {
+      const targetListing = await invoke<SftpListResult>("sftp_list", {
+        sessionId,
+        path: targetDirectory,
+      });
+      const unavailableNames = new Set(
+        targetListing.entries.map((entry) => entry.name),
+      );
+
+      for (const entry of clipboard.entries) {
+        let targetName = entry.name;
+        let targetPath = remoteJoinPath(targetListing.path, targetName);
+        if (clipboard.mode === "cut" && targetPath === entry.path) {
+          skipped += 1;
+          continue;
+        }
+
+        const conflicts = unavailableNames.has(targetName);
+        if (conflicts && conflictPolicy === "skip") {
+          skipped += 1;
+          continue;
+        }
+        if (conflicts && conflictPolicy === "rename") {
+          targetName = nextAvailableRemoteName(targetName, unavailableNames);
+          targetPath = remoteJoinPath(targetListing.path, targetName);
+        }
+
+        try {
+          await invoke(
+            clipboard.mode === "copy" ? "sftp_copy" : "sftp_rename",
+            {
+              sessionId,
+              sourcePath: entry.path,
+              targetPath,
+              overwrite: conflicts && conflictPolicy === "overwrite",
+            },
+          );
+          unavailableNames.add(targetName);
+          completedSourcePaths.add(entry.path);
+          succeeded += 1;
+        } catch (error) {
+          failures.push(`${entry.name}：${String(error)}`);
+        }
+      }
+
+      if (clipboard.mode === "cut" && completedSourcePaths.size > 0) {
+        setClipboards((current) => {
+          const active = current[sessionId];
+          if (!active || active.mode !== "cut") return current;
+          const remaining = active.entries.filter(
+            (entry) => !completedSourcePaths.has(entry.path),
+          );
+          if (remaining.length > 0) {
+            return { ...current, [sessionId]: { ...active, entries: remaining } };
+          }
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        });
+      }
+      setSelectedEntryKeys([]);
+
+      const activeBrowser = browsersRef.current[sessionId];
+      if (activeBrowser) {
+        await loadDirectory(sessionId, activeBrowser.path);
+      }
+      if (succeeded > 0) {
+        Message.success(
+          `${clipboard.mode === "copy" ? "已复制" : "已移动"} ${succeeded} 个项目`,
+        );
+      } else if (skipped > 0 && failures.length === 0) {
+        Message.info("没有需要处理的项目");
+      }
+      if (failures.length > 0) {
+        const remaining = failures.length > 1 ? `，另有 ${failures.length - 1} 项失败` : "";
+        Message.error(`${failures[0]}${remaining}`);
+      }
+    } catch (error) {
+      handleOperationError(error);
+    } finally {
+      setOperationLoading(false);
+    }
+  }
+
+  async function requestPaste(
+    targetDirectory: string,
+    clipboard = currentClipboard,
+  ) {
+    if (!session || !clipboard || clipboard.entries.length === 0) return;
+    const invalidDirectory = clipboard.entries.find(
+      (entry) =>
+        entry.kind === "directory" &&
+        (entry.path === targetDirectory ||
+          isRemotePathDescendant(entry.path, targetDirectory)),
+    );
+    if (invalidDirectory) {
+      Message.warning(`不能将“${invalidDirectory.name}”放到其自身内部`);
+      return;
+    }
+
+    setOperationLoading(true);
+    try {
+      const targetListing = await invoke<SftpListResult>("sftp_list", {
+        sessionId: session.id,
+        path: targetDirectory,
+      });
+      const targetNames = new Set(
+        targetListing.entries.map((entry) => entry.name),
+      );
+      const conflictCount = clipboard.entries.filter((entry) => {
+        const targetPath = remoteJoinPath(targetListing.path, entry.name);
+        return (
+          !(clipboard.mode === "cut" && targetPath === entry.path) &&
+          targetNames.has(entry.name)
+        );
+      }).length;
+      if (conflictCount > 0) {
+        setPasteConflictPolicy("rename");
+        setPendingPaste({
+          targetDirectory: targetListing.path,
+          clipboard,
+          conflictCount,
+        });
+      } else {
+        await pasteClipboard(clipboard, targetListing.path, "skip");
+      }
+    } catch (error) {
+      handleOperationError(error);
+    } finally {
+      setOperationLoading(false);
+    }
   }
 
   function openCreateDialog(kind: CreateEntryKind) {
@@ -1715,6 +1929,47 @@ function SftpPanel({
       });
     }
 
+    if (entries.length > 0) {
+      menuItems.push(
+        {
+          key: "copy",
+          label:
+            entries.length === 1 ? "复制" : `复制所选（${entries.length}）`,
+          icon: <IconCopy />,
+          disabled: operationLoading,
+          dividerBefore: true,
+          onClick: () => storeClipboard(entries, "copy"),
+        },
+        {
+          key: "cut",
+          label:
+            entries.length === 1 ? "剪切" : `剪切所选（${entries.length}）`,
+          icon: <IconScissor />,
+          disabled: operationLoading,
+          onClick: () => storeClipboard(entries, "cut"),
+        },
+      );
+    }
+
+    const pasteTarget =
+      singleEntry?.kind === "directory"
+        ? singleEntry.path
+        : entries.length === 0
+          ? browser?.path
+          : undefined;
+    if (currentClipboard && pasteTarget) {
+      menuItems.push({
+        key: "paste",
+        label:
+          singleEntry?.kind === "directory"
+            ? `粘贴到“${singleEntry.name}”`
+            : `粘贴（${currentClipboard.entries.length}）`,
+        icon: <IconPaste />,
+        disabled: operationLoading,
+        onClick: () => requestPaste(pasteTarget, currentClipboard),
+      });
+    }
+
     if (singleEntry) {
       menuItems.push({
         key: "rename",
@@ -2047,6 +2302,23 @@ function SftpPanel({
           >
             新建
           </Dropdown.Button>
+          <Tooltip
+            content={
+              currentClipboard
+                ? `粘贴 ${currentClipboard.entries.length} 个项目`
+                : "剪贴板为空"
+            }
+          >
+            <Button
+              aria-label="粘贴远程项目"
+              disabled={!ready || !currentClipboard || operationLoading}
+              icon={<IconPaste />}
+              onClick={() =>
+                browser && void requestPaste(browser.path, currentClipboard)
+              }
+              size="mini"
+            />
+          </Tooltip>
           <Tooltip content="下载所选文件">
             <Button
               aria-label="下载所选文件"
@@ -2125,6 +2397,9 @@ function SftpPanel({
               })}
               pagination={false}
               rowKey="id"
+              rowClassName={(entry) =>
+                cutEntryPaths.has(entry.path) ? "sftp-row-cut" : ""
+              }
               rowSelection={{
                 checkAll: true,
                 columnWidth: 42,
@@ -2492,6 +2767,40 @@ function SftpPanel({
           <Typography.Text ellipsis={{ showTooltip: true }} type="secondary">
             {externalEditConflict?.remotePath ?? ""}
           </Typography.Text>
+        </div>
+      </Modal>
+      <Modal
+        confirmLoading={operationLoading}
+        maskClosable={false}
+        onCancel={() => setPendingPaste(null)}
+        onOk={async () => {
+          if (!pendingPaste) return;
+          await pasteClipboard(
+            pendingPaste.clipboard,
+            pendingPaste.targetDirectory,
+            pasteConflictPolicy,
+          );
+          setPendingPaste(null);
+        }}
+        title="发现同名项目"
+        visible={Boolean(pendingPaste)}
+      >
+        <div className="sftp-paste-conflict">
+          <Typography.Paragraph>
+            目标目录中有 {pendingPaste?.conflictCount ?? 0} 个同名项目，请选择处理方式。
+          </Typography.Paragraph>
+          <Radio.Group
+            direction="vertical"
+            onChange={(value) =>
+              setPasteConflictPolicy(value as PasteConflictPolicy)
+            }
+            options={[
+              { label: "自动重命名并保留两者", value: "rename" },
+              { label: "覆盖同名项目", value: "overwrite" },
+              { label: "跳过同名项目", value: "skip" },
+            ]}
+            value={pasteConflictPolicy}
+          />
         </div>
       </Modal>
       <Modal

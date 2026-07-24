@@ -4,8 +4,10 @@ import {
   formatPermissions,
   addRemotePathHistory,
   isValidRemoteName,
+  isRemotePathDescendant,
   localFileName,
   matchRemoteDirectoryPaths,
+  nextAvailableRemoteName,
   normalizeRemoteDirectoryPath,
   parsePermissions,
   remoteJoinPath,
@@ -23,6 +25,32 @@ describe("SFTP path helpers", () => {
   test("joins names without duplicating separators", () => {
     expect(remoteJoinPath("/", "tmp")).toBe("/tmp");
     expect(remoteJoinPath("/var/", "log")).toBe("/var/log");
+  });
+
+  test("detects descendants without matching sibling prefixes", () => {
+    expect(isRemotePathDescendant("/srv/releases", "/srv/releases/2026")).toBe(
+      true,
+    );
+    expect(isRemotePathDescendant("/srv/releases", "/srv/releases-old")).toBe(
+      false,
+    );
+    expect(isRemotePathDescendant("/", "/tmp")).toBe(true);
+    expect(isRemotePathDescendant("/", "/")).toBe(false);
+  });
+
+  test("creates available copy names while preserving file extensions", () => {
+    expect(
+      nextAvailableRemoteName(
+        "report.txt",
+        new Set(["report.txt", "report (1).txt"]),
+      ),
+    ).toBe("report (2).txt");
+    expect(nextAvailableRemoteName("archive", new Set(["archive"]))).toBe(
+      "archive (1)",
+    );
+    expect(nextAvailableRemoteName(".env", new Set([".env"]))).toBe(
+      ".env (1)",
+    );
   });
 
   test("extracts file names from Unix and Windows paths", () => {
