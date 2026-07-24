@@ -39,6 +39,8 @@ interface ServerProcessDrawerProps {
   visible: boolean;
 }
 
+const PROCESS_TABLE_WIDTH = 1024;
+
 const PROCESS_REFRESH_INTERVAL_MS = 5_000;
 
 const PROCESS_STATE_LABELS: Record<string, string> = {
@@ -345,8 +347,9 @@ function ServerProcessDrawer({
         noDataElement={<Empty description={query ? "没有匹配的进程" : "暂无进程"} />}
         pagination={false}
         rowKey="id"
-        scroll={{ y: "calc(100vh - 180px)" }}
+        scroll={{ x: PROCESS_TABLE_WIDTH, y: "calc(100vh - 180px)" }}
         size="small"
+        tableLayoutFixed
       />
     </Drawer>
   );
