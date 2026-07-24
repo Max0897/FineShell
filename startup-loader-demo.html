@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>启动动画示例</title>
+    <style>
+      :root {
+        color: #1d2129;
+        background: #f7f8fa;
+        font-family:
+          Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        background: #f7f8fa;
+      }
+
+      .boot {
+        width: min(280px, calc(100vw - 48px));
+        user-select: none;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        margin-bottom: 28px;
+      }
+
+      .brand-mark {
+        position: relative;
+        display: grid;
+        width: 40px;
+        height: 40px;
+        place-items: center;
+        border: 1px solid #c9cdd4;
+        color: #165dff;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .brand-mark::after {
+        position: absolute;
+        right: 7px;
+        bottom: 8px;
+        width: 7px;
+        height: 2px;
+        background: #00b42a;
+        content: "";
+        animation: caret-blink 0.8s steps(1, end) infinite;
+      }
+
+      .shell {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      .command-line {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        height: 28px;
+        color: #4e5969;
+        font-size: 14px;
+        line-height: 28px;
+        white-space: nowrap;
+      }
+
+      .path {
+        color: #0e42d2;
+      }
+
+      .prompt {
+        margin: 0 9px;
+        color: #00b42a;
+        font-weight: 700;
+      }
+
+      .typing {
+        display: inline-block;
+        width: 0;
+        overflow: hidden;
+        color: #1d2129;
+        animation: typing 3.2s steps(12, end) infinite;
+      }
+
+      .cursor {
+        display: inline-block;
+        width: 7px;
+        height: 16px;
+        margin-left: 3px;
+        background: #1d2129;
+        animation: caret-blink 0.8s steps(1, end) infinite;
+      }
+
+      .progress {
+        position: relative;
+        height: 2px;
+        margin-top: 18px;
+        overflow: hidden;
+        background: #e5e6eb;
+      }
+
+      .progress::after {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 34%;
+        background: #165dff;
+        content: "";
+        animation: progress-run 1.35s ease-in-out infinite;
+      }
+
+      .status {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 10px;
+        color: #86909c;
+        font-size: 12px;
+        line-height: 20px;
+      }
+
+      @keyframes typing {
+        0%,
+        12% {
+          width: 0;
+        }
+
+        55%,
+        84% {
+          width: 12ch;
+        }
+
+        100% {
+          width: 0;
+        }
+      }
+
+      @keyframes caret-blink {
+        0%,
+        48% {
+          opacity: 1;
+        }
+
+        49%,
+        100% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes progress-run {
+        0% {
+          transform: translateX(-105%);
+        }
+
+        100% {
+          transform: translateX(395%);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .brand-mark::after,
+        .cursor,
+        .typing,
+        .progress::after {
+          animation: none;
+        }
+
+        .typing {
+          width: 12ch;
+        }
+
+        .progress::after {
+          width: 62%;
+          transform: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="boot" role="status" aria-label="应用正在启动">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">&gt;</span>
+      </div>
+
+      <div class="shell" aria-hidden="true">
+        <div class="command-line">
+          <span class="path">~</span>
+          <span class="prompt">$</span>
+          <span class="typing">boot --quiet</span>
+          <span class="cursor"></span>
+        </div>
+
+        <div class="progress"></div>
+        <div class="status">
+          <span>正在准备工作区</span>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
