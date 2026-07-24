@@ -4,7 +4,6 @@ import {
   Drawer,
   Empty,
   Message,
-  Space,
   Table,
   Tabs,
   Tag,
@@ -93,7 +92,6 @@ function PortForwardDrawer({
       : activeKind === "remote"
         ? remoteRules
         : dynamicRules;
-  const allRules = [...localRules, ...remoteRules, ...dynamicRules];
   const statusByRuleKey = useMemo(
     () =>
       new Map(
@@ -104,11 +102,6 @@ function PortForwardDrawer({
       ),
     [session.portForwardStatuses],
   );
-  const activeCount = allRules.filter(
-    (rule) =>
-      statusByRuleKey.get(statusKey(rule.kind, rule.id))?.status ===
-      "active",
-  ).length;
   const connected = session.status === "connected";
 
   const changeRuntimeStatus = async (
@@ -232,23 +225,6 @@ function PortForwardDrawer({
       visible={visible}
       width={720}
     >
-      <div className="port-forward-runtime-summary">
-        <Typography.Text type="secondary">
-          {activeKind === "local"
-            ? "本地端口转发"
-            : activeKind === "remote"
-              ? "远程端口转发"
-              : "动态 SOCKS5 转发"}
-        </Typography.Text>
-        <Space size="mini">
-          <Tag color={connected ? "green" : "gray"}>
-            {connected ? "SSH 已连接" : "SSH 未连接"}
-          </Tag>
-          <Typography.Text type="secondary">
-            {activeCount} / {allRules.length} 运行中
-          </Typography.Text>
-        </Space>
-      </div>
       <Tabs
         activeTab={activeKind}
         className="port-forward-runtime-tabs"
