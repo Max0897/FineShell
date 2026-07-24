@@ -38,3 +38,62 @@ fn write_config_file_inner(path: String, contents: String) -> Result<(), String>
 
     fs::write(path, contents).map_err(|error| format!("无法写入配置文件: {error}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, time::SystemTime};
+
+    use super::{read_config_file, write_config_file, MAX_CONFIG_FILE_BYTES};
+
+    fn temporary_directory(name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "fineshell-config-{name}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn command_boundary_writes_and_reads_nested_configuration() {
+        let directory = temporary_directory("round-trip");
+        let path = directory.join("nested/config.json");
+        let path_value = path.to_string_lossy().into_owned();
+
+        write_config_file(path_value.clone(), "{\"version\":1}".to_string()).unwrap();
+        assert_eq!(read_config_file(path_value).unwrap(), "{\"version\":1}");
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn command_boundary_returns_structured_not_found_errors() {
+        let path = temporary_directory("missing").join("config.json");
+        let error = read_config_file(path.to_string_lossy().into_owned()).unwrap_err();
+        let serialized = serde_json::to_value(error).unwrap();
+
+        assert_eq!(serialized["code"], "not_found");
+        assert_eq!(serialized["operation"], "read_config_file");
+        assert_eq!(serialized["retryable"], false);
+        assert!(serialized["message"]
+            .as_str()
+            .unwrap()
+            .contains("无法读取配置文件"));
+    }
+
+    #[test]
+    fn command_boundary_rejects_oversized_configuration_before_writing() {
+        let path = temporary_directory("oversized").join("config.json");
+        let error = write_config_file(
+            path.to_string_lossy().into_owned(),
+            "x".repeat(MAX_CONFIG_FILE_BYTES as usize + 1),
+        )
+        .unwrap_err();
+        let serialized = serde_json::to_value(error).unwrap();
+
+        assert_eq!(serialized["code"], "invalid_request");
+        assert!(!path.exists());
+    }
+}

@@ -8,20 +8,15 @@ import {
 } from "react";
 import {
   Alert,
-  Button,
   Message,
   Modal,
   ResizeBox,
-  Tabs,
-  Tooltip,
   Typography,
 } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
 import {
   IconClose,
   IconCloseCircle,
-  IconCommand,
-  IconHome,
   IconPoweroff,
   IconRefresh,
 } from "@arco-design/web-react/icon";
@@ -33,13 +28,12 @@ import type {
   QuickCommandRecord,
   TerminalSession,
 } from "./models";
-import ContextMenu, {
-  type ContextMenuItem,
-} from "./components/ContextMenu";
+import type { ContextMenuItem } from "./components/ContextMenu";
 import HostManagerPanel from "./components/HostManagerPanel";
 import QuickCommandDrawer from "./components/QuickCommandDrawer";
 import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
+import SessionTabs from "./components/SessionTabs";
 import { withHostDefaults } from "./host-storage";
 import { knownHostTargetKey } from "./known-hosts";
 import {
@@ -54,7 +48,6 @@ import {
 import {
   jumpHostRequest,
   reconnectDelaySeconds,
-  sessionTabName,
   sshCredentialId,
 } from "./terminal-utils";
 import {
@@ -153,21 +146,6 @@ function confirmHostFingerprint(host: HostRecord, result: SshConnectResult) {
     });
   });
 }
-
-function sessionStatusLabel(session: TerminalSession) {
-  const labels = {
-    connecting: "连接中",
-    connected: "已连接",
-    failed: "连接失败",
-    disconnected: "已断开",
-    reconnecting: "重连中",
-  };
-  return session.error
-    ? `${labels[session.status]}：${session.error}`
-    : labels[session.status];
-}
-
-const HOME_TAB_ID = "home";
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -865,96 +843,27 @@ function App() {
 
   const terminalPanel = (
     <section className="panel terminal-panel">
-      <button
-        aria-selected={activeSessionId === null}
-        className={`terminal-home-tab${
-          activeSessionId === null ? " terminal-home-tab-active" : ""
-        }`}
-        onClick={() => setActiveSessionId(null)}
-        role="tab"
-        type="button"
-      >
-        <IconHome />
-        <span>首页</span>
-      </button>
-      <Tabs
-        activeTab={activeSessionId ?? HOME_TAB_ID}
-        className="terminal-tabs"
-        editable
-        extra={
-          <Tooltip
-            content={
-              activeSession
-                ? "快捷命令（Command/Ctrl + Shift + P）"
-                : "请先打开终端会话"
-            }
-          >
-            <span className="terminal-command-button-wrapper">
-              <Button
-                aria-label="打开快捷命令"
-                className="terminal-command-button"
-                disabled={!activeSession}
-                icon={<IconCommand />}
-                onClick={() => setQuickCommandDrawerVisible(true)}
-                type="text"
-              />
-            </span>
-          </Tooltip>
-        }
-        onAddTab={() => setActiveSessionId(null)}
-        onChange={(tabId) =>
-          setActiveSessionId(tabId === HOME_TAB_ID ? null : tabId)
-        }
-        onDeleteTab={closeSession}
-        showAddButton
-        size="small"
-        type="card-gutter"
-      >
-        <Tabs.TabPane
-          closable={false}
-          key={HOME_TAB_ID}
-          title={
-            <span className="terminal-tab-label">
-              <IconHome />
-              <span className="terminal-tab-name">首页</span>
-            </span>
-          }
-        >
+      <SessionTabs
+        activeSessionId={activeSessionId}
+        homeContent={
           <HostManagerPanel onConnect={openSession} settings={settings} />
-        </Tabs.TabPane>
-        {sessions.map((session) => (
-          <Tabs.TabPane
-            closable
-            key={session.id}
-            title={
-              <ContextMenu items={sessionContextMenuItems(session)}>
-                <span
-                  className="terminal-tab-context-target terminal-tab-label"
-                  onContextMenu={() => setActiveSessionId(session.id)}
-                >
-                  <span
-                    className={`terminal-status-dot terminal-status-${session.status}`}
-                  />
-                  <Tooltip content={sessionStatusLabel(session)}>
-                    <span className="terminal-tab-name">
-                      {sessionTabName(sessions, session.id)}
-                    </span>
-                  </Tooltip>
-                </span>
-              </ContextMenu>
+        }
+        onActiveSessionChange={setActiveSessionId}
+        onCloseSession={closeSession}
+        onOpenQuickCommands={() => setQuickCommandDrawerVisible(true)}
+        renderSession={(session) => (
+          <TerminalView
+            active={session.id === activeSessionId}
+            focusRequest={
+              session.id === activeSessionId ? terminalFocusRequest : 0
             }
-          >
-            <TerminalView
-              active={session.id === activeSessionId}
-              focusRequest={
-                session.id === activeSessionId ? terminalFocusRequest : 0
-              }
-              settings={settings}
-              session={session}
-            />
-          </Tabs.TabPane>
-        ))}
-      </Tabs>
+            settings={settings}
+            session={session}
+          />
+        )}
+        sessionContextMenuItems={sessionContextMenuItems}
+        sessions={sessions}
+      />
       <QuickCommandDrawer
         canSend={activeSession?.status === "connected"}
         commands={quickCommands}

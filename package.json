@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "bun test",
+    "test:components": "bun test src/components/*.test.tsx",
+    "check": "bun test && bun run build",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -24,11 +26,15 @@
     "react-dom": "18.3.1"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.11.1",
     "@tauri-apps/cli": "^2",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/bun": "^1.3.14",
     "@types/react": "18",
     "@types/react-dom": "18",
     "@vitejs/plugin-react": "^4.6.0",
+    "happy-dom": "^20.11.1",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
   }

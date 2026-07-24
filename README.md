@@ -10,6 +10,7 @@ FineShell 是一个使用 Tauri 2、React、TypeScript 和 Arco Design 构建的
 bun install
 bun run build
 bun test
+bun run test:components
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo clippy --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
 bun run tauri dev

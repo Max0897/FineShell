@@ -1,15 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Button,
-  Dropdown,
   Empty,
   Input,
   InputNumber,
   Message,
-  Menu,
   Modal,
   Select,
-  Space,
   Table,
   Tooltip,
   Typography,
@@ -23,13 +20,9 @@ import {
   listenProtocolEvent,
 } from "../tauri-protocol";
 import {
-  IconDelete,
-  IconCopy,
-  IconEdit,
   IconFolder,
   IconHistory,
   IconLink,
-  IconMore,
   IconPlus,
   IconSort,
 } from "@arco-design/web-react/icon";
@@ -45,6 +38,7 @@ import type {
   SshKeyRecord,
 } from "../models";
 import HostEditorModal from "./HostEditorModal";
+import HostActions from "./HostActions";
 import {
   jumpHostSelectionError,
   normalizeHostForm,
@@ -654,70 +648,14 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       width: 140,
       render: (_, row) =>
         row.type === "host" ? (
-          <Space size="mini">
-            <Button
-              disabled={configurationAction}
-              icon={<IconLink />}
-              onClick={() => void sendConnection(row.host)}
-              size="mini"
-              type="primary"
-            >
-              连接
-            </Button>
-            <Dropdown
-              disabled={configurationAction}
-              droplist={
-                <Menu
-                  className="host-more-menu"
-                  onClickMenuItem={(key) => {
-                    if (key === "edit") {
-                      openHostEditor(row.host);
-                    } else if (key === "copy") {
-                      void copyHost(row.host);
-                    } else if (key === "delete") {
-                      Modal.confirm({
-                        cancelText: "取消",
-                        content: `删除后可在设置的回收站中恢复“${row.host.name}”。`,
-                        okButtonProps: { status: "danger" },
-                        okText: "删除",
-                        onOk: () => deleteHost(row.host),
-                        title: "删除主机？",
-                      });
-                    }
-                  }}
-                >
-                  <Menu.Item key="edit">
-                    <span className="host-more-menu-label">
-                      <IconEdit />
-                      编辑
-                    </span>
-                  </Menu.Item>
-                  <Menu.Item key="copy">
-                    <span className="host-more-menu-label">
-                      <IconCopy />
-                      复制
-                    </span>
-                  </Menu.Item>
-                  <Menu.Item className="host-more-delete" key="delete">
-                    <span className="host-more-menu-label">
-                      <IconDelete />
-                      删除
-                    </span>
-                  </Menu.Item>
-                </Menu>
-              }
-              position="br"
-              trigger="click"
-            >
-              <Tooltip content="更多操作">
-                <Button
-                  aria-label={`更多 ${row.host.name} 操作`}
-                  icon={<IconMore />}
-                  size="mini"
-                />
-              </Tooltip>
-            </Dropdown>
-          </Space>
+          <HostActions
+            disabled={configurationAction}
+            host={row.host}
+            onConnect={(host) => void sendConnection(host)}
+            onCopy={(host) => void copyHost(host)}
+            onDelete={deleteHost}
+            onEdit={openHostEditor}
+          />
         ) : null,
     },
   ];

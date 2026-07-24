@@ -10,7 +10,6 @@ import {
   Menu,
   Message,
   Modal,
-  Progress,
   Radio,
   Space,
   Spin,
@@ -45,14 +44,11 @@ import {
   IconHistory,
   IconLock,
   IconLaunch,
-  IconPause,
   IconPaste,
-  IconPlayArrow,
   IconRefresh,
   IconScissor,
   IconStar,
   IconStarFill,
-  IconStop,
   IconSync,
   IconThunderbolt,
   IconUpload,
@@ -88,16 +84,17 @@ import {
   remoteParentPath,
   setRemotePathBookmark,
 } from "../sftp-utils";
-import type { SftpTransferStatus } from "../sftp-utils";
 import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
 import {
   commandErrorMessage,
   listenProtocolEvent,
-  type ExternalEditStatus,
   type ExternalEditPayload,
   type ExternalEditResult,
-  type SftpTransferPayload,
 } from "../tauri-protocol";
+import TransferActivityList, {
+  externalEditStatusMeta,
+  type TransferActivityRecord,
+} from "./TransferActivityList";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
 type CreateEntryKind = "file" | "directory";
@@ -131,15 +128,7 @@ interface SftpPanelProps {
   showHiddenFiles: boolean;
 }
 
-interface TransferRecord extends Omit<SftpTransferPayload, "status"> {
-  status: SftpTransferStatus;
-  localPath: string;
-  remotePath: string;
-  overwrite: boolean;
-  sampledAt: number;
-  sampledBytes: number;
-  bytesPerSecond: number;
-}
+type TransferRecord = TransferActivityRecord;
 
 interface LocalUploadFile {
   path: string;
@@ -190,12 +179,6 @@ function createTransferId() {
   return `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function formatTransferSpeed(bytesPerSecond: number) {
-  return bytesPerSecond > 0
-    ? `${formatFileSize(bytesPerSecond)}/s`
-    : "正在计算";
-}
-
 function isTransferCancellation(message: string) {
   return /传输已取消|连接已取消|cancel(?:led|ed)/i.test(message);
 }
@@ -204,27 +187,6 @@ function isSftpSessionFailure(message: string) {
   return /会话不存在|会话已停止|连接已关闭|connection|disconnect|socket/i.test(
     message,
   );
-}
-
-function externalEditStatusMeta(status: ExternalEditStatus) {
-  return {
-    watching: { label: "外部编辑中", tone: "active" },
-    syncing: { label: "正在同步", tone: "syncing" },
-    synced: { label: "已同步", tone: "synced" },
-    conflict: { label: "同步冲突", tone: "conflict" },
-    failed: { label: "同步失败", tone: "failed" },
-    closed: { label: "已结束", tone: "closed" },
-  }[status];
-}
-
-function formatExternalEditTime(updatedAt?: number) {
-  if (!updatedAt) return "";
-  return new Date(updatedAt).toLocaleTimeString("zh-CN", {
-    hour: "2-digit",
-    hour12: false,
-    minute: "2-digit",
-    second: "2-digit",
-  });
 }
 
 function ExternalEditStatusIcon({ edit }: { edit: ExternalEditPayload }) {
@@ -2592,221 +2554,18 @@ function SftpPanel({
         visible={transferDrawerVisible}
         width={440}
       >
-        {transferActivityCount === 0 ? (
-          <div className="sftp-transfer-empty">
-            <Empty description="暂无传输记录" />
-          </div>
-        ) : (
-          <div className="sftp-transfer-list">
-            {currentTransfers.map((transfer) => {
-              const percent = transfer.totalBytes
-                ? Math.min(
-                    100,
-                    Math.round(
-                      (transfer.transferredBytes / transfer.totalBytes) * 100,
-                    ),
-                  )
-                : transfer.status === "completed"
-                  ? 100
-                  : 0;
-              const sizeText = transfer.totalBytes
-                ? `${formatFileSize(transfer.transferredBytes)} / ${formatFileSize(transfer.totalBytes)}`
-                : transfer.transferredBytes > 0
-                  ? formatFileSize(transfer.transferredBytes)
-                  : "等待传输";
-              const activityText =
-                transfer.status === "completed"
-                  ? "已完成"
-                  : transfer.status === "failed"
-                    ? "传输失败"
-                    : transfer.status === "cancelled"
-                      ? "已取消"
-                      : transfer.status === "paused"
-                        ? "已暂停"
-                        : transfer.status === "queued"
-                          ? "等待中"
-                          : formatTransferSpeed(transfer.bytesPerSecond);
-
-              return (
-                <div className="sftp-transfer-row" key={transfer.transferId}>
-                  <span
-                    className={`sftp-transfer-direction sftp-transfer-direction-${transfer.direction}`}
-                  >
-                    {transfer.direction === "upload" ? (
-                      <IconUpload />
-                    ) : (
-                      <IconDownload />
-                    )}
-                  </span>
-                  <div className="sftp-transfer-content">
-                    <div className="sftp-transfer-title-row">
-                      <Typography.Text
-                        className="sftp-transfer-file-name"
-                        ellipsis={{ showTooltip: true }}
-                      >
-                        {transfer.fileName}
-                      </Typography.Text>
-                    </div>
-                    <div className="sftp-transfer-meta">
-                      <Typography.Text type="secondary">
-                        {sizeText}
-                      </Typography.Text>
-                      <Typography.Text
-                        className={`sftp-transfer-activity sftp-transfer-activity-${transfer.status}`}
-                        type={transfer.status === "failed" ? "error" : "secondary"}
-                      >
-                        {activityText}
-                      </Typography.Text>
-                    </div>
-                    <Progress
-                      percent={percent}
-                      showText={false}
-                      size="small"
-                      status={
-                        transfer.status === "failed" ? "error" : "normal"
-                      }
-                      strokeWidth={3}
-                    />
-                    {transfer.status === "failed" && transfer.error && (
-                      <Typography.Text
-                        className="sftp-transfer-error"
-                        ellipsis={{ showTooltip: true }}
-                        type="error"
-                      >
-                        {transfer.error}
-                      </Typography.Text>
-                    )}
-                  </div>
-                  <div className="sftp-transfer-actions">
-                    {transfer.status === "running" && (
-                      <Tooltip content="暂停">
-                        <Button
-                          aria-label={`暂停 ${transfer.fileName}`}
-                          icon={<IconPause />}
-                          onClick={() => void pauseTransfer(transfer)}
-                          size="mini"
-                          type="text"
-                        />
-                      </Tooltip>
-                    )}
-                    {transfer.status === "paused" && (
-                      <Tooltip content="继续">
-                        <Button
-                          aria-label={`继续 ${transfer.fileName}`}
-                          icon={<IconPlayArrow />}
-                          onClick={() => void resumeTransfer(transfer)}
-                          size="mini"
-                          type="text"
-                        />
-                      </Tooltip>
-                    )}
-                    {isActiveSftpTransfer(transfer.status) && (
-                      <Tooltip content="取消">
-                        <Button
-                          aria-label={`取消 ${transfer.fileName}`}
-                          icon={<IconStop />}
-                          onClick={() => void cancelTransfer(transfer)}
-                          size="mini"
-                          type="text"
-                        />
-                      </Tooltip>
-                    )}
-                    {transfer.status === "failed" && (
-                      <Tooltip content="重试">
-                        <Button
-                          aria-label={`重试 ${transfer.fileName}`}
-                          icon={<IconRefresh />}
-                          onClick={() => void retryTransfer(transfer)}
-                          size="mini"
-                        />
-                      </Tooltip>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            {currentExternalEdits.map((edit) => {
-              const status = externalEditStatusMeta(edit.status);
-              const hasProblem =
-                edit.status === "conflict" || edit.status === "failed";
-              const updatedAt = formatExternalEditTime(edit.updatedAt);
-              return (
-                <div
-                  className="sftp-transfer-row sftp-sync-row"
-                  key={edit.editId}
-                >
-                  <span
-                    className={`sftp-transfer-direction sftp-transfer-direction-sync sftp-transfer-direction-sync-${status.tone}`}
-                  >
-                    {hasProblem ? (
-                      <IconExclamationCircle />
-                    ) : (
-                      <IconSync />
-                    )}
-                  </span>
-                  <div className="sftp-transfer-content">
-                    <div className="sftp-transfer-title-row">
-                      <Typography.Text
-                        className="sftp-transfer-file-name"
-                        ellipsis={{ showTooltip: true }}
-                      >
-                        {edit.fileName}
-                      </Typography.Text>
-                    </div>
-                    <div className="sftp-transfer-meta">
-                      <Typography.Text
-                        className="sftp-sync-path"
-                        ellipsis={{ showTooltip: true }}
-                        type="secondary"
-                      >
-                        {edit.remotePath}
-                      </Typography.Text>
-                      <Typography.Text
-                        className={`sftp-transfer-activity sftp-sync-activity-${status.tone}`}
-                        type={edit.status === "failed" ? "error" : "secondary"}
-                      >
-                        {updatedAt
-                          ? `${status.label} · ${updatedAt}`
-                          : status.label}
-                      </Typography.Text>
-                    </div>
-                    {hasProblem && edit.error && (
-                      <Typography.Text
-                        className="sftp-transfer-error"
-                        ellipsis={{ showTooltip: true }}
-                        type={edit.status === "failed" ? "error" : "secondary"}
-                      >
-                        {edit.error}
-                      </Typography.Text>
-                    )}
-                  </div>
-                  <div className="sftp-transfer-actions">
-                    <Tooltip content="打开本地副本">
-                      <Button
-                        aria-label={`打开 ${edit.fileName} 的本地副本`}
-                        icon={<IconLaunch />}
-                        onClick={() => void reopenExternalEditLocalFile(edit)}
-                        size="mini"
-                        type="text"
-                      />
-                    </Tooltip>
-                    {hasProblem && (
-                      <Tooltip content="处理同步问题">
-                        <Button
-                          aria-label={`处理 ${edit.fileName} 的同步问题`}
-                          icon={<IconExclamationCircle />}
-                          onClick={() => setExternalEditConflict(edit)}
-                          size="mini"
-                          type="text"
-                        />
-                      </Tooltip>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        <TransferActivityList
+          externalEdits={currentExternalEdits}
+          onCancel={(transfer) => void cancelTransfer(transfer)}
+          onOpenExternalEdit={(edit) =>
+            void reopenExternalEditLocalFile(edit)
+          }
+          onPause={(transfer) => void pauseTransfer(transfer)}
+          onResolveExternalEdit={setExternalEditConflict}
+          onResume={(transfer) => void resumeTransfer(transfer)}
+          onRetry={(transfer) => void retryTransfer(transfer)}
+          transfers={currentTransfers}
+        />
       </Drawer>
       <Modal
         cancelButtonProps={{ disabled: Boolean(textEditor?.saving) }}
