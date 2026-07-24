@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import {
+  Button,
   Message,
   Modal,
   ResizeBox,
@@ -19,6 +20,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   IconClose,
   IconCloseCircle,
+  IconCommand,
   IconHome,
   IconPoweroff,
   IconRefresh,
@@ -28,12 +30,14 @@ import type {
   JumpHostConnection,
   PortForwardStatus,
   ProxyRecord,
+  QuickCommandRecord,
   TerminalSession,
 } from "./models";
 import ContextMenu, {
   type ContextMenuItem,
 } from "./components/ContextMenu";
 import HostManagerPanel from "./components/HostManagerPanel";
+import QuickCommandDrawer from "./components/QuickCommandDrawer";
 import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
 import { withHostDefaults } from "./host-storage";
@@ -155,6 +159,10 @@ function App() {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
+  const [quickCommands, setQuickCommands] = useState<QuickCommandRecord[]>([]);
+  const [quickCommandDrawerVisible, setQuickCommandDrawerVisible] =
+    useState(false);
+  const [terminalFocusRequest, setTerminalFocusRequest] = useState(0);
   const sessionsRef = useRef<TerminalSession[]>([]);
   const reconnectTimersRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
@@ -522,13 +530,37 @@ function App() {
     let disposed = false;
     void loadConfiguration()
       .then((configuration) => {
-        if (!disposed) setSettings(configuration.settings);
+        if (disposed) return;
+        setSettings(configuration.settings);
+        setQuickCommands(configuration.quickCommands);
       })
       .catch(() => {
         if (!disposed) Message.warning("设置读取失败，已使用默认值");
       });
     return () => {
       disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen("configuration:changed", () => {
+      void loadConfiguration()
+        .then((configuration) => {
+          if (!disposed) setQuickCommands(configuration.quickCommands);
+        })
+        .catch(() => {
+          if (!disposed) Message.warning("快捷命令读取失败");
+        });
+    }).then((stopListening) => {
+      if (disposed) stopListening();
+      else unlisten = stopListening;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
     };
   }, []);
 
@@ -553,6 +585,41 @@ function App() {
 
   const activeSession =
     sessions.find((session) => session.id === activeSessionId) ?? null;
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      setQuickCommandDrawerVisible(false);
+      return;
+    }
+    const handleQuickCommandShortcut = (event: KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.shiftKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "p"
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        setQuickCommandDrawerVisible(true);
+      }
+    };
+    window.addEventListener("keydown", handleQuickCommandShortcut, true);
+    return () =>
+      window.removeEventListener("keydown", handleQuickCommandShortcut, true);
+  }, [activeSessionId]);
+
+  async function sendQuickCommand(command: string, execute: boolean) {
+    if (!activeSession || activeSession.status !== "connected") {
+      throw new Error("当前终端未连接");
+    }
+    const input = execute ? `${command}\r` : command;
+    await invoke("ssh_write", {
+      sessionId: activeSession.id,
+      data: Array.from(new TextEncoder().encode(input)),
+    });
+    setQuickCommandDrawerVisible(false);
+    Message.success(execute ? "命令已发送" : "命令已填入终端");
+  }
 
   function disconnectSession(sessionId: string) {
     clearReconnectTimer(sessionId);
@@ -707,6 +774,26 @@ function App() {
         activeTab={activeSessionId ?? HOME_TAB_ID}
         className="terminal-tabs"
         editable
+        extra={
+          <Tooltip
+            content={
+              activeSession
+                ? "快捷命令（Command/Ctrl + Shift + P）"
+                : "请先打开终端会话"
+            }
+          >
+            <span className="terminal-command-button-wrapper">
+              <Button
+                aria-label="打开快捷命令"
+                className="terminal-command-button"
+                disabled={!activeSession}
+                icon={<IconCommand />}
+                onClick={() => setQuickCommandDrawerVisible(true)}
+                type="text"
+              />
+            </span>
+          </Tooltip>
+        }
         onAddTab={() => setActiveSessionId(null)}
         onChange={(tabId) =>
           setActiveSessionId(tabId === HOME_TAB_ID ? null : tabId)
@@ -752,12 +839,25 @@ function App() {
           >
             <TerminalView
               active={session.id === activeSessionId}
+              focusRequest={
+                session.id === activeSessionId ? terminalFocusRequest : 0
+              }
               settings={settings}
               session={session}
             />
           </Tabs.TabPane>
         ))}
       </Tabs>
+      <QuickCommandDrawer
+        canSend={activeSession?.status === "connected"}
+        commands={quickCommands}
+        onAfterClose={() =>
+          setTerminalFocusRequest((current) => current + 1)
+        }
+        onCancel={() => setQuickCommandDrawerVisible(false)}
+        onSend={sendQuickCommand}
+        visible={quickCommandDrawerVisible}
+      />
     </section>
   );
 

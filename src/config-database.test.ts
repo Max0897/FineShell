@@ -25,9 +25,10 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(12);
+    expect(configuration.schemaVersion).toBe(13);
     expect(configuration.proxies).toEqual([]);
     expect(configuration.sshKeys).toEqual([]);
+    expect(configuration.quickCommands).toEqual([]);
     expect(configuration.hostSort).toBe("manual");
     expect(configuration.sftpLocations).toEqual([]);
     expect(configuration.settings).toEqual(DEFAULT_APP_SETTINGS);
@@ -194,6 +195,15 @@ describe("configuration import and export", () => {
             passphrase: "key-passphrase-must-not-be-exported",
           } as never,
         ],
+        quickCommands: [
+          {
+            id: "command-1",
+            name: "查看日志",
+            command: "tail -n {{行数:100}} {{文件}}",
+            group: "运维",
+            description: "读取文件末尾内容",
+          },
+        ],
         hostSort: "manual",
         sftpLocations: [
           {
@@ -212,6 +222,7 @@ describe("configuration import and export", () => {
     expect(contents).toContain('"settings"');
     expect(contents).toContain('"proxies"');
     expect(contents).toContain('"sshKeys"');
+    expect(contents).toContain('"quickCommands"');
     expect(contents).toContain('"sftpLocations"');
     expect(contents).not.toContain("must-not-be-exported");
     expect(contents).not.toContain("key-passphrase-must-not-be-exported");
@@ -245,6 +256,15 @@ describe("configuration import and export", () => {
         history: ["/var/log"],
       },
     ]);
+    expect(imported.quickCommands).toEqual([
+      {
+        id: "command-1",
+        name: "查看日志",
+        command: "tail -n {{行数:100}} {{文件}}",
+        group: "运维",
+        description: "读取文件末尾内容",
+      },
+    ]);
   });
 
   test("rejects unrelated and newer configuration documents", () => {
@@ -272,6 +292,7 @@ describe("configuration import and export", () => {
     expect(imported.hostSort).toBe("manual");
     expect(imported.proxies).toEqual([]);
     expect(imported.sshKeys).toEqual([]);
+    expect(imported.quickCommands).toEqual([]);
     expect(imported.sftpLocations).toEqual([]);
     expect(imported.settings).toEqual(DEFAULT_APP_SETTINGS);
   });

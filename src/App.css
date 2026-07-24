@@ -590,6 +590,32 @@ body,
   background: #f2f3f5;
 }
 
+.terminal-tabs > .arco-tabs-header-nav .arco-tabs-header-extra {
+  height: var(--terminal-tab-height);
+  margin-left: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.terminal-command-button-wrapper {
+  height: var(--terminal-tab-height);
+  display: inline-flex;
+  border-left: 1px solid #e5e6eb;
+}
+
+.terminal-command-button.arco-btn {
+  width: var(--terminal-tab-height);
+  height: var(--terminal-tab-height);
+  padding: 0;
+  border-radius: 0;
+  color: #4e5969;
+}
+
+.terminal-command-button.arco-btn:not(.arco-btn-disabled):hover {
+  color: #165dff;
+  background: #e8f3ff;
+}
+
 .terminal-tab-label {
   height: var(--terminal-tab-height);
   min-width: 0;
@@ -768,6 +794,92 @@ body,
 .terminal-search-case {
   font-size: 12px;
   font-weight: 600;
+}
+
+.quick-command-drawer .arco-drawer-body {
+  overflow: hidden;
+}
+
+.quick-command-drawer-toolbar {
+  padding: 12px 16px;
+  border-bottom: 1px solid #e5e6eb;
+}
+
+.quick-command-drawer-alert {
+  padding: 12px 16px 0;
+}
+
+.quick-command-drawer-content {
+  height: calc(100% - 57px);
+  padding: 0 16px 20px;
+  overflow: auto;
+}
+
+.quick-command-drawer-alert + .quick-command-drawer-content {
+  height: calc(100% - 117px);
+}
+
+.quick-command-group-title {
+  padding: 16px 0 8px;
+  display: block;
+  font-size: 12px;
+}
+
+.quick-command-list {
+  border-top: 1px solid #e5e6eb;
+}
+
+.quick-command-list-item {
+  min-height: 76px;
+  padding: 12px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid #e5e6eb;
+}
+
+.quick-command-list-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.quick-command-list-copy > .arco-typography {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-command-list-template {
+  display: block;
+}
+
+.quick-command-parameter-fields {
+  display: grid;
+  gap: 16px;
+}
+
+.quick-command-parameter-fields > label {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.quick-command-parameter-preview {
+  max-height: 120px;
+  margin-top: 20px;
+  padding: 10px 12px;
+  display: block;
+  overflow: auto;
+  border: 1px solid #e5e6eb;
+  border-radius: 4px;
+  background: #f7f8fa;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 @container (max-width: 360px) {
@@ -1413,6 +1525,57 @@ body.sftp-remote-dragging * {
 
 .ssh-key-settings-heading > .arco-typography {
   margin: 0;
+}
+
+.quick-command-settings-heading {
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.quick-command-settings-heading > .arco-typography {
+  margin: 0;
+}
+
+.quick-command-name-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.quick-command-name-cell > .arco-typography {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-command-template-cell {
+  max-width: 100%;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-command-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  gap: 12px;
+}
+
+.quick-command-template-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quick-command-template-label > svg {
+  color: #86909c;
 }
 
 .proxy-name-cell {

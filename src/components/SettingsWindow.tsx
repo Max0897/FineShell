@@ -18,6 +18,7 @@ import {
   IconDashboard,
   IconDelete,
   IconCloud,
+  IconCommand,
   IconLock,
   IconSave,
   IconStorage,
@@ -34,10 +35,12 @@ import {
 import { loadConfiguration, updateAppSettings } from "../config-database";
 import ConfigurationMaintenance from "./ConfigurationMaintenance";
 import ProxySettings from "./ProxySettings";
+import QuickCommandSettings from "./QuickCommandSettings";
 import SshKeySettings from "./SshKeySettings";
 
 type SettingsSection =
   | "terminal"
+  | "quickCommands"
   | "files"
   | "monitor"
   | "connection"
@@ -291,6 +294,8 @@ function SettingsWindow() {
             </div>
           </>
         );
+      case "quickCommands":
+        return <QuickCommandSettings />;
       case "monitor":
         return (
           <>
@@ -418,6 +423,10 @@ function SettingsWindow() {
             <IconCode />
             终端
           </Menu.Item>
+          <Menu.Item key="quickCommands">
+            <IconCommand />
+            快捷命令
+          </Menu.Item>
           <Menu.Item key="files">
             <IconStorage />
             文件管理
@@ -457,6 +466,7 @@ function SettingsWindow() {
           <div className="settings-page">{content}</div>
         )}
         {activeSection !== "proxies" &&
+          activeSection !== "quickCommands" &&
           activeSection !== "sshKeys" &&
           activeSection !== "backups" &&
           activeSection !== "trash" && (

@@ -31,6 +31,16 @@ export interface SshKeyFormValues extends Omit<SshKeyRecord, "id"> {
   passphrase?: string;
 }
 
+export interface QuickCommandRecord {
+  id: string;
+  name: string;
+  command: string;
+  group?: string;
+  description?: string;
+}
+
+export type QuickCommandFormValues = Omit<QuickCommandRecord, "id">;
+
 export interface LocalPortForwardRule {
   id: string;
   name: string;

@@ -182,7 +182,8 @@ function ConfigurationMaintenance({
             将导入 {imported.hosts.length} 台主机和 {imported.history.length}
             条连接记录，以及 {imported.proxies.length}
             个代理、{imported.sshKeys.length}
-            个密钥。当前配置会先自动备份，认证凭据不会被导入或覆盖。
+            个密钥和 {imported.quickCommands.length}
+            条快捷命令。当前配置会先自动备份，认证凭据不会被导入或覆盖。
           </Typography.Paragraph>
         ),
         okText: "确认导入",

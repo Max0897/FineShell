@@ -11,6 +11,7 @@ import type {
   HostSortMode,
   LocalPortForwardRule,
   ProxyRecord,
+  QuickCommandRecord,
   RemotePortForwardRule,
   SftpLocationRecord,
   SshKeyRecord,
@@ -24,8 +25,8 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 12;
-export const CONFIGURATION_EXPORT_VERSION = 10;
+export const CONFIGURATION_SCHEMA_VERSION = 13;
+export const CONFIGURATION_EXPORT_VERSION = 11;
 export const MAX_CONFIGURATION_BACKUPS = 10;
 export const TRASH_RETENTION_DAYS = 30;
 export const MAX_SFTP_BOOKMARKS = 20;
@@ -39,6 +40,7 @@ export interface ConfigurationBackup {
   history: ConnectionHistoryRecord[];
   proxies: ProxyRecord[];
   sshKeys: SshKeyRecord[];
+  quickCommands: QuickCommandRecord[];
   hostSort: HostSortMode;
   sftpLocations: SftpLocationRecord[];
 }
@@ -57,6 +59,7 @@ export interface FineShellConfiguration {
   history: ConnectionHistoryRecord[];
   proxies: ProxyRecord[];
   sshKeys: SshKeyRecord[];
+  quickCommands: QuickCommandRecord[];
   hostSort: HostSortMode;
   sftpLocations: SftpLocationRecord[];
   settings: AppSettings;
@@ -73,6 +76,7 @@ export interface FineShellConfigurationExport {
   history: ConnectionHistoryRecord[];
   proxies: ProxyRecord[];
   sshKeys: SshKeyRecord[];
+  quickCommands: QuickCommandRecord[];
   hostSort: HostSortMode;
   sftpLocations: SftpLocationRecord[];
   settings: AppSettings;
@@ -145,6 +149,23 @@ function sanitizeSshKey(value: unknown): SshKeyRecord | undefined {
     id,
     name: name.trim(),
     privateKeyPath: privateKeyPath.trim(),
+  };
+}
+
+function sanitizeQuickCommand(value: unknown): QuickCommandRecord | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const id = stringValue(value.id);
+  const name = stringValue(value.name);
+  const command = stringValue(value.command);
+  if (!id || !name || !command) return undefined;
+
+  return {
+    id: id.slice(0, 160),
+    name: name.trim().slice(0, 80),
+    command: command.trim().slice(0, 4000),
+    group: stringValue(value.group)?.trim().slice(0, 60),
+    description: stringValue(value.description)?.trim().slice(0, 160),
   };
 }
 
@@ -369,6 +390,7 @@ function sanitizeBackup(value: unknown): ConfigurationBackup | undefined {
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
     proxies: sanitizeList(value.proxies, sanitizeProxy),
     sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
+    quickCommands: sanitizeList(value.quickCommands, sanitizeQuickCommand),
     hostSort: sanitizeHostSortMode(value.hostSort),
     sftpLocations: sanitizeList(value.sftpLocations, sanitizeSftpLocation),
   };
@@ -431,6 +453,7 @@ export function migrateLegacyConfiguration(
     ).slice(0, 50),
     proxies: [],
     sshKeys: [],
+    quickCommands: [],
     hostSort: "manual",
     sftpLocations: [],
     settings: { ...DEFAULT_APP_SETTINGS },
@@ -456,6 +479,7 @@ function normalizeConfiguration(value: unknown): FineShellConfiguration {
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
     proxies: sanitizeList(value.proxies, sanitizeProxy),
     sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
+    quickCommands: sanitizeList(value.quickCommands, sanitizeQuickCommand),
     hostSort: sanitizeHostSortMode(value.hostSort),
     sftpLocations: sanitizeList(value.sftpLocations, sanitizeSftpLocation),
     settings: sanitizeAppSettings(value.settings),
@@ -481,6 +505,7 @@ function createBackup(
     history: configuration.history,
     proxies: configuration.proxies,
     sshKeys: configuration.sshKeys,
+    quickCommands: configuration.quickCommands,
     hostSort: configuration.hostSort,
     sftpLocations: configuration.sftpLocations,
   };
@@ -493,6 +518,7 @@ export function serializeConfigurationExport(
     | "history"
     | "proxies"
     | "sshKeys"
+    | "quickCommands"
     | "hostSort"
     | "sftpLocations"
     | "settings"
@@ -510,6 +536,10 @@ export function serializeConfigurationExport(
     ).slice(0, 50),
     proxies: sanitizeList(configuration.proxies, sanitizeProxy),
     sshKeys: sanitizeList(configuration.sshKeys, sanitizeSshKey),
+    quickCommands: sanitizeList(
+      configuration.quickCommands,
+      sanitizeQuickCommand,
+    ),
     hostSort: configuration.hostSort,
     sftpLocations: sanitizeList(
       configuration.sftpLocations,
@@ -542,6 +572,7 @@ export function parseConfigurationExport(contents: string) {
     history: sanitizeList(value.history, sanitizeHistoryRecord).slice(0, 50),
     proxies: sanitizeList(value.proxies, sanitizeProxy),
     sshKeys: sanitizeList(value.sshKeys, sanitizeSshKey),
+    quickCommands: sanitizeList(value.quickCommands, sanitizeQuickCommand),
     hostSort: sanitizeHostSortMode(value.hostSort),
     sftpLocations: sanitizeList(value.sftpLocations, sanitizeSftpLocation),
     settings: sanitizeAppSettings(value.settings),
@@ -705,6 +736,7 @@ export function importConfiguration(
     | "history"
     | "proxies"
     | "sshKeys"
+    | "quickCommands"
     | "hostSort"
     | "sftpLocations"
     | "settings"
@@ -716,6 +748,7 @@ export function importConfiguration(
     history: imported.history,
     proxies: imported.proxies,
     sshKeys: imported.sshKeys,
+    quickCommands: imported.quickCommands,
     hostSort: imported.hostSort,
     sftpLocations: imported.sftpLocations,
     settings: imported.settings,
@@ -737,6 +770,7 @@ export function restoreConfigurationBackup(backupId: string) {
       history: backup.history,
       proxies: backup.proxies,
       sshKeys: backup.sshKeys,
+      quickCommands: backup.quickCommands,
       hostSort: backup.hostSort,
       sftpLocations: backup.sftpLocations,
       backups: [
@@ -931,6 +965,32 @@ export function deleteSshKey(sshKeyId: string) {
       ),
     };
   });
+}
+
+export function upsertQuickCommand(command: QuickCommandRecord) {
+  const sanitized = sanitizeQuickCommand(command);
+  if (!sanitized) {
+    return Promise.reject(new Error("快捷命令内容无效"));
+  }
+  return updateConfiguration((current) => ({
+    ...current,
+    quickCommands: current.quickCommands.some(
+      (item) => item.id === sanitized.id,
+    )
+      ? current.quickCommands.map((item) =>
+          item.id === sanitized.id ? sanitized : item,
+        )
+      : [...current.quickCommands, sanitized],
+  }));
+}
+
+export function deleteQuickCommand(commandId: string) {
+  return updateConfiguration((current) => ({
+    ...current,
+    quickCommands: current.quickCommands.filter(
+      (item) => item.id !== commandId,
+    ),
+  }));
 }
 
 export function updateAppSettings(settings: AppSettings) {

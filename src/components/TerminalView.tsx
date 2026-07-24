@@ -35,6 +35,7 @@ import { decodeSshOutput } from "../terminal-utils";
 
 interface TerminalViewProps {
   active: boolean;
+  focusRequest: number;
   settings: AppSettings;
   session: TerminalSession;
 }
@@ -71,7 +72,12 @@ function searchOptions(
   };
 }
 
-function TerminalView({ active, settings, session }: TerminalViewProps) {
+function TerminalView({
+  active,
+  focusRequest,
+  settings,
+  session,
+}: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -215,6 +221,15 @@ function TerminalView({ active, settings, session }: TerminalViewProps) {
     });
     return () => cancelAnimationFrame(frame);
   }, [active, searchVisible]);
+
+  useEffect(() => {
+    if (!active || focusRequest <= 0) return;
+    const frame = requestAnimationFrame(() => {
+      if (searchVisibleRef.current) searchInputRef.current?.focus();
+      else terminalRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [active, focusRequest]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
