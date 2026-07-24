@@ -536,6 +536,15 @@ function App() {
       })
       .catch(() => {
         if (!disposed) Message.warning("设置读取失败，已使用默认值");
+      })
+      .finally(() => {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            if (!disposed) {
+              window.dispatchEvent(new Event("fineshell:workspace-ready"));
+            }
+          });
+        });
       });
     return () => {
       disposed = true;
@@ -876,7 +885,7 @@ function App() {
       className="right-split"
       direction="vertical"
       panes={[
-        { content: terminalPanel, size: 0.68, min: "240px" },
+        { content: terminalPanel, size: 0.64, min: "240px" },
         { content: sftpPanel, min: "180px" },
       ]}
     />
@@ -890,7 +899,7 @@ function App() {
         panes={[
           {
             content: serverMonitorPanel,
-            size: "280px",
+            size: "220px",
             min: "220px",
             max: "400px",
           },

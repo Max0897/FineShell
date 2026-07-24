@@ -5,10 +5,140 @@
     <link rel="icon" type="image/png" href="/app-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FineShell</title>
+    <script>
+      if (
+        new URLSearchParams(window.location.search).get("view") !== "settings"
+      ) {
+        document.documentElement.classList.add("main-window");
+      }
+    </script>
+    <style>
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background: #f2f3f5;
+      }
+
+      .startup-loader {
+        position: fixed;
+        inset: 0;
+        z-index: 10000;
+        display: none;
+        place-items: center;
+        background: #f2f3f5;
+        opacity: 0;
+        user-select: none;
+      }
+
+      .main-window .startup-loader {
+        display: grid;
+        animation: startup-loader-reveal 0s 120ms forwards;
+      }
+
+      .main-window .startup-loader.is-leaving {
+        visibility: hidden;
+        opacity: 0;
+        animation: none;
+        transition:
+          opacity 120ms ease,
+          visibility 0s 120ms;
+      }
+
+      .startup-loader-content {
+        width: min(280px, calc(100vw - 48px));
+      }
+
+      .startup-loader-track {
+        position: relative;
+        height: 2px;
+        overflow: hidden;
+        background: #e5e6eb;
+      }
+
+      .startup-loader-track::after {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 34%;
+        background: #165dff;
+        content: "";
+        animation: startup-loader-run 1.35s ease-in-out infinite;
+      }
+
+      .startup-loader-label {
+        margin-top: 10px;
+        color: #86909c;
+        font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 12px;
+        line-height: 20px;
+        text-align: center;
+      }
+
+      @keyframes startup-loader-reveal {
+        to {
+          opacity: 1;
+        }
+      }
+
+      @keyframes startup-loader-run {
+        from {
+          transform: translateX(-105%);
+        }
+
+        to {
+          transform: translateX(395%);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .main-window .startup-loader {
+          animation-delay: 0s;
+        }
+
+        .startup-loader-track::after {
+          width: 62%;
+          animation: none;
+        }
+      }
+    </style>
   </head>
 
   <body>
+    <div
+      class="startup-loader"
+      id="startup-loader"
+      role="status"
+      aria-label="正在加载工作区"
+    >
+      <div class="startup-loader-content">
+        <div class="startup-loader-track" aria-hidden="true"></div>
+        <div class="startup-loader-label">正在加载工作区</div>
+      </div>
+    </div>
     <div id="root"></div>
+    <script>
+      (() => {
+        const loader = document.getElementById("startup-loader");
+        if (!document.documentElement.classList.contains("main-window")) {
+          loader?.remove();
+          return;
+        }
+
+        let finished = false;
+        const finish = () => {
+          if (finished || !loader) return;
+          finished = true;
+          window.clearTimeout(fallbackTimer);
+          loader.classList.add("is-leaving");
+          window.setTimeout(() => loader.remove(), 180);
+        };
+        const fallbackTimer = window.setTimeout(finish, 8000);
+        window.addEventListener("fineshell:workspace-ready", finish, {
+          once: true,
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
