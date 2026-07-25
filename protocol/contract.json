@@ -2,6 +2,8 @@
   "version": 1,
   "commands": {
     "protocol_version": true,
+    "open_settings_window": true,
+    "open_shortcut_guide_window": true,
     "read_config_file": true,
     "write_config_file": true,
     "store_host_password": true,

@@ -6,9 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FineShell</title>
     <script>
-      if (
-        new URLSearchParams(window.location.search).get("view") !== "settings"
-      ) {
+      if (!new URLSearchParams(window.location.search).has("view")) {
         document.documentElement.classList.add("main-window");
       }
     </script>

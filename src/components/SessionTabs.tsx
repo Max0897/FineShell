@@ -1,15 +1,17 @@
 import type { ReactNode } from "react";
 import { Button, Tabs, Tooltip } from "@arco-design/web-react";
-import { IconCommand, IconHome } from "@arco-design/web-react/icon";
+import {
+  IconCommand,
+  IconHome,
+  IconQuestionCircle,
+  IconSettings,
+} from "@arco-design/web-react/icon";
 import type { TerminalSession } from "../models";
+import { primaryShortcutModifier } from "../platform-utils";
 import { sessionTabName } from "../terminal-utils";
 import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 const HOME_TAB_ID = "home";
-
-export function primaryShortcutModifier(platform = navigator.platform) {
-  return /mac|iphone|ipad|ipod/i.test(platform) ? "Command" : "Ctrl";
-}
 
 interface SessionTabsProps {
   activeSessionId: string | null;
@@ -17,6 +19,8 @@ interface SessionTabsProps {
   onActiveSessionChange: (sessionId: string | null) => void;
   onCloseSession: (sessionId: string) => void;
   onOpenQuickCommands: () => void;
+  onOpenSettings: () => void;
+  onOpenShortcutGuide: () => void;
   renderSession: (session: TerminalSession) => ReactNode;
   sessionContextMenuItems: (session: TerminalSession) => ContextMenuItem[];
   sessions: TerminalSession[];
@@ -41,12 +45,16 @@ function SessionTabs({
   onActiveSessionChange,
   onCloseSession,
   onOpenQuickCommands,
+  onOpenSettings,
+  onOpenShortcutGuide,
   renderSession,
   sessionContextMenuItems,
   sessions,
 }: SessionTabsProps) {
   const activeSession = sessions.find((item) => item.id === activeSessionId);
-  const quickCommandShortcut = `${primaryShortcutModifier()} + Shift + P`;
+  const primaryModifier = primaryShortcutModifier();
+  const quickCommandShortcut = `${primaryModifier} + Shift + P`;
+  const settingsShortcut = `${primaryModifier} + ,`;
 
   return (
     <>
@@ -67,24 +75,48 @@ function SessionTabs({
         className="terminal-tabs"
         editable
         extra={
-          <Tooltip
-            content={
-              activeSession
-                ? `快捷命令（${quickCommandShortcut}）`
-                : "请先打开终端会话"
-            }
-          >
-            <span className="terminal-command-button-wrapper">
-              <Button
-                aria-label="打开快捷命令"
-                className="terminal-command-button"
-                disabled={!activeSession}
-                icon={<IconCommand />}
-                onClick={onOpenQuickCommands}
-                type="text"
-              />
-            </span>
-          </Tooltip>
+          <div className="terminal-tab-actions">
+            <Tooltip
+              content={
+                activeSession
+                  ? `快捷命令（${quickCommandShortcut}）`
+                  : "请先打开终端会话"
+              }
+            >
+              <span className="terminal-tab-action-wrapper">
+                <Button
+                  aria-label="打开快捷命令"
+                  className="terminal-tab-action-button"
+                  disabled={!activeSession}
+                  icon={<IconCommand />}
+                  onClick={onOpenQuickCommands}
+                  type="text"
+                />
+              </span>
+            </Tooltip>
+            <Tooltip content="快捷键与操作">
+              <span className="terminal-tab-action-wrapper">
+                <Button
+                  aria-label="打开快捷键与操作"
+                  className="terminal-tab-action-button"
+                  icon={<IconQuestionCircle />}
+                  onClick={onOpenShortcutGuide}
+                  type="text"
+                />
+              </span>
+            </Tooltip>
+            <Tooltip content={`设置（${settingsShortcut}）`}>
+              <span className="terminal-tab-action-wrapper">
+                <Button
+                  aria-label="打开设置"
+                  className="terminal-tab-action-button"
+                  icon={<IconSettings />}
+                  onClick={onOpenSettings}
+                  type="text"
+                />
+              </span>
+            </Tooltip>
+          </div>
         }
         onAddTab={() => onActiveSessionChange(null)}
         onChange={(tabId) =>

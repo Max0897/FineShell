@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the application windows",
-  "windows": ["main", "settings"],
+  "windows": ["main", "settings", "shortcut-guide"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

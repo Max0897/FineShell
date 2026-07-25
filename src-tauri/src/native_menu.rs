@@ -8,6 +8,7 @@ use tauri::{
 };
 
 const SETTINGS_MENU_ID: &str = "settings";
+const SHORTCUT_GUIDE_MENU_ID: &str = "shortcut-guide";
 const SELECT_ALL_MENU_ID: &str = "select-all";
 const INVERT_SELECTION_MENU_ID: &str = "invert-selection";
 
@@ -15,6 +16,66 @@ const INVERT_SELECTION_MENU_ID: &str = "invert-selection";
 #[serde(rename_all = "camelCase")]
 struct SelectAllMenuPayload {
     invert: bool,
+}
+
+fn show_auxiliary_window<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+    view: &str,
+    title: &str,
+    width: f64,
+    height: f64,
+    min_width: f64,
+    min_height: f64,
+) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(label) {
+        window.show()?;
+        window.set_focus()?;
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(
+        app,
+        label,
+        WebviewUrl::App(format!("index.html?view={view}").into()),
+    )
+    .title(title)
+    .inner_size(width, height)
+    .min_inner_size(min_width, min_height)
+    .resizable(true)
+    .focused(true)
+    .center()
+    .build()?;
+    Ok(())
+}
+
+fn show_settings_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    show_auxiliary_window(
+        app, "settings", "settings", "设置", 860.0, 620.0, 720.0, 520.0,
+    )
+}
+
+fn show_shortcut_guide_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    show_auxiliary_window(
+        app,
+        "shortcut-guide",
+        "shortcuts",
+        "快捷键与操作",
+        780.0,
+        560.0,
+        720.0,
+        480.0,
+    )
+}
+
+#[tauri::command]
+pub fn open_settings_window(app: AppHandle) -> Result<(), String> {
+    show_settings_window(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn open_shortcut_guide_window(app: AppHandle) -> Result<(), String> {
+    show_shortcut_guide_window(&app).map_err(|error| error.to_string())
 }
 
 pub fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
@@ -34,31 +95,16 @@ pub fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
         return;
     }
 
-    if event.id() != SETTINGS_MENU_ID {
+    let result = if event.id() == SETTINGS_MENU_ID {
+        show_settings_window(app)
+    } else if event.id() == SHORTCUT_GUIDE_MENU_ID {
+        show_shortcut_guide_window(app)
+    } else {
         return;
-    }
-
-    if let Some(window) = app.get_webview_window("settings") {
-        let _ = window.show();
-        let _ = window.set_focus();
-        return;
-    }
-
-    let result = WebviewWindowBuilder::new(
-        app,
-        "settings",
-        WebviewUrl::App("index.html?view=settings".into()),
-    )
-    .title("设置")
-    .inner_size(860.0, 620.0)
-    .min_inner_size(720.0, 520.0)
-    .resizable(true)
-    .focused(true)
-    .center()
-    .build();
+    };
 
     if let Err(error) = result {
-        eprintln!("无法打开设置窗口: {error}");
+        eprintln!("无法打开辅助窗口: {error}");
     }
 }
 
@@ -97,6 +143,15 @@ pub fn build_chinese_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<
         "帮助",
         true,
         &[
+            &MenuItem::with_id(
+                app,
+                SHORTCUT_GUIDE_MENU_ID,
+                "快捷键与操作…",
+                true,
+                None::<&str>,
+            )?,
+            #[cfg(not(target_os = "macos"))]
+            &PredefinedMenuItem::separator(app)?,
             #[cfg(not(target_os = "macos"))]
             &PredefinedMenuItem::about(app, Some("关于 FineShell"), Some(about_metadata.clone()))?,
         ],
