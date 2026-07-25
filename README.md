@@ -73,8 +73,6 @@
 - Linux：x64 `.AppImage` / `.deb`
 - Windows：x64 `.exe`（NSIS）/ `.msi`
 
-当前 macOS 安装包使用 ad-hoc 签名，Windows 安装包尚未配置商业代码签名证书，系统可能显示安全提示。正式分发前仍需完成 Apple 公证和 Windows 代码签名。
-
 ## 从源码运行
 
 ### 环境要求
