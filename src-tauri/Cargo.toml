@@ -1,6 +1,6 @@
 [package]
 name = "fineshell"
-version = "0.1.0"
+version = "0.1.1"
 description = "A cross-platform SSH and SFTP client for terminal access, file management, and server monitoring."
 authors = ["Max"]
 license = "Apache-2.0"
@@ -25,7 +25,6 @@ keyring = "4.1.5"
 notify = "8.2.0"
 regex = "1.11.1"
 httparse = "1.10.1"
-ssh2 = "0.9.6"
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -36,3 +35,9 @@ tokio = { version = "1", features = ["net", "rt", "time"] }
 tokio-socks = "0.5.3"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ssh2 = { version = "0.9.6", features = ["vendored-openssl"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+ssh2 = "0.9.6"

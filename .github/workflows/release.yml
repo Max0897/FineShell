@@ -135,6 +135,30 @@ jobs:
           updaterJsonPreferNsis: true
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true
+      - name: Verify macOS binary dependencies
+        if: startsWith(matrix.platform, 'macos-')
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rustTargets }}
+        run: |
+          binary="src-tauri/target/$RUST_TARGET/release/bundle/macos/FineShell.app/Contents/MacOS/fineshell"
+          if [[ ! -x "$binary" ]]; then
+            echo "macOS application binary not found: $binary" >&2
+            exit 1
+          fi
+
+          otool -L "$binary"
+          unexpected_dependencies="$(
+            otool -L "$binary" \
+              | tail -n +2 \
+              | awk '{ print $1 }' \
+              | awk '!/^\/System\// && !/^\/usr\/lib\// && !/^@rpath\// && !/^@loader_path\// && !/^@executable_path\// { print }'
+          )"
+          if [[ -n "$unexpected_dependencies" ]]; then
+            echo "macOS binary contains non-system absolute dependencies:" >&2
+            echo "$unexpected_dependencies" >&2
+            exit 1
+          fi
 
   publish:
     name: Publish release
