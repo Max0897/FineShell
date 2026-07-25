@@ -86,6 +86,10 @@ export interface ExternalEditResult {
   localPath: string;
 }
 
+export interface MenuSelectAllPayload {
+  invert: boolean;
+}
+
 interface EventPayloadMap {
   "ssh-output": SshOutputPayload;
   "ssh-status": SshStatusPayload;
@@ -94,6 +98,7 @@ interface EventPayloadMap {
   "sftp-external-edit": ExternalEditPayload;
   "configuration:changed": undefined;
   "settings:changed": AppSettings;
+  "menu-select-all": MenuSelectAllPayload;
 }
 
 const ERROR_CODES = new Set<CommandErrorCode>(

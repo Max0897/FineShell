@@ -19,6 +19,8 @@ import {
   remoteArchiveFormatFromName,
   remoteJoinPath,
   remoteParentPath,
+  selectAllSftpEntryKeys,
+  invertSftpEntryKeys,
   setRemotePathBookmark,
 } from "./sftp-utils";
 
@@ -101,6 +103,23 @@ describe("SFTP path helpers", () => {
     expect(isValidRemoteName("reports\\archive")).toBe(false);
     expect(isValidRemoteName("..")).toBe(false);
     expect(isValidRemoteName(" ")).toBe(false);
+  });
+});
+
+describe("SFTP selection helpers", () => {
+  test("selects all visible entries in display order", () => {
+    expect(selectAllSftpEntryKeys(["a", "b", "c"])).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+  });
+
+  test("inverts only the currently visible entries", () => {
+    expect(invertSftpEntryKeys(["a", "b", "c"], ["b", "hidden"])).toEqual([
+      "a",
+      "c",
+    ]);
   });
 });
 

@@ -11,13 +11,13 @@ import {
 describe("Tauri shared protocol", () => {
   test("exposes the canonical version, commands, and events", () => {
     const command: TauriCommand = "ssh_connect";
-    const event: TauriEvent = "sftp-transfer";
+    const event: TauriEvent = "menu-select-all";
 
     expect(PROTOCOL_VERSION).toBe(contract.version);
     expect(contract.commands[command]).toBe(true);
     expect(contract.events[event]).toBe(true);
     expect(Object.keys(contract.commands)).toHaveLength(58);
-    expect(Object.keys(contract.events)).toHaveLength(7);
+    expect(Object.keys(contract.events)).toHaveLength(8);
   });
 
   test("preserves structured backend errors", () => {

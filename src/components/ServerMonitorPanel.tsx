@@ -240,7 +240,7 @@ function ServerMonitorPanel({
     }
   };
 
-  const handleChartActionKeyDown = (
+  const handleMonitorHeadingKeyDown = (
     event: ReactKeyboardEvent<HTMLDivElement>,
     action: () => void,
   ) => {
@@ -448,20 +448,20 @@ function ServerMonitorPanel({
             </div>
       </dl>
 
-      <div
-        aria-disabled={!connected}
-        aria-label="打开进程管理"
-        className="monitor-chart-section monitor-chart-section-action"
-        onClick={() => connected && setProcessDrawerVisible(true)}
-        onKeyDown={(event) =>
-          handleChartActionKeyDown(event, () => {
-            if (connected) setProcessDrawerVisible(true);
-          })
-        }
-        role="button"
-        tabIndex={connected ? 0 : -1}
-      >
-            <div className="monitor-chart-heading">
+      <div className="monitor-chart-section">
+            <div
+              aria-disabled={!connected}
+              aria-label="打开进程管理"
+              className="monitor-chart-heading monitor-chart-heading-action"
+              onClick={() => connected && setProcessDrawerVisible(true)}
+              onKeyDown={(event) =>
+                handleMonitorHeadingKeyDown(event, () => {
+                  if (connected) setProcessDrawerVisible(true);
+                })
+              }
+              role="button"
+              tabIndex={connected ? 0 : -1}
+            >
               <Typography.Text bold>资源占用</Typography.Text>
               <Typography.Text type="secondary">
                 {snapshot
@@ -559,18 +559,18 @@ function ServerMonitorPanel({
             />
       </div>
 
-      <div
-        aria-disabled={!connected}
-        aria-label="打开网络诊断"
-        className="monitor-chart-section monitor-chart-section-action"
-        onClick={openNetworkDiagnostics}
-        onKeyDown={(event) =>
-          handleChartActionKeyDown(event, openNetworkDiagnostics)
-        }
-        role="button"
-        tabIndex={connected ? 0 : -1}
-      >
-            <div className="monitor-chart-heading">
+      <div className="monitor-chart-section">
+            <div
+              aria-disabled={!connected}
+              aria-label="打开网络诊断"
+              className="monitor-chart-heading monitor-chart-heading-action"
+              onClick={openNetworkDiagnostics}
+              onKeyDown={(event) =>
+                handleMonitorHeadingKeyDown(event, openNetworkDiagnostics)
+              }
+              role="button"
+              tabIndex={connected ? 0 : -1}
+            >
               <Typography.Text bold>网络流量</Typography.Text>
               <Typography.Text type="secondary">
                 {snapshot

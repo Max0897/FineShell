@@ -5,8 +5,10 @@ import { isTauri } from "@tauri-apps/api/core";
 import App from "./App";
 import SettingsWindow from "./components/SettingsWindow";
 import { installGlobalDiagnostics } from "./diagnostics";
+import { installSelectAllShortcuts } from "./select-all-shortcut";
 
 installGlobalDiagnostics();
+installSelectAllShortcuts();
 
 if (isTauri()) {
   document.addEventListener("contextmenu", (event) => event.preventDefault());

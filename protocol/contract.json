@@ -67,7 +67,8 @@
     "sftp-transfer": true,
     "sftp-external-edit": true,
     "configuration:changed": true,
-    "settings:changed": true
+    "settings:changed": true,
+    "menu-select-all": true
   },
   "errorCodes": {
     "invalid_request": true,

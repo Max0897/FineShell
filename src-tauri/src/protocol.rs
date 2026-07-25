@@ -7,6 +7,7 @@ pub(crate) const SSH_STATUS_EVENT: &str = "ssh-status";
 pub(crate) const PORT_FORWARD_STATUS_EVENT: &str = "port-forward-status";
 pub(crate) const SFTP_TRANSFER_EVENT: &str = "sftp-transfer";
 pub(crate) const EXTERNAL_EDIT_EVENT: &str = "sftp-external-edit";
+pub(crate) const MENU_SELECT_ALL_EVENT: &str = "menu-select-all";
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -122,8 +123,8 @@ mod tests {
 
     use super::{
         protocol_version, CommandError, CommandErrorCode, EXTERNAL_EDIT_EVENT,
-        PORT_FORWARD_STATUS_EVENT, PROTOCOL_VERSION, SFTP_TRANSFER_EVENT, SSH_OUTPUT_EVENT,
-        SSH_STATUS_EVENT,
+        MENU_SELECT_ALL_EVENT, PORT_FORWARD_STATUS_EVENT, PROTOCOL_VERSION, SFTP_TRANSFER_EVENT,
+        SSH_OUTPUT_EVENT, SSH_STATUS_EVENT,
     };
 
     #[test]
@@ -160,6 +161,7 @@ mod tests {
             EXTERNAL_EDIT_EVENT,
             "configuration:changed",
             "settings:changed",
+            MENU_SELECT_ALL_EVENT,
         ] {
             assert_eq!(
                 events.get(event).and_then(|value| value.as_bool()),
