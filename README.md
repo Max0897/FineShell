@@ -152,15 +152,16 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib \
 
 ## 版本发布
 
-发布前需要同步修改 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 中的版本：
+发布前需要同步修改 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 中的版本，并在 `CHANGELOG.md` 中增加对应版本的更新日志：
 
 ```bash
 bun run release:check -- v0.1.0
+bun run release:notes -- v0.1.0
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-版本标签会触发 GitHub Actions 构建 macOS、Linux 和 Windows 安装包；所有平台构建成功后，工作流才会公开对应 Release。
+版本标签会触发 GitHub Actions 构建 macOS、Linux 和 Windows 安装包；所有平台构建成功后，工作流会将 `CHANGELOG.md` 中对应版本的内容写入 Release，随后才会公开发布。
 
 ## 支持项目
 

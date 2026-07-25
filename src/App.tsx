@@ -31,6 +31,7 @@ import type {
 import type { ContextMenuItem } from "./components/ContextMenu";
 import HostManagerPanel from "./components/HostManagerPanel";
 import QuickCommandDrawer from "./components/QuickCommandDrawer";
+import ReleaseNotesMarkdown from "./components/ReleaseNotesMarkdown";
 import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
 import SessionTabs from "./components/SessionTabs";
@@ -82,6 +83,7 @@ function promptStartupApplicationUpdate(update: ApplicationUpdate) {
   startupUpdatePromptShown = true;
 
   Modal.confirm({
+    autoFocus: false,
     cancelText: "稍后",
     className: "startup-update-modal",
     content: (
@@ -90,9 +92,9 @@ function promptStartupApplicationUpdate(update: ApplicationUpdate) {
           当前版本 v{update.currentVersion}，发现新版本 v{update.version}。
         </Typography.Text>
         {update.body && (
-          <Typography.Paragraph className="startup-update-notes">
+          <ReleaseNotesMarkdown className="startup-update-notes">
             {update.body}
-          </Typography.Paragraph>
+          </ReleaseNotesMarkdown>
         )}
       </div>
     ),

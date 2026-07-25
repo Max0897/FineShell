@@ -47,6 +47,10 @@ jobs:
         run: |
           bun scripts/check-release-version.ts "$RELEASE_TAG"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - name: Validate release notes
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+        run: bun scripts/extract-release-notes.ts "$RELEASE_TAG" > /tmp/release-notes.md
 
   build:
     name: Build ${{ matrix.name }}
@@ -93,6 +97,16 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
+      - id: release_notes
+        name: Prepare updater release notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          delimiter="FINESHELL_RELEASE_NOTES_${RANDOM}_${RANDOM}_${RANDOM}"
+          echo "body<<$delimiter" >> "$GITHUB_OUTPUT"
+          bun scripts/extract-release-notes.ts "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "$delimiter" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rustTargets }}
@@ -109,11 +123,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           args: ${{ matrix.args }}
-          generateReleaseNotes: true
+          generateReleaseNotes: false
           prerelease: ${{ contains(needs.validate.outputs.release_tag, '-') }}
           releaseAssetNamePattern: "[name]_[version]_[platform]_[arch][setup][ext]"
-          releaseBody: |
-            请根据操作系统和处理器架构下载对应的 FineShell 安装包。
+          releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: true
           releaseName: FineShell ${{ needs.validate.outputs.release_tag }}
           retryAttempts: 2
@@ -132,8 +145,16 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - name: Prepare release notes
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: bun scripts/extract-release-notes.ts "$RELEASE_TAG" > "$RUNNER_TEMP/release-notes.md"
       - name: Publish completed release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
-        run: gh release edit "$RELEASE_TAG" --draft=false
+        run: gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --draft=false

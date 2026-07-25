@@ -25,6 +25,7 @@ import {
   IconTool,
 } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   DEFAULT_APP_SETTINGS,
@@ -38,8 +39,11 @@ import {
 } from "../diagnostics";
 import {
   applicationUpdater,
+  isApplicationUpdateInstalling,
+  listenApplicationUpdateInstalling,
   listenApplicationUpdateNotice,
   readApplicationUpdateNotice,
+  type ApplicationUpdateNotice,
 } from "../app-updater";
 import { emitProtocolEventTo } from "../tauri-protocol";
 import { TERMINAL_THEMES } from "../terminal-themes";
@@ -158,10 +162,14 @@ function SettingsWindow() {
     useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [updateAvailable, setUpdateAvailable] = useState(
-    () =>
-      applicationUpdater.canInstallUpdates &&
-      readApplicationUpdateNotice() !== null,
+  const [updateNotice, setUpdateNotice] =
+    useState<ApplicationUpdateNotice | null>(() =>
+      applicationUpdater.canInstallUpdates
+        ? readApplicationUpdateNotice()
+        : null,
+    );
+  const [updateInstalling, setUpdateInstalling] = useState(
+    isApplicationUpdateInstalling,
   );
 
   useEffect(() => {
@@ -192,12 +200,38 @@ function SettingsWindow() {
   useEffect(
     () =>
       listenApplicationUpdateNotice((notice) => {
-        setUpdateAvailable(
-          applicationUpdater.canInstallUpdates && notice !== null,
+        setUpdateNotice(
+          applicationUpdater.canInstallUpdates ? notice : null,
         );
       }),
     [],
   );
+
+  useEffect(
+    () => listenApplicationUpdateInstalling(setUpdateInstalling),
+    [],
+  );
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onCloseRequested((event) => {
+        if (!isApplicationUpdateInstalling()) return;
+        event.preventDefault();
+        Message.warning("更新正在安装，请等待安装完成");
+      })
+      .then((stopListening) => {
+        if (disposed) stopListening();
+        else unlisten = stopListening;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     void configureDiagnosticLogging(savedSettings.diagnosticLogLevel).catch(
@@ -614,7 +648,7 @@ function SettingsWindow() {
       case "trash":
         return <ConfigurationMaintenance section="trash" />;
       case "about":
-        return <AboutSettings />;
+        return <AboutSettings knownUpdate={updateNotice} />;
       default:
         return null;
     }
@@ -646,9 +680,11 @@ function SettingsWindow() {
       <aside className="settings-sidebar">
         <Menu
           onClickMenuItem={(key) =>
-            setActiveSection(
-              CATEGORY_DEFAULT_SECTION[key as SettingsCategory],
-            )
+            updateInstalling && key !== "about"
+              ? Message.warning("更新正在安装，请等待安装完成")
+              : setActiveSection(
+                  CATEGORY_DEFAULT_SECTION[key as SettingsCategory],
+                )
           }
           selectedKeys={[activeCategory]}
         >
@@ -674,10 +710,14 @@ function SettingsWindow() {
           </Menu.Item>
           <Menu.Item key="about">
             <IconInfoCircle />
-            <span className="settings-about-menu-label">
-              关于
-              <Badge count={updateAvailable ? 1 : 0} dot />
-            </span>
+            <Badge
+              count={updateNotice ? 1 : 0}
+              dot
+              dotStyle={{ width: 8, height: 8 }}
+              offset={[5, -2]}
+            >
+              <span className="settings-about-menu-label">关于</span>
+            </Badge>
           </Menu.Item>
         </Menu>
       </aside>

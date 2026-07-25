@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   checkForApplicationUpdateOnStartup,
+  createMockApplicationUpdate,
   formatUpdateBytes,
   listenApplicationUpdateNotice,
   readApplicationUpdateNotice,
@@ -15,6 +16,15 @@ describe("application updater helpers", () => {
     expect(formatUpdateBytes(5 * 1024 * 1024)).toBe("5.0 MB");
   });
 
+  test("creates a safe development update preview", () => {
+    const update = createMockApplicationUpdate();
+
+    expect(update.currentVersion).toBe("0.1.0");
+    expect(update.version).toBe("0.2.0");
+    expect(update.body).toContain("### 新增");
+    expect(update.body).toContain("| 版本发布 | 自动生成 Release Notes |");
+  });
+
   test("persists and broadcasts the available update notice", () => {
     const notices: (string | undefined)[] = [];
     const unlisten = listenApplicationUpdateNotice((notice) => {
@@ -22,10 +32,14 @@ describe("application updater helpers", () => {
     });
 
     setApplicationUpdateNotice({
+      body: "### 新增\n\n- 更新说明",
+      currentVersion: "0.1.0",
       date: "2026-07-25T00:00:00Z",
       version: "0.2.0",
     });
     expect(readApplicationUpdateNotice()).toEqual({
+      body: "### 新增\n\n- 更新说明",
+      currentVersion: "0.1.0",
       date: "2026-07-25T00:00:00Z",
       version: "0.2.0",
     });
@@ -34,6 +48,21 @@ describe("application updater helpers", () => {
     expect(notices).toEqual(["0.2.0", undefined]);
 
     unlisten();
+  });
+
+  test("ignores update notices created for another installed version", () => {
+    window.localStorage.setItem(
+      "fineshell:application-update",
+      JSON.stringify({
+        currentVersion: "0.0.9",
+        version: "0.1.0",
+      }),
+    );
+
+    expect(readApplicationUpdateNotice()).toBeNull();
+    expect(
+      window.localStorage.getItem("fineshell:application-update"),
+    ).toBeNull();
   });
 
   test("skips the startup update request outside production Tauri", async () => {
