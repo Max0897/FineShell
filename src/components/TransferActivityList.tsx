@@ -24,6 +24,7 @@ import type {
 import {
   formatFileSize,
   isActiveSftpTransfer,
+  type RemoteArchiveFormat,
   type SftpTransferStatus,
 } from "../sftp-utils";
 
@@ -36,6 +37,8 @@ export interface TransferActivityRecord
   sampledAt: number;
   sampledBytes: number;
   bytesPerSecond: number;
+  archiveFormat?: RemoteArchiveFormat;
+  archiveSourcePaths?: string[];
 }
 
 interface TransferActivityListProps {

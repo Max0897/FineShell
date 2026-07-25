@@ -1131,6 +1131,16 @@ body.sftp-remote-dragging * {
   gap: 16px;
 }
 
+.sftp-archive-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  gap: 12px;
+}
+
+.sftp-archive-editor > .arco-select {
+  width: 100%;
+}
+
 .sftp-permission-editor > .arco-checkbox-group {
   width: 100%;
 }

@@ -148,6 +148,62 @@ export function parsePermissions(value: string) {
   return Number.parseInt(normalized, 8);
 }
 
+export type RemoteArchiveFormat = "tarGz" | "tar" | "zip";
+
+const REMOTE_ARCHIVE_SUFFIXES: Array<{
+  format: RemoteArchiveFormat;
+  suffix: string;
+}> = [
+  { format: "tarGz", suffix: ".tar.gz" },
+  { format: "tarGz", suffix: ".tgz" },
+  { format: "tar", suffix: ".tar" },
+  { format: "zip", suffix: ".zip" },
+];
+
+export function remoteArchiveExtension(format: RemoteArchiveFormat) {
+  return format === "tarGz" ? ".tar.gz" : `.${format}`;
+}
+
+export function remoteArchiveFormatFromName(name: string) {
+  const normalized = name.toLocaleLowerCase();
+  return (
+    REMOTE_ARCHIVE_SUFFIXES.find(({ suffix }) =>
+      normalized.endsWith(suffix),
+    )?.format ?? null
+  );
+}
+
+export function remoteArchiveBaseName(name: string) {
+  const normalized = name.toLocaleLowerCase();
+  const suffix = REMOTE_ARCHIVE_SUFFIXES.find(({ suffix }) =>
+    normalized.endsWith(suffix),
+  )?.suffix;
+  if (!suffix) return name;
+  return name.slice(0, -suffix.length) || "archive";
+}
+
+export function remoteArchiveFileName(
+  baseName: string,
+  format: RemoteArchiveFormat,
+) {
+  return `${remoteArchiveBaseName(baseName)}${remoteArchiveExtension(format)}`;
+}
+
+export function nextAvailableRemoteArchiveName(
+  baseName: string,
+  format: RemoteArchiveFormat,
+  unavailableNames: ReadonlySet<string>,
+) {
+  const normalizedBase = remoteArchiveBaseName(baseName) || "archive";
+  let candidate = remoteArchiveFileName(normalizedBase, format);
+  let index = 1;
+  while (unavailableNames.has(candidate)) {
+    candidate = remoteArchiveFileName(`${normalizedBase} (${index})`, format);
+    index += 1;
+  }
+  return candidate;
+}
+
 export const PERMISSION_FLAGS = [
   { mask: 0o400, value: "owner-read" },
   { mask: 0o200, value: "owner-write" },

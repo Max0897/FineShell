@@ -89,6 +89,14 @@ pub(crate) struct LocalUploadFile {
     size: u64,
 }
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum RemoteArchiveFormat {
+    TarGz,
+    Tar,
+    Zip,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SftpTransferPayload {
@@ -144,6 +152,20 @@ enum SftpCommand {
         path: String,
         owner: Option<String>,
         group: Option<String>,
+        reply: Sender<Result<(), String>>,
+    },
+    CreateArchive {
+        source_paths: Vec<String>,
+        target_path: String,
+        format: RemoteArchiveFormat,
+        overwrite: bool,
+        reply: Sender<Result<(), String>>,
+    },
+    ExtractArchive {
+        archive_path: String,
+        target_directory: String,
+        format: RemoteArchiveFormat,
+        create_directory: bool,
         reply: Sender<Result<(), String>>,
     },
     ReadTextFile {
@@ -1199,6 +1221,263 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+fn execute_remote_command(
+    session: &Session,
+    command: &str,
+    action: &str,
+) -> Result<String, String> {
+    let mut channel = session
+        .channel_session()
+        .map_err(|error| format!("无法创建{action}通道：{error}"))?;
+    channel
+        .exec(command)
+        .map_err(|error| format!("无法执行{action}命令：{error}"))?;
+    let mut output = String::new();
+    channel
+        .read_to_string(&mut output)
+        .map_err(|error| format!("无法读取{action}结果：{error}"))?;
+    channel
+        .wait_close()
+        .map_err(|error| format!("{action}通道关闭失败：{error}"))?;
+    let exit_status = channel
+        .exit_status()
+        .map_err(|error| format!("无法读取{action}命令状态：{error}"))?;
+    if exit_status == 0 {
+        Ok(output)
+    } else {
+        let detail = output.trim();
+        Err(if detail.is_empty() {
+            format!("{action}命令异常退出：{exit_status}")
+        } else {
+            format!("{action}失败：{detail}")
+        })
+    }
+}
+
+fn require_remote_commands(session: &Session, commands: &[&str]) -> Result<(), String> {
+    for command in commands {
+        let probe = format!("command -v {command} >/dev/null 2>&1");
+        if execute_remote_command(session, &probe, "检查归档工具").is_err() {
+            return Err(format!("远程服务器未安装 {command} 命令"));
+        }
+    }
+    Ok(())
+}
+
+fn archive_source_parts(source_paths: &[String]) -> Result<(String, Vec<String>), String> {
+    if source_paths.is_empty() {
+        return Err("没有选择需要归档的远程项目".to_string());
+    }
+
+    let mut parent_directory = None;
+    let mut names = Vec::with_capacity(source_paths.len());
+    for source_path in source_paths {
+        let normalized = normalize_remote_operation_path(source_path)?;
+        let path = Path::new(&normalized);
+        let parent = path
+            .parent()
+            .ok_or_else(|| "归档源路径缺少父目录".to_string())?;
+        let name = path
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "不能直接归档远程根目录".to_string())?
+            .to_string_lossy()
+            .into_owned();
+        let parent = remote_path_text(parent);
+        if let Some(expected_parent) = &parent_directory {
+            if expected_parent != &parent {
+                return Err("只能归档同一目录下的远程项目".to_string());
+            }
+        } else {
+            parent_directory = Some(parent);
+        }
+        names.push(name);
+    }
+    names.sort();
+    names.dedup();
+    Ok((parent_directory.unwrap_or_else(|| "/".to_string()), names))
+}
+
+fn validate_archive_file_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.len() > 255
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
+        return Err("归档文件名称无效".to_string());
+    }
+    Ok(name)
+}
+
+fn remote_archive_creation_temporary_path(target_path: &Path) -> Result<PathBuf, String> {
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| "归档目标缺少父目录".to_string())?;
+    let file_name = target_path
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "归档目标缺少文件名".to_string())?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut temporary_name = OsString::from(format!(".fineshell-{nonce}-"));
+    temporary_name.push(file_name);
+    Ok(parent.join(temporary_name))
+}
+
+fn archive_create_command(
+    source_paths: &[String],
+    target_path: &str,
+    format: RemoteArchiveFormat,
+) -> Result<String, String> {
+    let (parent_directory, names) = archive_source_parts(source_paths)?;
+    let target_path = normalize_remote_operation_path(target_path)?;
+    if source_paths.iter().any(|source| {
+        normalize_remote_operation_path(source)
+            .ok()
+            .is_some_and(|source| {
+                source == target_path || is_remote_descendant(&source, &target_path)
+            })
+    }) {
+        return Err("归档目标不能与源项目相同".to_string());
+    }
+    let source_arguments = names
+        .iter()
+        .map(|name| shell_quote(name))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let parent = shell_quote(&parent_directory);
+    let target = shell_quote(&target_path);
+    Ok(match format {
+        RemoteArchiveFormat::TarGz => {
+            format!("tar -czf {target} -C {parent} -- {source_arguments} 2>&1")
+        }
+        RemoteArchiveFormat::Tar => {
+            format!("tar -cf {target} -C {parent} -- {source_arguments} 2>&1")
+        }
+        RemoteArchiveFormat::Zip => {
+            format!("cd {parent} && zip -rq {target} -- {source_arguments} 2>&1")
+        }
+    })
+}
+
+fn create_archive(
+    session: &Session,
+    sftp: &Sftp,
+    source_paths: &[String],
+    target_path: &str,
+    format: RemoteArchiveFormat,
+    overwrite: bool,
+) -> Result<(), String> {
+    let target_path = normalize_remote_operation_path(target_path)?;
+    let target = Path::new(&target_path);
+    validate_archive_file_name(
+        target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "归档目标缺少有效文件名".to_string())?,
+    )?;
+    if remote_exists(sftp, target) && !overwrite {
+        return Err("归档目标已存在，需要确认覆盖".to_string());
+    }
+    match format {
+        RemoteArchiveFormat::TarGz => require_remote_commands(session, &["tar", "gzip"])?,
+        RemoteArchiveFormat::Tar => require_remote_commands(session, &["tar"])?,
+        RemoteArchiveFormat::Zip => require_remote_commands(session, &["zip"])?,
+    }
+    let temporary_path = remote_archive_creation_temporary_path(target)?;
+    let temporary_path_text = remote_path_text(&temporary_path);
+    let command = archive_create_command(source_paths, &temporary_path_text, format)?;
+    let result = execute_remote_command(session, &command, "压缩远程项目").and_then(|_| {
+        sftp.rename(
+            &temporary_path,
+            target,
+            Some(if overwrite {
+                RenameFlags::OVERWRITE
+            } else {
+                RenameFlags::empty()
+            }),
+        )
+        .map_err(|error| format!("无法保存远程归档文件：{error}"))
+    });
+    if result.is_err() {
+        let _ = sftp.unlink(&temporary_path);
+    }
+    result
+}
+
+fn archive_listing_is_safe(output: &str) -> bool {
+    output.lines().all(|entry| {
+        let normalized = entry.trim().replace('\\', "/");
+        !normalized.starts_with('/') && normalized.split('/').all(|component| component != "..")
+    })
+}
+
+fn extract_archive(
+    session: &Session,
+    sftp: &Sftp,
+    archive_path: &str,
+    target_directory: &str,
+    format: RemoteArchiveFormat,
+    create_directory: bool,
+) -> Result<(), String> {
+    let archive_path = normalize_remote_operation_path(archive_path)?;
+    let target_directory = normalize_remote_operation_path(target_directory)?;
+    let target = Path::new(&target_directory);
+    if create_directory {
+        if remote_exists(sftp, target) {
+            return Err("解压目标目录已存在".to_string());
+        }
+    } else {
+        let target_stat = sftp
+            .stat(target)
+            .map_err(|error| format!("无法读取解压目标目录：{error}"))?;
+        if !target_stat.is_dir() {
+            return Err("解压目标不是目录".to_string());
+        }
+    }
+
+    let archive = shell_quote(&archive_path);
+    let destination = shell_quote(&target_directory);
+    let (listing_command, extract_command) = match format {
+        RemoteArchiveFormat::TarGz => {
+            require_remote_commands(session, &["tar", "gzip"])?;
+            (
+                format!("tar -tzf {archive} 2>&1"),
+                format!("tar -xzf {archive} -C {destination} 2>&1"),
+            )
+        }
+        RemoteArchiveFormat::Tar => {
+            require_remote_commands(session, &["tar"])?;
+            (
+                format!("tar -tf {archive} 2>&1"),
+                format!("tar -xf {archive} -C {destination} 2>&1"),
+            )
+        }
+        RemoteArchiveFormat::Zip => {
+            require_remote_commands(session, &["unzip"])?;
+            (
+                format!("unzip -Z1 {archive} 2>&1"),
+                format!("unzip -oq {archive} -d {destination} 2>&1"),
+            )
+        }
+    };
+    let listing = execute_remote_command(session, &listing_command, "检查归档内容")?;
+    if !archive_listing_is_safe(&listing) {
+        return Err("归档包含不安全的绝对路径或上级目录，已拒绝解压".to_string());
+    }
+    if create_directory {
+        sftp.mkdir(target, 0o755)
+            .map_err(|error| format!("无法创建解压目标目录：{error}"))?;
+    }
+    execute_remote_command(session, &extract_command, "解压远程归档").map(|_| ())
+}
+
 fn fast_delete_command(paths: &[String]) -> Result<String, String> {
     if paths.is_empty() {
         return Err("没有选择需要快速删除的项目".to_string());
@@ -1566,6 +1845,20 @@ fn download_temporary_path(local_path: &Path, transfer_id: &str) -> Result<PathB
     Ok(local_path.with_file_name(temporary_name))
 }
 
+fn remote_archive_temporary_directory(transfer_id: &str) -> PathBuf {
+    let safe_transfer_id: String = transfer_id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .take(64)
+        .collect();
+    let safe_transfer_id = if safe_transfer_id.is_empty() {
+        "transfer"
+    } else {
+        &safe_transfer_id
+    };
+    PathBuf::from(format!("/tmp/.fineshell-archive-{safe_transfer_id}"))
+}
+
 fn replace_download_file(
     temporary_path: &Path,
     local_path: &Path,
@@ -1678,6 +1971,38 @@ fn run_session(
                     owner.as_deref(),
                     group.as_deref(),
                     &mut identity_cache,
+                ));
+            }
+            SftpCommand::CreateArchive {
+                source_paths,
+                target_path,
+                format,
+                overwrite,
+                reply,
+            } => {
+                let _ = reply.send(create_archive(
+                    &session,
+                    &sftp,
+                    &source_paths,
+                    &target_path,
+                    format,
+                    overwrite,
+                ));
+            }
+            SftpCommand::ExtractArchive {
+                archive_path,
+                target_directory,
+                format,
+                create_directory,
+                reply,
+            } => {
+                let _ = reply.send(extract_archive(
+                    &session,
+                    &sftp,
+                    &archive_path,
+                    &target_directory,
+                    format,
+                    create_directory,
                 ));
             }
             SftpCommand::ReadTextFile { path, reply } => {
@@ -1987,6 +2312,48 @@ pub(crate) async fn sftp_set_owner(
 }
 
 #[tauri::command]
+pub(crate) async fn sftp_create_archive(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    source_paths: Vec<String>,
+    target_path: String,
+    format: RemoteArchiveFormat,
+    overwrite: bool,
+) -> Result<(), String> {
+    dispatch(manager.inner().clone(), session_id, move |reply| {
+        SftpCommand::CreateArchive {
+            source_paths,
+            target_path,
+            format,
+            overwrite,
+            reply,
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_extract_archive(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    archive_path: String,
+    target_directory: String,
+    format: RemoteArchiveFormat,
+    create_directory: bool,
+) -> Result<(), String> {
+    dispatch(manager.inner().clone(), session_id, move |reply| {
+        SftpCommand::ExtractArchive {
+            archive_path,
+            target_directory,
+            format,
+            create_directory,
+            reply,
+        }
+    })
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn sftp_read_text_file(
     manager: State<'_, SftpSessionManager>,
     session_id: String,
@@ -2122,6 +2489,82 @@ pub(crate) async fn sftp_download(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn sftp_download_archive(
+    app: AppHandle,
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    transfer_id: String,
+    source_paths: Vec<String>,
+    archive_name: String,
+    format: RemoteArchiveFormat,
+    local_path: String,
+    overwrite: bool,
+) -> Result<(), String> {
+    let task_session_id = session_id.clone();
+    let task_transfer_id = transfer_id.clone();
+    run_transfer_task(
+        manager.inner().clone(),
+        session_id,
+        transfer_id,
+        move |auth, control| {
+            let reporter = TransferReporter::new(
+                &app,
+                &task_session_id,
+                &task_transfer_id,
+                "download",
+                Path::new(&local_path),
+                0,
+            );
+            let result = (|| -> Result<(), String> {
+                let archive_name = validate_archive_file_name(&archive_name)?;
+                let (session, _) = connect_authenticated_session(&auth, &control.cancelled)?;
+                let mut sftp = session
+                    .sftp()
+                    .map_err(|error| format!("无法建立打包下载通道：{error}"))?;
+                let temporary_directory = remote_archive_temporary_directory(&task_transfer_id);
+                let remote_archive_path = temporary_directory.join(archive_name);
+                let result = (|| -> Result<(), String> {
+                    wait_for_transfer(&control, &reporter, 0)?;
+                    let _ = sftp.unlink(&remote_archive_path);
+                    let _ = sftp.rmdir(&temporary_directory);
+                    sftp.mkdir(&temporary_directory, 0o700)
+                        .map_err(|error| format!("无法创建远程打包临时目录：{error}"))?;
+                    create_archive(
+                        &session,
+                        &sftp,
+                        &source_paths,
+                        &remote_path_text(&remote_archive_path),
+                        format,
+                        false,
+                    )?;
+                    wait_for_transfer(&control, &reporter, 0)?;
+                    let task = TransferTaskContext {
+                        app: &app,
+                        session_id: &task_session_id,
+                        control: &control,
+                        transfer_id: &task_transfer_id,
+                        local_path: &local_path,
+                        remote_path: remote_archive_path
+                            .to_str()
+                            .ok_or_else(|| "远程打包临时路径无效".to_string())?,
+                        overwrite,
+                    };
+                    download_file(&sftp, &task)
+                })();
+                let _ = sftp.unlink(&remote_archive_path);
+                let _ = sftp.rmdir(&temporary_directory);
+                let _ = sftp.shutdown();
+                result
+            })();
+            report_transfer_result(&reporter, &control, &result);
+            result
+        },
+    )
+    .await
+}
+
+#[tauri::command]
 pub(crate) fn sftp_pause_transfer(
     manager: State<'_, SftpSessionManager>,
     session_id: String,
@@ -2174,11 +2617,13 @@ mod tests {
     use ssh2::FileStat;
 
     use super::{
-        decode_remote_text, download_temporary_path, entry_kind, fast_delete_command,
-        inspect_upload_paths, is_remote_descendant, normalize_remote_operation_path,
-        parse_identity_names, remote_text_backup_path, remote_text_temporary_path,
-        remote_upload_temporary_path, replace_download_file, shell_quote, RemoteIdentityCache,
-        SftpCommand, SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
+        archive_create_command, archive_listing_is_safe, decode_remote_text,
+        download_temporary_path, entry_kind, fast_delete_command, inspect_upload_paths,
+        is_remote_descendant, normalize_remote_operation_path, parse_identity_names,
+        remote_archive_temporary_directory, remote_text_backup_path, remote_text_temporary_path,
+        remote_upload_temporary_path, replace_download_file, shell_quote,
+        validate_archive_file_name, RemoteArchiveFormat, RemoteIdentityCache, SftpCommand,
+        SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
     };
     use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
 
@@ -2225,6 +2670,54 @@ mod tests {
 
         assert_eq!(identities.get(&0).map(String::as_str), Some("root"));
         assert_eq!(identities.get(&33).map(String::as_str), Some("www-data"));
+    }
+
+    #[test]
+    fn builds_archive_commands_with_quoted_same_directory_sources() {
+        let command = archive_create_command(
+            &[
+                "/srv/releases/a b".to_string(),
+                "/srv/releases/report's.txt".to_string(),
+            ],
+            "/srv/releases/bundle.tar.gz",
+            RemoteArchiveFormat::TarGz,
+        )
+        .unwrap();
+
+        assert_eq!(
+            command,
+            "tar -czf '/srv/releases/bundle.tar.gz' -C '/srv/releases' -- 'a b' 'report'\"'\"'s.txt' 2>&1"
+        );
+        assert!(archive_create_command(
+            &["/srv/a".to_string(), "/tmp/b".to_string()],
+            "/srv/archive.zip",
+            RemoteArchiveFormat::Zip,
+        )
+        .is_err());
+        assert!(archive_create_command(
+            &["/srv/releases".to_string()],
+            "/srv/releases/archive.tar",
+            RemoteArchiveFormat::Tar,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_unsafe_archive_entries_and_names() {
+        assert!(archive_listing_is_safe("folder/\nfolder/report.txt\n"));
+        assert!(!archive_listing_is_safe("../etc/passwd\n"));
+        assert!(!archive_listing_is_safe("folder/../../etc/passwd\n"));
+        assert!(!archive_listing_is_safe("/etc/passwd\n"));
+        assert!(validate_archive_file_name("backup.tar.gz").is_ok());
+        assert!(validate_archive_file_name("../backup.tar.gz").is_err());
+    }
+
+    #[test]
+    fn sanitizes_archive_download_temporary_directories() {
+        assert_eq!(
+            remote_archive_temporary_directory("transfer/../../123"),
+            Path::new("/tmp/.fineshell-archive-transfer123")
+        );
     }
 
     #[test]
