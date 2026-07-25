@@ -1539,9 +1539,7 @@ body.sftp-remote-dragging * {
 }
 
 .settings-about-menu-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  display: inline-block;
 }
 
 .settings-content {

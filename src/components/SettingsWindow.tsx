@@ -674,10 +674,9 @@ function SettingsWindow() {
           </Menu.Item>
           <Menu.Item key="about">
             <IconInfoCircle />
-            <span className="settings-about-menu-label">
-              关于
-              <Badge count={updateAvailable ? 1 : 0} dot />
-            </span>
+            <Badge count={updateAvailable ? 1 : 0} dot>
+              <span className="settings-about-menu-label">关于</span>
+            </Badge>
           </Menu.Item>
         </Menu>
       </aside>
