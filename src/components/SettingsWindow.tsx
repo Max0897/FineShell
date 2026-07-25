@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  Badge,
   Button,
   Input,
   InputNumber,
@@ -21,6 +22,7 @@ import {
   IconCommand,
   IconLock,
   IconHistory,
+  IconInfoCircle,
   IconSafe,
   IconSave,
   IconSettings,
@@ -39,9 +41,15 @@ import {
   configureDiagnosticLogging,
   recordDiagnostic,
 } from "../diagnostics";
+import {
+  applicationUpdater,
+  listenApplicationUpdateNotice,
+  readApplicationUpdateNotice,
+} from "../app-updater";
 import { emitProtocolEventTo } from "../tauri-protocol";
 import { TERMINAL_THEMES } from "../terminal-themes";
 import AdvancedSettings from "./AdvancedSettings";
+import AboutSettings from "./AboutSettings";
 import ConfigurationMaintenance from "./ConfigurationMaintenance";
 import KnownHostSettings from "./KnownHostSettings";
 import PrivacySettings from "./PrivacySettings";
@@ -61,7 +69,8 @@ type SettingsSection =
   | "advanced"
   | "proxies"
   | "backups"
-  | "trash";
+  | "trash"
+  | "about";
 
 interface SettingRowProps {
   control: ReactNode;
@@ -91,6 +100,11 @@ function SettingsWindow() {
     useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(
+    () =>
+      applicationUpdater.canInstallUpdates &&
+      readApplicationUpdateNotice() !== null,
+  );
 
   useEffect(() => {
     document.title = "设置";
@@ -116,6 +130,16 @@ function SettingsWindow() {
       disposed = true;
     };
   }, []);
+
+  useEffect(
+    () =>
+      listenApplicationUpdateNotice((notice) => {
+        setUpdateAvailable(
+          applicationUpdater.canInstallUpdates && notice !== null,
+        );
+      }),
+    [],
+  );
 
   useEffect(() => {
     void configureDiagnosticLogging(savedSettings.diagnosticLogLevel).catch(
@@ -532,6 +556,8 @@ function SettingsWindow() {
         );
       case "trash":
         return <ConfigurationMaintenance section="trash" />;
+      case "about":
+        return <AboutSettings />;
       default:
         return null;
     }
@@ -592,6 +618,13 @@ function SettingsWindow() {
             <IconDelete />
             回收站
           </Menu.Item>
+          <Menu.Item key="about">
+            <IconInfoCircle />
+            <span className="settings-about-menu-label">
+              关于
+              <Badge count={updateAvailable ? 1 : 0} dot />
+            </span>
+          </Menu.Item>
         </Menu>
       </aside>
       <section className="settings-content">
@@ -607,7 +640,8 @@ function SettingsWindow() {
           activeSection !== "sshKeys" &&
           activeSection !== "knownHosts" &&
           activeSection !== "backups" &&
-          activeSection !== "trash" && (
+          activeSection !== "trash" &&
+          activeSection !== "about" && (
           <footer className="settings-footer">
             <Popconfirm
               onOk={() => setSettings({ ...DEFAULT_APP_SETTINGS })}

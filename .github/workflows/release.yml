@@ -106,6 +106,7 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: ${{ matrix.appleSigningIdentity }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           args: ${{ matrix.args }}
           generateReleaseNotes: true
@@ -118,6 +119,9 @@ jobs:
           retryAttempts: 2
           tagName: ${{ needs.validate.outputs.release_tag }}
           tauriScript: bun tauri
+          updaterJsonPreferNsis: true
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
 
   publish:
     name: Publish release

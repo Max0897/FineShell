@@ -46,6 +46,12 @@ import {
   type AppSettings,
 } from "./app-settings";
 import {
+  applicationUpdater,
+  checkForApplicationUpdateOnStartup,
+  setApplicationUpdateNotice,
+  type ApplicationUpdate,
+} from "./app-updater";
+import {
   jumpHostRequest,
   reconnectDelaySeconds,
   sshCredentialId,
@@ -68,6 +74,51 @@ import "./App.css";
 const ServerMonitorPanel = lazy(
   () => import("./components/ServerMonitorPanel"),
 );
+
+let startupUpdatePromptShown = false;
+
+function promptStartupApplicationUpdate(update: ApplicationUpdate) {
+  if (startupUpdatePromptShown) return;
+  startupUpdatePromptShown = true;
+
+  Modal.confirm({
+    cancelText: "稍后",
+    className: "startup-update-modal",
+    content: (
+      <div className="startup-update-content">
+        <Typography.Text>
+          当前版本 v{update.currentVersion}，发现新版本 v{update.version}。
+        </Typography.Text>
+        {update.body && (
+          <Typography.Paragraph className="startup-update-notes">
+            {update.body}
+          </Typography.Paragraph>
+        )}
+      </div>
+    ),
+    maskClosable: false,
+    okText: "立即更新",
+    onCancel: () => {
+      void update.close();
+    },
+    onOk: async () => {
+      try {
+        await update.downloadAndInstall();
+        setApplicationUpdateNotice(null);
+        await applicationUpdater.relaunch();
+      } catch (error) {
+        const message = commandErrorMessage(error);
+        recordDiagnostic("error", "application.update", "应用更新失败", {
+          error: message,
+          version: update.version,
+        });
+        Message.error(`更新失败：${message}`);
+        throw error;
+      }
+    },
+    title: "发现新版本",
+  });
+}
 
 async function persistHostFingerprint(host: HostRecord, fingerprint: string) {
   try {
@@ -588,6 +639,20 @@ function App() {
     return () => {
       disposed = true;
     };
+  }, []);
+
+  useEffect(() => {
+    if (!applicationUpdater.canInstallUpdates) return;
+    void checkForApplicationUpdateOnStartup()
+      .then((update) => {
+        setApplicationUpdateNotice(update);
+        if (update) promptStartupApplicationUpdate(update);
+      })
+      .catch((error) => {
+        recordDiagnostic("warn", "application.update", "启动更新检查失败", {
+          error: commandErrorMessage(error),
+        });
+      });
   }, []);
 
   useEffect(() => {

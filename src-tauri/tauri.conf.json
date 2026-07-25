@@ -26,6 +26,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -36,6 +37,17 @@
     ],
     "resources": {
       "infoplist/zh-Hans.lproj/InfoPlist.strings": "zh-Hans.lproj/InfoPlist.strings"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERCNjFDQ0VGNzRBMzZDQTUKUldTbGJLTjA3OHhoMjFNcjM4SHBGc1J3ZThJdC9LU3poMHFJV2g2aDR0ZmlEdHRZMzlrQUdTbisK",
+      "endpoints": [
+        "https://github.com/Max0897/fineshell/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
