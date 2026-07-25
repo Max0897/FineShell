@@ -1,8 +1,9 @@
 [package]
 name = "fineshell"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "A cross-platform SSH and SFTP client for terminal access, file management, and server monitoring."
+authors = ["Max"]
+license = "Apache-2.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

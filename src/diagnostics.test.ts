@@ -4,13 +4,13 @@ import { sanitizeDiagnosticValue } from "./diagnostics";
 describe("diagnostic redaction", () => {
   test("redacts secrets, hosts, users and local paths from text", () => {
     const value = sanitizeDiagnosticValue(
-      "ssh root@server.example.com 192.168.1.10 /Users/max/.ssh/id_ed25519 password=hello",
+      "ssh root@server.example.com 192.168.1.10 /Users/demo/.ssh/id_ed25519 password=hello",
     );
 
     expect(value).not.toContain("root");
     expect(value).not.toContain("server.example.com");
     expect(value).not.toContain("192.168.1.10");
-    expect(value).not.toContain("/Users/max");
+    expect(value).not.toContain("/Users/demo");
     expect(value).not.toContain("hello");
     expect(value).toContain("[USER]@[HOST]");
   });

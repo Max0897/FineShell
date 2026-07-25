@@ -416,11 +416,11 @@ mod tests {
     #[test]
     fn redacts_sensitive_text() {
         let value =
-            redact_text("root@server.example.com 192.168.1.10 /Users/max/.ssh/id password=hello");
+            redact_text("root@server.example.com 192.168.1.10 /Users/demo/.ssh/id password=hello");
         assert!(!value.contains("root"));
         assert!(!value.contains("server.example.com"));
         assert!(!value.contains("192.168.1.10"));
-        assert!(!value.contains("/Users/max"));
+        assert!(!value.contains("/Users/demo"));
         assert!(!value.contains("hello"));
     }
 
