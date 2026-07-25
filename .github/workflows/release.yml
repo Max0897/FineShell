@@ -67,7 +67,7 @@ jobs:
             args: --target aarch64-apple-darwin --bundles dmg
             appleSigningIdentity: "-"
           - name: macOS Intel
-            platform: macos-latest
+            platform: macos-15-intel
             rustTargets: x86_64-apple-darwin
             args: --target x86_64-apple-darwin --bundles dmg
             appleSigningIdentity: "-"
