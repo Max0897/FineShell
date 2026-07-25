@@ -120,6 +120,24 @@ function promptStartupApplicationUpdate(update: ApplicationUpdate) {
   });
 }
 
+type AuxiliaryWindow = "settings" | "shortcuts";
+
+function openAuxiliaryWindow(view: AuxiliaryWindow) {
+  if (!isTauri()) {
+    window.open(`?view=${view}`, `fineshell-${view}`);
+    return;
+  }
+
+  const command =
+    view === "settings"
+      ? "open_settings_window"
+      : "open_shortcut_guide_window";
+  void invoke(command).catch((error) => {
+    const title = view === "settings" ? "设置" : "快捷键说明";
+    Message.error(`无法打开${title}：${commandErrorMessage(error)}`);
+  });
+}
+
 async function persistHostFingerprint(host: HostRecord, fingerprint: string) {
   try {
     await updateStoredHostFingerprint(host, fingerprint);
@@ -916,6 +934,8 @@ function App() {
         onActiveSessionChange={setActiveSessionId}
         onCloseSession={closeSession}
         onOpenQuickCommands={() => setQuickCommandDrawerVisible(true)}
+        onOpenSettings={() => openAuxiliaryWindow("settings")}
+        onOpenShortcutGuide={() => openAuxiliaryWindow("shortcuts")}
         renderSession={(session) => (
           <TerminalView
             active={session.id === activeSessionId}

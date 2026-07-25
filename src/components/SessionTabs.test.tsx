@@ -1,7 +1,8 @@
 import { describe, expect, mock, test } from "bun:test";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { HostRecord, TerminalSession } from "../models";
-import SessionTabs, { primaryShortcutModifier } from "./SessionTabs";
+import { primaryShortcutModifier } from "../platform-utils";
+import SessionTabs from "./SessionTabs";
 
 const HOST: HostRecord = {
   id: "host-1",
@@ -27,8 +28,12 @@ function renderTabs(
   activeSessionId: string | null,
   onActiveSessionChange = mock(() => undefined),
 ) {
+  const onOpenSettings = mock(() => undefined);
+  const onOpenShortcutGuide = mock(() => undefined);
   return {
     onActiveSessionChange,
+    onOpenSettings,
+    onOpenShortcutGuide,
     ...render(
       <SessionTabs
         activeSessionId={activeSessionId}
@@ -36,6 +41,8 @@ function renderTabs(
         onActiveSessionChange={onActiveSessionChange}
         onCloseSession={() => undefined}
         onOpenQuickCommands={() => undefined}
+        onOpenSettings={onOpenSettings}
+        onOpenShortcutGuide={onOpenShortcutGuide}
         renderSession={(session) => <div>终端 {session.host.name}</div>}
         sessionContextMenuItems={() => []}
         sessions={[SESSION]}
@@ -52,7 +59,7 @@ describe("SessionTabs", () => {
   });
 
   test("keeps the fixed home entry outside the scrollable tabs", () => {
-    const { container } = renderTabs(null);
+    const { container, onOpenSettings, onOpenShortcutGuide } = renderTabs(null);
     const fixedHome = container.querySelector(".terminal-home-tab");
     const tabContainer = container.querySelector(".terminal-tabs");
 
@@ -66,6 +73,10 @@ describe("SessionTabs", () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "打开快捷键与操作" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    expect(onOpenShortcutGuide).toHaveBeenCalledTimes(1);
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
   test("switches between a session and the fixed home entry", () => {

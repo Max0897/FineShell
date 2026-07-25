@@ -141,7 +141,8 @@ mod tests {
             .lines()
             .filter_map(|line| {
                 let command = line.trim().trim_end_matches(',');
-                (!command.is_empty()).then(|| command.rsplit("::").next().unwrap().to_string())
+                (!command.is_empty() && !command.starts_with("#["))
+                    .then(|| command.rsplit("::").next().unwrap().to_string())
             })
             .collect::<BTreeSet<_>>();
         let contract_commands = contract["commands"]

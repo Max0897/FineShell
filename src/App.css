@@ -614,13 +614,17 @@ body,
   align-items: stretch;
 }
 
-.terminal-command-button-wrapper {
+.terminal-tab-actions,
+.terminal-tab-action-wrapper {
   height: var(--terminal-tab-height);
   display: inline-flex;
+}
+
+.terminal-tab-action-wrapper {
   border-left: 1px solid #e5e6eb;
 }
 
-.terminal-command-button.arco-btn {
+.terminal-tab-action-button.arco-btn {
   width: var(--terminal-tab-height);
   height: var(--terminal-tab-height);
   padding: 0;
@@ -628,7 +632,7 @@ body,
   color: #4e5969;
 }
 
-.terminal-command-button.arco-btn:not(.arco-btn-disabled):hover {
+.terminal-tab-action-button.arco-btn:not(.arco-btn-disabled):hover {
   color: #165dff;
   background: #e8f3ff;
 }
@@ -1494,6 +1498,39 @@ body.sftp-remote-dragging * {
   grid-template-columns: 190px minmax(0, 1fr);
   overflow: hidden;
   background: #ffffff;
+}
+
+.shortcut-guide-window {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.shortcut-guide-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 24px 28px;
+  overflow: auto;
+}
+
+.shortcut-guide-keys {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 7px;
+  border: 1px solid #c9cdd4;
+  border-radius: 3px;
+  color: #4e5969;
+  background: #f7f8fa;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  letter-spacing: 0;
+  white-space: nowrap;
 }
 
 .settings-sidebar {
