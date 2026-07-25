@@ -124,6 +124,7 @@ function TerminalView({
       convertEol: false,
       cursorBlink: settings.terminalCursorBlink,
       cursorStyle: settings.terminalCursorStyle,
+      cursorWidth: 1,
       fontFamily: TERMINAL_FONT_FAMILIES[settings.terminalFontFamily],
       fontSize: settings.terminalFontSize,
       lineHeight: settings.terminalLineHeight,
@@ -258,6 +259,7 @@ function TerminalView({
 
     terminal.options.cursorBlink = settings.terminalCursorBlink;
     terminal.options.cursorStyle = settings.terminalCursorStyle;
+    terminal.options.cursorWidth = 1;
     terminal.options.fontFamily =
       TERMINAL_FONT_FAMILIES[settings.terminalFontFamily];
     terminal.options.fontSize = settings.terminalFontSize;

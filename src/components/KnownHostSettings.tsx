@@ -242,7 +242,6 @@ function KnownHostSettings() {
     <div className="known-host-settings">
       <div className="known-host-settings-heading">
         <div>
-          <Typography.Title heading={5}>已知主机</Typography.Title>
           <Typography.Text type="secondary">
             移除记录后，该服务器会在下次连接时重新请求指纹确认。
           </Typography.Text>

@@ -343,7 +343,6 @@ function SshKeySettings() {
   return (
     <div className="ssh-key-settings">
       <div className="ssh-key-settings-heading">
-        <Typography.Title heading={5}>密钥</Typography.Title>
         <Button
           disabled={loading || acting}
           icon={<IconPlus />}

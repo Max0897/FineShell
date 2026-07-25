@@ -367,7 +367,6 @@ function ProxySettings() {
   return (
     <div className="proxy-settings">
       <div className="proxy-settings-heading">
-        <Typography.Title heading={5}>代理</Typography.Title>
         <Button
           disabled={loading || acting}
           icon={<IconPlus />}

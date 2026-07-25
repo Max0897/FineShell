@@ -214,8 +214,6 @@ function PrivacySettings({
 
   return (
     <div className="privacy-settings">
-      <Typography.Title heading={5}>隐私与清理</Typography.Title>
-
       <section className="privacy-section">
         <div className="privacy-section-heading">
           <div>
