@@ -141,7 +141,9 @@ jobs:
         env:
           RUST_TARGET: ${{ matrix.rustTargets }}
         run: |
-          binary="src-tauri/target/$RUST_TARGET/release/bundle/macos/FineShell.app/Contents/MacOS/fineshell"
+          # Tauri removes the temporary .app after creating the DMG, while the
+          # linked release executable remains available for dependency checks.
+          binary="src-tauri/target/$RUST_TARGET/release/fineshell"
           if [[ ! -x "$binary" ]]; then
             echo "macOS application binary not found: $binary" >&2
             exit 1
