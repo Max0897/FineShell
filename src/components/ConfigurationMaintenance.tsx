@@ -378,7 +378,6 @@ function ConfigurationMaintenance({
       {section === "backups" ? (
         <>
           <div className="configuration-maintenance-heading">
-            <Typography.Title heading={5}>备份与恢复</Typography.Title>
             <Space size="small">
               <Button
                 disabled={loading || acting}
@@ -409,7 +408,6 @@ function ConfigurationMaintenance({
         </>
       ) : (
         <>
-          <Typography.Title heading={5}>回收站</Typography.Title>
           <Table<DeletedHostRecord>
             border={false}
             columns={trashColumns}

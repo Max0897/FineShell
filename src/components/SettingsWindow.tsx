@@ -12,22 +12,17 @@ import {
   Space,
   Spin,
   Switch,
+  Tabs,
   Typography,
 } from "@arco-design/web-react";
 import {
-  IconCode,
-  IconDashboard,
+  IconApps,
   IconDelete,
-  IconCloud,
   IconCommand,
-  IconLock,
   IconHistory,
   IconInfoCircle,
-  IconSafe,
-  IconSave,
-  IconSettings,
-  IconStorage,
   IconThunderbolt,
+  IconTool,
 } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -71,6 +66,69 @@ type SettingsSection =
   | "backups"
   | "trash"
   | "about";
+
+type SettingsCategory =
+  | "general"
+  | "connectionSecurity"
+  | "quickCommands"
+  | "dataPrivacy"
+  | "advanced"
+  | "about";
+
+const CATEGORY_DEFAULT_SECTION: Record<SettingsCategory, SettingsSection> = {
+  general: "terminal",
+  connectionSecurity: "connection",
+  quickCommands: "quickCommands",
+  dataPrivacy: "privacy",
+  advanced: "advanced",
+  about: "about",
+};
+
+const SECTION_CATEGORY: Record<SettingsSection, SettingsCategory> = {
+  terminal: "general",
+  files: "general",
+  monitor: "general",
+  connection: "connectionSecurity",
+  proxies: "connectionSecurity",
+  sshKeys: "connectionSecurity",
+  knownHosts: "connectionSecurity",
+  quickCommands: "quickCommands",
+  privacy: "dataPrivacy",
+  backups: "dataPrivacy",
+  trash: "dataPrivacy",
+  advanced: "advanced",
+  about: "about",
+};
+
+const CATEGORY_TABS: Partial<
+  Record<SettingsCategory, { key: SettingsSection; title: string }[]>
+> = {
+  general: [
+    { key: "terminal", title: "终端" },
+    { key: "files", title: "文件管理" },
+    { key: "monitor", title: "服务器监控" },
+  ],
+  connectionSecurity: [
+    { key: "connection", title: "连接默认值" },
+    { key: "proxies", title: "代理" },
+    { key: "sshKeys", title: "密钥" },
+    { key: "knownHosts", title: "已知主机" },
+  ],
+  dataPrivacy: [
+    { key: "privacy", title: "隐私与清理" },
+    { key: "backups", title: "备份与恢复" },
+    { key: "trash", title: "回收站" },
+  ],
+};
+
+const SECTIONS_WITH_SETTINGS_FOOTER = new Set<SettingsSection>([
+  "terminal",
+  "files",
+  "monitor",
+  "connection",
+  "privacy",
+  "advanced",
+]);
 
 interface SettingRowProps {
   control: ReactNode;
@@ -196,12 +254,14 @@ function SettingsWindow() {
     }));
   };
 
+  const activeCategory = SECTION_CATEGORY[activeSection];
+  const categoryTabs = CATEGORY_TABS[activeCategory];
+
   const content = (() => {
     switch (activeSection) {
       case "terminal":
         return (
           <>
-            <Typography.Title heading={5}>终端</Typography.Title>
             <div className="settings-group">
               <SettingRow
                 control={
@@ -370,7 +430,6 @@ function SettingsWindow() {
       case "files":
         return (
           <>
-            <Typography.Title heading={5}>文件管理</Typography.Title>
             <div className="settings-group">
               <SettingRow
                 control={
@@ -431,7 +490,6 @@ function SettingsWindow() {
       case "monitor":
         return (
           <>
-            <Typography.Title heading={5}>服务器监控</Typography.Title>
             <div className="settings-group">
               <SettingRow
                 control={
@@ -458,7 +516,6 @@ function SettingsWindow() {
       case "connection":
         return (
           <>
-            <Typography.Title heading={5}>连接默认值</Typography.Title>
             <div className="settings-group">
               <SettingRow
                 control={
@@ -563,60 +620,57 @@ function SettingsWindow() {
     }
   })();
 
+  const pageContent = categoryTabs ? (
+    <Tabs
+      activeTab={activeSection}
+      animation={false}
+      className="settings-category-tabs"
+      destroyOnHide
+      headerPadding={false}
+      onChange={(key) => setActiveSection(key as SettingsSection)}
+      size="small"
+      type="capsule"
+    >
+      {categoryTabs.map((tab) => (
+        <Tabs.TabPane key={tab.key} title={tab.title}>
+          {activeSection === tab.key ? content : null}
+        </Tabs.TabPane>
+      ))}
+    </Tabs>
+  ) : (
+    content
+  );
+
   return (
     <main className="settings-window">
       <aside className="settings-sidebar">
         <Menu
-          onClickMenuItem={(key) => setActiveSection(key as SettingsSection)}
-          selectedKeys={[activeSection]}
+          onClickMenuItem={(key) =>
+            setActiveSection(
+              CATEGORY_DEFAULT_SECTION[key as SettingsCategory],
+            )
+          }
+          selectedKeys={[activeCategory]}
         >
-          <Menu.Item key="terminal">
-            <IconCode />
-            终端
+          <Menu.Item key="general">
+            <IconApps />
+            常规
+          </Menu.Item>
+          <Menu.Item key="connectionSecurity">
+            <IconThunderbolt />
+            连接与安全
           </Menu.Item>
           <Menu.Item key="quickCommands">
             <IconCommand />
             快捷命令
           </Menu.Item>
-          <Menu.Item key="files">
-            <IconStorage />
-            文件管理
-          </Menu.Item>
-          <Menu.Item key="monitor">
-            <IconDashboard />
-            服务器监控
-          </Menu.Item>
-          <Menu.Item key="connection">
-            <IconThunderbolt />
-            连接
-          </Menu.Item>
-          <Menu.Item key="proxies">
-            <IconCloud />
-            代理
-          </Menu.Item>
-          <Menu.Item key="sshKeys">
-            <IconLock />
-            密钥
-          </Menu.Item>
-          <Menu.Item key="knownHosts">
-            <IconSafe />
-            已知主机
-          </Menu.Item>
-          <Menu.Item key="privacy">
+          <Menu.Item key="dataPrivacy">
             <IconHistory />
-            隐私与清理
+            数据与隐私
           </Menu.Item>
           <Menu.Item key="advanced">
-            <IconSettings />
+            <IconTool />
             高级
-          </Menu.Item>
-          <Menu.Item key="backups">
-            <IconSave />
-            备份与恢复
-          </Menu.Item>
-          <Menu.Item key="trash">
-            <IconDelete />
-            回收站
           </Menu.Item>
           <Menu.Item key="about">
             <IconInfoCircle />
@@ -633,15 +687,9 @@ function SettingsWindow() {
             <Spin />
           </div>
         ) : (
-          <div className="settings-page">{content}</div>
+          <div className="settings-page">{pageContent}</div>
         )}
-        {activeSection !== "proxies" &&
-          activeSection !== "quickCommands" &&
-          activeSection !== "sshKeys" &&
-          activeSection !== "knownHosts" &&
-          activeSection !== "backups" &&
-          activeSection !== "trash" &&
-          activeSection !== "about" && (
+        {SECTIONS_WITH_SETTINGS_FOOTER.has(activeSection) && (
           <footer className="settings-footer">
             <Popconfirm
               onOk={() => setSettings({ ...DEFAULT_APP_SETTINGS })}

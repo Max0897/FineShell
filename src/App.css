@@ -44,8 +44,12 @@
 }
 
 .app-shell,
-.app-shell * {
+.app-shell *:not(.xterm-cursor-bar) {
   box-shadow: none !important;
+}
+
+.app-shell,
+.app-shell * {
   text-shadow: none !important;
 }
 
@@ -1531,6 +1535,26 @@ body.sftp-remote-dragging * {
 
 .settings-page > .arco-typography {
   margin: 0 0 24px;
+}
+
+.settings-category-tabs > .arco-tabs-header-nav {
+  margin-bottom: 24px;
+}
+
+.settings-category-tabs
+  > .arco-tabs-header-nav-capsule
+  .arco-tabs-header-wrapper {
+  justify-content: flex-start;
+}
+
+.settings-category-tabs > .arco-tabs-content {
+  overflow: visible;
+}
+
+.configuration-maintenance-heading,
+.proxy-settings-heading,
+.ssh-key-settings-heading {
+  justify-content: flex-end;
 }
 
 .settings-group {
