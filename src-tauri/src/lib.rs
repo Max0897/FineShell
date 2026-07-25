@@ -20,7 +20,11 @@ pub fn run() {
         .manage(ssh::SshSessionManager::default())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init());
+
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
 
     let builder = builder.setup(|app| {
         diagnostics::record_startup(app.handle());
