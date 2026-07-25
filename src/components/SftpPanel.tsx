@@ -2879,6 +2879,7 @@ function SftpPanel({
         bodyStyle={{ padding: 0 }}
         className="sftp-transfer-drawer"
         footer={null}
+        getChildrenPopupContainer={() => document.body}
         onCancel={() => setTransferDrawerVisible(false)}
         title={
           <div className="sftp-transfer-drawer-title">
