@@ -1722,7 +1722,88 @@ body.sftp-remote-dragging * {
   overflow: auto;
   border-left: 2px solid #c9cdd4;
   color: #4e5969;
+}
+
+.release-notes-markdown {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.release-notes-markdown-fallback {
   white-space: pre-wrap;
+}
+
+.release-notes-markdown > :first-child {
+  margin-top: 0;
+}
+
+.release-notes-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.release-notes-markdown h1,
+.release-notes-markdown h2,
+.release-notes-markdown h3,
+.release-notes-markdown h4,
+.release-notes-markdown h5,
+.release-notes-markdown h6 {
+  margin: 14px 0 6px;
+  color: #1d2129;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.release-notes-markdown p,
+.release-notes-markdown ul,
+.release-notes-markdown ol,
+.release-notes-markdown blockquote,
+.release-notes-markdown table {
+  margin: 6px 0;
+}
+
+.release-notes-markdown ul,
+.release-notes-markdown ol {
+  padding-left: 20px;
+}
+
+.release-notes-markdown li + li {
+  margin-top: 3px;
+}
+
+.release-notes-markdown a {
+  color: #165dff;
+  text-decoration: none;
+}
+
+.release-notes-markdown a:hover {
+  text-decoration: underline;
+}
+
+.release-notes-markdown code {
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: #f2f3f5;
+  color: #4e5969;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.release-notes-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.release-notes-markdown th,
+.release-notes-markdown td {
+  padding: 5px 8px;
+  border: 1px solid #e5e6eb;
+  text-align: left;
+}
+
+.release-notes-markdown blockquote {
+  padding-left: 10px;
+  border-left: 2px solid #c9cdd4;
+  color: #86909c;
 }
 
 .about-download-meta {
@@ -1740,7 +1821,6 @@ body.sftp-remote-dragging * {
   overflow: auto;
   background: #f7f8fa;
   color: #4e5969;
-  white-space: pre-wrap;
 }
 
 .configuration-retention-cell {

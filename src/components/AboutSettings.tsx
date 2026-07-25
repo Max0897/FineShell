@@ -25,6 +25,7 @@ import {
   type ApplicationUpdate,
   type ApplicationUpdaterService,
 } from "../app-updater";
+import ReleaseNotesMarkdown from "./ReleaseNotesMarkdown";
 
 type UpdateStatus =
   | "idle"
@@ -269,9 +270,9 @@ function AboutSettings({ updater = applicationUpdater }: AboutSettingsProps) {
               )}
             </div>
             {availableUpdate.body && (
-              <Typography.Paragraph className="about-release-notes">
+              <ReleaseNotesMarkdown className="about-release-notes">
                 {availableUpdate.body}
-              </Typography.Paragraph>
+              </ReleaseNotesMarkdown>
             )}
           </div>
         )}

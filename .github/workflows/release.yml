@@ -97,6 +97,16 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
+      - id: release_notes
+        name: Prepare updater release notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          delimiter="FINESHELL_RELEASE_NOTES_${RANDOM}_${RANDOM}_${RANDOM}"
+          echo "body<<$delimiter" >> "$GITHUB_OUTPUT"
+          bun scripts/extract-release-notes.ts "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "$delimiter" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rustTargets }}
@@ -116,6 +126,7 @@ jobs:
           generateReleaseNotes: false
           prerelease: ${{ contains(needs.validate.outputs.release_tag, '-') }}
           releaseAssetNamePattern: "[name]_[version]_[platform]_[arch][setup][ext]"
+          releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: true
           releaseName: FineShell ${{ needs.validate.outputs.release_tag }}
           retryAttempts: 2
