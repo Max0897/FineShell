@@ -7,6 +7,10 @@ import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 const HOME_TAB_ID = "home";
 
+export function primaryShortcutModifier(platform = navigator.platform) {
+  return /mac|iphone|ipad|ipod/i.test(platform) ? "Command" : "Ctrl";
+}
+
 interface SessionTabsProps {
   activeSessionId: string | null;
   homeContent: ReactNode;
@@ -42,6 +46,7 @@ function SessionTabs({
   sessions,
 }: SessionTabsProps) {
   const activeSession = sessions.find((item) => item.id === activeSessionId);
+  const quickCommandShortcut = `${primaryShortcutModifier()} + Shift + P`;
 
   return (
     <>
@@ -65,7 +70,7 @@ function SessionTabs({
           <Tooltip
             content={
               activeSession
-                ? "快捷命令（Command/Ctrl + Shift + P）"
+                ? `快捷命令（${quickCommandShortcut}）`
                 : "请先打开终端会话"
             }
           >
