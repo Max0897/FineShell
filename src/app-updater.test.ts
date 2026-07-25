@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import packageMetadata from "../package.json";
 import {
   checkForApplicationUpdateOnStartup,
   createMockApplicationUpdate,
@@ -19,7 +20,7 @@ describe("application updater helpers", () => {
   test("creates a safe development update preview", () => {
     const update = createMockApplicationUpdate();
 
-    expect(update.currentVersion).toBe("0.1.0");
+    expect(update.currentVersion).toBe(packageMetadata.version);
     expect(update.version).toBe("0.2.0");
     expect(update.body).toContain("### 新增");
     expect(update.body).toContain("| 版本发布 | 自动生成 Release Notes |");
@@ -33,13 +34,13 @@ describe("application updater helpers", () => {
 
     setApplicationUpdateNotice({
       body: "### 新增\n\n- 更新说明",
-      currentVersion: "0.1.0",
+      currentVersion: packageMetadata.version,
       date: "2026-07-25T00:00:00Z",
       version: "0.2.0",
     });
     expect(readApplicationUpdateNotice()).toEqual({
       body: "### 新增\n\n- 更新说明",
-      currentVersion: "0.1.0",
+      currentVersion: packageMetadata.version,
       date: "2026-07-25T00:00:00Z",
       version: "0.2.0",
     });
