@@ -12,6 +12,7 @@ import {
   Message,
   Modal,
   Radio,
+  Select,
   Space,
   Spin,
   Table,
@@ -28,6 +29,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { diagnosticInvoke as invoke, recordDiagnostic } from "../diagnostics";
 import {
   IconApps,
+  IconArchive,
   IconArrowUp,
   IconBook,
   IconCode,
@@ -80,14 +82,19 @@ import {
   localFileName,
   matchRemoteDirectoryPaths,
   nextAvailableRemoteName,
+  nextAvailableRemoteArchiveName,
   parsePermissions,
   permissionFlagsFromValue,
   permissionValueFromFlags,
+  remoteArchiveBaseName,
+  remoteArchiveExtension,
+  remoteArchiveFileName,
+  remoteArchiveFormatFromName,
   remoteJoinPath,
   remoteParentPath,
   setRemotePathBookmark,
 } from "../sftp-utils";
-import type { PermissionFlag } from "../sftp-utils";
+import type { PermissionFlag, RemoteArchiveFormat } from "../sftp-utils";
 import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
 import {
   commandErrorMessage,
@@ -122,6 +129,11 @@ interface PendingPaste {
   targetDirectory: string;
   clipboard: SftpClipboard;
   conflictCount: number;
+}
+
+interface ArchiveDialogState {
+  entries: SftpEntry[];
+  mode: "compress" | "download";
 }
 
 interface SftpPanelProps {
@@ -183,6 +195,12 @@ const PERMISSION_MATRIX_COLUMNS = [
   { label: "写入", capability: "write" },
   { label: "执行", capability: "execute" },
 ] as const;
+
+const ARCHIVE_FORMAT_OPTIONS = [
+  { label: "Tar Gzip (.tar.gz)", value: "tarGz" },
+  { label: "Zip (.zip)", value: "zip" },
+  { label: "Tar (.tar)", value: "tar" },
+];
 
 function samePaths(left: string[], right: string[]) {
   return (
@@ -251,6 +269,11 @@ function SftpPanel({
       ? []
       : permissionFlagsFromValue(parsedPermissionValue);
   const [operationLoading, setOperationLoading] = useState(false);
+  const [archiveDialog, setArchiveDialog] =
+    useState<ArchiveDialogState | null>(null);
+  const [archiveBaseName, setArchiveBaseName] = useState("");
+  const [archiveFormat, setArchiveFormat] =
+    useState<RemoteArchiveFormat>("tarGz");
   const [textEditor, setTextEditor] = useState<TextEditorState | null>(null);
   const [externalEdits, setExternalEdits] = useState<
     Record<string, ExternalEditPayload>
@@ -881,16 +904,28 @@ function SftpPanel({
   const executeTransfer = useCallback(
     async (transfer: TransferRecord) => {
       try {
-        await invoke(
-          transfer.direction === "upload" ? "sftp_upload" : "sftp_download",
-          {
+        if (transfer.archiveFormat && transfer.archiveSourcePaths?.length) {
+          await invoke("sftp_download_archive", {
             sessionId: transfer.sessionId,
             transferId: transfer.transferId,
             localPath: transfer.localPath,
-            remotePath: transfer.remotePath,
+            sourcePaths: transfer.archiveSourcePaths,
+            archiveName: transfer.fileName,
+            format: transfer.archiveFormat,
             overwrite: transfer.overwrite,
-          },
-        );
+          });
+        } else {
+          await invoke(
+            transfer.direction === "upload" ? "sftp_upload" : "sftp_download",
+            {
+              sessionId: transfer.sessionId,
+              transferId: transfer.transferId,
+              localPath: transfer.localPath,
+              remotePath: transfer.remotePath,
+              overwrite: transfer.overwrite,
+            },
+          );
+        }
         Message.success(
           `${transfer.direction === "upload" ? "上传" : "下载"}完成：${transfer.fileName}`,
         );
@@ -993,6 +1028,34 @@ function SftpPanel({
       sampledAt: Date.now(),
       sampledBytes: 0,
       bytesPerSecond: 0,
+    };
+    setTransfers((current) => ({ ...current, [transferId]: record }));
+  }
+
+  function runArchiveDownload(
+    localPath: string,
+    sourcePaths: string[],
+    format: RemoteArchiveFormat,
+    archiveName: string,
+    transferId = createTransferId(),
+  ) {
+    if (!session) return;
+    const record: TransferRecord = {
+      sessionId: session.id,
+      transferId,
+      direction: "download",
+      fileName: archiveName,
+      transferredBytes: 0,
+      totalBytes: 0,
+      status: "queued",
+      localPath,
+      remotePath: sourcePaths[0] ?? "",
+      overwrite: true,
+      sampledAt: Date.now(),
+      sampledBytes: 0,
+      bytesPerSecond: 0,
+      archiveFormat: format,
+      archiveSourcePaths: [...sourcePaths],
     };
     setTransfers((current) => ({ ...current, [transferId]: record }));
   }
@@ -1145,6 +1208,16 @@ function SftpPanel({
   }
 
   async function retryTransfer(transfer: TransferRecord) {
+    if (transfer.archiveFormat && transfer.archiveSourcePaths?.length) {
+      runArchiveDownload(
+        transfer.localPath,
+        transfer.archiveSourcePaths,
+        transfer.archiveFormat,
+        transfer.fileName,
+        transfer.transferId,
+      );
+      return;
+    }
     runTransfer(
       transfer.direction,
       transfer.localPath,
@@ -1609,6 +1682,147 @@ function SftpPanel({
     });
   }
 
+  function openArchiveDialog(
+    entries: SftpEntry[],
+    mode: ArchiveDialogState["mode"],
+  ) {
+    const suggestedBase =
+      entries.length === 1
+        ? remoteArchiveBaseName(entries[0].name)
+        : "archive";
+    const suggestedName = nextAvailableRemoteArchiveName(
+      suggestedBase || "archive",
+      "tarGz",
+      new Set((browser?.entries ?? []).map((entry) => entry.name)),
+    );
+    setArchiveFormat("tarGz");
+    setArchiveBaseName(remoteArchiveBaseName(suggestedName));
+    setArchiveDialog({ entries, mode });
+  }
+
+  function closeArchiveDialog() {
+    setArchiveDialog(null);
+    setArchiveBaseName("");
+    setArchiveFormat("tarGz");
+  }
+
+  async function submitArchiveDialog() {
+    if (!archiveDialog || !session || !browser) return;
+    const archiveName = remoteArchiveFileName(
+      archiveBaseName.trim(),
+      archiveFormat,
+    );
+    if (!isValidRemoteName(archiveName)) {
+      Message.warning("请输入有效的归档文件名称");
+      return;
+    }
+    const sourcePaths = archiveDialog.entries.map((entry) => entry.path);
+
+    if (archiveDialog.mode === "download") {
+      const target = await save({
+        defaultPath: archiveName,
+        title: `打包下载 ${archiveDialog.entries.length} 个项目`,
+      });
+      if (!target) return;
+      runArchiveDownload(
+        target,
+        sourcePaths,
+        archiveFormat,
+        archiveName,
+      );
+      closeArchiveDialog();
+      setSelectedEntryKeys([]);
+      Message.info("已加入打包下载任务");
+      return;
+    }
+
+    const targetPath = remoteJoinPath(browser.path, archiveName);
+    const overwrite = browser.entries.some(
+      (entry) => entry.path === targetPath,
+    );
+    if (
+      overwrite &&
+      !(await confirmBatchOverwrite(
+        "覆盖已有归档？",
+        `当前目录已经存在“${archiveName}”，继续后将覆盖该文件。`,
+      ))
+    ) {
+      return;
+    }
+
+    setOperationLoading(true);
+    try {
+      await invoke("sftp_create_archive", {
+        sessionId: session.id,
+        sourcePaths,
+        targetPath,
+        format: archiveFormat,
+        overwrite,
+      });
+      closeArchiveDialog();
+      setSelectedEntryKeys([]);
+      Message.success(`已创建 ${archiveName}`);
+      await loadDirectory(session.id, browser.path);
+    } catch (error) {
+      handleOperationError(error);
+    } finally {
+      setOperationLoading(false);
+    }
+  }
+
+  async function extractRemoteArchive(
+    entry: SftpEntry,
+    createDirectory: boolean,
+  ) {
+    if (!session || !browser) return;
+    const format = remoteArchiveFormatFromName(entry.name);
+    if (!format) {
+      Message.warning("当前文件不是支持的归档格式");
+      return;
+    }
+    const targetName = remoteArchiveBaseName(entry.name);
+    const targetDirectory = createDirectory
+      ? remoteJoinPath(browser.path, targetName)
+      : browser.path;
+    if (
+      createDirectory &&
+      browser.entries.some((candidate) => candidate.path === targetDirectory)
+    ) {
+      Message.warning(`目标目录“${targetName}”已存在`);
+      return;
+    }
+    if (
+      !createDirectory &&
+      !(await confirmBatchOverwrite(
+        "解压到当前目录？",
+        "归档中的同名文件将被覆盖，该操作无法自动撤销。",
+      ))
+    ) {
+      return;
+    }
+
+    setOperationLoading(true);
+    try {
+      await invoke("sftp_extract_archive", {
+        sessionId: session.id,
+        archivePath: entry.path,
+        targetDirectory,
+        format,
+        createDirectory,
+      });
+      Message.success(
+        createDirectory
+          ? `已解压到 ${targetName}`
+          : `已将 ${entry.name} 解压到当前目录`,
+      );
+      await loadDirectory(session.id, browser.path);
+    } catch (error) {
+      handleOperationError(error);
+    } finally {
+      setOperationLoading(false);
+    }
+  }
+
   function openPermissionsDialog(entries: SftpEntry[]) {
     const firstPermissions = entries[0]?.permissions;
     const samePermissions = entries.every(
@@ -1977,6 +2191,61 @@ function SftpPanel({
         icon: <IconDownload />,
         disabled: operationLoading,
         onClick: () => downloadEntries(entries),
+      });
+    }
+
+    const selectedArchiveFormat =
+      singleEntry?.kind === "file"
+        ? remoteArchiveFormatFromName(singleEntry.name)
+        : null;
+    if (singleEntry && selectedArchiveFormat) {
+      menuItems.push({
+        key: "extract",
+        label: "解压",
+        icon: <IconArchive />,
+        dividerBefore: true,
+        disabled: operationLoading,
+        children: [
+          {
+            key: "extract-here",
+            label: "解压到当前目录",
+            icon: <IconArchive />,
+            onClick: () => extractRemoteArchive(singleEntry, false),
+          },
+          {
+            key: "extract-directory",
+            label: "解压到同名目录",
+            icon: <IconFolderAdd />,
+            onClick: () => extractRemoteArchive(singleEntry, true),
+          },
+        ],
+      });
+    }
+
+    if (entries.length > 0) {
+      menuItems.push({
+        key: "compress",
+        label:
+          entries.length === 1 ? "压缩..." : `压缩所选（${entries.length}）...`,
+        icon: <IconArchive />,
+        dividerBefore: !selectedArchiveFormat,
+        disabled: operationLoading,
+        onClick: () => openArchiveDialog(entries, "compress"),
+      });
+    }
+    if (
+      entries.length > 1 ||
+      entries.some((entry) => entry.kind === "directory")
+    ) {
+      menuItems.push({
+        key: "archive-download",
+        label:
+          entries.length === 1
+            ? "打包下载..."
+            : `打包下载所选（${entries.length}）...`,
+        icon: <IconDownload />,
+        disabled: operationLoading,
+        onClick: () => openArchiveDialog(entries, "download"),
       });
     }
 
@@ -2790,6 +3059,39 @@ function SftpPanel({
               { label: "跳过同名项目", value: "skip" },
             ]}
             value={pasteConflictPolicy}
+          />
+        </div>
+      </Modal>
+      <Modal
+        confirmLoading={operationLoading}
+        maskClosable={false}
+        onCancel={closeArchiveDialog}
+        onOk={() => void submitArchiveDialog()}
+        okText={archiveDialog?.mode === "download" ? "选择保存位置" : "压缩"}
+        title={
+          archiveDialog?.mode === "download"
+            ? `打包下载 ${archiveDialog.entries.length} 个项目`
+            : `压缩 ${archiveDialog?.entries.length ?? 0} 个项目`
+        }
+        visible={Boolean(archiveDialog)}
+      >
+        <div className="sftp-archive-editor">
+          <Input
+            addAfter={remoteArchiveExtension(archiveFormat)}
+            addBefore="名称"
+            autoFocus
+            maxLength={200}
+            onChange={setArchiveBaseName}
+            onPressEnter={() => void submitArchiveDialog()}
+            placeholder="archive"
+            value={archiveBaseName}
+          />
+          <Select
+            onChange={(value) =>
+              setArchiveFormat(value as RemoteArchiveFormat)
+            }
+            options={ARCHIVE_FORMAT_OPTIONS}
+            value={archiveFormat}
           />
         </div>
       </Modal>

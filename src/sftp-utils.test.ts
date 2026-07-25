@@ -8,10 +8,15 @@ import {
   localFileName,
   matchRemoteDirectoryPaths,
   nextAvailableRemoteName,
+  nextAvailableRemoteArchiveName,
   normalizeRemoteDirectoryPath,
   parsePermissions,
   permissionFlagsFromValue,
   permissionValueFromFlags,
+  remoteArchiveBaseName,
+  remoteArchiveExtension,
+  remoteArchiveFileName,
+  remoteArchiveFormatFromName,
   remoteJoinPath,
   remoteParentPath,
   setRemotePathBookmark,
@@ -128,5 +133,22 @@ describe("SFTP display helpers", () => {
         0o4000,
       ),
     ).toBe(0o4644);
+  });
+
+  test("detects archive formats and derives stable archive names", () => {
+    expect(remoteArchiveFormatFromName("backup.TAR.GZ")).toBe("tarGz");
+    expect(remoteArchiveFormatFromName("source.tgz")).toBe("tarGz");
+    expect(remoteArchiveFormatFromName("bundle.zip")).toBe("zip");
+    expect(remoteArchiveFormatFromName("notes.txt")).toBeNull();
+    expect(remoteArchiveBaseName("backup.tar.gz")).toBe("backup");
+    expect(remoteArchiveExtension("tarGz")).toBe(".tar.gz");
+    expect(remoteArchiveFileName("backup.zip", "tar")).toBe("backup.tar");
+    expect(
+      nextAvailableRemoteArchiveName(
+        "backup",
+        "tarGz",
+        new Set(["backup.tar.gz", "backup (1).tar.gz"]),
+      ),
+    ).toBe("backup (2).tar.gz");
   });
 });
