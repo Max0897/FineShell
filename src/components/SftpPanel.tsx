@@ -79,6 +79,7 @@ import {
   isRemotePathDescendant,
   isActiveSftpTransfer,
   isValidRemoteName,
+  invertSftpEntryKeys,
   localFileName,
   matchRemoteDirectoryPaths,
   nextAvailableRemoteName,
@@ -92,6 +93,7 @@ import {
   remoteArchiveFormatFromName,
   remoteJoinPath,
   remoteParentPath,
+  selectAllSftpEntryKeys,
   setRemotePathBookmark,
 } from "../sftp-utils";
 import type { PermissionFlag, RemoteArchiveFormat } from "../sftp-utils";
@@ -106,6 +108,11 @@ import TransferActivityList, {
   externalEditStatusMeta,
   type TransferActivityRecord,
 } from "./TransferActivityList";
+import {
+  isEditableSelectAllTarget,
+  SELECT_ALL_REQUEST_EVENT,
+  type SelectAllRequestDetail,
+} from "../select-all-shortcut";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
 type CreateEntryKind = "file" | "directory";
@@ -306,6 +313,7 @@ function SftpPanel({
   const startingTransfersRef = useRef(new Set<string>());
   const browsersRef = useRef(browsers);
   const transfersRef = useRef(transfers);
+  const panelRef = useRef<HTMLElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const remotePointerDragRef = useRef<{
     active: boolean;
@@ -788,6 +796,46 @@ function SftpPanel({
       return next.length === current.length ? current : next;
     });
   }, [visibleEntries]);
+
+  useEffect(() => {
+    const handleSelectAllRequest = (event: Event) => {
+      const panel = panelRef.current;
+      if (
+        !ready ||
+        !panel?.contains(document.activeElement) ||
+        isEditableSelectAllTarget(document.activeElement)
+      ) {
+        return;
+      }
+
+      const request = event as CustomEvent<SelectAllRequestDetail>;
+      const visibleKeys = visibleEntries.map((entry) => entry.id);
+      event.preventDefault();
+      setSelectedEntryKeys((current) =>
+        request.detail.invert
+          ? invertSftpEntryKeys(visibleKeys, current)
+          : selectAllSftpEntryKeys(visibleKeys),
+      );
+    };
+    window.addEventListener(SELECT_ALL_REQUEST_EVENT, handleSelectAllRequest);
+    return () =>
+      window.removeEventListener(
+        SELECT_ALL_REQUEST_EVENT,
+        handleSelectAllRequest,
+      );
+  }, [ready, visibleEntries]);
+
+  function focusFilePanelForShortcut(event: React.PointerEvent<HTMLElement>) {
+    if (!(event.target instanceof Element)) return;
+    if (
+      event.target.closest(
+        'button, input, textarea, a, [contenteditable="true"], [role="button"], [role="checkbox"], [role="combobox"], [role="textbox"]',
+      )
+    ) {
+      return;
+    }
+    panelRef.current?.focus({ preventScroll: true });
+  }
 
   function navigateToPath(path: string) {
     if (!session || !path.trim()) return;
@@ -2572,7 +2620,13 @@ function SftpPanel({
   }, []);
 
   return (
-    <section className="panel sftp-panel">
+    <section
+      aria-label="文件管理"
+      className="panel sftp-panel"
+      onPointerDownCapture={focusFilePanelForShortcut}
+      ref={panelRef}
+      tabIndex={-1}
+    >
       <div className="panel-toolbar sftp-toolbar">
         <Space size="mini">
           <Tooltip content="返回上级目录">

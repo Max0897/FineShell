@@ -88,6 +88,18 @@ export function localFileName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
+export function selectAllSftpEntryKeys(visibleKeys: readonly string[]) {
+  return [...visibleKeys];
+}
+
+export function invertSftpEntryKeys(
+  visibleKeys: readonly string[],
+  selectedKeys: readonly string[],
+) {
+  const selected = new Set(selectedKeys);
+  return visibleKeys.filter((key) => !selected.has(key));
+}
+
 export type SftpTransferStatus =
   | "queued"
   | "running"

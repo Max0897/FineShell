@@ -248,18 +248,16 @@ body,
   border-top: 1px solid #f2f3f5;
 }
 
-.monitor-chart-section-action {
-  margin: 0 -6px;
-  padding: 12px 6px 0;
+.monitor-chart-heading-action {
   cursor: pointer;
 }
 
-.monitor-chart-section-action:focus-visible {
+.monitor-chart-heading-action:focus-visible {
   outline: 1px solid #165dff;
   outline-offset: 2px;
 }
 
-.monitor-chart-section-action[aria-disabled="true"] {
+.monitor-chart-heading-action[aria-disabled="true"] {
   cursor: default;
 }
 
@@ -915,6 +913,10 @@ body,
 
 .sftp-toolbar {
   gap: 10px;
+}
+
+.sftp-panel:focus {
+  outline: none;
 }
 
 .sftp-path-controls {

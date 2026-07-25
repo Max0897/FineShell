@@ -1,14 +1,39 @@
+use serde::Serialize;
 use tauri::{
     menu::{
-        AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
-        HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
+        AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
+        WINDOW_SUBMENU_ID,
     },
-    AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder,
 };
 
 const SETTINGS_MENU_ID: &str = "settings";
+const SELECT_ALL_MENU_ID: &str = "select-all";
+const INVERT_SELECTION_MENU_ID: &str = "invert-selection";
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectAllMenuPayload {
+    invert: bool,
+}
 
 pub fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
+    if event.id() == SELECT_ALL_MENU_ID || event.id() == INVERT_SELECTION_MENU_ID {
+        if let Some(window) = app
+            .webview_windows()
+            .into_values()
+            .find(|window| window.is_focused().unwrap_or(false))
+        {
+            let _ = window.emit(
+                crate::protocol::MENU_SELECT_ALL_EVENT,
+                SelectAllMenuPayload {
+                    invert: event.id() == INVERT_SELECTION_MENU_ID,
+                },
+            );
+        }
+        return;
+    }
+
     if event.id() != SETTINGS_MENU_ID {
         return;
     }
@@ -92,13 +117,7 @@ pub fn build_chinese_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<
                         Some(about_metadata.clone()),
                     )?,
                     &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(
-                        app,
-                        SETTINGS_MENU_ID,
-                        "设置…",
-                        true,
-                        Some("CmdOrCtrl+,"),
-                    )?,
+                    &MenuItem::with_id(app, SETTINGS_MENU_ID, "设置…", true, Some("CmdOrCtrl+,"))?,
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::services(app, Some("服务"))?,
                     &PredefinedMenuItem::separator(app)?,
@@ -132,13 +151,7 @@ pub fn build_chinese_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<
                 true,
                 &[
                     #[cfg(not(target_os = "macos"))]
-                    &MenuItem::with_id(
-                        app,
-                        SETTINGS_MENU_ID,
-                        "设置…",
-                        true,
-                        Some("CmdOrCtrl+,"),
-                    )?,
+                    &MenuItem::with_id(app, SETTINGS_MENU_ID, "设置…", true, Some("CmdOrCtrl+,"))?,
                     #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::undo(app, Some("撤销"))?,
@@ -147,7 +160,14 @@ pub fn build_chinese_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<
                     &PredefinedMenuItem::cut(app, Some("剪切"))?,
                     &PredefinedMenuItem::copy(app, Some("复制"))?,
                     &PredefinedMenuItem::paste(app, Some("粘贴"))?,
-                    &PredefinedMenuItem::select_all(app, Some("全选"))?,
+                    &MenuItem::with_id(app, SELECT_ALL_MENU_ID, "全选", true, Some("CmdOrCtrl+A"))?,
+                    &MenuItem::with_id(
+                        app,
+                        INVERT_SELECTION_MENU_ID,
+                        "反选",
+                        true,
+                        Some("CmdOrCtrl+Shift+A"),
+                    )?,
                 ],
             )?,
             #[cfg(target_os = "macos")]
