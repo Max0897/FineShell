@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   checkForApplicationUpdateOnStartup,
+  createMockApplicationUpdate,
   formatUpdateBytes,
   listenApplicationUpdateNotice,
   readApplicationUpdateNotice,
@@ -13,6 +14,15 @@ describe("application updater helpers", () => {
     expect(formatUpdateBytes(512)).toBe("512 B");
     expect(formatUpdateBytes(1536)).toBe("1.5 KB");
     expect(formatUpdateBytes(5 * 1024 * 1024)).toBe("5.0 MB");
+  });
+
+  test("creates a safe development update preview", () => {
+    const update = createMockApplicationUpdate();
+
+    expect(update.currentVersion).toBe("0.1.0");
+    expect(update.version).toBe("0.2.0");
+    expect(update.body).toContain("### 新增");
+    expect(update.body).toContain("| 版本发布 | 自动生成 Release Notes |");
   });
 
   test("persists and broadcasts the available update notice", () => {
