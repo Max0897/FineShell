@@ -1125,6 +1125,67 @@ body.sftp-remote-dragging * {
   margin: 0;
 }
 
+.sftp-permission-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sftp-permission-editor > .arco-checkbox-group {
+  width: 100%;
+}
+
+.sftp-owner-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.sftp-owner-fields .arco-input-group-addbefore {
+  min-width: 62px;
+  justify-content: center;
+}
+
+.sftp-permission-matrix {
+  overflow: hidden;
+  border: 1px solid #e5e6eb;
+  border-radius: 4px;
+}
+
+.sftp-permission-matrix-header,
+.sftp-permission-matrix-row {
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: minmax(88px, 1fr) repeat(3, 64px);
+  align-items: center;
+}
+
+.sftp-permission-matrix-header {
+  min-height: 34px;
+  color: #86909c;
+  font-size: 12px;
+  background: #f7f8fa;
+  border-bottom: 1px solid #e5e6eb;
+}
+
+.sftp-permission-matrix-header > span:not(:first-child),
+.sftp-permission-checkbox {
+  text-align: center;
+}
+
+.sftp-permission-matrix-row > span:first-child {
+  padding-left: 16px;
+  color: #4e5969;
+}
+
+.sftp-permission-matrix-row + .sftp-permission-matrix-row {
+  border-top: 1px solid #f2f3f5;
+}
+
+.sftp-permission-checkbox .arco-checkbox {
+  margin: 0;
+}
+
 .sftp-external-edit-status {
   width: 18px;
   height: 18px;

@@ -3,6 +3,7 @@ import {
   AutoComplete,
   Badge,
   Button,
+  Checkbox,
   Drawer,
   Dropdown,
   Empty,
@@ -80,10 +81,13 @@ import {
   matchRemoteDirectoryPaths,
   nextAvailableRemoteName,
   parsePermissions,
+  permissionFlagsFromValue,
+  permissionValueFromFlags,
   remoteJoinPath,
   remoteParentPath,
   setRemotePathBookmark,
 } from "../sftp-utils";
+import type { PermissionFlag } from "../sftp-utils";
 import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
 import {
   commandErrorMessage,
@@ -168,6 +172,18 @@ const EMPTY_SFTP_LOCATION: SftpLocationRecord = {
   history: [],
 };
 
+const PERMISSION_MATRIX_ROWS = [
+  { label: "所有者", scope: "owner" },
+  { label: "用户组", scope: "group" },
+  { label: "其他", scope: "other" },
+] as const;
+
+const PERMISSION_MATRIX_COLUMNS = [
+  { label: "读取", capability: "read" },
+  { label: "写入", capability: "write" },
+  { label: "执行", capability: "execute" },
+] as const;
+
 function samePaths(left: string[], right: string[]) {
   return (
     left.length === right.length &&
@@ -227,6 +243,13 @@ function SftpPanel({
   const [renameName, setRenameName] = useState("");
   const [permissionEntries, setPermissionEntries] = useState<SftpEntry[]>([]);
   const [permissionValue, setPermissionValue] = useState("");
+  const [permissionOwner, setPermissionOwner] = useState("");
+  const [permissionGroup, setPermissionGroup] = useState("");
+  const parsedPermissionValue = parsePermissions(permissionValue);
+  const selectedPermissionFlags =
+    parsedPermissionValue === null
+      ? []
+      : permissionFlagsFromValue(parsedPermissionValue);
   const [operationLoading, setOperationLoading] = useState(false);
   const [textEditor, setTextEditor] = useState<TextEditorState | null>(null);
   const [externalEdits, setExternalEdits] = useState<
@@ -787,6 +810,11 @@ function SftpPanel({
       {
         title: "名称",
         dataIndex: "name",
+        sorter: (left, right) =>
+          left.name.localeCompare(right.name, "zh-CN", {
+            numeric: true,
+            sensitivity: "base",
+          }),
         render: (_, entry) => {
           const externalEdit = Object.values(externalEdits).find(
             (edit) =>
@@ -812,9 +840,18 @@ function SftpPanel({
       {
         title: "大小",
         dataIndex: "size",
+        sorter: (left, right) => left.size - right.size,
         width: 110,
         render: (_, entry) =>
           entry.kind === "directory" ? "-" : formatFileSize(entry.size),
+      },
+      {
+        title: "用户 / 用户组",
+        width: 140,
+        render: (_, entry) =>
+          entry.owner || entry.group
+            ? `${entry.owner ?? "-"} / ${entry.group ?? "-"}`
+            : "-",
       },
       {
         title: "权限",
@@ -825,6 +862,8 @@ function SftpPanel({
       {
         title: "修改时间",
         dataIndex: "modifiedAt",
+        sorter: (left, right) =>
+          (left.modifiedAt ?? 0) - (right.modifiedAt ?? 0),
         width: 150,
         render: (value) => formatRemoteTime(value),
       },
@@ -1581,38 +1620,77 @@ function SftpPanel({
         ? formatPermissions(firstPermissions)
         : "",
     );
+    setPermissionOwner(
+      entries.every((entry) => entry.owner === entries[0]?.owner)
+        ? (entries[0]?.owner ?? "")
+        : "",
+    );
+    setPermissionGroup(
+      entries.every((entry) => entry.group === entries[0]?.group)
+        ? (entries[0]?.group ?? "")
+        : "",
+    );
   }
 
   async function updatePermissions() {
     if (!session || !browser || permissionEntries.length === 0) return;
-    const permissions = parsePermissions(permissionValue);
-    if (permissions === null) {
+    const permissions = permissionValue.trim()
+      ? parsePermissions(permissionValue)
+      : null;
+    if (permissionValue.trim() && permissions === null) {
       Message.warning("请输入 3 到 4 位八进制权限");
+      return;
+    }
+    const owner = permissionOwner.trim();
+    const group = permissionGroup.trim();
+    const hasChanges = permissionEntries.some(
+      (entry) =>
+        (permissions !== null && entry.permissions !== permissions) ||
+        (owner && entry.owner !== owner) ||
+        (group && entry.group !== group),
+    );
+    if (!hasChanges) {
+      Message.info("没有需要保存的更改");
       return;
     }
 
     setOperationLoading(true);
-    let updatedCount = 0;
+    let didUpdate = false;
     try {
       for (const entry of permissionEntries) {
-        await invoke("sftp_set_permissions", {
-          sessionId: session.id,
-          path: entry.path,
-          permissions,
-        });
-        updatedCount += 1;
+        if (permissions !== null && entry.permissions !== permissions) {
+          await invoke("sftp_set_permissions", {
+            sessionId: session.id,
+            path: entry.path,
+            permissions,
+          });
+          didUpdate = true;
+        }
+        const nextOwner = owner && entry.owner !== owner ? owner : null;
+        const nextGroup = group && entry.group !== group ? group : null;
+        if (nextOwner || nextGroup) {
+          await invoke("sftp_set_owner", {
+            sessionId: session.id,
+            path: entry.path,
+            owner: nextOwner,
+            group: nextGroup,
+          });
+          didUpdate = true;
+        }
       }
       Message.success(
         permissionEntries.length === 1
-          ? `已修改 ${permissionEntries[0].name} 的权限`
-          : `已修改 ${permissionEntries.length} 个项目的权限`,
+          ? `已保存 ${permissionEntries[0].name} 的属性`
+          : `已保存 ${permissionEntries.length} 个项目的属性`,
       );
       setPermissionEntries([]);
       setPermissionValue("");
+      setPermissionOwner("");
+      setPermissionGroup("");
     } catch (error) {
       handleOperationError(error);
     } finally {
-      if (updatedCount > 0) {
+      if (didUpdate) {
         await loadDirectory(session.id, browser.path);
       }
       setOperationLoading(false);
@@ -2742,31 +2820,99 @@ function SftpPanel({
         onCancel={() => {
           setPermissionEntries([]);
           setPermissionValue("");
+          setPermissionOwner("");
+          setPermissionGroup("");
         }}
         onOk={() => void updatePermissions()}
         title={
           permissionEntries.length === 1
-            ? `文件权限 - ${permissionEntries[0].name}`
-            : `修改 ${permissionEntries.length} 个项目的权限`
+            ? `权限与所有者 - ${permissionEntries[0].name}`
+            : `修改 ${permissionEntries.length} 个项目的属性`
         }
         visible={permissionEntries.length > 0}
       >
-        <Input
-          addBefore="权限"
-          autoFocus
-          maxLength={4}
-          onChange={(value) =>
-            setPermissionValue(value.replace(/[^0-7]/g, "").slice(0, 4))
-          }
-          onPressEnter={() => void updatePermissions()}
-          placeholder="755"
-          status={
-            permissionValue && parsePermissions(permissionValue) === null
-              ? "error"
-              : undefined
-          }
-          value={permissionValue}
-        />
+        <div className="sftp-permission-editor">
+          <div className="sftp-owner-fields">
+            <Input
+              addBefore="用户"
+              maxLength={128}
+              onChange={setPermissionOwner}
+              placeholder={
+                permissionEntries.length > 1 ? "留空保持不变" : "用户名或 UID"
+              }
+              value={permissionOwner}
+            />
+            <Input
+              addBefore="用户组"
+              maxLength={128}
+              onChange={setPermissionGroup}
+              placeholder={
+                permissionEntries.length > 1
+                  ? "留空保持不变"
+                  : "用户组名称或 GID"
+              }
+              value={permissionGroup}
+            />
+          </div>
+          <Input
+            addBefore="权限"
+            autoFocus
+            maxLength={4}
+            onChange={(value) =>
+              setPermissionValue(value.replace(/[^0-7]/g, "").slice(0, 4))
+            }
+            onPressEnter={() => void updatePermissions()}
+            placeholder={
+              permissionEntries.length > 1 ? "留空保持不变" : "755"
+            }
+            status={
+              permissionValue && parsedPermissionValue === null
+                ? "error"
+                : undefined
+            }
+            value={permissionValue}
+          />
+          <Checkbox.Group
+            onChange={(values) => {
+              setPermissionValue(
+                formatPermissions(
+                  permissionValueFromFlags(
+                    values as PermissionFlag[],
+                    parsedPermissionValue ?? 0,
+                  ),
+                ),
+              );
+            }}
+            value={selectedPermissionFlags}
+          >
+            <div className="sftp-permission-matrix">
+              <div className="sftp-permission-matrix-header">
+                <span />
+                {PERMISSION_MATRIX_COLUMNS.map(({ capability, label }) => (
+                  <span key={capability}>{label}</span>
+                ))}
+              </div>
+              {PERMISSION_MATRIX_ROWS.map(({ label, scope }) => (
+                <div className="sftp-permission-matrix-row" key={scope}>
+                  <span>{label}</span>
+                  {PERMISSION_MATRIX_COLUMNS.map(
+                    ({ capability, label: action }) => {
+                      const value = `${scope}-${capability}` as PermissionFlag;
+                      return (
+                        <span className="sftp-permission-checkbox" key={value}>
+                          <Checkbox
+                            aria-label={`${label}${action}权限`}
+                            value={value}
+                          />
+                        </span>
+                      );
+                    },
+                  )}
+                </div>
+              ))}
+            </div>
+          </Checkbox.Group>
+        </div>
       </Modal>
       <Modal
         confirmLoading={operationLoading}

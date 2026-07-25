@@ -43,6 +43,7 @@
     "sftp_delete": true,
     "sftp_fast_delete": true,
     "sftp_set_permissions": true,
+    "sftp_set_owner": true,
     "sftp_read_text_file": true,
     "sftp_write_text_file": true,
     "sftp_start_external_edit": true,

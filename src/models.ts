@@ -279,6 +279,8 @@ export interface SftpEntry {
   size: number;
   modifiedAt?: number;
   permissions?: number;
+  owner?: string;
+  group?: string;
 }
 
 export interface SftpLocationRecord {

@@ -147,3 +147,36 @@ export function parsePermissions(value: string) {
   if (!/^[0-7]{3,4}$/.test(normalized)) return null;
   return Number.parseInt(normalized, 8);
 }
+
+export const PERMISSION_FLAGS = [
+  { mask: 0o400, value: "owner-read" },
+  { mask: 0o200, value: "owner-write" },
+  { mask: 0o100, value: "owner-execute" },
+  { mask: 0o040, value: "group-read" },
+  { mask: 0o020, value: "group-write" },
+  { mask: 0o010, value: "group-execute" },
+  { mask: 0o004, value: "other-read" },
+  { mask: 0o002, value: "other-write" },
+  { mask: 0o001, value: "other-execute" },
+] as const;
+
+export type PermissionFlag = (typeof PERMISSION_FLAGS)[number]["value"];
+
+export function permissionFlagsFromValue(permissions: number) {
+  return PERMISSION_FLAGS.filter(
+    ({ mask }) => (permissions & mask) === mask,
+  ).map(({ value }) => value);
+}
+
+export function permissionValueFromFlags(
+  flags: readonly PermissionFlag[],
+  currentPermissions = 0,
+) {
+  const selectedFlags = new Set<PermissionFlag>(flags);
+  const standardPermissions = PERMISSION_FLAGS.reduce(
+    (permissions, { mask, value }) =>
+      selectedFlags.has(value) ? permissions | mask : permissions,
+    0,
+  );
+  return (currentPermissions & 0o7000) | standardPermissions;
+}

@@ -76,6 +76,7 @@ pub fn run() {
             sftp::sftp_delete,
             sftp::sftp_fast_delete,
             sftp::sftp_set_permissions,
+            sftp::sftp_set_owner,
             sftp::sftp_read_text_file,
             sftp::sftp_write_text_file,
             external_edit::sftp_start_external_edit,

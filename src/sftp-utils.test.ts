@@ -10,6 +10,8 @@ import {
   nextAvailableRemoteName,
   normalizeRemoteDirectoryPath,
   parsePermissions,
+  permissionFlagsFromValue,
+  permissionValueFromFlags,
   remoteJoinPath,
   remoteParentPath,
   setRemotePathBookmark,
@@ -109,5 +111,22 @@ describe("SFTP display helpers", () => {
     expect(parsePermissions(" 4755 ")).toBe(0o4755);
     expect(parsePermissions("99")).toBeNull();
     expect(parsePermissions("888")).toBeNull();
+  });
+
+  test("converts permissions to visual flags and back", () => {
+    expect(permissionFlagsFromValue(0o754)).toEqual([
+      "owner-read",
+      "owner-write",
+      "owner-execute",
+      "group-read",
+      "group-execute",
+      "other-read",
+    ]);
+    expect(
+      permissionValueFromFlags(
+        ["owner-read", "owner-write", "group-read", "other-read"],
+        0o4000,
+      ),
+    ).toBe(0o4644);
   });
 });
