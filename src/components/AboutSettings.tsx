@@ -219,9 +219,6 @@ function AboutSettings({ updater = applicationUpdater }: AboutSettingsProps) {
         <div className="about-update-heading">
           <div>
             <Typography.Title heading={6}>软件更新</Typography.Title>
-            <Typography.Text type="secondary">
-              通过 GitHub Releases 获取经过签名验证的正式版本
-            </Typography.Text>
           </div>
           {availableUpdate &&
           (status === "available" || status === "error") ? (
