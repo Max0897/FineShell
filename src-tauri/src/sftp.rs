@@ -60,6 +60,8 @@ pub(crate) struct SftpEntry {
     size: u64,
     modified_at: Option<u64>,
     permissions: Option<u32>,
+    owner: Option<String>,
+    group: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -136,6 +138,12 @@ enum SftpCommand {
     SetPermissions {
         path: String,
         permissions: u32,
+        reply: Sender<Result<(), String>>,
+    },
+    SetOwner {
+        path: String,
+        owner: Option<String>,
+        group: Option<String>,
         reply: Sender<Result<(), String>>,
     },
     ReadTextFile {
@@ -397,13 +405,108 @@ fn entry_kind(stat: &FileStat) -> &'static str {
     }
 }
 
-fn list_directory(sftp: &Sftp, path: &str) -> Result<SftpListResult, String> {
+#[derive(Default)]
+struct RemoteIdentityCache {
+    users: HashMap<u32, String>,
+    groups: HashMap<u32, String>,
+}
+
+fn parse_identity_names(output: &str) -> HashMap<u32, String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(':');
+            let name = fields.next()?.trim();
+            fields.next()?;
+            let id = fields.next()?.parse::<u32>().ok()?;
+            (!name.is_empty()).then(|| (id, name.to_string()))
+        })
+        .collect()
+}
+
+fn query_identity_names(session: &Session, database: &str, ids: &[u32]) -> HashMap<u32, String> {
+    if ids.is_empty() {
+        return HashMap::new();
+    }
+
+    let command = format!(
+        "getent {database} {} 2>/dev/null || true",
+        ids.iter().map(u32::to_string).collect::<Vec<_>>().join(" ")
+    );
+    let mut channel = match session.channel_session() {
+        Ok(channel) => channel,
+        Err(_) => return HashMap::new(),
+    };
+    if channel.exec(&command).is_err() {
+        return HashMap::new();
+    }
+
+    let mut output = String::new();
+    if channel.read_to_string(&mut output).is_err() {
+        return HashMap::new();
+    }
+    let _ = channel.wait_close();
+
+    parse_identity_names(&output)
+}
+
+fn resolve_identity_names(
+    session: &Session,
+    entries: &[(PathBuf, FileStat)],
+    cache: &mut RemoteIdentityCache,
+) {
+    let mut user_ids = entries
+        .iter()
+        .filter_map(|(_, stat)| stat.uid)
+        .filter(|id| !cache.users.contains_key(id))
+        .collect::<Vec<_>>();
+    user_ids.sort_unstable();
+    user_ids.dedup();
+
+    let mut group_ids = entries
+        .iter()
+        .filter_map(|(_, stat)| stat.gid)
+        .filter(|id| !cache.groups.contains_key(id))
+        .collect::<Vec<_>>();
+    group_ids.sort_unstable();
+    group_ids.dedup();
+
+    let user_names = query_identity_names(session, "passwd", &user_ids);
+    for id in user_ids {
+        cache.users.insert(
+            id,
+            user_names
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| id.to_string()),
+        );
+    }
+    let group_names = query_identity_names(session, "group", &group_ids);
+    for id in group_ids {
+        cache.groups.insert(
+            id,
+            group_names
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| id.to_string()),
+        );
+    }
+}
+
+fn list_directory(
+    session: &Session,
+    sftp: &Sftp,
+    path: &str,
+    identity_cache: &mut RemoteIdentityCache,
+) -> Result<SftpListResult, String> {
     let canonical_path = sftp
         .realpath(Path::new(path))
         .map_err(|error| format!("无法解析远程目录：{error}"))?;
-    let mut entries = sftp
+    let raw_entries = sftp
         .readdir(&canonical_path)
-        .map_err(|error| format!("无法读取远程目录：{error}"))?
+        .map_err(|error| format!("无法读取远程目录：{error}"))?;
+    resolve_identity_names(session, &raw_entries, identity_cache);
+    let mut entries = raw_entries
         .into_iter()
         .map(|(entry_path, stat)| {
             let path_text = remote_path_text(&entry_path);
@@ -419,6 +522,12 @@ fn list_directory(sftp: &Sftp, path: &str) -> Result<SftpListResult, String> {
                 size: stat.size.unwrap_or(0),
                 modified_at: stat.mtime,
                 permissions: stat.perm.map(|value| value & 0o7777),
+                owner: stat
+                    .uid
+                    .and_then(|id| identity_cache.users.get(&id).cloned()),
+                group: stat
+                    .gid
+                    .and_then(|id| identity_cache.groups.get(&id).cloned()),
             }
         })
         .collect::<Vec<_>>();
@@ -493,6 +602,97 @@ fn set_permissions(sftp: &Sftp, path: &str, permissions: u32) -> Result<(), Stri
         },
     )
     .map_err(|error| format!("修改远程项目权限失败：{error}"))
+}
+
+fn resolve_identity_id(
+    session: &Session,
+    database: &str,
+    identity: &str,
+    cache: &HashMap<u32, String>,
+) -> Result<u32, String> {
+    let identity = identity.trim();
+    if identity.is_empty() || identity.len() > 128 || identity.chars().any(char::is_control) {
+        return Err("用户或用户组名称无效".to_string());
+    }
+    if let Ok(id) = identity.parse::<u32>() {
+        return Ok(id);
+    }
+    if let Some(id) = cache
+        .iter()
+        .find_map(|(id, name)| (name == identity).then_some(*id))
+    {
+        return Ok(id);
+    }
+
+    let command = format!(
+        "getent {database} {} 2>/dev/null || true",
+        shell_quote(identity)
+    );
+    let mut channel = session
+        .channel_session()
+        .map_err(|error| format!("无法解析远程用户信息：{error}"))?;
+    channel
+        .exec(&command)
+        .map_err(|error| format!("无法查询远程用户信息：{error}"))?;
+    let mut output = String::new();
+    channel
+        .read_to_string(&mut output)
+        .map_err(|error| format!("无法读取远程用户信息：{error}"))?;
+    let _ = channel.wait_close();
+
+    parse_identity_names(&output)
+        .into_keys()
+        .next()
+        .ok_or_else(|| {
+            format!(
+                "远程服务器不存在{}“{identity}”",
+                if database == "passwd" {
+                    "用户"
+                } else {
+                    "用户组"
+                }
+            )
+        })
+}
+
+fn set_owner(
+    session: &Session,
+    sftp: &Sftp,
+    path: &str,
+    owner: Option<&str>,
+    group: Option<&str>,
+    identity_cache: &mut RemoteIdentityCache,
+) -> Result<(), String> {
+    if owner.is_none() && group.is_none() {
+        return Err("没有需要修改的用户或用户组".to_string());
+    }
+
+    let uid = owner
+        .map(|value| resolve_identity_id(session, "passwd", value, &identity_cache.users))
+        .transpose()?;
+    let gid = group
+        .map(|value| resolve_identity_id(session, "group", value, &identity_cache.groups))
+        .transpose()?;
+    sftp.setstat(
+        Path::new(path),
+        FileStat {
+            size: None,
+            uid,
+            gid,
+            perm: None,
+            atime: None,
+            mtime: None,
+        },
+    )
+    .map_err(|error| format!("修改远程项目所有者失败：{error}"))?;
+
+    if let (Some(id), Some(name)) = (uid, owner) {
+        identity_cache.users.insert(id, name.to_string());
+    }
+    if let (Some(id), Some(name)) = (gid, group) {
+        identity_cache.groups.insert(id, name.to_string());
+    }
+    Ok(())
 }
 
 fn normalize_remote_operation_path(path: &str) -> Result<String, String> {
@@ -1389,6 +1589,7 @@ fn run_session(
     receiver: Receiver<SftpCommand>,
     keep_alive_interval_seconds: u32,
 ) {
+    let mut identity_cache = RemoteIdentityCache::default();
     loop {
         let command = match receiver.recv_timeout(Duration::from_secs(1)) {
             Ok(command) => command,
@@ -1402,7 +1603,7 @@ fn run_session(
         };
         match command {
             SftpCommand::List { path, reply } => {
-                let _ = reply.send(list_directory(&sftp, &path));
+                let _ = reply.send(list_directory(&session, &sftp, &path, &mut identity_cache));
             }
             SftpCommand::CreateDirectory { path, reply } => {
                 let result = sftp
@@ -1463,6 +1664,21 @@ fn run_session(
                 reply,
             } => {
                 let _ = reply.send(set_permissions(&sftp, &path, permissions));
+            }
+            SftpCommand::SetOwner {
+                path,
+                owner,
+                group,
+                reply,
+            } => {
+                let _ = reply.send(set_owner(
+                    &session,
+                    &sftp,
+                    &path,
+                    owner.as_deref(),
+                    group.as_deref(),
+                    &mut identity_cache,
+                ));
             }
             SftpCommand::ReadTextFile { path, reply } => {
                 let _ = reply.send(read_remote_text_file(&sftp, &path));
@@ -1752,6 +1968,25 @@ pub(crate) async fn sftp_set_permissions(
 }
 
 #[tauri::command]
+pub(crate) async fn sftp_set_owner(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    path: String,
+    owner: Option<String>,
+    group: Option<String>,
+) -> Result<(), String> {
+    dispatch(manager.inner().clone(), session_id, move |reply| {
+        SftpCommand::SetOwner {
+            path,
+            owner,
+            group,
+            reply,
+        }
+    })
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn sftp_read_text_file(
     manager: State<'_, SftpSessionManager>,
     session_id: String,
@@ -1941,8 +2176,9 @@ mod tests {
     use super::{
         decode_remote_text, download_temporary_path, entry_kind, fast_delete_command,
         inspect_upload_paths, is_remote_descendant, normalize_remote_operation_path,
-        remote_text_backup_path, remote_text_temporary_path, remote_upload_temporary_path,
-        replace_download_file, shell_quote, SftpCommand, SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
+        parse_identity_names, remote_text_backup_path, remote_text_temporary_path,
+        remote_upload_temporary_path, replace_download_file, shell_quote, RemoteIdentityCache,
+        SftpCommand, SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
     };
     use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
 
@@ -1979,6 +2215,16 @@ mod tests {
 
         assert_eq!(entry_kind(&directory), "directory");
         assert_eq!(entry_kind(&file), "file");
+    }
+
+    #[test]
+    fn parses_user_and_group_identity_records() {
+        let identities = parse_identity_names(
+            "root:x:0:0:root:/root:/bin/bash\nwww-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n",
+        );
+
+        assert_eq!(identities.get(&0).map(String::as_str), Some("root"));
+        assert_eq!(identities.get(&33).map(String::as_str), Some("www-data"));
     }
 
     #[test]
@@ -2241,7 +2487,12 @@ mod tests {
                 .map_err(|error| format!("刷新测试文件失败：{error}"))?;
             drop(remote);
 
-            let entries = super::list_directory(&sftp, &directory)?;
+            let entries = super::list_directory(
+                &session,
+                &sftp,
+                &directory,
+                &mut RemoteIdentityCache::default(),
+            )?;
             if !entries
                 .entries
                 .iter()
