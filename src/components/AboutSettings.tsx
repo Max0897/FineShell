@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -19,10 +19,13 @@ import {
   FINESHELL_REPOSITORY_URL,
   applicationUpdater,
   formatUpdateBytes,
+  isApplicationUpdateInstalling,
   openApplicationUrl,
   setApplicationUpdateNotice,
+  setApplicationUpdateInstalling,
   type ApplicationInfo,
   type ApplicationUpdate,
+  type ApplicationUpdateNotice,
   type ApplicationUpdaterService,
 } from "../app-updater";
 import ReleaseNotesMarkdown from "./ReleaseNotesMarkdown";
@@ -37,6 +40,7 @@ type UpdateStatus =
   | "error";
 
 interface AboutSettingsProps {
+  knownUpdate?: ApplicationUpdateNotice | null;
   updater?: ApplicationUpdaterService;
 }
 
@@ -53,16 +57,25 @@ function releaseDate(value?: string) {
   }).format(date);
 }
 
-function AboutSettings({ updater = applicationUpdater }: AboutSettingsProps) {
+function AboutSettings({
+  knownUpdate = null,
+  updater = applicationUpdater,
+}: AboutSettingsProps) {
   const [applicationInfo, setApplicationInfo] = useState<ApplicationInfo>();
   const [applicationInfoError, setApplicationInfoError] = useState("");
   const [availableUpdate, setAvailableUpdate] =
     useState<ApplicationUpdate | null>(null);
-  const [status, setStatus] = useState<UpdateStatus>("idle");
+  const [status, setStatus] = useState<UpdateStatus>(() =>
+    isApplicationUpdateInstalling() ? "downloading" : "idle",
+  );
   const [updateError, setUpdateError] = useState("");
   const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [totalBytes, setTotalBytes] = useState(0);
   const updateRef = useRef<ApplicationUpdate | null>(null);
+  const mountedRef = useRef(true);
+  const checkRequestRef = useRef(0);
+  const installingRef = useRef(isApplicationUpdateInstalling());
+  const automaticallyCheckedVersionRef = useRef<string>();
 
   useEffect(() => {
     let disposed = false;
@@ -79,21 +92,32 @@ function AboutSettings({ updater = applicationUpdater }: AboutSettingsProps) {
     };
   }, [updater]);
 
-  useEffect(
-    () => () => {
-      if (updateRef.current) void updateRef.current.close();
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      checkRequestRef.current += 1;
+      if (updateRef.current && !installingRef.current) {
+        const update = updateRef.current;
+        updateRef.current = null;
+        void update.close();
+      }
+    };
+  }, []);
+
+  const replaceAvailableUpdate = useCallback(
+    (next: ApplicationUpdate | null) => {
+      const previous = updateRef.current;
+      updateRef.current = next;
+      if (mountedRef.current) setAvailableUpdate(next);
+      if (previous && previous !== next) void previous.close();
     },
     [],
   );
 
-  const replaceAvailableUpdate = (next: ApplicationUpdate | null) => {
-    const previous = updateRef.current;
-    updateRef.current = next;
-    setAvailableUpdate(next);
-    if (previous && previous !== next) void previous.close();
-  };
-
-  const checkForUpdate = async () => {
+  const checkForUpdate = useCallback(async () => {
+    const request = checkRequestRef.current + 1;
+    checkRequestRef.current = request;
     replaceAvailableUpdate(null);
     setStatus("checking");
     setUpdateError("");
@@ -101,16 +125,45 @@ function AboutSettings({ updater = applicationUpdater }: AboutSettingsProps) {
     setTotalBytes(0);
     try {
       const update = await updater.checkForUpdate();
+      if (!mountedRef.current || checkRequestRef.current !== request) {
+        if (update) await update.close();
+        return;
+      }
       replaceAvailableUpdate(update);
+      if (update) automaticallyCheckedVersionRef.current = update.version;
       setApplicationUpdateNotice(update);
       setStatus(update ? "available" : "latest");
     } catch (error) {
+      if (!mountedRef.current || checkRequestRef.current !== request) return;
       setStatus("error");
       setUpdateError(errorMessage(error));
     }
-  };
+  }, [replaceAvailableUpdate, updater]);
+
+  const knownUpdateVersion = knownUpdate?.version;
+
+  useEffect(() => {
+    if (
+      !updater.canInstallUpdates ||
+      !knownUpdateVersion ||
+      automaticallyCheckedVersionRef.current === knownUpdateVersion
+    ) {
+      return;
+    }
+    automaticallyCheckedVersionRef.current = knownUpdateVersion;
+    void checkForUpdate();
+    return () => {
+      if (
+        automaticallyCheckedVersionRef.current === knownUpdateVersion
+      ) {
+        automaticallyCheckedVersionRef.current = undefined;
+      }
+    };
+  }, [checkForUpdate, knownUpdateVersion, updater.canInstallUpdates]);
 
   const downloadAndInstall = async (update: ApplicationUpdate) => {
+    installingRef.current = true;
+    setApplicationUpdateInstalling(true);
     setStatus("downloading");
     setUpdateError("");
     setDownloadedBytes(0);
@@ -121,22 +174,33 @@ function AboutSettings({ updater = applicationUpdater }: AboutSettingsProps) {
       await update.downloadAndInstall((event) => {
         if (event.event === "Started") {
           contentLength = event.data.contentLength ?? 0;
-          setTotalBytes(contentLength);
+          if (mountedRef.current) setTotalBytes(contentLength);
           return;
         }
         if (event.event === "Progress") {
           downloaded += event.data.chunkLength;
-          setDownloadedBytes(downloaded);
+          if (mountedRef.current) setDownloadedBytes(downloaded);
           return;
         }
-        if (contentLength > 0) setDownloadedBytes(contentLength);
+        if (contentLength > 0 && mountedRef.current) {
+          setDownloadedBytes(contentLength);
+        }
       });
       setApplicationUpdateNotice(null);
-      setStatus("restarting");
+      if (mountedRef.current) setStatus("restarting");
       await updater.relaunch();
     } catch (error) {
-      setStatus("error");
-      setUpdateError(errorMessage(error));
+      if (mountedRef.current) {
+        setStatus("error");
+        setUpdateError(errorMessage(error));
+      }
+    } finally {
+      installingRef.current = false;
+      setApplicationUpdateInstalling(false);
+      if (!mountedRef.current && updateRef.current === update) {
+        updateRef.current = null;
+        void update.close();
+      }
     }
   };
 
@@ -159,6 +223,13 @@ function AboutSettings({ updater = applicationUpdater }: AboutSettingsProps) {
     totalBytes > 0
       ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100))
       : 0;
+  const updateSummary = availableUpdate ?? knownUpdate;
+  const showUpdateSummary =
+    updateSummary !== null &&
+    (status === "idle" ||
+      status === "checking" ||
+      status === "available" ||
+      status === "error");
 
   return (
     <div className="about-settings">
@@ -257,21 +328,21 @@ function AboutSettings({ updater = applicationUpdater }: AboutSettingsProps) {
           <Alert content="当前已是最新版本。" type="success" />
         )}
 
-        {status === "available" && availableUpdate && (
+        {showUpdateSummary && updateSummary && (
           <div className="about-release">
             <div className="about-release-heading">
               <Typography.Text bold>
-                发现新版本 v{availableUpdate.version}
+                发现新版本 v{updateSummary.version}
               </Typography.Text>
-              {releaseDate(availableUpdate.date) && (
+              {releaseDate(updateSummary.date) && (
                 <Typography.Text type="secondary">
-                  {releaseDate(availableUpdate.date)}
+                  {releaseDate(updateSummary.date)}
                 </Typography.Text>
               )}
             </div>
-            {availableUpdate.body && (
+            {updateSummary.body && (
               <ReleaseNotesMarkdown className="about-release-notes">
-                {availableUpdate.body}
+                {updateSummary.body}
               </ReleaseNotesMarkdown>
             )}
           </div>

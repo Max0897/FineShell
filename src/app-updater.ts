@@ -13,6 +13,8 @@ export const FINESHELL_REPOSITORY_URL =
 export const FINESHELL_LICENSE_URL = `${FINESHELL_REPOSITORY_URL}/blob/main/LICENSE`;
 const APPLICATION_UPDATE_NOTICE_KEY = "fineshell:application-update";
 const APPLICATION_UPDATE_NOTICE_EVENT = "fineshell:application-update-changed";
+const APPLICATION_UPDATE_INSTALLING_EVENT =
+  "fineshell:application-update-installing-changed";
 const MOCK_UPDATE_SIZE = 6 * 1024 * 1024;
 const MOCK_UPDATE_BODY = `### 新增
 
@@ -54,9 +56,13 @@ export interface ApplicationUpdaterService {
 }
 
 export interface ApplicationUpdateNotice {
+  body?: string;
+  currentVersion: string;
   date?: string;
   version: string;
 }
+
+let applicationUpdateInstalling = false;
 
 export function createMockApplicationUpdate(): ApplicationUpdate {
   return {
@@ -137,11 +143,21 @@ export function readApplicationUpdateNotice(): ApplicationUpdateNotice | null {
       value === null ||
       !("version" in value) ||
       typeof value.version !== "string" ||
-      !value.version.trim()
+      !value.version.trim() ||
+      !("currentVersion" in value) ||
+      typeof value.currentVersion !== "string" ||
+      value.currentVersion !== packageMetadata.version ||
+      value.version === value.currentVersion
     ) {
+      window.localStorage.removeItem(APPLICATION_UPDATE_NOTICE_KEY);
       return null;
     }
     return {
+      body:
+        "body" in value && typeof value.body === "string"
+          ? value.body
+          : undefined,
+      currentVersion: value.currentVersion,
       version: value.version,
       date:
         "date" in value && typeof value.date === "string"
@@ -149,19 +165,32 @@ export function readApplicationUpdateNotice(): ApplicationUpdateNotice | null {
           : undefined,
     };
   } catch {
+    try {
+      window.localStorage.removeItem(APPLICATION_UPDATE_NOTICE_KEY);
+    } catch {
+      // Ignore unavailable persistent storage.
+    }
     return null;
   }
 }
 
 export function setApplicationUpdateNotice(
-  update: Pick<ApplicationUpdate, "date" | "version"> | null,
+  update: Pick<
+    ApplicationUpdate,
+    "body" | "currentVersion" | "date" | "version"
+  > | null,
 ) {
   if (typeof window === "undefined") return;
   try {
     if (update) {
       window.localStorage.setItem(
         APPLICATION_UPDATE_NOTICE_KEY,
-        JSON.stringify({ version: update.version, date: update.date }),
+        JSON.stringify({
+          body: update.body,
+          currentVersion: update.currentVersion,
+          date: update.date,
+          version: update.version,
+        }),
       );
     } else {
       window.localStorage.removeItem(APPLICATION_UPDATE_NOTICE_KEY);
@@ -170,6 +199,35 @@ export function setApplicationUpdateNotice(
     // The update flow still works when persistent web storage is unavailable.
   }
   window.dispatchEvent(new Event(APPLICATION_UPDATE_NOTICE_EVENT));
+}
+
+export function isApplicationUpdateInstalling() {
+  return applicationUpdateInstalling;
+}
+
+export function setApplicationUpdateInstalling(installing: boolean) {
+  if (applicationUpdateInstalling === installing) return;
+  applicationUpdateInstalling = installing;
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(APPLICATION_UPDATE_INSTALLING_EVENT));
+  }
+}
+
+export function listenApplicationUpdateInstalling(
+  handler: (installing: boolean) => void,
+) {
+  if (typeof window === "undefined") return () => undefined;
+  const handleInstalling = () => handler(applicationUpdateInstalling);
+  window.addEventListener(
+    APPLICATION_UPDATE_INSTALLING_EVENT,
+    handleInstalling,
+  );
+  return () => {
+    window.removeEventListener(
+      APPLICATION_UPDATE_INSTALLING_EVENT,
+      handleInstalling,
+    );
+  };
 }
 
 export function listenApplicationUpdateNotice(

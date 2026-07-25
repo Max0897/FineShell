@@ -83,6 +83,7 @@ function promptStartupApplicationUpdate(update: ApplicationUpdate) {
   startupUpdatePromptShown = true;
 
   Modal.confirm({
+    autoFocus: false,
     cancelText: "稍后",
     className: "startup-update-modal",
     content: (

@@ -32,10 +32,14 @@ describe("application updater helpers", () => {
     });
 
     setApplicationUpdateNotice({
+      body: "### 新增\n\n- 更新说明",
+      currentVersion: "0.1.0",
       date: "2026-07-25T00:00:00Z",
       version: "0.2.0",
     });
     expect(readApplicationUpdateNotice()).toEqual({
+      body: "### 新增\n\n- 更新说明",
+      currentVersion: "0.1.0",
       date: "2026-07-25T00:00:00Z",
       version: "0.2.0",
     });
@@ -44,6 +48,21 @@ describe("application updater helpers", () => {
     expect(notices).toEqual(["0.2.0", undefined]);
 
     unlisten();
+  });
+
+  test("ignores update notices created for another installed version", () => {
+    window.localStorage.setItem(
+      "fineshell:application-update",
+      JSON.stringify({
+        currentVersion: "0.0.9",
+        version: "0.1.0",
+      }),
+    );
+
+    expect(readApplicationUpdateNotice()).toBeNull();
+    expect(
+      window.localStorage.getItem("fineshell:application-update"),
+    ).toBeNull();
   });
 
   test("skips the startup update request outside production Tauri", async () => {
