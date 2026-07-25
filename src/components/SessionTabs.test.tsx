@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { HostRecord, TerminalSession } from "../models";
-import SessionTabs from "./SessionTabs";
+import SessionTabs, { primaryShortcutModifier } from "./SessionTabs";
 
 const HOST: HostRecord = {
   id: "host-1",
@@ -45,6 +45,12 @@ function renderTabs(
 }
 
 describe("SessionTabs", () => {
+  test("uses the platform-specific primary shortcut modifier", () => {
+    expect(primaryShortcutModifier("MacIntel")).toBe("Command");
+    expect(primaryShortcutModifier("Win32")).toBe("Ctrl");
+    expect(primaryShortcutModifier("Linux x86_64")).toBe("Ctrl");
+  });
+
   test("keeps the fixed home entry outside the scrollable tabs", () => {
     const { container } = renderTabs(null);
     const fixedHome = container.querySelector(".terminal-home-tab");
