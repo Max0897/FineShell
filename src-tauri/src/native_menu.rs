@@ -18,17 +18,42 @@ struct SelectAllMenuPayload {
     invert: bool,
 }
 
-fn show_auxiliary_window<R: Runtime>(
-    app: &AppHandle<R>,
-    label: &str,
-    view: &str,
-    title: &str,
+#[derive(Clone, Copy)]
+struct AuxiliaryWindowSpec {
+    label: &'static str,
+    view: &'static str,
+    title: &'static str,
     width: f64,
     height: f64,
     min_width: f64,
     min_height: f64,
+}
+
+const SETTINGS_WINDOW: AuxiliaryWindowSpec = AuxiliaryWindowSpec {
+    label: "settings",
+    view: "settings",
+    title: "设置",
+    width: 860.0,
+    height: 620.0,
+    min_width: 720.0,
+    min_height: 520.0,
+};
+
+const SHORTCUT_GUIDE_WINDOW: AuxiliaryWindowSpec = AuxiliaryWindowSpec {
+    label: "shortcut-guide",
+    view: "shortcuts",
+    title: "快捷键与操作",
+    width: 780.0,
+    height: 560.0,
+    min_width: 720.0,
+    min_height: 480.0,
+};
+
+fn show_auxiliary_window<R: Runtime>(
+    app: &AppHandle<R>,
+    spec: AuxiliaryWindowSpec,
 ) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window(label) {
+    if let Some(window) = app.get_webview_window(spec.label) {
         window.show()?;
         window.set_focus()?;
         return Ok(());
@@ -36,12 +61,12 @@ fn show_auxiliary_window<R: Runtime>(
 
     WebviewWindowBuilder::new(
         app,
-        label,
-        WebviewUrl::App(format!("index.html?view={view}").into()),
+        spec.label,
+        WebviewUrl::App(format!("index.html?view={}", spec.view).into()),
     )
-    .title(title)
-    .inner_size(width, height)
-    .min_inner_size(min_width, min_height)
+    .title(spec.title)
+    .inner_size(spec.width, spec.height)
+    .min_inner_size(spec.min_width, spec.min_height)
     .resizable(true)
     .focused(true)
     .center()
@@ -50,22 +75,11 @@ fn show_auxiliary_window<R: Runtime>(
 }
 
 fn show_settings_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    show_auxiliary_window(
-        app, "settings", "settings", "设置", 860.0, 620.0, 720.0, 520.0,
-    )
+    show_auxiliary_window(app, SETTINGS_WINDOW)
 }
 
 fn show_shortcut_guide_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    show_auxiliary_window(
-        app,
-        "shortcut-guide",
-        "shortcuts",
-        "快捷键与操作",
-        780.0,
-        560.0,
-        720.0,
-        480.0,
-    )
+    show_auxiliary_window(app, SHORTCUT_GUIDE_WINDOW)
 }
 
 #[tauri::command]
