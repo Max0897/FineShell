@@ -11,6 +11,7 @@
     "test:components": "bun test src/components/*.test.tsx",
     "check": "bun test && bun run build",
     "release:check": "bun scripts/check-release-version.ts",
+    "release:notes": "bun scripts/extract-release-notes.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },
