@@ -1,9 +1,4 @@
-import {
-  type KeyboardEvent as ReactKeyboardEvent,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Button,
@@ -23,8 +18,10 @@ import {
 import type { TableColumnProps } from "@arco-design/web-react";
 import {
   IconBranch,
-  IconLink,
+  IconCloudDownload,
+  IconNav,
   IconRefresh,
+  IconReply,
 } from "@arco-design/web-react/icon";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import type { ITooltipLineActual } from "@visactor/vchart";
@@ -240,15 +237,6 @@ function ServerMonitorPanel({
     }
   };
 
-  const handleMonitorHeadingKeyDown = (
-    event: ReactKeyboardEvent<HTMLDivElement>,
-    action: () => void,
-  ) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    action();
-  };
-
   const runTraceRoute = async () => {
     if (!session) return;
     const target = pingTarget.trim();
@@ -406,11 +394,31 @@ function ServerMonitorPanel({
       <div className="server-monitor-heading">
         <Typography.Text bold>服务器监控</Typography.Text>
         <Space size="mini">
+          <Tooltip content="进程管理">
+            <Button
+              aria-label="打开进程管理"
+              disabled={!connected}
+              icon={<IconNav />}
+              onClick={() => setProcessDrawerVisible(true)}
+              size="mini"
+              type="text"
+            />
+          </Tooltip>
+          <Tooltip content="网络诊断">
+            <Button
+              aria-label="打开网络诊断"
+              disabled={!connected}
+              icon={<IconCloudDownload />}
+              onClick={openNetworkDiagnostics}
+              size="mini"
+              type="text"
+            />
+          </Tooltip>
           <Tooltip content="端口转发">
             <Button
               aria-label="打开端口转发"
               disabled={!session}
-              icon={<IconLink />}
+              icon={<IconReply />}
               onClick={() => setPortForwardDrawerVisible(true)}
               size="mini"
               type="text"
@@ -449,19 +457,7 @@ function ServerMonitorPanel({
       </dl>
 
       <div className="monitor-chart-section">
-            <div
-              aria-disabled={!connected}
-              aria-label="打开进程管理"
-              className="monitor-chart-heading monitor-chart-heading-action"
-              onClick={() => connected && setProcessDrawerVisible(true)}
-              onKeyDown={(event) =>
-                handleMonitorHeadingKeyDown(event, () => {
-                  if (connected) setProcessDrawerVisible(true);
-                })
-              }
-              role="button"
-              tabIndex={connected ? 0 : -1}
-            >
+            <div className="monitor-chart-heading">
               <Typography.Text bold>资源占用</Typography.Text>
               <Typography.Text type="secondary">
                 {snapshot
@@ -560,17 +556,7 @@ function ServerMonitorPanel({
       </div>
 
       <div className="monitor-chart-section">
-            <div
-              aria-disabled={!connected}
-              aria-label="打开网络诊断"
-              className="monitor-chart-heading monitor-chart-heading-action"
-              onClick={openNetworkDiagnostics}
-              onKeyDown={(event) =>
-                handleMonitorHeadingKeyDown(event, openNetworkDiagnostics)
-              }
-              role="button"
-              tabIndex={connected ? 0 : -1}
-            >
+            <div className="monitor-chart-heading">
               <Typography.Text bold>网络流量</Typography.Text>
               <Typography.Text type="secondary">
                 {snapshot

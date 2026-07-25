@@ -248,19 +248,6 @@ body,
   border-top: 1px solid #f2f3f5;
 }
 
-.monitor-chart-heading-action {
-  cursor: pointer;
-}
-
-.monitor-chart-heading-action:focus-visible {
-  outline: 1px solid #165dff;
-  outline-offset: 2px;
-}
-
-.monitor-chart-heading-action[aria-disabled="true"] {
-  cursor: default;
-}
-
 .monitor-chart {
   width: 100% !important;
   min-width: 0;
