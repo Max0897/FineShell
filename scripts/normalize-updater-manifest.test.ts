@@ -25,6 +25,7 @@ describe("updater manifest URL normalization", () => {
           },
         ],
       },
+      "v1.2.3",
     );
 
     expect(result.normalizedKeys).toEqual(["darwin-aarch64"]);
@@ -46,13 +47,40 @@ describe("updater manifest URL normalization", () => {
           },
         },
         { assets: [] },
+        "v1.2.3",
       ),
     ).toThrow("找不到对应的公开下载地址");
   });
 
   test("rejects malformed release metadata", () => {
     expect(() =>
-      normalizeUpdaterManifestUrls({ platforms: {} }, {}),
+      normalizeUpdaterManifestUrls({ platforms: {} }, {}, "v1.2.3"),
     ).toThrow("缺少 assets 数组");
+  });
+
+  test("replaces draft release paths with the intended tag", () => {
+    const result = normalizeUpdaterManifestUrls(
+      {
+        platforms: {
+          "darwin-aarch64": { signature: "signed", url: apiUrl },
+        },
+      },
+      {
+        assets: [
+          {
+            browser_download_url:
+              "https://github.com/example/app/releases/download/untagged-draft/app.tar.gz",
+            url: apiUrl,
+          },
+        ],
+      },
+      "v1.2.3",
+    );
+
+    expect(result.manifest).toEqual({
+      platforms: {
+        "darwin-aarch64": { signature: "signed", url: publicUrl },
+      },
+    });
   });
 });

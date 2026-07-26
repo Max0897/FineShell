@@ -56,11 +56,34 @@ function releaseAssetUrls(value: unknown) {
   return urls;
 }
 
+function stableReleaseDownloadUrl(value: string, releaseTag: string) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("GitHub Release 公开下载地址无效");
+  }
+
+  const match = url.pathname.match(
+    /^\/([^/]+)\/([^/]+)\/releases\/download\/[^/]+\/([^/]+)$/,
+  );
+  if (url.hostname !== "github.com" || !match) {
+    throw new Error("GitHub Release 公开下载地址格式无效");
+  }
+
+  const [, owner, repository, fileName] = match;
+  return `https://github.com/${owner}/${repository}/releases/download/${releaseTag}/${fileName}`;
+}
+
 export function normalizeUpdaterManifestUrls(
   value: unknown,
   releaseValue: unknown,
+  releaseTag: string,
 ) {
   if (!isRecord(value)) throw new Error("更新清单格式无效");
+  if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(releaseTag)) {
+    throw new Error(`版本标签“${releaseTag}”格式无效`);
+  }
 
   const manifest = value as UpdaterManifest;
   if (!isRecord(manifest.platforms)) {
@@ -83,12 +106,15 @@ export function normalizeUpdaterManifestUrls(
       return;
     }
 
-    const publicUrl = assetUrls.get(platform.url);
-    if (!publicUrl) {
+    const assetUrl = assetUrls.get(platform.url);
+    if (!assetUrl) {
       throw new Error(`更新清单平台 ${key} 找不到对应的公开下载地址`);
     }
 
-    normalizedPlatforms[key] = { ...value, url: publicUrl };
+    normalizedPlatforms[key] = {
+      ...value,
+      url: stableReleaseDownloadUrl(assetUrl, releaseTag),
+    };
     normalizedKeys.push(key);
   });
 
@@ -102,12 +128,18 @@ if (import.meta.main) {
   try {
     const manifestPath = process.argv[2];
     const releasePath = process.argv[3];
+    const releaseTag = process.argv[4] ?? "";
     if (!manifestPath) throw new Error("缺少 latest.json 路径");
     if (!releasePath) throw new Error("缺少 GitHub Release 元数据路径");
+    if (!releaseTag) throw new Error("缺少版本标签");
 
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     const release = JSON.parse(readFileSync(releasePath, "utf8"));
-    const normalized = normalizeUpdaterManifestUrls(manifest, release);
+    const normalized = normalizeUpdaterManifestUrls(
+      manifest,
+      release,
+      releaseTag,
+    );
     writeFileSync(
       manifestPath,
       `${JSON.stringify(normalized.manifest, null, 2)}\n`,

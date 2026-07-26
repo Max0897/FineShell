@@ -79,6 +79,20 @@ describe("updater manifest validation", () => {
         }),
         "v1.2.3",
       ),
-    ).toThrow("必须使用 GitHub Release 公开下载地址");
+    ).toThrow("必须使用当前版本的 GitHub Release 公开下载地址");
+  });
+
+  test("rejects draft release download paths", () => {
+    expect(() =>
+      validateUpdaterManifest(
+        manifest({
+          "darwin-aarch64": {
+            ...platform,
+            url: "https://github.com/example/app/releases/download/untagged-draft/app.tar.gz",
+          },
+        }),
+        "v1.2.3",
+      ),
+    ).toThrow("必须使用当前版本的 GitHub Release 公开下载地址");
   });
 });
