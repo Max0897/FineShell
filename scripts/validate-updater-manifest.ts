@@ -66,6 +66,14 @@ function validatePlatform(key: string, value: unknown) {
   if (url.protocol !== "https:") {
     throw new Error(`更新清单平台 ${key} 的下载地址必须使用 HTTPS`);
   }
+  if (
+    url.hostname !== "github.com" ||
+    !/^\/[^/]+\/[^/]+\/releases\/download\/[^/]+\/[^/]+$/.test(url.pathname)
+  ) {
+    throw new Error(
+      `更新清单平台 ${key} 必须使用 GitHub Release 公开下载地址`,
+    );
+  }
 }
 
 export function validateUpdaterManifest(

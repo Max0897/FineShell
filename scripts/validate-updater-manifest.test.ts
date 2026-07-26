@@ -3,7 +3,7 @@ import { validateUpdaterManifest } from "./validate-updater-manifest";
 
 const platform = {
   signature: "signed-update",
-  url: "https://github.com/example/app/releases/assets/1",
+  url: "https://github.com/example/app/releases/download/v1.2.3/app.tar.gz",
 };
 
 function manifest(platforms: Record<string, unknown>) {
@@ -66,5 +66,19 @@ describe("updater manifest validation", () => {
         "v1.2.3",
       ),
     ).toThrow("必须使用 HTTPS");
+  });
+
+  test("rejects GitHub API asset URLs", () => {
+    expect(() =>
+      validateUpdaterManifest(
+        manifest({
+          "darwin-aarch64": {
+            ...platform,
+            url: "https://api.github.com/repos/example/app/releases/assets/1",
+          },
+        }),
+        "v1.2.3",
+      ),
+    ).toThrow("必须使用 GitHub Release 公开下载地址");
   });
 });
