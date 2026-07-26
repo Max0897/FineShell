@@ -70,6 +70,7 @@ import {
   type SshConnectResult,
   verifyProtocolVersion,
 } from "./tauri-protocol";
+import { auxiliaryWindowHref } from "./window-view";
 import "./App.css";
 
 const ServerMonitorPanel = lazy(
@@ -126,7 +127,7 @@ type AuxiliaryWindow = "settings" | "shortcuts";
 
 function openAuxiliaryWindow(view: AuxiliaryWindow) {
   if (!isTauri()) {
-    window.open(`?view=${view}`, `fineshell-${view}`);
+    window.open(auxiliaryWindowHref(view), `fineshell-${view}`);
     return;
   }
 
