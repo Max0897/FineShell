@@ -70,8 +70,8 @@
 前往 [GitHub Releases](https://github.com/Max0897/fineshell/releases) 下载对应平台的安装包：
 
 - macOS：Apple Silicon / Intel `.dmg`
-- Linux：x64 `.AppImage` / `.deb`
-- Windows：x64 `.exe`（NSIS）/ `.msi`
+- Linux：x64 / ARM64 `.deb`
+- Windows：x64 `.exe`（NSIS）/ `.msi`，ARM64 `.exe`（NSIS）
 
 ## 从源码运行
 

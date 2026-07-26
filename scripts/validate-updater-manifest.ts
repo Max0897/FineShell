@@ -20,8 +20,12 @@ const REQUIRED_PLATFORM_GROUPS = [
     label: "macOS Intel",
   },
   {
-    keys: ["linux-x86_64-appimage", "linux-x86_64"],
+    keys: ["linux-x86_64-deb"],
     label: "Linux x64",
+  },
+  {
+    keys: ["linux-aarch64-deb"],
+    label: "Linux ARM64",
   },
   {
     keys: [
@@ -30,6 +34,10 @@ const REQUIRED_PLATFORM_GROUPS = [
       "windows-x86_64",
     ],
     label: "Windows x64",
+  },
+  {
+    keys: ["windows-aarch64-nsis", "windows-aarch64"],
+    label: "Windows ARM64",
   },
 ] as const;
 

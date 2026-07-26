@@ -17,17 +17,66 @@ describe("updater manifest validation", () => {
         manifest({
           "darwin-aarch64-app": platform,
           "darwin-x86_64": platform,
-          "linux-x86_64-appimage": platform,
+          "linux-x86_64-deb": platform,
+          "linux-aarch64-deb": platform,
           "windows-x86_64-nsis": platform,
+          "windows-aarch64-nsis": platform,
         }),
         "v1.2.3",
       ),
     ).toEqual([
       "darwin-aarch64-app",
       "darwin-x86_64",
-      "linux-x86_64-appimage",
+      "linux-x86_64-deb",
+      "linux-aarch64-deb",
       "windows-x86_64-nsis",
+      "windows-aarch64-nsis",
     ]);
+  });
+
+  test("rejects a manifest without ARM64 updater platforms", () => {
+    expect(() =>
+      validateUpdaterManifest(
+        manifest({
+          "darwin-aarch64": platform,
+          "darwin-x86_64": platform,
+          "linux-x86_64-deb": platform,
+          "windows-x86_64-nsis": platform,
+        }),
+        "v1.2.3",
+      ),
+    ).toThrow("缺少 Linux ARM64");
+  });
+
+  test("rejects AppImage-only Linux updater platforms", () => {
+    expect(() =>
+      validateUpdaterManifest(
+        manifest({
+          "darwin-aarch64": platform,
+          "darwin-x86_64": platform,
+          "linux-x86_64-appimage": platform,
+          "linux-aarch64-deb": platform,
+          "windows-x86_64-nsis": platform,
+          "windows-aarch64-nsis": platform,
+        }),
+        "v1.2.3",
+      ),
+    ).toThrow("缺少 Linux x64");
+  });
+
+  test("rejects a manifest without Windows ARM64", () => {
+    expect(() =>
+      validateUpdaterManifest(
+        manifest({
+          "darwin-aarch64": platform,
+          "darwin-x86_64": platform,
+          "linux-x86_64-deb": platform,
+          "linux-aarch64-deb": platform,
+          "windows-x86_64-nsis": platform,
+        }),
+        "v1.2.3",
+      ),
+    ).toThrow("缺少 Windows ARM64");
   });
 
   test("rejects a manifest without macOS updater platforms", () => {
