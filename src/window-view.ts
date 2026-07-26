@@ -1,5 +1,11 @@
 export type WindowView = "settings" | "shortcuts";
 
+declare global {
+  interface Window {
+    __FINESHELL_WINDOW_VIEW__?: unknown;
+  }
+}
+
 function supportedWindowView(value: string | null): WindowView | null {
   return value === "settings" || value === "shortcuts" ? value : null;
 }
@@ -18,6 +24,34 @@ export function windowViewFromLocation(
 
   return supportedWindowView(
     new URLSearchParams(location.search).get("view"),
+  );
+}
+
+export function windowViewFromWindowLabel(label: string | null) {
+  if (label === "settings") return "settings";
+  if (label === "shortcut-guide") return "shortcuts";
+  return null;
+}
+
+interface WindowViewContext {
+  injectedView?: unknown;
+  location?: Pick<Location, "hash" | "search">;
+  windowLabel?: string | null;
+}
+
+export function windowViewFromContext({
+  injectedView,
+  location = window.location,
+  windowLabel = null,
+}: WindowViewContext = {}) {
+  const injected =
+    typeof injectedView === "string"
+      ? supportedWindowView(injectedView)
+      : null;
+  return (
+    injected ??
+    windowViewFromWindowLabel(windowLabel) ??
+    windowViewFromLocation(location)
   );
 }
 
