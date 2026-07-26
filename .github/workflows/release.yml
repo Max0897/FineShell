@@ -184,10 +184,23 @@ jobs:
           gh release download "$RELEASE_TAG" \
             --pattern latest.json \
             --dir "$RUNNER_TEMP/updater"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            > "$RUNNER_TEMP/updater/release.json"
+      - name: Normalize updater download URLs
+        run: |
+          bun scripts/normalize-updater-manifest.ts \
+            "$RUNNER_TEMP/updater/latest.json" \
+            "$RUNNER_TEMP/updater/release.json"
       - name: Validate updater manifest
         env:
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
         run: bun scripts/validate-updater-manifest.ts "$RUNNER_TEMP/updater/latest.json" "$RELEASE_TAG"
+      - name: Upload normalized updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/updater/latest.json" --clobber
       - name: Prepare release notes
         env:
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
