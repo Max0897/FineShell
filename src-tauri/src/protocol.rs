@@ -7,6 +7,7 @@ pub(crate) const SSH_STATUS_EVENT: &str = "ssh-status";
 pub(crate) const PORT_FORWARD_STATUS_EVENT: &str = "port-forward-status";
 pub(crate) const SFTP_TRANSFER_EVENT: &str = "sftp-transfer";
 pub(crate) const EXTERNAL_EDIT_EVENT: &str = "sftp-external-edit";
+#[cfg(target_os = "macos")]
 pub(crate) const MENU_SELECT_ALL_EVENT: &str = "menu-select-all";
 
 #[derive(Clone, Copy, Debug, Serialize)]

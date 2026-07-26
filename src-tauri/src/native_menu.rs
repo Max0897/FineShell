@@ -1,17 +1,26 @@
+#[cfg(target_os = "macos")]
 use serde::Serialize;
+use std::path::PathBuf;
+#[cfg(target_os = "macos")]
 use tauri::{
     menu::{
         AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
         WINDOW_SUBMENU_ID,
     },
-    AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder,
+    Emitter,
 };
+use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
+#[cfg(target_os = "macos")]
 const SETTINGS_MENU_ID: &str = "settings";
+#[cfg(target_os = "macos")]
 const SHORTCUT_GUIDE_MENU_ID: &str = "shortcut-guide";
+#[cfg(target_os = "macos")]
 const SELECT_ALL_MENU_ID: &str = "select-all";
+#[cfg(target_os = "macos")]
 const INVERT_SELECTION_MENU_ID: &str = "invert-selection";
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SelectAllMenuPayload {
@@ -49,6 +58,12 @@ const SHORTCUT_GUIDE_WINDOW: AuxiliaryWindowSpec = AuxiliaryWindowSpec {
     min_height: 480.0,
 };
 
+fn auxiliary_window_path(spec: AuxiliaryWindowSpec) -> PathBuf {
+    // Keep the view selector in the fragment so it never becomes part of the
+    // local asset request handled by WebView2 on Windows.
+    format!("index.html#view={}", spec.view).into()
+}
+
 fn show_auxiliary_window<R: Runtime>(
     app: &AppHandle<R>,
     spec: AuxiliaryWindowSpec,
@@ -62,7 +77,7 @@ fn show_auxiliary_window<R: Runtime>(
     WebviewWindowBuilder::new(
         app,
         spec.label,
-        WebviewUrl::App(format!("index.html?view={}", spec.view).into()),
+        WebviewUrl::App(auxiliary_window_path(spec)),
     )
     .title(spec.title)
     .inner_size(spec.width, spec.height)
@@ -72,6 +87,26 @@ fn show_auxiliary_window<R: Runtime>(
     .center()
     .build()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{auxiliary_window_path, SETTINGS_WINDOW, SHORTCUT_GUIDE_WINDOW};
+
+    #[test]
+    fn auxiliary_window_routes_do_not_put_queries_in_asset_paths() {
+        assert_eq!(
+            auxiliary_window_path(SETTINGS_WINDOW).to_string_lossy(),
+            "index.html#view=settings"
+        );
+        assert_eq!(
+            auxiliary_window_path(SHORTCUT_GUIDE_WINDOW).to_string_lossy(),
+            "index.html#view=shortcuts"
+        );
+        assert!(!auxiliary_window_path(SETTINGS_WINDOW)
+            .to_string_lossy()
+            .contains('?'));
+    }
 }
 
 fn show_settings_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -92,6 +127,7 @@ pub fn open_shortcut_guide_window(app: AppHandle) -> Result<(), String> {
     show_shortcut_guide_window(&app).map_err(|error| error.to_string())
 }
 
+#[cfg(target_os = "macos")]
 pub fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     if event.id() == SELECT_ALL_MENU_ID || event.id() == INVERT_SELECTION_MENU_ID {
         if let Some(window) = app
@@ -122,6 +158,7 @@ pub fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn build_chinese_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let package = app.package_info();
     let config = app.config();

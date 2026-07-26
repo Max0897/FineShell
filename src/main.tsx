@@ -7,6 +7,7 @@ import ShortcutGuideWindow from "./components/ShortcutGuideWindow";
 import SettingsWindow from "./components/SettingsWindow";
 import { installGlobalDiagnostics } from "./diagnostics";
 import { installSelectAllShortcuts } from "./select-all-shortcut";
+import { windowViewFromLocation } from "./window-view";
 
 installGlobalDiagnostics();
 installSelectAllShortcuts();
@@ -15,7 +16,7 @@ if (isTauri()) {
   document.addEventListener("contextmenu", (event) => event.preventDefault());
 }
 
-const view = new URLSearchParams(window.location.search).get("view");
+const view = windowViewFromLocation();
 const RootView =
   view === "settings"
     ? SettingsWindow
