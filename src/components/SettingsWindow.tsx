@@ -47,6 +47,7 @@ import {
 } from "../app-updater";
 import { emitProtocolEventTo } from "../tauri-protocol";
 import { TERMINAL_THEMES } from "../terminal-themes";
+import { isApplePlatform } from "../platform-utils";
 import AdvancedSettings from "./AdvancedSettings";
 import AboutSettings from "./AboutSettings";
 import ConfigurationMaintenance from "./ConfigurationMaintenance";
@@ -213,7 +214,7 @@ function SettingsWindow() {
   );
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isTauri() || !isApplePlatform()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void getCurrentWindow()

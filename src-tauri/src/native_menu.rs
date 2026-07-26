@@ -1,6 +1,5 @@
 #[cfg(target_os = "macos")]
 use serde::Serialize;
-use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use tauri::{
     menu::{
@@ -58,10 +57,11 @@ const SHORTCUT_GUIDE_WINDOW: AuxiliaryWindowSpec = AuxiliaryWindowSpec {
     min_height: 480.0,
 };
 
-fn auxiliary_window_path(spec: AuxiliaryWindowSpec) -> PathBuf {
-    // Keep the view selector in the fragment so it never becomes part of the
-    // local asset request handled by WebView2 on Windows.
-    format!("index.html#view={}", spec.view).into()
+fn auxiliary_window_initialization_script(spec: AuxiliaryWindowSpec) -> String {
+    format!(
+        "window.__FINESHELL_WINDOW_VIEW__ = {};",
+        serde_json::to_string(spec.view).expect("auxiliary window view is serializable")
+    )
 }
 
 fn show_auxiliary_window<R: Runtime>(
@@ -74,38 +74,32 @@ fn show_auxiliary_window<R: Runtime>(
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(
-        app,
-        spec.label,
-        WebviewUrl::App(auxiliary_window_path(spec)),
-    )
-    .title(spec.title)
-    .inner_size(spec.width, spec.height)
-    .min_inner_size(spec.min_width, spec.min_height)
-    .resizable(true)
-    .focused(true)
-    .center()
-    .build()?;
+    WebviewWindowBuilder::new(app, spec.label, WebviewUrl::App("index.html".into()))
+        .initialization_script(auxiliary_window_initialization_script(spec))
+        .title(spec.title)
+        .inner_size(spec.width, spec.height)
+        .min_inner_size(spec.min_width, spec.min_height)
+        .resizable(true)
+        .focused(true)
+        .center()
+        .build()?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{auxiliary_window_path, SETTINGS_WINDOW, SHORTCUT_GUIDE_WINDOW};
+    use super::{auxiliary_window_initialization_script, SETTINGS_WINDOW, SHORTCUT_GUIDE_WINDOW};
 
     #[test]
-    fn auxiliary_window_routes_do_not_put_queries_in_asset_paths() {
+    fn auxiliary_window_views_are_injected_before_the_document_loads() {
         assert_eq!(
-            auxiliary_window_path(SETTINGS_WINDOW).to_string_lossy(),
-            "index.html#view=settings"
+            auxiliary_window_initialization_script(SETTINGS_WINDOW),
+            "window.__FINESHELL_WINDOW_VIEW__ = \"settings\";"
         );
         assert_eq!(
-            auxiliary_window_path(SHORTCUT_GUIDE_WINDOW).to_string_lossy(),
-            "index.html#view=shortcuts"
+            auxiliary_window_initialization_script(SHORTCUT_GUIDE_WINDOW),
+            "window.__FINESHELL_WINDOW_VIEW__ = \"shortcuts\";"
         );
-        assert!(!auxiliary_window_path(SETTINGS_WINDOW)
-            .to_string_lossy()
-            .contains('?'));
     }
 }
 

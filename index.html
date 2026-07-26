@@ -8,7 +8,14 @@
     <script>
       const hashParams = new URLSearchParams(window.location.hash.slice(1));
       const searchParams = new URLSearchParams(window.location.search);
-      if (!hashParams.has("view") && !searchParams.has("view")) {
+      const injectedView = window.__FINESHELL_WINDOW_VIEW__;
+      const isAuxiliaryWindow =
+        injectedView === "settings" || injectedView === "shortcuts";
+      if (
+        !isAuxiliaryWindow &&
+        !hashParams.has("view") &&
+        !searchParams.has("view")
+      ) {
         document.documentElement.classList.add("main-window");
       }
     </script>
