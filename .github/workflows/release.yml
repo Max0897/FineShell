@@ -184,14 +184,22 @@ jobs:
           gh release download "$RELEASE_TAG" \
             --pattern latest.json \
             --dir "$RUNNER_TEMP/updater"
+          release_id="$(
+            gh release view "$RELEASE_TAG" \
+              --json databaseId \
+              --jq '.databaseId'
+          )"
           gh api \
-            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            "repos/$GITHUB_REPOSITORY/releases/$release_id" \
             > "$RUNNER_TEMP/updater/release.json"
       - name: Normalize updater download URLs
         run: |
           bun scripts/normalize-updater-manifest.ts \
             "$RUNNER_TEMP/updater/latest.json" \
-            "$RUNNER_TEMP/updater/release.json"
+            "$RUNNER_TEMP/updater/release.json" \
+            "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
       - name: Validate updater manifest
         env:
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
