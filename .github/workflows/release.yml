@@ -74,12 +74,22 @@ jobs:
           - name: Linux x64
             platform: ubuntu-22.04
             rustTargets: ""
-            args: --bundles appimage,deb
+            args: --bundles deb
+            appleSigningIdentity: ""
+          - name: Linux ARM64
+            platform: ubuntu-22.04-arm
+            rustTargets: aarch64-unknown-linux-gnu
+            args: --target aarch64-unknown-linux-gnu --bundles deb
             appleSigningIdentity: ""
           - name: Windows x64
             platform: windows-latest
             rustTargets: ""
             args: --bundles nsis,msi
+            appleSigningIdentity: ""
+          - name: Windows ARM64
+            platform: windows-11-arm
+            rustTargets: aarch64-pc-windows-msvc
+            args: --target aarch64-pc-windows-msvc --bundles nsis
             appleSigningIdentity: ""
     runs-on: ${{ matrix.platform }}
     steps:

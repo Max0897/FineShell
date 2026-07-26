@@ -2,6 +2,13 @@
 
 本文件记录 FineShell 各版本的重要变更。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.6] - 2026-07-26
+
+### 工程
+
+- 增加 Linux ARM64 `.deb` 与 Windows ARM64 `.exe` 安装包构建。
+- Linux 发布包统一为 `.deb`，不再构建 AppImage。
+
 ## [0.1.5] - 2026-07-26
 
 ### 修复
