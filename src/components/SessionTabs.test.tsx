@@ -30,10 +30,8 @@ function renderTabs(
 ) {
   const onOpenSettings = mock(() => undefined);
   const onOpenShortcutGuide = mock(() => undefined);
-  const onExportDiagnostics = mock(() => undefined);
   return {
     onActiveSessionChange,
-    onExportDiagnostics,
     onOpenSettings,
     onOpenShortcutGuide,
     ...render(
@@ -42,7 +40,6 @@ function renderTabs(
         homeContent={<div>主机管理内容</div>}
         onActiveSessionChange={onActiveSessionChange}
         onCloseSession={() => undefined}
-        onExportDiagnostics={onExportDiagnostics}
         onOpenQuickCommands={() => undefined}
         onOpenSettings={onOpenSettings}
         onOpenShortcutGuide={onOpenShortcutGuide}
@@ -62,12 +59,7 @@ describe("SessionTabs", () => {
   });
 
   test("keeps the fixed home entry outside the scrollable tabs", () => {
-    const {
-      container,
-      onExportDiagnostics,
-      onOpenSettings,
-      onOpenShortcutGuide,
-    } = renderTabs(null);
+    const { container, onOpenSettings, onOpenShortcutGuide } = renderTabs(null);
     const fixedHome = container.querySelector(".terminal-home-tab");
     const tabContainer = container.querySelector(".terminal-tabs");
 
@@ -83,10 +75,8 @@ describe("SessionTabs", () => {
     ).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "打开快捷键与操作" }));
     fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
-    fireEvent.click(screen.getByRole("button", { name: "导出诊断日志" }));
     expect(onOpenShortcutGuide).toHaveBeenCalledTimes(1);
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
-    expect(onExportDiagnostics).toHaveBeenCalledTimes(1);
   });
 
   test("switches between a session and the fixed home entry", () => {
