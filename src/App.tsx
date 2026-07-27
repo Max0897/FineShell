@@ -60,6 +60,7 @@ import {
 import {
   configureDiagnosticLogging,
   diagnosticInvoke as invoke,
+  exportDiagnosticLogsWithDialog,
   recordDiagnostic,
 } from "./diagnostics";
 import {
@@ -139,6 +140,20 @@ function openAuxiliaryWindow(view: AuxiliaryWindow) {
     const title = view === "settings" ? "设置" : "快捷键说明";
     Message.error(`无法打开${title}：${commandErrorMessage(error)}`);
   });
+}
+
+async function exportDiagnosticsFromMainWindow() {
+  try {
+    const count = await exportDiagnosticLogsWithDialog();
+    if (count === null) return;
+    Message.success(`已导出 ${count} 条脱敏诊断日志`);
+  } catch (error) {
+    const message = commandErrorMessage(error);
+    recordDiagnostic("error", "diagnostics", "主窗口导出诊断日志失败", {
+      error: message,
+    });
+    Message.error(`导出诊断日志失败：${message}`);
+  }
 }
 
 async function persistHostFingerprint(host: HostRecord, fingerprint: string) {
@@ -936,6 +951,7 @@ function App() {
         }
         onActiveSessionChange={setActiveSessionId}
         onCloseSession={closeSession}
+        onExportDiagnostics={() => void exportDiagnosticsFromMainWindow()}
         onOpenQuickCommands={() => setQuickCommandDrawerVisible(true)}
         onOpenSettings={() => openAuxiliaryWindow("settings")}
         onOpenShortcutGuide={() => openAuxiliaryWindow("shortcuts")}

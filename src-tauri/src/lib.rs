@@ -31,6 +31,9 @@ pub fn run() {
         Ok(())
     });
 
+    #[cfg(desktop)]
+    let builder = builder.on_window_event(native_menu::handle_window_event);
+
     #[cfg(target_os = "macos")]
     let builder = builder
         .menu(native_menu::build_chinese_menu)

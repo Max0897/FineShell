@@ -8,7 +8,7 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 const DIAGNOSTIC_CAPACITY: usize = 1_000;
 const DUPLICATE_WINDOW_MS: u64 = 10_000;
@@ -398,13 +398,31 @@ pub(crate) fn diagnostic_export(
 }
 
 pub(crate) fn record_startup(app: &AppHandle) {
+    let mut windows = app.webview_windows().keys().cloned().collect::<Vec<_>>();
+    windows.sort();
     let _ = app
         .state::<DiagnosticLogState>()
         .record(DiagnosticRecordInput {
             level: DiagnosticLogLevel::Info,
             scope: "application".to_string(),
             message: "Rust 后端已初始化".to_string(),
-            context: None,
+            context: Some(serde_json::json!({ "windows": windows })),
+        });
+}
+
+pub(crate) fn record_native_info<R: Runtime>(
+    app: &AppHandle<R>,
+    scope: &str,
+    message: &str,
+    context: Option<Value>,
+) {
+    let _ = app
+        .state::<DiagnosticLogState>()
+        .record(DiagnosticRecordInput {
+            level: DiagnosticLogLevel::Info,
+            scope: scope.to_string(),
+            message: message.to_string(),
+            context,
         });
 }
 

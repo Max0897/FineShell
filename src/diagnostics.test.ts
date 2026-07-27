@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { sanitizeDiagnosticValue } from "./diagnostics";
+import { diagnosticFilename, sanitizeDiagnosticValue } from "./diagnostics";
 
 describe("diagnostic redaction", () => {
+  test("builds a filesystem-safe diagnostic filename", () => {
+    expect(diagnosticFilename(new Date("2026-07-27T12:34:56.789Z"))).toBe(
+      "fineshell-diagnostics-2026-07-27T12-34-56-789Z.log",
+    );
+  });
+
   test("redacts secrets, hosts, users and local paths from text", () => {
     const value = sanitizeDiagnosticValue(
       "ssh root@server.example.com 192.168.1.10 /Users/demo/.ssh/id_ed25519 password=hello",

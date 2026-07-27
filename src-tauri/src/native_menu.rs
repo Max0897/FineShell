@@ -1,5 +1,6 @@
 #[cfg(target_os = "macos")]
 use serde::Serialize;
+#[cfg(not(target_os = "windows"))]
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use tauri::{
@@ -9,7 +10,9 @@ use tauri::{
     },
     Emitter,
 };
-use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Runtime, Window, WindowEvent};
+#[cfg(not(target_os = "windows"))]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(target_os = "macos")]
 const SETTINGS_MENU_ID: &str = "settings";
@@ -27,119 +30,137 @@ struct SelectAllMenuPayload {
     invert: bool,
 }
 
-#[derive(Clone, Copy)]
-struct AuxiliaryWindowSpec {
-    label: &'static str,
-    view: &'static str,
-    title: &'static str,
-    width: f64,
-    height: f64,
-    min_width: f64,
-    min_height: f64,
+const SETTINGS_WINDOW_LABEL: &str = "settings";
+const SHORTCUT_GUIDE_WINDOW_LABEL: &str = "shortcut-guide";
+
+fn is_auxiliary_window(label: &str) -> bool {
+    matches!(label, SETTINGS_WINDOW_LABEL | SHORTCUT_GUIDE_WINDOW_LABEL)
 }
 
-const SETTINGS_WINDOW: AuxiliaryWindowSpec = AuxiliaryWindowSpec {
-    label: "settings",
-    view: "settings",
-    title: "设置",
-    width: 860.0,
-    height: 620.0,
-    min_width: 720.0,
-    min_height: 520.0,
-};
-
-const SHORTCUT_GUIDE_WINDOW: AuxiliaryWindowSpec = AuxiliaryWindowSpec {
-    label: "shortcut-guide",
-    view: "shortcuts",
-    title: "快捷键与操作",
-    width: 780.0,
-    height: 560.0,
-    min_width: 720.0,
-    min_height: 480.0,
-};
-
-fn auxiliary_window_path(spec: AuxiliaryWindowSpec) -> PathBuf {
-    // Fragments select the frontend view without becoming part of the asset request.
-    format!("index.html#view={}", spec.view).into()
+#[cfg(not(target_os = "windows"))]
+fn create_auxiliary_window<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &'static str,
+) -> Result<(), String> {
+    let (view, title, width, height, min_width, min_height) = match label {
+        SETTINGS_WINDOW_LABEL => ("settings", "设置", 860.0, 620.0, 720.0, 520.0),
+        SHORTCUT_GUIDE_WINDOW_LABEL => ("shortcuts", "快捷键与操作", 780.0, 560.0, 720.0, 480.0),
+        _ => return Err(format!("不支持的辅助窗口: {label}")),
+    };
+    let path = PathBuf::from(format!("index.html#view={view}"));
+    WebviewWindowBuilder::new(app, label, WebviewUrl::App(path))
+        .title(title)
+        .inner_size(width, height)
+        .min_inner_size(min_width, min_height)
+        .resizable(true)
+        .focused(true)
+        .center()
+        .build()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn show_auxiliary_window<R: Runtime>(
     app: &AppHandle<R>,
-    spec: AuxiliaryWindowSpec,
-) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window(spec.label) {
-        window.show()?;
-        window.set_focus()?;
+    label: &'static str,
+) -> Result<(), String> {
+    let window = app.get_webview_window(label);
+    if let Some(window) = window {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        crate::diagnostics::record_native_info(
+            app,
+            "window",
+            "辅助窗口已显示",
+            Some(serde_json::json!({ "label": label })),
+        );
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(
-        app,
-        spec.label,
-        WebviewUrl::App(auxiliary_window_path(spec)),
-    )
-    .title(spec.title)
-    .inner_size(spec.width, spec.height)
-    .min_inner_size(spec.min_width, spec.min_height)
-    .resizable(true)
-    .focused(true)
-    .center()
-    .build()?;
-    Ok(())
+    #[cfg(not(target_os = "windows"))]
+    {
+        create_auxiliary_window(app, label)?;
+        crate::diagnostics::record_native_info(
+            app,
+            "window",
+            "辅助窗口已创建并显示",
+            Some(serde_json::json!({ "label": label })),
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Err(format!("预加载窗口 {label} 不存在，请重启 FineShell"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        auxiliary_window_path, open_settings_window, open_shortcut_guide_window, SETTINGS_WINDOW,
-        SHORTCUT_GUIDE_WINDOW,
-    };
-    use std::future::Future;
-    use tauri::AppHandle;
+    use serde_json::Value;
 
     #[test]
-    fn auxiliary_window_views_use_url_fragments() {
-        assert_eq!(
-            auxiliary_window_path(SETTINGS_WINDOW).to_string_lossy(),
-            "index.html#view=settings"
-        );
-        assert_eq!(
-            auxiliary_window_path(SHORTCUT_GUIDE_WINDOW).to_string_lossy(),
-            "index.html#view=shortcuts"
-        );
-    }
-
-    fn assert_async_window_command<Handler, CommandFuture>(_: Handler)
-    where
-        Handler: Fn(AppHandle) -> CommandFuture,
-        CommandFuture: Future<Output = Result<(), String>>,
-    {
+    fn base_configuration_only_preloads_the_main_window() {
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let windows = config["app"]["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0]["label"], "main");
     }
 
     #[test]
-    fn auxiliary_window_commands_remain_async() {
-        assert_async_window_command(open_settings_window);
-        assert_async_window_command(open_shortcut_guide_window);
+    fn windows_configuration_preloads_auxiliary_windows_hidden() {
+        let config: Value =
+            serde_json::from_str(include_str!("../tauri.windows.conf.json")).unwrap();
+        let windows = config["app"]["windows"].as_array().unwrap();
+        assert!(windows.iter().any(|window| window["label"] == "main"));
+        for (label, url) in [
+            ("settings", "index.html#view=settings"),
+            ("shortcut-guide", "index.html#view=shortcuts"),
+        ] {
+            let window = windows
+                .iter()
+                .find(|window| window["label"] == label)
+                .unwrap();
+            assert_eq!(window["url"], url);
+            assert_eq!(window["visible"], false);
+            assert_eq!(window["focus"], false);
+        }
     }
 }
 
-fn show_settings_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    show_auxiliary_window(app, SETTINGS_WINDOW)
+fn show_settings_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    show_auxiliary_window(app, SETTINGS_WINDOW_LABEL)
 }
 
-fn show_shortcut_guide_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    show_auxiliary_window(app, SHORTCUT_GUIDE_WINDOW)
+fn show_shortcut_guide_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    show_auxiliary_window(app, SHORTCUT_GUIDE_WINDOW_LABEL)
 }
 
-// WebView2 can deadlock when a window is built inside a synchronous IPC handler.
 #[tauri::command]
 pub async fn open_settings_window(app: AppHandle) -> Result<(), String> {
-    show_settings_window(&app).map_err(|error| error.to_string())
+    show_settings_window(&app)
 }
 
 #[tauri::command]
 pub async fn open_shortcut_guide_window(app: AppHandle) -> Result<(), String> {
-    show_shortcut_guide_window(&app).map_err(|error| error.to_string())
+    show_shortcut_guide_window(&app)
+}
+
+pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
+    if let WindowEvent::CloseRequested { api, .. } = event {
+        if is_auxiliary_window(window.label()) {
+            api.prevent_close();
+            let _ = window.hide();
+            if let Some(main_window) = window.app_handle().get_webview_window("main") {
+                let _ = main_window.set_focus();
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        if window.label() == "main" {
+            window.app_handle().exit(0);
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
