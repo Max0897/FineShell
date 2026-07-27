@@ -26,6 +26,10 @@ import {
   upsertKnownHostRecord,
 } from "./known-hosts";
 import { normalizeRemoteDirectoryPath } from "./sftp-utils";
+import {
+  getSshKeySource,
+  managedSshKeyReference,
+} from "./ssh-keys";
 import { applyConnectionHistoryPolicy } from "./connection-history";
 import {
   sanitizeCredentialReference,
@@ -165,10 +169,27 @@ function sanitizeSshKey(value: unknown): SshKeyRecord | undefined {
   const privateKeyPath = stringValue(value.privateKeyPath);
   if (!id || !name || !privateKeyPath) return undefined;
 
+  const normalizedId = id.trim();
+  const normalizedName = name.trim();
+  const normalizedPath = privateKeyPath.trim();
+  if (!normalizedId || !normalizedName || !normalizedPath) return undefined;
+  const source = getSshKeySource({
+    privateKeyPath: normalizedPath,
+    source: value.source === "managed" ? "managed" : undefined,
+  });
+  if (
+    source === "managed" &&
+    (normalizedPath !== managedSshKeyReference(normalizedId) ||
+      !/^[A-Za-z0-9_-]{1,160}$/.test(normalizedId))
+  ) {
+    return undefined;
+  }
+
   return {
-    id,
-    name: name.trim(),
-    privateKeyPath: privateKeyPath.trim(),
+    id: normalizedId,
+    name: normalizedName,
+    privateKeyPath: normalizedPath,
+    ...(source === "managed" ? { source } : {}),
   };
 }
 

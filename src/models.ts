@@ -21,13 +21,20 @@ export interface ProxyFormValues extends Omit<ProxyRecord, "id"> {
   password?: string;
 }
 
+export type SshKeySource = "file" | "managed";
+
 export interface SshKeyRecord {
   id: string;
   name: string;
   privateKeyPath: string;
+  source?: SshKeySource;
 }
 
-export interface SshKeyFormValues extends Omit<SshKeyRecord, "id"> {
+export interface SshKeyFormValues {
+  name: string;
+  source: SshKeySource;
+  privateKeyPath?: string;
+  privateKeyContent?: string;
   passphrase?: string;
 }
 

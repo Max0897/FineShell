@@ -2166,6 +2166,11 @@ body.sftp-remote-dragging * {
   white-space: nowrap;
 }
 
+.ssh-key-managed-content textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+}
+
 .proxy-form-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 150px;

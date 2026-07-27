@@ -399,14 +399,17 @@ fn validate_fingerprint(expected: Option<&str>, actual: &str) -> Result<(), Stri
     }
 }
 
-fn resolve_private_key_path(path: &str) -> PathBuf {
+fn resolve_private_key_path(path: &str) -> Result<PathBuf, String> {
+    if let Some(path) = crate::managed_keys::resolve_reference(path)? {
+        return Ok(path);
+    }
     let Some(relative) = path.strip_prefix("~/") else {
-        return PathBuf::from(path);
+        return Ok(PathBuf::from(path));
     };
-    std::env::var_os("HOME")
+    Ok(std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|home| PathBuf::from(home).join(relative))
-        .unwrap_or_else(|| PathBuf::from(path))
+        .unwrap_or_else(|| PathBuf::from(path)))
 }
 
 fn configure_keepalive(session: &Session, interval_seconds: u32) {
@@ -676,8 +679,11 @@ fn authenticate_session(session: &Session, config: &SshAuthConfig) -> Result<(),
                 .map(str::trim)
                 .filter(|path| !path.is_empty())
                 .ok_or_else(|| "未配置 SSH 私钥文件".to_string())?;
-            let private_key = resolve_private_key_path(private_key_path);
+            let private_key = resolve_private_key_path(private_key_path)?;
             if !private_key.is_file() {
+                if private_key_path.starts_with("managed://") {
+                    return Err("托管 SSH 私钥不存在，请在设置中重新添加密钥".to_string());
+                }
                 return Err(format!("SSH 私钥文件不存在：{private_key_path}"));
             }
             let passphrase = credentials::get_private_key_passphrase(&config.host_id)?;
