@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "FineShell",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 720,
+        "minHeight": 520
+      },
+      {
+        "label": "settings",
+        "title": "设置",
+        "url": "index.html#view=settings",
+        "width": 860,
+        "height": 620,
+        "minWidth": 720,
+        "minHeight": 520,
+        "center": true,
+        "focus": false,
+        "visible": false
+      },
+      {
+        "label": "shortcut-guide",
+        "title": "快捷键与操作",
+        "url": "index.html#view=shortcuts",
+        "width": 780,
+        "height": 560,
+        "minWidth": 720,
+        "minHeight": 480,
+        "center": true,
+        "focus": false,
+        "visible": false
+      }
+    ]
+  }
+}

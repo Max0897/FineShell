@@ -1,4 +1,5 @@
 import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import type { DiagnosticLogLevel } from "./app-settings";
 import {
   commandErrorMessage,
@@ -192,6 +193,22 @@ export async function clearDiagnosticLogs() {
 export async function exportDiagnosticLogs(path: string) {
   if (!isTauri()) throw new Error("诊断日志导出仅支持桌面应用");
   return tauriInvoke<number>("diagnostic_export", { path });
+}
+
+export function diagnosticFilename(now = new Date()) {
+  const timestamp = now.toISOString().replace(/[:.]/g, "-");
+  return `fineshell-diagnostics-${timestamp}.log`;
+}
+
+export async function exportDiagnosticLogsWithDialog() {
+  if (!isTauri()) throw new Error("诊断日志导出仅支持桌面应用");
+  const path = await save({
+    defaultPath: diagnosticFilename(),
+    filters: [{ extensions: ["log"], name: "诊断日志" }],
+    title: "导出诊断日志",
+  });
+  if (!path) return null;
+  return exportDiagnosticLogs(path);
 }
 
 export function installGlobalDiagnostics() {

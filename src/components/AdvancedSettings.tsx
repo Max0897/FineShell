@@ -14,12 +14,10 @@ import {
   IconDownload,
   IconRefresh,
 } from "@arco-design/web-react/icon";
-import { isTauri } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
 import type { AppSettings } from "../app-settings";
 import {
   clearDiagnosticLogs,
-  exportDiagnosticLogs,
+  exportDiagnosticLogsWithDialog,
   loadDiagnosticSummary,
   type DiagnosticSummary,
 } from "../diagnostics";
@@ -45,11 +43,6 @@ function formatDiagnosticTime(timestamp?: number) {
     dateStyle: "medium",
     timeStyle: "medium",
   }).format(new Date(timestamp));
-}
-
-function diagnosticFilename() {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `fineshell-diagnostics-${timestamp}.log`;
 }
 
 function AdvancedSettings({ settings, updateSetting }: AdvancedSettingsProps) {
@@ -87,20 +80,10 @@ function AdvancedSettings({ settings, updateSetting }: AdvancedSettingsProps) {
   };
 
   const exportLogs = async () => {
-    if (!isTauri()) {
-      Message.warning("诊断日志导出仅支持桌面应用");
-      return;
-    }
-    const path = await save({
-      defaultPath: diagnosticFilename(),
-      filters: [{ extensions: ["log"], name: "诊断日志" }],
-      title: "导出诊断日志",
-    });
-    if (!path) return;
-
     setExporting(true);
     try {
-      const count = await exportDiagnosticLogs(path);
+      const count = await exportDiagnosticLogsWithDialog();
+      if (count === null) return;
       Message.success(`已导出 ${count} 条脱敏诊断日志`);
     } catch (error) {
       Message.error(String(error));
