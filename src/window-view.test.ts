@@ -33,24 +33,18 @@ describe("window view routing", () => {
     expect(auxiliaryWindowHref("shortcuts")).toBe("#view=shortcuts");
   });
 
-  test("reads auxiliary views injected by native windows", () => {
-    expect(
-      windowViewFromContext({
-        injectedView: "settings",
-        location: { hash: "", search: "" },
-      }),
-    ).toBe("settings");
-    expect(
-      windowViewFromContext({
-        injectedView: "shortcuts",
-        location: { hash: "", search: "" },
-      }),
-    ).toBe("shortcuts");
-  });
-
   test("falls back to the native window label", () => {
     expect(windowViewFromWindowLabel("settings")).toBe("settings");
     expect(windowViewFromWindowLabel("shortcut-guide")).toBe("shortcuts");
     expect(windowViewFromWindowLabel("main")).toBe(null);
+  });
+
+  test("prefers the native window label over location hints", () => {
+    expect(
+      windowViewFromContext({
+        location: { hash: "#view=shortcuts", search: "" },
+        windowLabel: "settings",
+      }),
+    ).toBe("settings");
   });
 });

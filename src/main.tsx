@@ -4,6 +4,7 @@ import "@arco-design/web-react/dist/css/arco.css";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
+import ApplicationErrorBoundary from "./components/ApplicationErrorBoundary";
 import ShortcutGuideWindow from "./components/ShortcutGuideWindow";
 import SettingsWindow from "./components/SettingsWindow";
 import { installGlobalDiagnostics } from "./diagnostics";
@@ -18,7 +19,6 @@ if (isTauri()) {
 }
 
 const view = windowViewFromContext({
-  injectedView: window.__FINESHELL_WINDOW_VIEW__,
   windowLabel: isTauri() ? getCurrentWindow().label : null,
 });
 const RootView =
@@ -30,6 +30,8 @@ const RootView =
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <RootView />
+    <ApplicationErrorBoundary>
+      <RootView />
+    </ApplicationErrorBoundary>
   </React.StrictMode>,
 );

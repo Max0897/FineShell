@@ -14,8 +14,12 @@ import {
 import type { TableColumnProps } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
+  diagnosticInvoke as invoke,
+  recordDiagnostic,
+} from "../diagnostics";
+import {
+  commandErrorMessage,
   emitProtocolEventTo,
   listenProtocolEvent,
 } from "../tauri-protocol";
@@ -265,7 +269,32 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       host: normalized,
     } = normalizeHostForm(values);
     const hostId = editingHost?.id ?? createId("host");
+    const action = editingHost ? "update" : "create";
+    const credentialTypes = [
+      ...(password ? ["hostPassword"] : []),
+      ...(privateKeyPassphrase ? ["privateKeyPassphrase"] : []),
+    ];
+    const diagnosticContext = {
+      action,
+      authentication: normalized.authMethod,
+      credentialTypes,
+      hostId,
+      usesJumpHost: Boolean(normalized.jumpHostId),
+      usesProxy: Boolean(normalized.proxyId),
+    };
+    recordDiagnostic(
+      "info",
+      "host.configuration",
+      "开始保存主机配置",
+      diagnosticContext,
+    );
     if (normalized.proxyId && normalized.jumpHostId) {
+      recordDiagnostic(
+        "warn",
+        "host.configuration",
+        "主机配置路由校验失败",
+        { ...diagnosticContext, reason: "proxy_and_jump_host_conflict" },
+      );
       Message.error("代理和跳板机不能同时配置");
       return;
     }
@@ -275,6 +304,12 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
       hosts,
     );
     if (routeError) {
+      recordDiagnostic(
+        "warn",
+        "host.configuration",
+        "主机配置跳板机校验失败",
+        { ...diagnosticContext, error: routeError },
+      );
       Message.error(routeError);
       return;
     }
@@ -282,6 +317,14 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     let passwordStored = false;
     let passphraseStored = false;
     try {
+      if (credentialTypes.length > 0) {
+        recordDiagnostic(
+          "info",
+          "host.configuration",
+          "开始写入系统凭据",
+          diagnosticContext,
+        );
+      }
       if (password) {
         await storeHostPassword(hostId, password);
         passwordStored = true;
@@ -290,7 +333,21 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         await storePrivateKeyPassphrase(hostId, privateKeyPassphrase);
         passphraseStored = true;
       }
-    } catch {
+      if (credentialTypes.length > 0) {
+        recordDiagnostic(
+          "info",
+          "host.configuration",
+          "系统凭据写入完成",
+          diagnosticContext,
+        );
+      }
+    } catch (error) {
+      recordDiagnostic(
+        "error",
+        "host.configuration",
+        "系统凭据写入失败",
+        { ...diagnosticContext, error: commandErrorMessage(error) },
+      );
       if (!editingHost) {
         await Promise.allSettled([
           ...(passwordStored ? [removeHostPassword(hostId)] : []),
@@ -309,9 +366,27 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         )
       : [...hosts, { id: hostId, ...normalized }];
     try {
+      recordDiagnostic(
+        "info",
+        "host.configuration",
+        "开始写入本地主机配置",
+        diagnosticContext,
+      );
       await replaceConfigurationContent(nextHosts, history);
       setHosts(nextHosts);
-    } catch {
+      recordDiagnostic(
+        "info",
+        "host.configuration",
+        "本地主机配置写入完成",
+        diagnosticContext,
+      );
+    } catch (error) {
+      recordDiagnostic(
+        "error",
+        "host.configuration",
+        "本地主机配置写入失败",
+        { ...diagnosticContext, error: commandErrorMessage(error) },
+      );
       if (!editingHost) {
         await Promise.allSettled([
           ...(passwordStored ? [removeHostPassword(hostId)] : []),
@@ -348,9 +423,28 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         : []),
     ]);
     if (indexed.some((result) => result.status === "rejected")) {
+      recordDiagnostic(
+        "warn",
+        "host.configuration",
+        "主机已保存但凭据索引更新失败",
+        {
+          ...diagnosticContext,
+          errors: indexed.flatMap((result) =>
+            result.status === "rejected"
+              ? [commandErrorMessage(result.reason)]
+              : [],
+          ),
+        },
+      );
       Message.warning("主机已保存，但凭据索引更新失败，可在隐私与清理中重新扫描");
     }
 
+    recordDiagnostic(
+      "info",
+      "host.configuration",
+      "主机配置保存完成",
+      diagnosticContext,
+    );
     Message.success(editingHost ? "主机信息已更新" : "主机已添加");
 
     setEditorVisible(false);

@@ -19,6 +19,7 @@ import type {
   SshKeyRecord,
 } from "../models";
 import type { AppSettings } from "../app-settings";
+import { recordDiagnostic } from "../diagnostics";
 import PortForwardRulesEditor from "./PortForwardRulesEditor";
 
 type ConnectionDefaults = Pick<
@@ -165,7 +166,18 @@ function HostEditorModal({
         initialValues={initialValues}
         layout="vertical"
         onSubmit={submitHost}
-        onSubmitFailed={() => setActiveSection("basic")}
+        onSubmitFailed={(errors) => {
+          setActiveSection("basic");
+          recordDiagnostic(
+            "warn",
+            "host.configuration",
+            "主机表单校验失败",
+            {
+              fields: Object.keys(errors),
+              mode: host ? "update" : "create",
+            },
+          );
+        }}
       >
         <div className="host-editor-layout">
           <Menu
