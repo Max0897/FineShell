@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { Button, Tabs, Tooltip } from "@arco-design/web-react";
 import {
   IconCommand,
-  IconDownload,
   IconHome,
   IconQuestionCircle,
   IconSettings,
@@ -19,7 +18,6 @@ interface SessionTabsProps {
   homeContent: ReactNode;
   onActiveSessionChange: (sessionId: string | null) => void;
   onCloseSession: (sessionId: string) => void;
-  onExportDiagnostics: () => void;
   onOpenQuickCommands: () => void;
   onOpenSettings: () => void;
   onOpenShortcutGuide: () => void;
@@ -46,7 +44,6 @@ function SessionTabs({
   homeContent,
   onActiveSessionChange,
   onCloseSession,
-  onExportDiagnostics,
   onOpenQuickCommands,
   onOpenSettings,
   onOpenShortcutGuide,
@@ -93,17 +90,6 @@ function SessionTabs({
                   disabled={!activeSession}
                   icon={<IconCommand />}
                   onClick={onOpenQuickCommands}
-                  type="text"
-                />
-              </span>
-            </Tooltip>
-            <Tooltip content="导出诊断日志">
-              <span className="terminal-tab-action-wrapper">
-                <Button
-                  aria-label="导出诊断日志"
-                  className="terminal-tab-action-button"
-                  icon={<IconDownload />}
-                  onClick={onExportDiagnostics}
                   type="text"
                 />
               </span>
