@@ -52,9 +52,45 @@ jobs:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: bun scripts/extract-release-notes.ts "$RELEASE_TAG" > /tmp/release-notes.md
 
+  prepare:
+    name: Prepare draft release
+    needs: validate
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - id: release
+        name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          prerelease=false
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            prerelease=true
+          fi
+
+          release_id="$(
+            gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/releases" \
+              -F tag_name="$RELEASE_TAG" \
+              -F target_commitish="$GITHUB_SHA" \
+              -F name="FineShell $RELEASE_TAG" \
+              -F body="" \
+              -F draft=true \
+              -F prerelease="$prerelease" \
+              --jq '.id'
+          )"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.name }}
-    needs: validate
+    needs:
+      - validate
+      - prepare
     permissions:
       contents: write
     strategy:
@@ -135,6 +171,7 @@ jobs:
           args: ${{ matrix.args }}
           generateReleaseNotes: false
           prerelease: ${{ contains(needs.validate.outputs.release_tag, '-') }}
+          releaseId: ${{ needs.prepare.outputs.release_id }}
           releaseAssetNamePattern: "[name]_[version]_[platform]_[arch][setup][ext]"
           releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: true
