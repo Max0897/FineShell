@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { render, within } from "@testing-library/react";
 import ApplicationErrorBoundary from "./ApplicationErrorBoundary";
 
 function BrokenView(): never {
@@ -16,14 +16,15 @@ describe("ApplicationErrorBoundary", () => {
   test("shows a recoverable error instead of leaving an empty window", () => {
     console.error = mock(() => undefined);
 
-    render(
+    const { container } = render(
       <ApplicationErrorBoundary>
         <BrokenView />
       </ApplicationErrorBoundary>,
     );
+    const boundary = within(container);
 
-    expect(screen.getByRole("alert").textContent).toContain("界面加载失败");
-    expect(screen.getByRole("alert").textContent).toContain("测试渲染错误");
-    expect(screen.getByRole("button", { name: "重新加载" })).toBeTruthy();
+    expect(boundary.getByRole("alert").textContent).toContain("界面加载失败");
+    expect(boundary.getByRole("alert").textContent).toContain("测试渲染错误");
+    expect(boundary.getByRole("button", { name: "重新加载" })).toBeTruthy();
   });
 });
