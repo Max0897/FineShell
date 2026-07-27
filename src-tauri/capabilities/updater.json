@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "updater",
-  "description": "Allow the settings window to check, install, and restart after signed updates",
-  "windows": ["settings"],
+  "description": "Allow the main and settings windows to check, install, and restart after signed updates",
+  "windows": ["main", "settings"],
   "permissions": ["updater:default", "process:allow-restart"]
 }
