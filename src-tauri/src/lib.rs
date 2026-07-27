@@ -3,6 +3,7 @@ mod credentials;
 mod diagnostics;
 mod dynamic_forward;
 mod external_edit;
+mod managed_keys;
 mod monitor;
 #[cfg(desktop)]
 mod native_menu;
@@ -27,6 +28,7 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
 
     let builder = builder.setup(|app| {
+        managed_keys::initialize(app.handle()).map_err(std::io::Error::other)?;
         diagnostics::record_startup(app.handle());
         Ok(())
     });
@@ -56,6 +58,8 @@ pub fn run() {
             credentials::delete_private_key_passphrase,
             credentials::store_proxy_password,
             credentials::delete_proxy_password,
+            managed_keys::managed_ssh_key_import,
+            managed_keys::managed_ssh_key_delete,
             diagnostics::diagnostic_set_level,
             diagnostics::diagnostic_record,
             diagnostics::diagnostic_summary,

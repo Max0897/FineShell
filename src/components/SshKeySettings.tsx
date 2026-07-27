@@ -7,6 +7,7 @@ import {
   Message,
   Modal,
   Popconfirm,
+  Radio,
   Space,
   Table,
   Tooltip,
@@ -30,7 +31,12 @@ import {
   upsertSshKey,
 } from "../config-database";
 import { createCredentialReference } from "../credential-registry";
-import type { SshKeyFormValues, SshKeyRecord } from "../models";
+import type {
+  SshKeyFormValues,
+  SshKeyRecord,
+  SshKeySource,
+} from "../models";
+import { getSshKeySource } from "../ssh-keys";
 import {
   emitProtocolEventTo,
   listenProtocolEvent,
@@ -65,6 +71,26 @@ async function removePassphrase(sshKeyId: string) {
   await removeCredentialReference("privateKeyPassphrase", sshKeyId);
 }
 
+interface ManagedSshKeyImportResult {
+  reference: string;
+  keyType: string;
+}
+
+async function importManagedSshKey(sshKeyId: string, privateKey: string) {
+  if (!isTauri()) {
+    throw new Error("粘贴私钥仅在桌面应用中可用");
+  }
+  return invoke<ManagedSshKeyImportResult>("managed_ssh_key_import", {
+    keyId: sshKeyId,
+    privateKey,
+  });
+}
+
+async function deleteManagedSshKey(sshKeyId: string) {
+  if (!isTauri()) return;
+  await invoke("managed_ssh_key_delete", { keyId: sshKeyId });
+}
+
 interface SshKeyEditorModalProps {
   sshKey: SshKeyRecord | null;
   visible: boolean;
@@ -79,6 +105,8 @@ function SshKeyEditorModal({
   onSubmit,
 }: SshKeyEditorModalProps) {
   const [form] = Form.useForm<SshKeyFormValues>();
+  const initialSource = sshKey ? getSshKeySource(sshKey) : "file";
+  const [source, setSource] = useState<SshKeySource>(initialSource);
 
   return (
     <Modal
@@ -86,7 +114,7 @@ function SshKeyEditorModal({
       footer={null}
       maskClosable={false}
       onCancel={onCancel}
-      style={{ width: 560 }}
+      style={{ width: 620 }}
       title={sshKey ? "编辑密钥" : "新增密钥"}
       visible={visible}
     >
@@ -94,7 +122,9 @@ function SshKeyEditorModal({
         form={form}
         initialValues={{
           name: sshKey?.name ?? "",
+          source: initialSource,
           privateKeyPath: sshKey?.privateKeyPath ?? "",
+          privateKeyContent: "",
           passphrase: "",
         }}
         layout="vertical"
@@ -107,25 +137,57 @@ function SshKeyEditorModal({
         >
           <Input autoFocus placeholder="例如：生产环境 Ed25519" />
         </Form.Item>
-        <Form.Item
-          field="privateKeyPath"
-          label="私钥文件"
-          rules={[{ required: true, message: "请选择私钥文件" }]}
-        >
-          <Input.Search
-            onSearch={() =>
-              void choosePrivateKeyPath().then((path) => {
-                if (path) form.setFieldValue("privateKeyPath", path);
-              })
-            }
-            placeholder="选择或输入私钥文件路径"
-            searchButton={
-              <Tooltip content="选择私钥文件">
-                <IconFolder />
-              </Tooltip>
-            }
+        <Form.Item field="source" label="添加方式">
+          <Radio.Group
+            disabled={Boolean(sshKey)}
+            onChange={(value) => setSource(value as SshKeySource)}
+            options={[
+              { label: "选择文件", value: "file" },
+              { label: "粘贴私钥", value: "managed" },
+            ]}
+            type="button"
           />
         </Form.Item>
+        {source === "file" ? (
+          <Form.Item
+            field="privateKeyPath"
+            label="私钥文件"
+            rules={[{ required: true, message: "请选择私钥文件" }]}
+          >
+            <Input.Search
+              onSearch={() =>
+                void choosePrivateKeyPath().then((path) => {
+                  if (path) form.setFieldValue("privateKeyPath", path);
+                })
+              }
+              placeholder="选择或输入私钥文件路径"
+              searchButton={
+                <Tooltip content="选择私钥文件">
+                  <IconFolder />
+                </Tooltip>
+              }
+            />
+          </Form.Item>
+        ) : sshKey ? (
+          <Form.Item label="私钥">
+            <Input disabled value="FineShell 托管密钥" />
+          </Form.Item>
+        ) : (
+          <Form.Item
+            className="ssh-key-managed-content"
+            field="privateKeyContent"
+            label="私钥内容"
+            rules={[{ required: true, message: "请粘贴完整的私钥内容" }]}
+          >
+            <Input.TextArea
+              autoSize={{ minRows: 7, maxRows: 11 }}
+              placeholder={
+                "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
+              }
+              spellCheck={false}
+            />
+          </Form.Item>
+        )}
         <Form.Item field="passphrase" label="私钥口令">
           <Input.Password
             placeholder={sshKey ? "留空则保留原口令" : "没有口令可留空"}
@@ -221,14 +283,31 @@ function SshKeySettings() {
 
   const saveSshKey = async (values: SshKeyFormValues) => {
     const sshKeyId = editingSshKey?.id ?? createSshKeyId();
-    const sshKey: SshKeyRecord = {
-      id: sshKeyId,
-      name: values.name.trim(),
-      privateKeyPath: values.privateKeyPath.trim(),
-    };
     setActing(true);
     let passphraseStored = false;
+    let managedKeyImported = false;
     try {
+      const existingSource = editingSshKey
+        ? getSshKeySource(editingSshKey)
+        : values.source;
+      let privateKeyPath = values.privateKeyPath?.trim() ?? "";
+      if (!editingSshKey && existingSource === "managed") {
+        const result = await importManagedSshKey(
+          sshKeyId,
+          values.privateKeyContent?.trim() ?? "",
+        );
+        privateKeyPath = result.reference;
+        managedKeyImported = true;
+      } else if (editingSshKey && existingSource === "managed") {
+        privateKeyPath = editingSshKey.privateKeyPath;
+      }
+
+      const sshKey: SshKeyRecord = {
+        id: sshKeyId,
+        name: values.name.trim(),
+        privateKeyPath,
+        ...(existingSource === "managed" ? { source: "managed" as const } : {}),
+      };
       if (values.passphrase) {
         await storePassphrase(sshKeyId, values.passphrase);
         passphraseStored = true;
@@ -246,13 +325,16 @@ function SshKeySettings() {
           Message.warning("密钥已保存，但凭据索引更新失败，可重新扫描");
         });
       }
-      await notifyMainWindow();
+      await notifyMainWindow().catch(() => undefined);
       setEditorVisible(false);
       setEditingSshKey(null);
       Message.success(editingSshKey ? "密钥已更新" : "密钥已添加");
     } catch (error) {
       if (!editingSshKey && passphraseStored) {
         await removePassphrase(sshKeyId).catch(() => undefined);
+      }
+      if (managedKeyImported) {
+        await deleteManagedSshKey(sshKeyId).catch(() => undefined);
       }
       Message.error(String(error));
     } finally {
@@ -265,12 +347,20 @@ function SshKeySettings() {
     try {
       const configuration = await deleteSshKey(sshKey.id);
       setSshKeys(configuration.sshKeys);
-      await notifyMainWindow();
-      try {
-        await removePassphrase(sshKey.id);
+      await notifyMainWindow().catch(() => undefined);
+      const cleanupFailures: string[] = [];
+      await removePassphrase(sshKey.id).catch(() => {
+        cleanupFailures.push("系统凭据");
+      });
+      if (getSshKeySource(sshKey) === "managed") {
+        await deleteManagedSshKey(sshKey.id).catch(() => {
+          cleanupFailures.push("托管私钥文件");
+        });
+      }
+      if (cleanupFailures.length === 0) {
         Message.success(`已删除 ${sshKey.name}`);
-      } catch {
-        Message.warning("密钥已删除，但系统凭据清理失败");
+      } else {
+        Message.warning(`密钥记录已删除，但${cleanupFailures.join("和")}清理失败`);
       }
     } catch (error) {
       Message.error(String(error));
@@ -288,7 +378,9 @@ function SshKeySettings() {
           <div className="ssh-key-name-cell">
             <Typography.Text bold>{sshKey.name}</Typography.Text>
             <Typography.Text type="secondary">
-              {sshKey.privateKeyPath}
+              {getSshKeySource(sshKey) === "managed"
+                ? "FineShell 托管"
+                : sshKey.privateKeyPath}
             </Typography.Text>
           </div>
         ),

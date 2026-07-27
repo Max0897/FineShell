@@ -419,4 +419,36 @@ describe("configuration import and export", () => {
     });
     expect(imported.sshKeys[0]).not.toHaveProperty("passphrase");
   });
+
+  test("preserves FineShell-managed key references without exporting key contents", () => {
+    const contents = serializeConfigurationExport(
+      {
+        ...migrateLegacyConfiguration(
+          null,
+          null,
+          "2026-07-27T00:00:00.000Z",
+        ),
+        sshKeys: [
+          {
+            id: "ssh-key-managed",
+            name: "Managed key",
+            privateKeyPath: "managed://ssh-key-managed",
+            source: "managed",
+            privateKeyContent: "must-not-be-exported",
+          } as never,
+        ],
+      },
+      "2026-07-27T00:00:00.000Z",
+    );
+
+    expect(contents).not.toContain("must-not-be-exported");
+    expect(parseConfigurationExport(contents).sshKeys).toEqual([
+      {
+        id: "ssh-key-managed",
+        name: "Managed key",
+        privateKeyPath: "managed://ssh-key-managed",
+        source: "managed",
+      },
+    ]);
+  });
 });

@@ -14,6 +14,8 @@
     "delete_private_key_passphrase": true,
     "store_proxy_password": true,
     "delete_proxy_password": true,
+    "managed_ssh_key_import": true,
+    "managed_ssh_key_delete": true,
     "diagnostic_set_level": true,
     "diagnostic_record": true,
     "diagnostic_summary": true,
