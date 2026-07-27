@@ -1,5 +1,6 @@
 #[cfg(target_os = "macos")]
 use serde::Serialize;
+use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use tauri::{
     menu::{
@@ -57,11 +58,9 @@ const SHORTCUT_GUIDE_WINDOW: AuxiliaryWindowSpec = AuxiliaryWindowSpec {
     min_height: 480.0,
 };
 
-fn auxiliary_window_initialization_script(spec: AuxiliaryWindowSpec) -> String {
-    format!(
-        "window.__FINESHELL_WINDOW_VIEW__ = {};",
-        serde_json::to_string(spec.view).expect("auxiliary window view is serializable")
-    )
+fn auxiliary_window_path(spec: AuxiliaryWindowSpec) -> PathBuf {
+    // Fragments select the frontend view without becoming part of the asset request.
+    format!("index.html#view={}", spec.view).into()
 }
 
 fn show_auxiliary_window<R: Runtime>(
@@ -74,32 +73,53 @@ fn show_auxiliary_window<R: Runtime>(
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(app, spec.label, WebviewUrl::App("index.html".into()))
-        .initialization_script(auxiliary_window_initialization_script(spec))
-        .title(spec.title)
-        .inner_size(spec.width, spec.height)
-        .min_inner_size(spec.min_width, spec.min_height)
-        .resizable(true)
-        .focused(true)
-        .center()
-        .build()?;
+    WebviewWindowBuilder::new(
+        app,
+        spec.label,
+        WebviewUrl::App(auxiliary_window_path(spec)),
+    )
+    .title(spec.title)
+    .inner_size(spec.width, spec.height)
+    .min_inner_size(spec.min_width, spec.min_height)
+    .resizable(true)
+    .focused(true)
+    .center()
+    .build()?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{auxiliary_window_initialization_script, SETTINGS_WINDOW, SHORTCUT_GUIDE_WINDOW};
+    use super::{
+        auxiliary_window_path, open_settings_window, open_shortcut_guide_window, SETTINGS_WINDOW,
+        SHORTCUT_GUIDE_WINDOW,
+    };
+    use std::future::Future;
+    use tauri::AppHandle;
 
     #[test]
-    fn auxiliary_window_views_are_injected_before_the_document_loads() {
+    fn auxiliary_window_views_use_url_fragments() {
         assert_eq!(
-            auxiliary_window_initialization_script(SETTINGS_WINDOW),
-            "window.__FINESHELL_WINDOW_VIEW__ = \"settings\";"
+            auxiliary_window_path(SETTINGS_WINDOW).to_string_lossy(),
+            "index.html#view=settings"
         );
         assert_eq!(
-            auxiliary_window_initialization_script(SHORTCUT_GUIDE_WINDOW),
-            "window.__FINESHELL_WINDOW_VIEW__ = \"shortcuts\";"
+            auxiliary_window_path(SHORTCUT_GUIDE_WINDOW).to_string_lossy(),
+            "index.html#view=shortcuts"
         );
+    }
+
+    fn assert_async_window_command<Handler, CommandFuture>(_: Handler)
+    where
+        Handler: Fn(AppHandle) -> CommandFuture,
+        CommandFuture: Future<Output = Result<(), String>>,
+    {
+    }
+
+    #[test]
+    fn auxiliary_window_commands_remain_async() {
+        assert_async_window_command(open_settings_window);
+        assert_async_window_command(open_shortcut_guide_window);
     }
 }
 
@@ -111,13 +131,14 @@ fn show_shortcut_guide_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
     show_auxiliary_window(app, SHORTCUT_GUIDE_WINDOW)
 }
 
+// WebView2 can deadlock when a window is built inside a synchronous IPC handler.
 #[tauri::command]
-pub fn open_settings_window(app: AppHandle) -> Result<(), String> {
+pub async fn open_settings_window(app: AppHandle) -> Result<(), String> {
     show_settings_window(&app).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn open_shortcut_guide_window(app: AppHandle) -> Result<(), String> {
+pub async fn open_shortcut_guide_window(app: AppHandle) -> Result<(), String> {
     show_shortcut_guide_window(&app).map_err(|error| error.to_string())
 }
 
