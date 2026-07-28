@@ -14,6 +14,7 @@ import {
   normalizeAiTerminalCommand,
   mergeAiRemoteFileContexts,
   redactAiContext,
+  separateAiContextMentions,
   stripAiContextMentions,
 } from "./ai-utils";
 
@@ -287,6 +288,39 @@ describe("AI terminal command safety", () => {
         ["terminal-output", "sftp-path"],
       ),
     ).toBe("分析故障\n\n@最近终端输出\n\n@当前远程目录");
+  });
+
+  test("keeps known context mentions separated from following text", () => {
+    const sources = [
+      { id: "terminal-output" as const, label: "最近终端输出", content: "log" },
+      { id: "sftp-path" as const, label: "当前远程目录", content: "/srv/app" },
+    ];
+
+    expect(separateAiContextMentions("@最近终端输出查看", sources)).toBe(
+      "@最近终端输出 查看",
+    );
+    expect(separateAiContextMentions("分析 @当前远程目录", sources)).toBe(
+      "分析 @当前远程目录 ",
+    );
+    expect(separateAiContextMentions("联系 @max", sources)).toBe("联系 @max");
+
+    const nestedSources = [
+      aiRemoteFileContextSource({
+        content: "a",
+        name: "a",
+        path: "/srv/a",
+        size: 1,
+      }),
+      aiRemoteFileContextSource({
+        content: "b",
+        name: "b",
+        path: "/srv/a/b",
+        size: 1,
+      }),
+    ];
+    expect(
+      separateAiContextMentions("@文件:/srv/a/b继续", nestedSources),
+    ).toBe("@文件:/srv/a/b 继续");
   });
 
   test("removes known context mentions from the submitted question", () => {

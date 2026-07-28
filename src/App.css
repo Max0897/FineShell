@@ -158,8 +158,16 @@ body,
 
 .main-split {
   width: auto;
-  min-width: 0;
-  flex: 1;
+  min-width: 720px;
+  flex: 1 0 720px;
+}
+
+.main-split > .arco-resizebox-split-group-pane:first-child {
+  min-width: 220px;
+}
+
+.main-split > .arco-resizebox-split-group-pane:last-child {
+  min-width: 480px;
 }
 
 .right-split {

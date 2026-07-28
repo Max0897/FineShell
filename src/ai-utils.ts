@@ -146,6 +146,20 @@ export function appendAiContextMentions(
   return `${current}${current ? "\n\n" : ""}${mentions.join(" ")}`;
 }
 
+export function separateAiContextMentions(
+  value: string,
+  sources: AiContextSource[],
+) {
+  const labels = [...new Set(sources.map((source) => source.label))]
+    .sort((left, right) => right.length - left.length)
+    .map(escapeRegularExpression);
+  if (!labels.length) return value;
+  return value.replace(
+    new RegExp(`@(?:${labels.join("|")})(?=\\S|$)`, "g"),
+    (mention) => `${mention} `,
+  );
+}
+
 export function stripAiContextMentions(
   value: string,
   sources: AiContextSource[],

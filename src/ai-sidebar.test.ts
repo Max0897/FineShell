@@ -18,6 +18,8 @@ describe("AI sidebar layout", () => {
     expect(clampAiSidebarWidth(200)).toBe(360);
     expect(clampAiSidebarWidth(500)).toBe(500);
     expect(clampAiSidebarWidth(900)).toBe(640);
+    expect(clampAiSidebarWidth(640, 1_160)).toBe(440);
+    expect(clampAiSidebarWidth(640, 1_360)).toBe(640);
     expect(aiWindowTargetWidth(800, false, 440)).toBe(720);
   });
 });

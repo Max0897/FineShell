@@ -1448,9 +1448,14 @@ function App() {
             aiAssistantVisible ? "" : " ai-assistant-sidebar-hidden"
           }`}
           directions={["left"]}
-          onMoving={(_, size) =>
-            setAiSidebarWidth(clampAiSidebarWidth(size.width))
-          }
+          onMoving={(_, size) => {
+            const workspaceWidth =
+              mainSplitRef.current?.parentElement?.getBoundingClientRect().width ??
+              window.innerWidth;
+            setAiSidebarWidth(
+              clampAiSidebarWidth(size.width, workspaceWidth),
+            );
+          }}
           onMovingEnd={() =>
             document.body.classList.remove("ai-sidebar-resizing")
           }

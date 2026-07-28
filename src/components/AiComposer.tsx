@@ -17,6 +17,7 @@ import {
   MAX_AI_REMOTE_FILES,
   aiRemoteFileContextSource,
   isAiRemoteFileContextSourceId,
+  separateAiContextMentions,
   type AiContextSource,
   type AiContextSourceId,
   type AiRemoteFileContext,
@@ -124,7 +125,9 @@ function AiComposer({
             <span>未找到相关上下文</span>
           </span>
         }
-        onChange={onChange}
+        onChange={(value) =>
+          onChange(separateAiContextMentions(value, contextSources).slice(0, 4_000))
+        }
         onKeyDownCapture={(event) => {
           if (
             event.key !== "Enter" ||

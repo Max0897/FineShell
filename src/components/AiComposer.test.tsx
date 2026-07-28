@@ -102,6 +102,17 @@ describe("AiComposer", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  test("separates a selected context mention from following input", () => {
+    const onChange = mock(() => undefined);
+    renderComposer({ onChange, prompt: "" });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "向 AI 提问" }), {
+      target: { value: "@最近终端输出继续分析" },
+    });
+
+    expect(onChange).toHaveBeenCalledWith("@最近终端输出 继续分析");
+  });
+
   test("shows remote file context and delegates its selection", () => {
     const onToggleRemoteFile = mock(() => undefined);
     render(
