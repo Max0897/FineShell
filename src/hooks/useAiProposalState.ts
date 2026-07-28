@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef } from "react";
 import {
   aiCommandProposalMatchesSubmission,
+  aiCommandProposalMatchesResult,
+  markAiCommandProposalCompleted,
   markAiCommandProposalExecuted,
   type AiCommandProposal,
 } from "../ai-command-proposals";
@@ -63,20 +65,17 @@ export function useAiProposalState({
       proposalId: string,
       update: (proposal: AiCommandProposal) => AiCommandProposal,
     ) =>
-      persistUpdatedMessages(
-        targetHostId,
-        targetConversationId,
-        (messages) =>
-          messages.map((message) =>
-            message.id === messageId
-              ? {
-                  ...message,
-                  commandProposals: message.commandProposals?.map((proposal) =>
-                    proposal.id === proposalId ? update(proposal) : proposal,
-                  ),
-                }
-              : message,
-          ),
+      persistUpdatedMessages(targetHostId, targetConversationId, (messages) =>
+        messages.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                commandProposals: message.commandProposals?.map((proposal) =>
+                  proposal.id === proposalId ? update(proposal) : proposal,
+                ),
+              }
+            : message,
+        ),
       ),
     [persistUpdatedMessages],
   );
@@ -96,11 +95,7 @@ export function useAiProposalState({
         update,
       );
     },
-    [
-      activeConversationId,
-      hostId,
-      updateCommandProposalInConversation,
-    ],
+    [activeConversationId, hostId, updateCommandProposalInConversation],
   );
 
   const updateFileEditProposal = useCallback(
@@ -199,14 +194,16 @@ export function useAiProposalState({
 
   useEffect(() => {
     const submission = commandSubmission;
+    const phase = submission?.phase ?? "submitted";
+    const eventKey = submission ? `${submission.id}:${phase}` : "";
     if (
       !submission ||
-      processedCommandSubmissionsRef.current.has(submission.id) ||
+      processedCommandSubmissionsRef.current.has(eventKey) ||
       !isHostLoaded(submission.hostId)
     ) {
       return;
     }
-    processedCommandSubmissionsRef.current.add(submission.id);
+    processedCommandSubmissionsRef.current.add(eventKey);
 
     const conversations = getHostConversations(submission.hostId);
     for (const conversation of conversations) {
@@ -220,7 +217,10 @@ export function useAiProposalState({
         const proposal = [...message.commandProposals]
           .reverse()
           .find((item) =>
-            aiCommandProposalMatchesSubmission(item, submission),
+            phase === "submitted"
+              ? aiCommandProposalMatchesSubmission(item, submission)
+              : aiCommandProposalMatchesResult(item, submission) ||
+                aiCommandProposalMatchesSubmission(item, submission),
           );
         if (!proposal) continue;
         updateCommandProposalInConversation(
@@ -228,7 +228,16 @@ export function useAiProposalState({
           conversation.id,
           message.id,
           proposal.id,
-          (current) => markAiCommandProposalExecuted(current, submission),
+          (current) => {
+            if (phase === "submitted") {
+              return markAiCommandProposalExecuted(current, submission);
+            }
+            const executed =
+              current.status === "inserted"
+                ? markAiCommandProposalExecuted(current, submission)
+                : current;
+            return markAiCommandProposalCompleted(executed, submission);
+          },
         );
         return;
       }

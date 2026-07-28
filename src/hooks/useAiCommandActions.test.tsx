@@ -150,4 +150,30 @@ describe("useAiCommandActions", () => {
       "已加入最近终端输出，确认问题后发送即可分析",
     );
   });
+
+  test("prefers the captured command result over generic recent output", async () => {
+    const resultSource: AiContextSource = {
+      content: "退出码: 2\npermission denied",
+      id: "terminal-command-result:command-1",
+      label: "命令结果:重启 Nginx-mand",
+    };
+    const view = renderActions({ contextSources: [resultSource] });
+    const value = {
+      ...proposal("safe", "failed"),
+      exitCode: 2,
+      resultOutput: "permission denied",
+    };
+
+    act(() => {
+      view.result.current.prepareCommandVerification("assistant-1", value);
+    });
+    await waitFor(() => expect(view.setDraft).toHaveBeenCalledTimes(1));
+    expect(view.setDraft.mock.calls[0]?.[1]).toContain(
+      "@命令结果:重启 Nginx-mand",
+    );
+    expect(view.onNotice).toHaveBeenCalledWith(
+      "info",
+      "已加入该命令的执行结果，确认问题后发送即可分析",
+    );
+  });
 });

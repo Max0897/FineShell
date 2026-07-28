@@ -21,7 +21,8 @@ export type AiContextSourceId =
   | "sftp-path"
   | "sftp-selection"
   | "sftp-file"
-  | `sftp-file:${string}`;
+  | `sftp-file:${string}`
+  | `terminal-command-result:${string}`;
 
 export interface AiContextSource {
   content: string;

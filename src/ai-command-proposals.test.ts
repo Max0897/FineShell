@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   aiCommandProposalMatchesSubmission,
+  aiCommandResultContextSource,
   aiCommandProposalToolResult,
   aiCommandRecordFromProposal,
   createAiCommandProposal,
+  markAiCommandProposalCompleted,
   markAiCommandProposalExecuted,
   markAiCommandProposalInserted,
   markAiCommandProposalVerified,
@@ -131,5 +133,44 @@ describe("AI terminal command proposals", () => {
     expect(aiCommandProposalToolResult(commandCall({})).content).toContain(
       "尚未填入或执行",
     );
+  });
+
+  test("records a bounded command result without persisting its output", () => {
+    const inserted = markAiCommandProposalInserted(
+      createAiCommandProposal(
+        commandCall({ command: "false", purpose: "验证失败路径" }),
+        "session-1",
+      ),
+    );
+    const submission = {
+      command: "false",
+      hostId: "host-1",
+      id: "submission-1",
+      phase: "submitted" as const,
+      sessionId: "session-1",
+      submittedAt: "2026-07-28T08:01:00.000Z",
+    };
+    const executed = markAiCommandProposalExecuted(inserted, submission);
+    const completed = markAiCommandProposalCompleted(executed, {
+      ...submission,
+      completedAt: "2026-07-28T08:01:01.250Z",
+      durationMs: 1_250,
+      exitCode: 1,
+      output: "token=must-not-leak\nfailed",
+      phase: "completed",
+    });
+
+    expect(completed).toMatchObject({
+      durationMs: 1_250,
+      exitCode: 1,
+      resultOutput: "token=[已隐藏]\nfailed",
+      status: "failed",
+    });
+    expect(aiCommandResultContextSource(completed)?.content).toContain(
+      "退出码: 1",
+    );
+    const record = aiCommandRecordFromProposal(completed);
+    expect(record).toMatchObject({ durationMs: 1_250, exitCode: 1 });
+    expect(JSON.stringify(record)).not.toContain("must-not-leak");
   });
 });

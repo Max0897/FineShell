@@ -18,8 +18,15 @@ export interface TerminalInjectedInput {
 
 export interface TerminalCommandSubmission {
   command: string;
+  completedAt?: string;
+  durationMs?: number;
+  exitCode?: number;
   hostId: string;
   id: string;
+  output?: string;
+  outputTruncated?: boolean;
+  phase?: "submitted" | "completed" | "unavailable";
+  reason?: string;
   sessionId: string;
   submittedAt: string;
 }
@@ -55,7 +62,9 @@ export function consumeTerminalCommandCandidate(
   const index = candidates.lastIndexOf(command);
   if (index < 0) return { candidates, matched: false };
   return {
-    candidates: candidates.filter((_, candidateIndex) => candidateIndex !== index),
+    candidates: candidates.filter(
+      (_, candidateIndex) => candidateIndex !== index,
+    ),
     matched: true,
   };
 }

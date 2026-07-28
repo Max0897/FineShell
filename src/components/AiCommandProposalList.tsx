@@ -5,11 +5,7 @@ import {
   Tooltip,
   Typography,
 } from "@arco-design/web-react";
-import {
-  IconCommand,
-  IconCopy,
-  IconRobot,
-} from "@arco-design/web-react/icon";
+import { IconCommand, IconCopy, IconRobot } from "@arco-design/web-react/icon";
 import {
   aiCommandRiskColor,
   type AiCommandProposal,
@@ -33,6 +29,9 @@ interface AiCommandProposalListProps {
 
 function proposalStatus(status: AiCommandProposal["status"]) {
   if (status === "verified") return { color: "green", label: "已分析" };
+  if (status === "succeeded") return { color: "green", label: "执行成功" };
+  if (status === "failed") return { color: "red", label: "执行失败" };
+  if (status === "unavailable") return { color: "gray", label: "结果不可用" };
   if (status === "executed") return { color: "orange", label: "已提交" };
   if (status === "inserted") return { color: "blue", label: "已填入" };
   if (status === "rejected") return { color: "gray", label: "已拒绝" };
@@ -41,6 +40,9 @@ function proposalStatus(status: AiCommandProposal["status"]) {
 
 function recordStatus(status: AiCommandRecord["status"]) {
   if (status === "verified") return { color: "green", label: "已分析" };
+  if (status === "succeeded") return { color: "green", label: "执行成功" };
+  if (status === "failed") return { color: "red", label: "执行失败" };
+  if (status === "unavailable") return { color: "gray", label: "结果不可用" };
   if (status === "executed") return { color: "orange", label: "已提交" };
   if (status === "inserted") return { color: "blue", label: "已填入" };
   if (status === "rejected") return { color: "gray", label: "已拒绝" };
@@ -75,9 +77,7 @@ function AiCommandProposalList({
         <div className="ai-command-proposals-heading">
           <span>
             <Typography.Text bold>命令提案记录</Typography.Text>
-            <Typography.Text type="secondary">
-              未保存完整命令
-            </Typography.Text>
+            <Typography.Text type="secondary">未保存完整命令</Typography.Text>
           </span>
         </div>
         {records.map((record) => {
@@ -124,6 +124,12 @@ function AiCommandProposalList({
       {proposals.map((proposal, proposalIndex) => {
         const sameSession = proposal.sessionId === sessionId;
         const status = proposalStatus(proposal.status);
+        const hasCapturedResult =
+          (proposal.status === "succeeded" || proposal.status === "failed") &&
+          proposal.resultOutput !== undefined;
+        const canAnalyze =
+          hasCapturedResult ||
+          (proposal.status === "executed" && hasRecentTerminalOutput);
         return (
           <div className="ai-command-proposal" key={proposal.id}>
             <div className="ai-command-proposal-heading">
@@ -200,20 +206,22 @@ function AiCommandProposalList({
                     拒绝
                   </Button>
                 )}
-                {proposal.status === "executed" && (
+                {(proposal.status === "executed" ||
+                  proposal.status === "succeeded" ||
+                  proposal.status === "failed") && (
                   <Tooltip
                     content={
                       !sameSession
                         ? "请切换到提交该命令的终端会话"
-                        : hasRecentTerminalOutput
-                          ? "将最近终端输出加入下一次提问"
-                          : "暂无可分析的最近终端输出"
+                        : hasCapturedResult
+                          ? "将该命令的退出码和有界输出加入下一次提问"
+                          : canAnalyze
+                            ? "将最近终端输出加入下一次提问"
+                            : "暂无可分析的命令输出"
                     }
                   >
                     <Button
-                      disabled={
-                        sending || !sameSession || !hasRecentTerminalOutput
-                      }
+                      disabled={sending || !sameSession || !canAnalyze}
                       icon={<IconRobot />}
                       onClick={() => onAnalyze(proposal)}
                       size="mini"
@@ -241,13 +249,35 @@ function AiCommandProposalList({
                 已检测到手动提交，不代表命令执行成功
               </Typography.Text>
             )}
+            {(proposal.status === "succeeded" ||
+              proposal.status === "failed" ||
+              (proposal.status === "verified" &&
+                proposal.exitCode !== undefined)) && (
+              <Typography.Text
+                className="ai-command-proposal-result"
+                type={proposal.exitCode === 0 ? "success" : "error"}
+              >
+                退出码 {proposal.exitCode ?? "-"}
+                {proposal.durationMs !== undefined
+                  ? ` · ${(proposal.durationMs / 1000).toFixed(1)} 秒`
+                  : ""}
+                {proposal.resultOutputTruncated ? " · 输出已截断" : ""}
+              </Typography.Text>
+            )}
+            {proposal.status === "unavailable" && (
+              <Typography.Text
+                className="ai-command-proposal-warning"
+                type="secondary"
+              >
+                {proposal.resultUnavailableReason ??
+                  "无法可靠获取命令结束边界或退出码"}
+              </Typography.Text>
+            )}
             {proposal.assessment.reason && (
               <Typography.Text
                 className="ai-command-proposal-warning"
                 type={
-                  proposal.assessment.risk === "danger"
-                    ? "error"
-                    : "secondary"
+                  proposal.assessment.risk === "danger" ? "error" : "secondary"
                 }
               >
                 {proposal.assessment.reason}

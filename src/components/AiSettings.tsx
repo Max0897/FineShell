@@ -68,8 +68,7 @@ function AiSettings({
   const [modelListError, setModelListError] = useState("");
   const [credentialRevision, setCredentialRevision] = useState(0);
   const [testing, setTesting] = useState(false);
-  const [connectionState, setConnectionState] =
-    useState<ConnectionState>(null);
+  const [connectionState, setConnectionState] = useState<ConnectionState>(null);
   const [capabilities, setCapabilities] =
     useState<AiServiceCapabilities | null>(null);
   const localService = useMemo(
@@ -211,11 +210,7 @@ function AiSettings({
 
   const autoFetchSignature = loadingKeyStatus
     ? ""
-    : aiModelFetchSignature(
-        settings.aiBaseUrl,
-        hasApiKey,
-        credentialRevision,
-      );
+    : aiModelFetchSignature(settings.aiBaseUrl, hasApiKey, credentialRevision);
 
   useEffect(() => {
     if (!autoFetchSignature) {
@@ -407,10 +402,7 @@ function AiSettings({
           <Checkbox.Group
             aria-label="AI 只读工具权限"
             onChange={(values) =>
-              updateSetting(
-                "aiReadOnlyTools",
-                values as AiReadOnlyToolName[],
-              )
+              updateSetting("aiReadOnlyTools", values as AiReadOnlyToolName[])
             }
             value={settings.aiReadOnlyTools}
           >
@@ -476,6 +468,28 @@ function AiSettings({
       </div>
       <div className="settings-row">
         <span className="settings-label-with-description">
+          <Typography.Text>Shell Integration</Typography.Text>
+          <Typography.Text type="secondary">
+            在当前 Bash/Zsh
+            会话中临时获取命令结束边界与退出码，不修改远端配置文件
+          </Typography.Text>
+        </span>
+        <div className="settings-control">
+          <Switch
+            aria-label="启用 Shell Integration"
+            checked={settings.aiShellIntegrationEnabled}
+            disabled={
+              !settings.aiCommandProposalsEnabled ||
+              !settings.aiCommandTrackingEnabled
+            }
+            onChange={(checked) =>
+              updateSetting("aiShellIntegrationEnabled", checked)
+            }
+          />
+        </div>
+      </div>
+      <div className="settings-row">
+        <span className="settings-label-with-description">
           <Typography.Text>服务能力</Typography.Text>
           <Typography.Text type="secondary">
             会发起少量测试请求，不执行服务器操作
@@ -497,10 +511,7 @@ function AiSettings({
                 </Tooltip>
               );
             })}
-          <Button
-            loading={testing}
-            onClick={() => void testConnection()}
-          >
+          <Button loading={testing} onClick={() => void testConnection()}>
             检测能力
           </Button>
         </div>

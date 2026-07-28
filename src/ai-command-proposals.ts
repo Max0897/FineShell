@@ -2,6 +2,7 @@ import {
   assessAiTerminalCommand,
   normalizeAiTerminalCommand,
   redactAiContext,
+  type AiContextSource,
   type AiCommandAssessment,
 } from "./ai-utils";
 import type { AiToolCall, AiToolResult } from "./tauri-protocol";
@@ -14,28 +15,48 @@ export type AiCommandProposalStatus =
   | "pending"
   | "inserted"
   | "executed"
+  | "succeeded"
+  | "failed"
+  | "unavailable"
   | "verified"
   | "rejected";
 
 export interface AiCommandProposal {
   assessment: AiCommandAssessment;
   command: string;
+  completedAt?: string;
   directory?: string;
+  durationMs?: number;
   executedAt?: string;
+  exitCode?: number;
   id: string;
   insertedAt?: string;
   purpose: string;
+  resultOutput?: string;
+  resultOutputTruncated?: boolean;
+  resultUnavailableReason?: string;
   sessionId: string;
   status: AiCommandProposalStatus;
+  submissionId?: string;
   verifiedAt?: string;
 }
 
 export interface AiCommandRecord {
   id: string;
+  durationMs?: number;
+  exitCode?: number;
   occurredAt?: string;
   purpose: string;
   risk: AiCommandAssessment["risk"];
-  status: "inserted" | "executed" | "verified" | "rejected" | "not-inserted";
+  status:
+    | "inserted"
+    | "executed"
+    | "succeeded"
+    | "failed"
+    | "unavailable"
+    | "verified"
+    | "rejected"
+    | "not-inserted";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -45,8 +66,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function exactKeys(value: Record<string, unknown>, keys: string[]) {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
-  return actual.length === expected.length &&
-    actual.every((key, index) => key === expected[index]);
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
 }
 
 export function isAiCommandProposalToolCall(call: AiToolCall) {
@@ -153,6 +176,53 @@ export function markAiCommandProposalExecuted(
     ...proposal,
     executedAt: submission.submittedAt,
     status: "executed" as const,
+    submissionId: submission.id,
+  };
+}
+
+export function aiCommandProposalMatchesResult(
+  proposal: AiCommandProposal,
+  result: TerminalCommandSubmission,
+) {
+  return (
+    proposal.status === "executed" &&
+    proposal.sessionId === result.sessionId &&
+    proposal.submissionId === result.id &&
+    (result.phase === "completed" || result.phase === "unavailable")
+  );
+}
+
+export function markAiCommandProposalCompleted(
+  proposal: AiCommandProposal,
+  result: TerminalCommandSubmission,
+) {
+  if (!aiCommandProposalMatchesResult(proposal, result)) {
+    throw new Error("终端结果与命令提案不匹配");
+  }
+  if (result.phase === "unavailable") {
+    return {
+      ...proposal,
+      completedAt: result.completedAt,
+      durationMs: result.durationMs,
+      resultUnavailableReason: result.reason,
+      status: "unavailable" as const,
+    };
+  }
+  if (typeof result.exitCode !== "number") {
+    throw new Error("终端结果缺少退出码");
+  }
+  const redactedOutput = redactAiContext(result.output ?? "");
+  const outputTruncated =
+    result.outputTruncated === true || redactedOutput.length > 12_000;
+  return {
+    ...proposal,
+    completedAt: result.completedAt,
+    durationMs: result.durationMs,
+    exitCode: result.exitCode,
+    resultOutput: redactedOutput.slice(-12_000),
+    resultOutputTruncated: outputTruncated,
+    status:
+      result.exitCode === 0 ? ("succeeded" as const) : ("failed" as const),
   };
 }
 
@@ -160,7 +230,11 @@ export function markAiCommandProposalVerified(
   proposal: AiCommandProposal,
   verifiedAt = new Date().toISOString(),
 ) {
-  if (proposal.status !== "executed") {
+  if (
+    proposal.status !== "executed" &&
+    proposal.status !== "succeeded" &&
+    proposal.status !== "failed"
+  ) {
     throw new Error("只有已提交的命令才能标记为已分析");
   }
   return { ...proposal, status: "verified" as const, verifiedAt };
@@ -172,14 +246,45 @@ export function aiCommandRecordFromProposal(
   return {
     id: proposal.id,
     occurredAt:
-      proposal.verifiedAt ?? proposal.executedAt ?? proposal.insertedAt,
+      proposal.verifiedAt ??
+      proposal.completedAt ??
+      proposal.executedAt ??
+      proposal.insertedAt,
+    durationMs: proposal.durationMs,
+    exitCode: proposal.exitCode,
     purpose: redactAiContext(proposal.purpose).slice(
       0,
       MAX_AI_COMMAND_PURPOSE_CHARS,
     ),
     risk: proposal.assessment.risk,
-    status:
-      proposal.status === "pending" ? "not-inserted" : proposal.status,
+    status: proposal.status === "pending" ? "not-inserted" : proposal.status,
+  };
+}
+
+export function aiCommandResultContextSource(
+  proposal: AiCommandProposal,
+): AiContextSource | null {
+  if (
+    (proposal.status !== "succeeded" && proposal.status !== "failed") ||
+    proposal.exitCode === undefined
+  ) {
+    return null;
+  }
+  const output = proposal.resultOutput?.trim();
+  const duration = Math.max(0, proposal.durationMs ?? 0);
+  const resultLines = [
+    `命令用途: ${proposal.purpose}`,
+    `退出码: ${proposal.exitCode}`,
+    `耗时: ${duration} ms`,
+    `输出${proposal.resultOutputTruncated ? "（已截断）" : ""}:`,
+    output || "（无输出）",
+  ];
+  return {
+    content: resultLines.join("\n"),
+    id: `terminal-command-result:${proposal.id}`,
+    label: `命令结果:${proposal.purpose.slice(0, 16)}-${proposal.id.slice(-4)}`,
+    preserveWhitespace: true,
+    truncateFrom: "start",
   };
 }
 

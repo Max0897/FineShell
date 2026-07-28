@@ -65,6 +65,8 @@ function toolStatus(status: string): AiAuditStatus {
 }
 
 function commandStatus(status: string): AiAuditStatus {
+  if (status === "succeeded") return "success";
+  if (status === "failed" || status === "unavailable") return "failed";
   if (
     status === "inserted" ||
     status === "executed" ||

@@ -166,4 +166,51 @@ describe("useAiProposalState", () => {
     );
     expect(persistConversation).toHaveBeenCalledTimes(1);
   });
+
+  test("can complete an inserted proposal when lifecycle events are batched", () => {
+    const harness = createHarness(
+      conversation([
+        {
+          commandProposals: [commandProposal("inserted")],
+          content: "",
+          id: "assistant-1",
+          role: "assistant",
+        },
+      ]),
+    );
+    const result: TerminalCommandSubmission = {
+      command: "ls -la",
+      completedAt: "2026-07-28T09:00:02.000Z",
+      durationMs: 2_000,
+      exitCode: 0,
+      hostId: "host-1",
+      id: "submission-1",
+      output: "file.txt",
+      phase: "completed",
+      sessionId: "session-1",
+      submittedAt: "2026-07-28T09:00:00.000Z",
+    };
+
+    renderHook(() =>
+      useAiProposalState({
+        activeConversationId: "conversation-1",
+        commandSubmission: result,
+        conversationsByHost: { "host-1": [harness.current()] },
+        getHostConversations: harness.getHostConversations,
+        hostId: "host-1",
+        isHostLoaded: () => true,
+        persistConversation: async () => undefined,
+        updateMessages: harness.updateMessages,
+      }),
+    );
+
+    expect(harness.current().messages[0]?.commandProposals?.[0]).toEqual(
+      expect.objectContaining({
+        exitCode: 0,
+        resultOutput: "file.txt",
+        status: "succeeded",
+        submissionId: "submission-1",
+      }),
+    );
+  });
 });

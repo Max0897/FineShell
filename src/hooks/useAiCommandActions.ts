@@ -4,10 +4,7 @@ import {
   markAiCommandProposalVerified,
   type AiCommandProposal,
 } from "../ai-command-proposals";
-import {
-  appendAiContextMentions,
-  type AiContextSource,
-} from "../ai-utils";
+import { appendAiContextMentions, type AiContextSource } from "../ai-utils";
 import { commandErrorMessage } from "../tauri-protocol";
 
 export interface AiCommandConfirmation {
@@ -130,9 +127,7 @@ export function useAiCommandActions({
     }
   };
 
-  const copyAllCommandProposals = async (
-    proposals: AiCommandProposal[],
-  ) => {
+  const copyAllCommandProposals = async (proposals: AiCommandProposal[]) => {
     try {
       await onCopyText(
         proposals.map((proposal) => proposal.command).join("\n"),
@@ -147,22 +142,32 @@ export function useAiCommandActions({
     messageId: string,
     proposal: AiCommandProposal,
   ) => {
-    if (!conversationId || proposal.status !== "executed") return;
+    if (
+      !conversationId ||
+      (proposal.status !== "executed" &&
+        proposal.status !== "succeeded" &&
+        proposal.status !== "failed")
+    ) {
+      return;
+    }
     if (proposal.sessionId !== sessionId) {
       onNotice("warning", "请切换到提交该命令的终端会话");
       return;
     }
-    const recentOutput = contextSources.find(
-      (source) => source.id === "terminal-output",
+    const resultSource = contextSources.find(
+      (source) => source.id === `terminal-command-result:${proposal.id}`,
     );
-    if (!recentOutput?.content.trim()) {
-      onNotice("warning", "暂无可分析的最近终端输出");
+    const source = resultSource?.content.trim()
+      ? resultSource
+      : contextSources.find((item) => item.id === "terminal-output");
+    if (!source?.content.trim()) {
+      onNotice("warning", "暂无可分析的命令输出");
       return;
     }
     const nextDraft = appendAiContextMentions(
       `请分析刚才提交的命令是否达到“${proposal.purpose}”的预期，并根据输出给出结论和下一步验证建议。`,
       contextSources,
-      ["terminal-output"],
+      [source.id],
     );
     updateDraft(nextDraft, conversationId);
     setVerificationTarget({
@@ -171,7 +176,12 @@ export function useAiCommandActions({
       messageId,
       proposalId: proposal.id,
     });
-    onNotice("info", "已加入最近终端输出，确认问题后发送即可分析");
+    onNotice(
+      "info",
+      resultSource
+        ? "已加入该命令的执行结果，确认问题后发送即可分析"
+        : "已加入最近终端输出，确认问题后发送即可分析",
+    );
   };
 
   const captureVerificationTarget = (draft: string) => {

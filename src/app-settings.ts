@@ -10,10 +10,7 @@ export type { AiProvider } from "./ai-providers";
 export type TerminalFontFamily = "system" | "menlo" | "consolas";
 export type TerminalCursorStyle = "block" | "underline" | "bar";
 export type TerminalColorScheme =
-  | "fineshellDark"
-  | "graphiteLight"
-  | "solarizedDark"
-  | "dracula";
+  "fineshellDark" | "graphiteLight" | "solarizedDark" | "dracula";
 export type TerminalRightClickAction = "menu" | "paste";
 export type ConnectionHistoryLimit = 0 | 20 | 50 | 100;
 export type ConnectionHistoryRetentionDays = 0 | 7 | 30 | 90;
@@ -49,6 +46,7 @@ export interface AppSettings {
   aiFileProposalsEnabled: boolean;
   aiCommandProposalsEnabled: boolean;
   aiCommandTrackingEnabled: boolean;
+  aiShellIntegrationEnabled: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -81,6 +79,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   aiFileProposalsEnabled: true,
   aiCommandProposalsEnabled: true,
   aiCommandTrackingEnabled: true,
+  aiShellIntegrationEnabled: false,
 };
 
 export const TERMINAL_FONT_FAMILIES: Record<TerminalFontFamily, string> = {
@@ -268,6 +267,10 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
     aiCommandTrackingEnabled: booleanValue(
       settings.aiCommandTrackingEnabled,
       DEFAULT_APP_SETTINGS.aiCommandTrackingEnabled,
+    ),
+    aiShellIntegrationEnabled: booleanValue(
+      settings.aiShellIntegrationEnabled,
+      DEFAULT_APP_SETTINGS.aiShellIntegrationEnabled,
     ),
   };
 }

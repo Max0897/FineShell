@@ -65,7 +65,9 @@ describe("AiCommandProposalList", () => {
     fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
 
     expect(view.onCopy).toHaveBeenCalledWith("uname -a");
-    expect(view.onInsert).toHaveBeenCalledWith(expect.objectContaining({ id: "command-1" }));
+    expect(view.onInsert).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "command-1" }),
+    );
     expect(view.onReject).toHaveBeenCalledWith("command-1");
   });
 
@@ -75,23 +77,43 @@ describe("AiCommandProposalList", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "分析结果" }));
     expect(view.onAnalyze).toHaveBeenCalledWith(executed);
-    expect(screen.getByText("已检测到手动提交，不代表命令执行成功")).not.toBeNull();
+    expect(
+      screen.getByText("已检测到手动提交，不代表命令执行成功"),
+    ).not.toBeNull();
   });
 
   test("renders persisted metadata without exposing a command", () => {
-    renderList([], [
-      {
-        id: "record-1",
-        purpose: "重启服务",
-        risk: "danger",
-        status: "rejected",
-      },
-    ]);
+    renderList(
+      [],
+      [
+        {
+          id: "record-1",
+          purpose: "重启服务",
+          risk: "danger",
+          status: "rejected",
+        },
+      ],
+    );
 
     expect(screen.getByText("命令提案记录")).not.toBeNull();
     expect(screen.getByText("重启服务")).not.toBeNull();
     expect(screen.getByText("高风险")).not.toBeNull();
     expect(screen.getByText("已拒绝")).not.toBeNull();
     expect(screen.queryByText("uname -a")).toBeNull();
+  });
+
+  test("shows the exit code and offers captured result analysis", () => {
+    const failed = {
+      ...proposal("failed"),
+      durationMs: 1_250,
+      exitCode: 2,
+      resultOutput: "permission denied",
+    };
+    const view = renderList([failed]);
+
+    expect(screen.getByText("执行失败")).not.toBeNull();
+    expect(screen.getByText("退出码 2 · 1.3 秒")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "分析结果" }));
+    expect(view.onAnalyze).toHaveBeenCalledWith(failed);
   });
 });

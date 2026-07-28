@@ -824,7 +824,10 @@ body.ai-sidebar-resizing::after {
 
 .terminal-view .xterm-scrollable-element > .scrollbar.vertical > .slider,
 .terminal-view .xterm-scrollable-element > .scrollbar.vertical > .slider:hover,
-.terminal-view .xterm-scrollable-element > .scrollbar.vertical > .slider.active {
+.terminal-view
+  .xterm-scrollable-element
+  > .scrollbar.vertical
+  > .slider.active {
   background: #c9cdd4 !important;
 }
 
@@ -1504,6 +1507,13 @@ body.ai-sidebar-resizing::after {
 }
 
 .ai-command-proposal-warning.arco-typography {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.ai-command-proposal-result.arco-typography {
   display: block;
   margin-top: 5px;
   font-size: 11px;
@@ -3580,8 +3590,9 @@ body.sftp-remote-dragging * {
 }
 
 .ssh-key-managed-content textarea {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    monospace;
 }
 
 .proxy-form-row {

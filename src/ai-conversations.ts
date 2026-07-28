@@ -1,7 +1,4 @@
-import {
-  sanitizePersistedAiToolRuns,
-  type AiToolRun,
-} from "./ai-tools";
+import { sanitizePersistedAiToolRuns, type AiToolRun } from "./ai-tools";
 import {
   sanitizePersistedAiDiagnosticPlans,
   type AiDiagnosticPlan,
@@ -133,8 +130,8 @@ function sanitizeFileChanges(value: unknown) {
         fileNameFromPath(item.path);
       const targetFileName =
         operation === "rename"
-          ? boundedText(item.targetFileName, 160) ??
-            fileNameFromPath(item.targetPath)
+          ? (boundedText(item.targetFileName, 160) ??
+            fileNameFromPath(item.targetPath))
           : undefined;
       const status = fileChangeStatus(item.status);
       if (!id || !fileName || !status) return undefined;
@@ -151,7 +148,8 @@ function sanitizeFileChanges(value: unknown) {
       ) {
         const originalContent =
           operation === "create" ? "" : String(originalFile?.content ?? "");
-        const nextContent = operation === "delete" ? "" : String(item.content ?? "");
+        const nextContent =
+          operation === "delete" ? "" : String(item.content ?? "");
         if (
           originalContent.length <= MAX_AI_FILE_EDIT_CHARS &&
           nextContent.length <= MAX_AI_FILE_EDIT_CHARS
@@ -203,7 +201,9 @@ function sanitizeCommandRecords(value: unknown) {
       const purpose = purposeValue
         ? redactAiContext(purposeValue).slice(0, MAX_AI_COMMAND_PURPOSE_CHARS)
         : undefined;
-      const assessment = isRecord(item.assessment) ? item.assessment : undefined;
+      const assessment = isRecord(item.assessment)
+        ? item.assessment
+        : undefined;
       const riskValue = item.risk ?? assessment?.risk;
       const risk =
         riskValue === "safe" ||
@@ -214,6 +214,9 @@ function sanitizeCommandRecords(value: unknown) {
       const status =
         item.status === "inserted" ||
         item.status === "executed" ||
+        item.status === "succeeded" ||
+        item.status === "failed" ||
+        item.status === "unavailable" ||
         item.status === "verified" ||
         item.status === "rejected"
           ? item.status
@@ -224,6 +227,19 @@ function sanitizeCommandRecords(value: unknown) {
       return {
         id,
         occurredAt: optionalIsoDate(item.occurredAt),
+        durationMs:
+          typeof item.durationMs === "number" &&
+          Number.isFinite(item.durationMs) &&
+          item.durationMs >= 0
+            ? Math.min(Math.round(item.durationMs), 86_400_000)
+            : undefined,
+        exitCode:
+          typeof item.exitCode === "number" &&
+          Number.isInteger(item.exitCode) &&
+          item.exitCode >= 0 &&
+          item.exitCode <= 255
+            ? item.exitCode
+            : undefined,
         purpose,
         risk,
         status,
@@ -239,13 +255,16 @@ function sanitizeMessage(
 ): AiConversationMessageRecord | undefined {
   if (!isRecord(value)) return undefined;
   const id = boundedText(value.id, 160);
-  const role = value.role === "user" || value.role === "assistant"
-    ? value.role
-    : undefined;
+  const role =
+    value.role === "user" || value.role === "assistant"
+      ? value.role
+      : undefined;
   const content =
     boundedText(value.content, role === "user" ? 4_000 : 40_000) ?? "";
   const toolRuns =
-    role === "assistant" ? sanitizePersistedAiToolRuns(value.toolRuns) : undefined;
+    role === "assistant"
+      ? sanitizePersistedAiToolRuns(value.toolRuns)
+      : undefined;
   const diagnosticPlans =
     role === "assistant"
       ? sanitizePersistedAiDiagnosticPlans(value.diagnosticPlans)
@@ -295,7 +314,9 @@ function sanitizeMessages(value: unknown) {
   if (!Array.isArray(value)) return [];
   const candidates = value
     .map(sanitizeMessage)
-    .filter((message): message is AiConversationMessageRecord => Boolean(message))
+    .filter((message): message is AiConversationMessageRecord =>
+      Boolean(message),
+    )
     .slice(-MAX_AI_CONVERSATION_MESSAGES);
   const messages: AiConversationMessageRecord[] = [];
   let remaining = MAX_AI_CONVERSATION_CHARS;
@@ -378,12 +399,15 @@ export function aiConversationTitleFromPrompt(prompt: string) {
   return title.length > 36 ? `${title.slice(0, 36)}…` : title;
 }
 
-export function aiConversationExportFilename(conversation: AiConversationRecord) {
-  const title = conversation.title
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 60) || "AI-对话";
+export function aiConversationExportFilename(
+  conversation: AiConversationRecord,
+) {
+  const title =
+    conversation.title
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 60) || "AI-对话";
   return `${title}.md`;
 }
 
@@ -418,9 +442,7 @@ export function serializeAiConversationMarkdown(
         );
         const detail = run.summary ?? run.error;
         if (detail) {
-          lines.push(
-            ...detail.split("\n").map((line) => `>   ${line}`),
-          );
+          lines.push(...detail.split("\n").map((line) => `>   ${line}`));
         }
       }
       lines.push("");
@@ -444,13 +466,19 @@ export function serializeAiConversationMarkdown(
         const status =
           record.status === "verified"
             ? "已分析"
-            : record.status === "executed"
-              ? "已提交"
-              : record.status === "inserted"
-                ? "已填入"
-                : record.status === "rejected"
-                  ? "已拒绝"
-                  : "未填入";
+            : record.status === "succeeded"
+              ? "执行成功"
+              : record.status === "failed"
+                ? "执行失败"
+                : record.status === "unavailable"
+                  ? "结果不可用"
+                  : record.status === "executed"
+                    ? "已提交"
+                    : record.status === "inserted"
+                      ? "已填入"
+                      : record.status === "rejected"
+                        ? "已拒绝"
+                        : "未填入";
         const risk =
           record.risk === "danger"
             ? "高风险"
@@ -469,15 +497,15 @@ export function serializeAiConversationMarkdown(
             ? "已应用"
             : change.status === "not-applied"
               ? "未应用"
-            : change.status === "rolled-back"
-              ? "已回滚"
-              : change.status === "rejected"
-                ? "已拒绝"
-                : change.status === "conflict"
-                  ? "远端已变化"
-                  : change.status === "failed"
-                    ? "应用失败"
-                    : "等待审阅";
+              : change.status === "rolled-back"
+                ? "已回滚"
+                : change.status === "rejected"
+                  ? "已拒绝"
+                  : change.status === "conflict"
+                    ? "远端已变化"
+                    : change.status === "failed"
+                      ? "应用失败"
+                      : "等待审阅";
         lines.push(
           `> - ${
             change.operation === "edit"
@@ -500,7 +528,8 @@ export function serializeAiConversationMarkdown(
 function requestResult<T>(request: IDBRequest<T>) {
   return new Promise<T>((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("数据库请求失败"));
+    request.onerror = () =>
+      reject(request.error ?? new Error("数据库请求失败"));
   });
 }
 

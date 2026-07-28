@@ -32,19 +32,25 @@ import {
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import type { TerminalSession } from "../models";
-import {
-  TERMINAL_FONT_FAMILIES,
-  type AppSettings,
-} from "../app-settings";
+import { TERMINAL_FONT_FAMILIES, type AppSettings } from "../app-settings";
 import {
   appendInjectedTerminalInput,
   consumeTerminalCommandCandidate,
   decodeSshOutput,
   EMPTY_TERMINAL_INPUT_STATE,
   terminalStatusNoticeKey,
+  type TerminalCommandSubmission,
   trackTerminalInput,
   type TerminalInjectedInput,
 } from "../terminal-utils";
+import {
+  FINESHELL_OSC_ID,
+  boundedShellCommandOutput,
+  buildShellIntegrationInstallCommand,
+  buildShellIntegrationUninstallCommand,
+  createShellIntegrationNonce,
+  parseShellIntegrationMessage,
+} from "../shell-integration";
 import { TERMINAL_THEMES } from "../terminal-themes";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import { listenProtocolEvent } from "../tauri-protocol";
@@ -58,9 +64,15 @@ interface TerminalViewProps {
   settings: AppSettings;
   session: TerminalSession;
   onAskAi: (selection: string) => void;
-  onCommandSubmit: (command: string) => void;
+  onCommandLifecycle: (event: TerminalCommandSubmission) => void;
   onRecentOutputChange: (output: string) => void;
   onSelectionChange: (selection: string) => void;
+}
+
+interface PendingShellCommand {
+  startLine: number;
+  startedAtMs: number;
+  submission: TerminalCommandSubmission;
 }
 
 const EMPTY_SEARCH_RESULT: ISearchResultChangeEvent = {
@@ -68,16 +80,15 @@ const EMPTY_SEARCH_RESULT: ISearchResultChangeEvent = {
   resultIndex: -1,
 };
 
-const TERMINAL_SEARCH_DECORATIONS: NonNullable<
-  ISearchOptions["decorations"]
-> = {
-  activeMatchBackground: "#165dff",
-  activeMatchBorder: "#94bfff",
-  activeMatchColorOverviewRuler: "#165dff",
-  matchBackground: "#6b5700",
-  matchBorder: "#fadc19",
-  matchOverviewRuler: "#fadc19",
-};
+const TERMINAL_SEARCH_DECORATIONS: NonNullable<ISearchOptions["decorations"]> =
+  {
+    activeMatchBackground: "#165dff",
+    activeMatchBorder: "#94bfff",
+    activeMatchColorOverviewRuler: "#165dff",
+    matchBackground: "#6b5700",
+    matchBorder: "#fadc19",
+    matchOverviewRuler: "#fadc19",
+  };
 
 function searchOptions(
   caseSensitive: boolean,
@@ -110,7 +121,7 @@ function TerminalView({
   settings,
   session,
   onAskAi,
-  onCommandSubmit,
+  onCommandLifecycle,
   onRecentOutputChange,
   onSelectionChange,
 }: TerminalViewProps) {
@@ -120,8 +131,15 @@ function TerminalView({
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<RefInputType>(null);
   const connectedRef = useRef(session.status === "connected");
-  const commandSubmitRef = useRef(onCommandSubmit);
+  const commandLifecycleRef = useRef(onCommandLifecycle);
   const commandTrackingEnabledRef = useRef(commandTrackingEnabled);
+  const shellIntegrationEnabledRef = useRef(settings.aiShellIntegrationEnabled);
+  const shellIntegrationInstalledRef = useRef(false);
+  const shellIntegrationNonceRef = useRef(createShellIntegrationNonce());
+  const shellIntegrationStateRef = useRef<
+    "disabled" | "installing" | "ready" | "unavailable"
+  >("disabled");
+  const pendingShellCommandsRef = useRef<PendingShellCommand[]>([]);
   const aiCommandCandidatesRef = useRef<string[]>([]);
   const inputStateRef = useRef({ ...EMPTY_TERMINAL_INPUT_STATE });
   const lastInjectedInputIdRef = useRef<string>();
@@ -135,17 +153,33 @@ function TerminalView({
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
   const [searchResult, setSearchResult] =
     useState<ISearchResultChangeEvent>(EMPTY_SEARCH_RESULT);
+  const [terminalReady, setTerminalReady] = useState(false);
 
   searchVisibleRef.current = searchVisible;
   settingsRef.current = settings;
-  commandSubmitRef.current = onCommandSubmit;
+  commandLifecycleRef.current = onCommandLifecycle;
   commandTrackingEnabledRef.current = commandTrackingEnabled;
+  shellIntegrationEnabledRef.current =
+    commandTrackingEnabled && settings.aiShellIntegrationEnabled;
   recentOutputChangeRef.current = onRecentOutputChange;
   selectionChangeRef.current = onSelectionChange;
 
   useEffect(() => {
     connectedRef.current = session.status === "connected";
     if (session.status !== "connected") {
+      const completedAt = new Date().toISOString();
+      for (const pending of pendingShellCommandsRef.current) {
+        commandLifecycleRef.current({
+          ...pending.submission,
+          completedAt,
+          durationMs: Math.max(0, Date.now() - pending.startedAtMs),
+          phase: "unavailable",
+          reason: "终端会话已断开，无法确认命令结果",
+        });
+      }
+      pendingShellCommandsRef.current = [];
+      shellIntegrationInstalledRef.current = false;
+      shellIntegrationStateRef.current = "disabled";
       aiCommandCandidatesRef.current = [];
       inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
     }
@@ -153,9 +187,54 @@ function TerminalView({
 
   useEffect(() => {
     if (commandTrackingEnabled) return;
+    pendingShellCommandsRef.current = [];
     aiCommandCandidatesRef.current = [];
     inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
   }, [commandTrackingEnabled]);
+
+  useEffect(() => {
+    if (session.status !== "connected" || !terminalReady) return;
+    const enabled =
+      commandTrackingEnabled && settings.aiShellIntegrationEnabled;
+    if (enabled && !shellIntegrationInstalledRef.current) {
+      if (!inputStateRef.current.reliable || inputStateRef.current.value) {
+        shellIntegrationStateRef.current = "unavailable";
+        return;
+      }
+      shellIntegrationInstalledRef.current = true;
+      shellIntegrationStateRef.current = "installing";
+      const command = buildShellIntegrationInstallCommand(
+        shellIntegrationNonceRef.current,
+      );
+      void invoke("ssh_write", {
+        sessionId: session.id,
+        data: Array.from(new TextEncoder().encode(command)),
+      }).catch(() => {
+        shellIntegrationInstalledRef.current = false;
+        shellIntegrationStateRef.current = "unavailable";
+      });
+      return;
+    }
+    if (!enabled && shellIntegrationInstalledRef.current) {
+      pendingShellCommandsRef.current = [];
+      if (!inputStateRef.current.reliable || inputStateRef.current.value) {
+        return;
+      }
+      shellIntegrationStateRef.current = "disabled";
+      shellIntegrationInstalledRef.current = false;
+      const command = buildShellIntegrationUninstallCommand();
+      void invoke("ssh_write", {
+        sessionId: session.id,
+        data: Array.from(new TextEncoder().encode(command)),
+      }).catch(() => undefined);
+    }
+  }, [
+    commandTrackingEnabled,
+    session.id,
+    session.status,
+    settings.aiShellIntegrationEnabled,
+    terminalReady,
+  ]);
 
   useEffect(() => {
     if (
@@ -208,6 +287,7 @@ function TerminalView({
     searchAddonRef.current = searchAddon;
     inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
     aiCommandCandidatesRef.current = [];
+    pendingShellCommandsRef.current = [];
     lastInjectedInputIdRef.current = undefined;
 
     const fit = () => {
@@ -242,7 +322,36 @@ function TerminalView({
           );
           aiCommandCandidatesRef.current = candidate.candidates;
           if (!candidate.matched) continue;
-          commandSubmitRef.current(command);
+          const submittedAt = new Date().toISOString();
+          const submission: TerminalCommandSubmission = {
+            command,
+            hostId: session.host.id,
+            id: `terminal-command-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            phase: "submitted",
+            sessionId: session.id,
+            submittedAt,
+          };
+          commandLifecycleRef.current(submission);
+          if (!shellIntegrationEnabledRef.current) continue;
+          if (shellIntegrationStateRef.current === "ready") {
+            const buffer = terminal.buffer.active;
+            pendingShellCommandsRef.current.push({
+              startLine: buffer.baseY + buffer.cursorY + 1,
+              startedAtMs: Date.now(),
+              submission,
+            });
+          } else {
+            commandLifecycleRef.current({
+              ...submission,
+              completedAt: submittedAt,
+              durationMs: 0,
+              phase: "unavailable",
+              reason:
+                shellIntegrationStateRef.current === "unavailable"
+                  ? "当前远程 Shell 不支持结果关联"
+                  : "Shell Integration 尚未就绪",
+            });
+          }
         }
       }
       void invoke("ssh_write", {
@@ -269,6 +378,66 @@ function TerminalView({
       }
       void writeClipboard(terminal.getSelection()).catch(() => undefined);
     });
+    const shellIntegrationDisposable = terminal.parser.registerOscHandler(
+      FINESHELL_OSC_ID,
+      (data) => {
+        const message = parseShellIntegrationMessage(
+          data,
+          shellIntegrationNonceRef.current,
+        );
+        if (!message) return false;
+        if (message.kind === "ready") {
+          shellIntegrationStateRef.current = "ready";
+          return true;
+        }
+        if (message.kind === "unavailable") {
+          shellIntegrationStateRef.current = "unavailable";
+          const completedAt = new Date().toISOString();
+          for (const pending of pendingShellCommandsRef.current) {
+            commandLifecycleRef.current({
+              ...pending.submission,
+              completedAt,
+              durationMs: Math.max(0, Date.now() - pending.startedAtMs),
+              phase: "unavailable",
+              reason: "当前远程 Shell 不支持结果关联",
+            });
+          }
+          pendingShellCommandsRef.current = [];
+          return true;
+        }
+
+        const pending = pendingShellCommandsRef.current.shift();
+        if (!pending) return true;
+        window.setTimeout(() => {
+          const buffer = terminal.buffer.active;
+          const endLine = buffer.baseY + buffer.cursorY;
+          let rawOutput = "";
+          for (
+            let index = Math.max(0, pending.startLine);
+            index <= endLine;
+            index += 1
+          ) {
+            const line = buffer.getLine(index);
+            if (!line) continue;
+            const value = line.translateToString(true);
+            rawOutput += line.isWrapped
+              ? value
+              : `${rawOutput ? "\n" : ""}${value}`;
+          }
+          const result = boundedShellCommandOutput(rawOutput);
+          commandLifecycleRef.current({
+            ...pending.submission,
+            completedAt: new Date().toISOString(),
+            durationMs: Math.max(0, Date.now() - pending.startedAtMs),
+            exitCode: message.exitCode,
+            output: result.output,
+            outputTruncated: result.truncated,
+            phase: "completed",
+          });
+        }, 0);
+        return true;
+      },
+    );
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -300,11 +469,13 @@ function TerminalView({
         stopListening();
       } else {
         unlisten = stopListening;
+        setTerminalReady(true);
       }
     });
 
     return () => {
       disposed = true;
+      setTerminalReady(false);
       unlisten?.();
       if (recentOutputTimer) clearTimeout(recentOutputTimer);
       resizeObserver.disconnect();
@@ -313,6 +484,7 @@ function TerminalView({
       resizeDisposable.dispose();
       searchDisposable.dispose();
       selectionDisposable.dispose();
+      shellIntegrationDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -328,10 +500,7 @@ function TerminalView({
       setSearchResult(EMPTY_SEARCH_RESULT);
       return;
     }
-    searchAddon.findNext(
-      searchQuery,
-      searchOptions(searchCaseSensitive, true),
-    );
+    searchAddon.findNext(searchQuery, searchOptions(searchCaseSensitive, true));
   }, [searchCaseSensitive, searchQuery, searchVisible]);
 
   useEffect(() => {
@@ -441,17 +610,15 @@ function TerminalView({
     };
 
     window.addEventListener("keydown", handleWindowKeyDown, true);
-    return () => window.removeEventListener("keydown", handleWindowKeyDown, true);
+    return () =>
+      window.removeEventListener("keydown", handleWindowKeyDown, true);
   }, [active, searchVisible]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) return;
 
-    const noticeKey = terminalStatusNoticeKey(
-      session.status,
-      session.error,
-    );
+    const noticeKey = terminalStatusNoticeKey(session.status, session.error);
     if (lastStatusNoticeRef.current === noticeKey) return;
     lastStatusNoticeRef.current = noticeKey;
 

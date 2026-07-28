@@ -1365,15 +1365,7 @@ function App() {
               }));
               openAiAssistant("请解释这段终端输出，并给出排查建议。");
             }}
-            onCommandSubmit={(command) =>
-              setTerminalCommandSubmission({
-                command,
-                hostId: session.host.id,
-                id: createId("terminal-command"),
-                sessionId: session.id,
-                submittedAt: new Date().toISOString(),
-              })
-            }
+            onCommandLifecycle={setTerminalCommandSubmission}
             onRecentOutputChange={(output) =>
               setTerminalRecentOutputs((current) => {
                 const next = output.slice(-settings.aiContextMaxChars);

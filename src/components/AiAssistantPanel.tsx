@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Input,
@@ -46,15 +46,10 @@ import {
   type AiContextSourceId,
   type AiRemoteFileContext,
 } from "../ai-utils";
-import {
-  diagnosticInvoke as invoke,
-  recordDiagnostic,
-} from "../diagnostics";
-import {
-  commandErrorMessage,
-  type AiToolCall,
-} from "../tauri-protocol";
+import { diagnosticInvoke as invoke, recordDiagnostic } from "../diagnostics";
+import { commandErrorMessage, type AiToolCall } from "../tauri-protocol";
 import type { TerminalCommandSubmission } from "../terminal-utils";
+import { aiCommandResultContextSource } from "../ai-command-proposals";
 import {
   useAiCommandActions,
   type AiCommandConfirmation,
@@ -126,7 +121,8 @@ function confirmAiToolExecution(call: AiToolCall) {
       content: (
         <div className="ai-tool-confirmation">
           <Typography.Paragraph>
-            AI 请求从当前服务器执行主动网络探测。该操作只读取结果，不会修改服务器配置。
+            AI
+            请求从当前服务器执行主动网络探测。该操作只读取结果，不会修改服务器配置。
           </Typography.Paragraph>
           <Typography.Text code>{target}</Typography.Text>
         </div>
@@ -134,14 +130,20 @@ function confirmAiToolExecution(call: AiToolCall) {
       okText: "允许执行",
       onCancel: () => finish(false),
       onOk: () => finish(true),
-      title: call.name === "ping_target" ? "允许执行 Ping？" : "允许执行路由追踪？",
+      title:
+        call.name === "ping_target" ? "允许执行 Ping？" : "允许执行路由追踪？",
     });
   });
 }
 
 function contextSourceDisplayLabel(source: AiContextSource) {
   return isAiRemoteFileContextSourceId(source.id)
-    ? `文件:${source.label.replace(/^文件:/, "").split("/").pop() || "远程文件"}`
+    ? `文件:${
+        source.label
+          .replace(/^文件:/, "")
+          .split("/")
+          .pop() || "远程文件"
+      }`
     : source.label;
 }
 
@@ -212,10 +214,7 @@ function requestAiConversationRename(request: AiConversationRenameRequest) {
   });
 }
 
-function showAiConversationNotice(
-  type: AiConversationNotice,
-  content: string,
-) {
+function showAiConversationNotice(type: AiConversationNotice, content: string) {
   if (type === "success") Message.success(content);
   else if (type === "warning") Message.warning(content);
   else Message.error(content);
@@ -303,13 +302,29 @@ function AiAssistantPanel({
     hostId,
     hostName,
     onLoadError: (error) =>
-      Message.warning(
-        `AI 历史记录加载失败：${commandErrorMessage(error)}`,
-      ),
+      Message.warning(`AI 历史记录加载失败：${commandErrorMessage(error)}`),
     onSaveError: (error) =>
       Message.warning(`AI 对话保存失败：${commandErrorMessage(error)}`),
     sessionId,
   });
+  const commandResultContextSources = useMemo(
+    () =>
+      messages.flatMap((message) =>
+        (message.commandProposals ?? [])
+          .map(aiCommandResultContextSource)
+          .filter((source) => source !== null),
+      ),
+    [messages],
+  );
+  const availableContextSources = useMemo(() => {
+    const sources = new Map(
+      contextSources.map((source) => [source.id, source]),
+    );
+    for (const source of commandResultContextSources) {
+      sources.set(source.id, source);
+    }
+    return Array.from(sources.values());
+  }, [commandResultContextSources, contextSources]);
   const {
     rejectCommandProposal,
     rejectFileEditProposal,
@@ -339,7 +354,7 @@ function AiAssistantPanel({
     prepareCommandVerification,
     updateDraft,
   } = useAiCommandActions({
-    contextSources,
+    contextSources: availableContextSources,
     conversationId: conversationStateKey,
     hostId,
     onConfirm: confirmAiCommand,
@@ -410,7 +425,7 @@ function AiAssistantPanel({
     removeRemoteFile,
     updateRemoteFileMention,
   } = useAiDraftActions({
-    contextSources,
+    contextSources: availableContextSources,
     conversationId: conversationStateKey,
     initialContextIds,
     initialPrompt,
@@ -447,15 +462,18 @@ function AiAssistantPanel({
     sending,
     sessionId,
   });
-  const selectedContextIds = aiContextMentionIds(prompt, contextSources);
-  const question = stripAiContextMentions(prompt, contextSources);
+  const selectedContextIds = aiContextMentionIds(
+    prompt,
+    availableContextSources,
+  );
+  const question = stripAiContextMentions(prompt, availableContextSources);
 
-  const selectedContextSources = contextSources.filter(
+  const selectedContextSources = availableContextSources.filter(
     (source) =>
       selectedContextIds.includes(source.id) && Boolean(source.content.trim()),
   );
   const contextPayload = buildAiContextPayloadResult(
-    contextSources,
+    availableContextSources,
     selectedContextIds,
     settings.aiContextMaxChars,
   );
@@ -471,18 +489,19 @@ function AiAssistantPanel({
   );
   const editableRemoteFiles =
     settings.aiFileProposalsEnabled && canInsertCommand
-    ? selectedRemoteFiles.filter(
-        (file) =>
-          !aiFileEditEligibilityError(
-            file,
-            context,
-            settings.aiContextMaxChars,
-          ),
-      )
-    : [];
+      ? selectedRemoteFiles.filter(
+          (file) =>
+            !aiFileEditEligibilityError(
+              file,
+              context,
+              settings.aiContextMaxChars,
+            ),
+        )
+      : [];
   const currentRemoteDirectory =
-    contextSources.find((source) => source.id === "sftp-path")?.content.trim() ||
-    null;
+    contextSources
+      .find((source) => source.id === "sftp-path")
+      ?.content.trim() || null;
   const hasRecentTerminalOutput = Boolean(
     contextSources
       .find((source) => source.id === "terminal-output")
@@ -497,18 +516,18 @@ function AiAssistantPanel({
   const fileEditEligibility = !settings.aiFileProposalsEnabled
     ? "文件变更提案权限已在设置中关闭"
     : !selectedRemoteFiles.length
-    ? "请在输入框中提及远程文件后再生成修改建议"
-    : !canInsertCommand
-      ? "当前终端会话未连接，不能应用文件修改"
-      : editableRemoteFiles.length === selectedRemoteFiles.length
-        ? null
-        : editableRemoteFiles.length
-          ? `${editableRemoteFiles.length}/${selectedRemoteFiles.length} 个文件可生成修改建议，其余文件只能分析`
-          : aiFileEditEligibilityError(
-              selectedRemoteFiles[0] ?? null,
-              context,
-              settings.aiContextMaxChars,
-            );
+      ? "请在输入框中提及远程文件后再生成修改建议"
+      : !canInsertCommand
+        ? "当前终端会话未连接，不能应用文件修改"
+        : editableRemoteFiles.length === selectedRemoteFiles.length
+          ? null
+          : editableRemoteFiles.length
+            ? `${editableRemoteFiles.length}/${selectedRemoteFiles.length} 个文件可生成修改建议，其余文件只能分析`
+            : aiFileEditEligibilityError(
+                selectedRemoteFiles[0] ?? null,
+                context,
+                settings.aiContextMaxChars,
+              );
 
   const toggleToolRun = (key: string) => {
     setExpandedToolRuns((current) => {
@@ -546,7 +565,8 @@ function AiAssistantPanel({
     if (!visible) return;
     const frame = requestAnimationFrame(() => {
       const contentElement = contentRef.current;
-      if (contentElement) contentElement.scrollTop = contentElement.scrollHeight;
+      if (contentElement)
+        contentElement.scrollTop = contentElement.scrollHeight;
     });
     return () => cancelAnimationFrame(frame);
   }, [messages, visible]);
@@ -741,7 +761,7 @@ function AiAssistantPanel({
         />
         <AiComposer
           activeConversationAvailable={Boolean(activeConversation)}
-          contextSources={contextSources}
+          contextSources={availableContextSources}
           editableRemoteFileCount={editableRemoteFiles.length}
           fileEditEligibility={fileEditEligibility ?? undefined}
           model={settings.aiModel}

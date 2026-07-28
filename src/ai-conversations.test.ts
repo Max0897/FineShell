@@ -99,8 +99,12 @@ describe("AI conversation persistence", () => {
         status: "applied",
       },
     ]);
-    expect(JSON.stringify(sanitized)).not.toContain("proposal-must-not-be-saved");
-    expect(JSON.stringify(sanitized)).not.toContain("applied-must-not-be-saved");
+    expect(JSON.stringify(sanitized)).not.toContain(
+      "proposal-must-not-be-saved",
+    );
+    expect(JSON.stringify(sanitized)).not.toContain(
+      "applied-must-not-be-saved",
+    );
     expect(JSON.stringify(sanitized)).not.toContain("/etc/app.conf");
     expect(sanitized.messages[1]?.toolRuns?.[0]).toMatchObject({
       label: "Ping",
@@ -258,10 +262,14 @@ describe("AI conversation persistence", () => {
           commandProposals: [
             {
               id: "command-1",
-              command: "curl -H 'Authorization: Bearer must-not-be-saved' example.com",
+              command:
+                "curl -H 'Authorization: Bearer must-not-be-saved' example.com",
               purpose: "使用 token=must-not-be-saved 检查服务",
               assessment: { risk: "caution" },
-              status: "verified",
+              status: "failed",
+              durationMs: 1250,
+              exitCode: 7,
+              resultOutput: "must-not-be-saved",
               sessionId: "session-1",
             },
           ],
@@ -271,9 +279,11 @@ describe("AI conversation persistence", () => {
     expect(sanitized.messages[1]?.commandRecords).toEqual([
       {
         id: "command-1",
+        durationMs: 1250,
+        exitCode: 7,
         purpose: "使用 token=[已隐藏] 检查服务",
         risk: "caution",
-        status: "verified",
+        status: "failed",
       },
     ]);
     expect(JSON.stringify(sanitized)).not.toContain("curl");
