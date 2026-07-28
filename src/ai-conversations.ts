@@ -3,6 +3,10 @@ import {
   type AiToolRun,
 } from "./ai-tools";
 import {
+  sanitizePersistedAiDiagnosticPlans,
+  type AiDiagnosticPlan,
+} from "./ai-diagnostic-plans";
+import {
   aiFileEditLineSummary,
   MAX_AI_FILE_EDIT_CHARS,
   type AiFileChangeStatus,
@@ -28,6 +32,7 @@ export interface AiConversationMessageRecord {
   content: string;
   commandRecords?: AiCommandRecord[];
   contextLabels?: string[];
+  diagnosticPlans?: AiDiagnosticPlan[];
   fileChanges?: AiFileChangeRecord[];
   id: string;
   role: "user" | "assistant";
@@ -241,6 +246,10 @@ function sanitizeMessage(
     boundedText(value.content, role === "user" ? 4_000 : 40_000) ?? "";
   const toolRuns =
     role === "assistant" ? sanitizePersistedAiToolRuns(value.toolRuns) : undefined;
+  const diagnosticPlans =
+    role === "assistant"
+      ? sanitizePersistedAiDiagnosticPlans(value.diagnosticPlans)
+      : undefined;
   const fileChanges =
     role === "assistant"
       ? sanitizeFileChanges(
@@ -265,6 +274,7 @@ function sanitizeMessage(
     (!content && role === "user") ||
     (!content &&
       !toolRuns?.length &&
+      !diagnosticPlans?.length &&
       !fileChanges?.length &&
       !commandRecords?.length)
   ) {
@@ -276,7 +286,7 @@ function sanitizeMessage(
     content,
     contextLabels: sanitizeContextLabels(value.contextLabels),
     ...(role === "assistant"
-      ? { toolRuns, fileChanges, commandRecords }
+      ? { toolRuns, diagnosticPlans, fileChanges, commandRecords }
       : {}),
   };
 }
@@ -298,6 +308,11 @@ function sanitizeMessages(value: unknown) {
           total + (run.summary?.length ?? 0) + (run.error?.length ?? 0),
         0,
       ) ?? 0;
+    const planChars =
+      message.diagnosticPlans?.reduce(
+        (total, plan) => total + (plan.description?.length ?? 0) + 96,
+        0,
+      ) ?? 0;
     const fileChangeChars =
       message.fileChanges?.reduce(
         (total, change) => total + change.fileName.length + 64,
@@ -309,7 +324,11 @@ function sanitizeMessages(value: unknown) {
         0,
       ) ?? 0;
     const messageChars =
-      message.content.length + toolChars + fileChangeChars + commandRecordChars;
+      message.content.length +
+      toolChars +
+      planChars +
+      fileChangeChars +
+      commandRecordChars;
     if (messageChars > remaining) break;
     messages.unshift(message);
     remaining -= messageChars;
@@ -403,6 +422,19 @@ export function serializeAiConversationMarkdown(
             ...detail.split("\n").map((line) => `>   ${line}`),
           );
         }
+      }
+      lines.push("");
+    }
+    if (message.diagnosticPlans?.length) {
+      lines.push("> 诊断计划：");
+      for (const plan of message.diagnosticPlans) {
+        const status =
+          plan.status === "completed"
+            ? "已完成"
+            : plan.status === "partial"
+              ? "部分完成"
+              : "已取消";
+        lines.push(`> - ${plan.description ?? "只读诊断"}：${status}`);
       }
       lines.push("");
     }

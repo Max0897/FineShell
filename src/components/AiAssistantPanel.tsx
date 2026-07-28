@@ -381,10 +381,13 @@ function AiAssistantPanel({
     updateFileOperationProposal,
   });
   const {
+    cancelDiagnosticPlan,
     cancelRequest,
+    confirmDiagnosticPlan,
     rerunTool: rerunRequestTool,
     sendMessage,
     sending,
+    stopDiagnosticPlan,
     summarizingConversationIds,
   } = useAiRequestOrchestrator({
     confirmToolExecution: confirmAiToolExecution,
@@ -712,6 +715,8 @@ function AiAssistantPanel({
           onCopyCommand={copyCommandProposal}
           onCopyCommands={copyAllCommandProposals}
           onCopyToolRun={copyToolRun}
+          onCancelDiagnosticPlan={cancelDiagnosticPlan}
+          onConfirmDiagnosticPlan={confirmDiagnosticPlan}
           onInsertCommand={onInsertCommand}
           onInsertCommandProposal={confirmInsertCommandProposal}
           onOpenFileEditReview={openFileEditReview}
@@ -728,6 +733,7 @@ function AiAssistantPanel({
           onRollbackFileEdit={confirmRollbackAppliedFileEdit}
           onRollbackFileOperation={confirmRollbackFileOperation}
           onSelectPreset={applyPromptPreset}
+          onStopDiagnosticPlan={stopDiagnosticPlan}
           onToggleToolRun={toggleToolRun}
           scrollRef={contentRef}
           sending={sending}

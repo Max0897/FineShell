@@ -20,6 +20,7 @@ const conversations: AiConversationRecord[] = [
             durationMs: 250,
             label: "读取服务器状态",
             name: "get_server_status",
+            planId: "plan-1",
             startedAt: Date.parse("2026-07-28T09:00:00.000Z"),
             status: "success",
             summary: "password=secret",
@@ -61,6 +62,9 @@ describe("AI operation audit", () => {
       "diagnostic",
     ]);
     const serialized = JSON.stringify(entries);
+    expect(entries.find((entry) => entry.category === "diagnostic")?.planId).toBe(
+      "plan-1",
+    );
     expect(serialized).not.toContain("private.example.com");
     expect(serialized).not.toContain("password");
     expect(serialized).not.toContain("secret");

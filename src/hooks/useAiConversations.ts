@@ -15,6 +15,7 @@ import type {
   AiFileEditProposal,
 } from "../ai-file-edits";
 import type { AiFileOperationProposal } from "../ai-file-operations";
+import type { AiDiagnosticPlan } from "../ai-diagnostic-plans";
 import type { AiToolRun } from "../ai-tools";
 
 export interface AiMessage {
@@ -23,6 +24,7 @@ export interface AiMessage {
   content: string;
   context?: string;
   contextLabels?: string[];
+  diagnosticPlans?: AiDiagnosticPlan[];
   error?: string;
   failed?: boolean;
   fileChanges?: AiFileChangeRecord[];

@@ -408,7 +408,7 @@ describe("useAiRequestOrchestrator", () => {
     expect(confirmToolExecution).not.toHaveBeenCalled();
     expect(callbacks.current().messages[1]?.toolRuns?.[0]).toMatchObject({
       error: "只读工具权限已关闭",
-      status: "cancelled",
+      status: "unavailable",
     });
     expect(
       callbacks.current().messages[1]?.toolRuns?.[0]?.startedAt,
@@ -416,5 +416,360 @@ describe("useAiRequestOrchestrator", () => {
     expect(
       callbacks.current().messages[1]?.toolRuns?.[0]?.durationMs,
     ).toBeLessThan(60_001);
+  });
+
+  test("waits for plan confirmation before executing tools in order", async () => {
+    let chatRequests = 0;
+    const commands: string[] = [];
+    const invokeMock = mock(async (command: string) => {
+      commands.push(command);
+      if (command === "ai_chat_start") {
+        chatRequests += 1;
+        return chatRequests === 1
+          ? {
+              content: "先检查资源，再读取进程。",
+              toolCalls: [
+                {
+                  arguments: '{"reason":"确认资源使用情况"}',
+                  id: "call-status",
+                  name: "get_server_status",
+                },
+                {
+                  arguments:
+                    '{"reason":"查找高占用进程","depends_on":[1]}',
+                  id: "call-processes",
+                  name: "list_processes",
+                },
+              ],
+            }
+          : { content: "诊断完成", toolCalls: [] };
+      }
+      if (command === "ssh_monitor_snapshot") {
+        return {
+          hostname: "server",
+          operatingSystem: "Linux",
+          kernel: "6.8",
+          uptimeSeconds: 100,
+          loadAverage: [0.1, 0.2, 0.3],
+          cpuUsagePercent: 10,
+          memoryTotalBytes: 100,
+          memoryUsedBytes: 20,
+          memoryUsagePercent: 20,
+          diskTotalBytes: 100,
+          diskUsedBytes: 30,
+          diskUsagePercent: 30,
+          networkReceiveBytes: 1,
+          networkTransmitBytes: 2,
+        };
+      }
+      if (command === "ssh_processes") {
+        return { processes: [], truncated: false };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const callbacks = createConversationCallbacks();
+    const confirmToolExecution = mock(async () => true);
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        confirmToolExecution,
+        invoke: invokeMock as unknown as AiRequestInvoke,
+        listenToStream: async () => () => undefined,
+        persistConversation: async () => undefined,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    let task!: Promise<AiConversation | undefined>;
+    act(() => {
+      task = result.current.sendMessage(baseSendOptions);
+    });
+    await waitFor(() =>
+      expect(
+        callbacks.current().messages[1]?.diagnosticPlans?.[0]?.status,
+      ).toBe("pending"),
+    );
+    expect(commands).toEqual(["ai_chat_start"]);
+    const plan = callbacks.current().messages[1]!.diagnosticPlans![0]!;
+    expect(callbacks.current().messages[1]?.toolRuns?.[0]).toMatchObject({
+      reason: "确认资源使用情况",
+      status: "pending",
+    });
+
+    act(() => {
+      result.current.confirmDiagnosticPlan(plan.id, plan.stepCallIds);
+    });
+    await act(async () => {
+      await task;
+    });
+
+    expect(commands).toEqual([
+      "ai_chat_start",
+      "ssh_monitor_snapshot",
+      "ssh_processes",
+      "ai_chat_start",
+    ]);
+    expect(confirmToolExecution).not.toHaveBeenCalled();
+    expect(callbacks.current().messages[1]?.diagnosticPlans?.[0]?.status).toBe(
+      "completed",
+    );
+    expect(
+      callbacks.current().messages[1]?.toolRuns?.map((run) => run.status),
+    ).toEqual(["success", "success"]);
+  });
+
+  test("cancels an unconfirmed active probe without executing it", async () => {
+    let chatRequests = 0;
+    const invokeMock = mock(async (command: string) => {
+      if (command === "ai_chat_start") {
+        chatRequests += 1;
+        return chatRequests === 1
+          ? {
+              content: "确认外部网络。",
+              toolCalls: [
+                {
+                  arguments:
+                    '{"target":"example.com","reason":"确认目标是否可达"}',
+                  id: "call-ping",
+                  name: "ping_target",
+                },
+              ],
+            }
+          : { content: "已取消网络诊断", toolCalls: [] };
+      }
+      throw new Error("未确认计划不应执行远端诊断");
+    });
+    const callbacks = createConversationCallbacks();
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        confirmToolExecution: async () => true,
+        invoke: invokeMock as unknown as AiRequestInvoke,
+        listenToStream: async () => () => undefined,
+        persistConversation: async () => undefined,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    let task!: Promise<AiConversation | undefined>;
+    act(() => {
+      task = result.current.sendMessage(baseSendOptions);
+    });
+    await waitFor(() =>
+      expect(callbacks.current().messages[1]?.toolRuns?.[0]).toMatchObject({
+        detail: "example.com",
+        status: "pending",
+      }),
+    );
+    const planId = callbacks.current().messages[1]!.diagnosticPlans![0]!.id;
+    act(() => result.current.cancelDiagnosticPlan(planId));
+    await act(async () => {
+      await task;
+    });
+
+    expect(invokeMock.mock.calls.map((item) => item[0])).toEqual([
+      "ai_chat_start",
+      "ai_chat_start",
+    ]);
+    expect(callbacks.current().messages[1]?.toolRuns?.[0]?.status).toBe(
+      "cancelled",
+    );
+    expect(callbacks.current().messages[1]?.diagnosticPlans?.[0]?.status).toBe(
+      "cancelled",
+    );
+  });
+
+  test("continues independent steps after failure and previews supplemental plans again", async () => {
+    let chatRequests = 0;
+    const invokeMock = mock(async (command: string) => {
+      if (command === "ai_chat_start") {
+        chatRequests += 1;
+        if (chatRequests === 1) {
+          return {
+            content: "第一轮计划",
+            toolCalls: [
+              {
+                arguments: '{"reason":"读取资源"}',
+                id: "call-failed",
+                name: "get_server_status",
+              },
+              {
+                arguments: '{"reason":"读取连接"}',
+                id: "call-connections",
+                name: "get_network_connections",
+              },
+            ],
+          };
+        }
+        if (chatRequests === 2) {
+          return {
+            content: "补充检查当前目录",
+            toolCalls: [
+              {
+                arguments: '{"reason":"确认工作目录"}',
+                id: "call-directory",
+                name: "get_current_directory",
+              },
+            ],
+          };
+        }
+        return { content: "完成", toolCalls: [] };
+      }
+      if (command === "ssh_monitor_snapshot") throw new Error("读取失败");
+      if (command === "ssh_network_connections") {
+        return { connections: [], truncated: false };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const callbacks = createConversationCallbacks();
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        confirmToolExecution: async () => true,
+        invoke: invokeMock as unknown as AiRequestInvoke,
+        listenToStream: async () => () => undefined,
+        persistConversation: async () => undefined,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    let task!: Promise<AiConversation | undefined>;
+    act(() => {
+      task = result.current.sendMessage(baseSendOptions);
+    });
+    await waitFor(() =>
+      expect(callbacks.current().messages[1]?.diagnosticPlans).toHaveLength(1),
+    );
+    const firstPlan = callbacks.current().messages[1]!.diagnosticPlans![0]!;
+    act(() =>
+      result.current.confirmDiagnosticPlan(firstPlan.id, firstPlan.stepCallIds),
+    );
+    await waitFor(() =>
+      expect(callbacks.current().messages[1]?.diagnosticPlans).toHaveLength(2),
+    );
+    expect(
+      callbacks.current().messages[1]?.toolRuns?.slice(0, 2).map((run) =>
+        run.status,
+      ),
+    ).toEqual(["failed", "success"]);
+    expect(invokeMock.mock.calls.map((item) => item[0])).not.toContain(
+      "ssh_current_directory",
+    );
+    const secondPlan = callbacks.current().messages[1]!.diagnosticPlans![1]!;
+    expect(secondPlan.status).toBe("pending");
+    act(() =>
+      result.current.confirmDiagnosticPlan(secondPlan.id, secondPlan.stepCallIds),
+    );
+    await act(async () => {
+      await task;
+    });
+    expect(callbacks.current().messages[1]?.diagnosticPlans?.[1]?.status).toBe(
+      "completed",
+    );
+  });
+
+  test("stops remaining steps after the active step finishes", async () => {
+    const snapshot = deferred<unknown>();
+    let chatRequests = 0;
+    const invokeMock = mock(async (command: string) => {
+      if (command === "ai_chat_start") {
+        chatRequests += 1;
+        return chatRequests === 1
+          ? {
+              content: "顺序检查",
+              toolCalls: [
+                {
+                  arguments: "{}",
+                  id: "call-status",
+                  name: "get_server_status",
+                },
+                {
+                  arguments: "{}",
+                  id: "call-processes",
+                  name: "list_processes",
+                },
+              ],
+            }
+          : { content: "已基于部分结果完成分析", toolCalls: [] };
+      }
+      if (command === "ssh_monitor_snapshot") return snapshot.promise;
+      throw new Error(`不应执行：${command}`);
+    });
+    const callbacks = createConversationCallbacks();
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        confirmToolExecution: async () => true,
+        invoke: invokeMock as unknown as AiRequestInvoke,
+        listenToStream: async () => () => undefined,
+        persistConversation: async () => undefined,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    let task!: Promise<AiConversation | undefined>;
+    act(() => {
+      task = result.current.sendMessage(baseSendOptions);
+    });
+    await waitFor(() =>
+      expect(callbacks.current().messages[1]?.diagnosticPlans).toHaveLength(1),
+    );
+    const currentPlan = callbacks.current().messages[1]!.diagnosticPlans![0]!;
+    act(() =>
+      result.current.confirmDiagnosticPlan(
+        currentPlan.id,
+        currentPlan.stepCallIds,
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.some((item) => item[0] === "ssh_monitor_snapshot"),
+      ).toBe(true),
+    );
+    act(() => result.current.stopDiagnosticPlan(currentPlan.id));
+    expect(
+      callbacks.current().messages[1]?.diagnosticPlans?.[0]?.stopRequested,
+    ).toBe(true);
+    await act(async () => {
+      snapshot.resolve({
+        hostname: "server",
+        operatingSystem: "Linux",
+        kernel: "6.8",
+        uptimeSeconds: 100,
+        loadAverage: [0.1, 0.2, 0.3],
+        cpuUsagePercent: 10,
+        memoryTotalBytes: 100,
+        memoryUsedBytes: 20,
+        memoryUsagePercent: 20,
+        diskTotalBytes: 100,
+        diskUsedBytes: 30,
+        diskUsagePercent: 30,
+        networkReceiveBytes: 1,
+        networkTransmitBytes: 2,
+      });
+      await task;
+    });
+
+    expect(invokeMock.mock.calls.map((item) => item[0])).not.toContain(
+      "ssh_processes",
+    );
+    expect(
+      callbacks.current().messages[1]?.toolRuns?.map((run) => run.status),
+    ).toEqual(["success", "cancelled"]);
+    expect(callbacks.current().messages[1]?.diagnosticPlans?.[0]?.status).toBe(
+      "partial",
+    );
   });
 });

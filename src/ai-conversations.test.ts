@@ -26,6 +26,16 @@ function conversation(id = "conversation-1") {
         id: "message-2",
         role: "assistant" as const,
         content: "请先运行 `nginx -t`。",
+        diagnosticPlans: [
+          {
+            createdAt: "2026-07-28T00:20:00.000Z",
+            description: "使用 token=must-not-be-saved 检查网络",
+            id: "plan-1",
+            status: "completed" as const,
+            stepCallIds: ["call-1"],
+            rawResults: "must-not-be-saved",
+          },
+        ],
         fileEditProposals: [
           {
             appliedAt: "2026-07-28T00:30:00.000Z",
@@ -54,6 +64,8 @@ function conversation(id = "conversation-1") {
             durationMs: 120,
             label: "untrusted",
             name: "ping_target" as const,
+            planId: "plan-1",
+            reason: "检查 token=must-not-be-saved 对应服务",
             startedAt: 123,
             status: "success" as const,
             summary: "状态：可达\ntoken=must-not-be-saved",
@@ -93,12 +105,19 @@ describe("AI conversation persistence", () => {
     expect(sanitized.messages[1]?.toolRuns?.[0]).toMatchObject({
       label: "Ping",
       name: "ping_target",
+      planId: "plan-1",
       startedAt: 123,
       status: "success",
     });
     expect(sanitized.messages[1]?.toolRuns?.[0]?.summary).not.toContain(
       "must-not-be-saved",
     );
+    expect(sanitized.messages[1]?.diagnosticPlans?.[0]).toMatchObject({
+      description: "使用 token=[已隐藏] 检查网络",
+      id: "plan-1",
+      status: "completed",
+    });
+    expect(JSON.stringify(sanitized)).not.toContain("rawResults");
   });
 
   test("persists a redacted conversation summary and its watermark", () => {
@@ -136,6 +155,7 @@ describe("AI conversation persistence", () => {
     expect(markdown).toContain("> 上下文来源：最近终端输出");
     expect(markdown).toContain("## AI");
     expect(markdown).toContain("> 诊断工具：");
+    expect(markdown).toContain("> 诊断计划：");
     expect(markdown).toContain("Ping（example.com）：已完成");
     expect(markdown).toContain("修改 app.conf：已应用（+1 / -1）");
     expect(markdown).not.toContain("must-not-be-saved");

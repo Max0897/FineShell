@@ -38,6 +38,7 @@ import { assessAiTerminalCommand } from "../ai-utils";
 import type { AiMessage } from "../hooks/useAiConversations";
 import { commandErrorMessage } from "../tauri-protocol";
 import AiCommandProposalList from "./AiCommandProposalList";
+import AiDiagnosticPlanList from "./AiDiagnosticPlanList";
 import AiFileChangePanels from "./AiFileChangePanels";
 import AiToolRunList from "./AiToolRunList";
 
@@ -64,6 +65,11 @@ interface AiMessageTimelineProps {
   onCopyCommand: (command: string) => void | Promise<void>;
   onCopyCommands: (proposals: AiCommandProposal[]) => void | Promise<void>;
   onCopyToolRun: (run: AiToolRun) => void | Promise<void>;
+  onCancelDiagnosticPlan: (planId: string) => void;
+  onConfirmDiagnosticPlan: (
+    planId: string,
+    selectedCallIds: string[],
+  ) => void;
   onInsertCommand: (command: string) => Promise<void>;
   onInsertCommandProposal: (
     messageId: string,
@@ -101,6 +107,7 @@ interface AiMessageTimelineProps {
     proposal: AiFileOperationProposal,
   ) => void;
   onSelectPreset: (preset: AiPromptPreset) => void;
+  onStopDiagnosticPlan: (planId: string) => void;
   onToggleToolRun: (key: string) => void;
   scrollRef: RefObject<HTMLDivElement>;
   sending: boolean;
@@ -270,6 +277,8 @@ function AiMessageTimeline({
   onCopyCommand,
   onCopyCommands,
   onCopyToolRun,
+  onCancelDiagnosticPlan,
+  onConfirmDiagnosticPlan,
   onInsertCommand,
   onInsertCommandProposal,
   onOpenFileEditReview,
@@ -286,6 +295,7 @@ function AiMessageTimeline({
   onRollbackFileEdit,
   onRollbackFileOperation,
   onSelectPreset,
+  onStopDiagnosticPlan,
   onToggleToolRun,
   scrollRef,
   sending,
@@ -312,7 +322,26 @@ function AiMessageTimeline({
                 </Tag>
               ))}
             </div>
-            {message.role === "assistant" && Boolean(message.toolRuns?.length) && (
+            {message.role === "assistant" &&
+              Boolean(message.diagnosticPlans?.length) && (
+                <AiDiagnosticPlanList
+                  expandedRuns={expandedToolRuns}
+                  messageId={message.id}
+                  onAddToDraft={onAddToolRunToDraft}
+                  onCancel={onCancelDiagnosticPlan}
+                  onConfirm={onConfirmDiagnosticPlan}
+                  onCopy={onCopyToolRun}
+                  onRerun={onRerunTool}
+                  onStop={onStopDiagnosticPlan}
+                  onToggleRun={onToggleToolRun}
+                  plans={message.diagnosticPlans ?? []}
+                  runs={message.toolRuns ?? []}
+                  sending={sending}
+                  sessionAvailable={Boolean(sessionId)}
+                />
+              )}
+            {message.role === "assistant" &&
+              Boolean(message.toolRuns?.some((run) => !run.planId)) && (
               <AiToolRunList
                 expandedRuns={expandedToolRuns}
                 messageId={message.id}
@@ -320,7 +349,7 @@ function AiMessageTimeline({
                 onCopy={onCopyToolRun}
                 onRerun={onRerunTool}
                 onToggle={onToggleToolRun}
-                runs={message.toolRuns ?? []}
+                runs={message.toolRuns?.filter((run) => !run.planId) ?? []}
                 sending={sending}
                 sessionAvailable={Boolean(sessionId)}
               />
@@ -405,7 +434,8 @@ function AiMessageTimeline({
                     message.commandRecords?.length ||
                     message.fileEditProposals?.length ||
                     message.fileOperationProposals?.length ||
-                    message.fileChanges?.length ? null : message.toolRuns?.some(
+                    message.fileChanges?.length ||
+                    message.diagnosticPlans?.length ? null : message.toolRuns?.some(
                         (run) => run.status === "running",
                       ) ? null : (
                     <Spin size={14} />

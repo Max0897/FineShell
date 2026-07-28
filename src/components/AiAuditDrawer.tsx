@@ -188,6 +188,9 @@ function AiAuditDrawer({
                   </div>
                   <Typography.Text type="secondary">
                     {entry.hostName} · {formatAuditTime(entry.occurredAt)}
+                    {entry.planId
+                      ? ` · 计划 ${entry.planId.slice(-8)}`
+                      : ""}
                     {entry.durationMs !== undefined
                       ? ` · ${entry.durationMs} ms`
                       : ""}

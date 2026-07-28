@@ -36,15 +36,19 @@ export function aiToolRunDuration(durationMs?: number) {
 }
 
 function runStatus(run: AiToolRun) {
+  if (run.status === "pending") return "等待确认";
   if (run.status === "running") return "读取中";
   if (run.status === "success") {
     return `已完成 · ${aiToolRunDuration(run.durationMs)}`;
   }
   if (run.status === "cancelled") return "已取消";
+  if (run.status === "skipped") return "已跳过";
+  if (run.status === "unavailable") return "不可用";
   return `不可用 · ${aiToolRunDuration(run.durationMs)}`;
 }
 
 function runStatusIcon(run: AiToolRun) {
+  if (run.status === "pending") return <IconRight />;
   if (run.status === "running") return <Spin size={12} />;
   if (run.status === "success") return <IconCheckCircle />;
   if (run.status === "cancelled") return <IconStop />;
@@ -121,7 +125,7 @@ function AiToolRunList({
                     />
                   </Tooltip>
                 )}
-                {run.status !== "running" && (
+                {run.status !== "running" && run.status !== "pending" && (
                   <Tooltip content="重新执行">
                     <Button
                       aria-label="重新执行诊断工具"

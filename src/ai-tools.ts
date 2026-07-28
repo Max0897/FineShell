@@ -16,18 +16,25 @@ export type { AiReadOnlyToolName } from "./ai-permissions";
 export { isAiReadOnlyToolName } from "./ai-permissions";
 
 export type AiToolRunStatus =
+  | "pending"
   | "running"
   | "success"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "skipped"
+  | "unavailable";
 
 export interface AiToolRun {
   callId: string;
+  dependsOn?: string[];
   detail?: string;
   durationMs?: number;
   error?: string;
   label: string;
   name: AiReadOnlyToolName;
+  optional?: boolean;
+  planId?: string;
+  reason?: string;
   summary?: string;
   startedAt: number;
   status: AiToolRunStatus;
@@ -112,6 +119,7 @@ export function aiToolLabel(name: string) {
 export function createAiToolRun(
   call: AiToolCall,
   startedAt = Date.now(),
+  status: "pending" | "running" = "running",
 ): AiToolRun {
   if (!isAiReadOnlyToolName(call.name)) {
     throw new Error(`AI 请求了不支持的工具：${call.name}`);
@@ -122,7 +130,7 @@ export function createAiToolRun(
     label: aiToolLabel(call.name),
     name: call.name,
     startedAt,
-    status: "running",
+    status,
   };
 }
 
@@ -130,7 +138,7 @@ export function finishAiToolRun(
   run: AiToolRun,
   completion: {
     error?: string;
-    status?: "success" | "failed" | "cancelled";
+    status?: Exclude<AiToolRunStatus, "pending" | "running">;
     summary?: string;
   } = {},
   finishedAt = Date.now(),
@@ -270,13 +278,25 @@ export function sanitizePersistedAiToolRuns(value: unknown): AiToolRun[] | undef
       if (
         item.status !== "success" &&
         item.status !== "failed" &&
-        item.status !== "cancelled"
+        item.status !== "cancelled" &&
+        item.status !== "skipped" &&
+        item.status !== "unavailable"
       ) {
         return undefined;
       }
       const name = String(item.name) as AiReadOnlyToolName;
       const callId = boundedSafeText(item.callId, 160);
       if (!callId) return undefined;
+      const planId = boundedSafeText(item.planId, 160);
+      const dependsOn = Array.isArray(item.dependsOn)
+        ? Array.from(
+            new Set(
+              item.dependsOn
+                .map((id) => boundedSafeText(id, 160))
+                .filter((id): id is string => Boolean(id)),
+            ),
+          ).slice(0, 5)
+        : undefined;
       const duration = finiteNumber(item.durationMs);
       const startedAt = finiteNumber(item.startedAt);
       return {
@@ -289,6 +309,9 @@ export function sanitizePersistedAiToolRuns(value: unknown): AiToolRun[] | undef
         error: boundedSafeText(item.error, 300),
         label: TOOL_LABELS[name],
         name,
+        optional: item.optional === true || undefined,
+        planId,
+        reason: boundedSafeText(item.reason, 240),
         startedAt:
           startedAt === undefined ||
           startedAt < 0 ||
@@ -297,6 +320,7 @@ export function sanitizePersistedAiToolRuns(value: unknown): AiToolRun[] | undef
             : Math.round(startedAt),
         status: item.status,
         summary: boundedSafeText(item.summary, 4_000),
+        dependsOn: dependsOn?.length ? dependsOn : undefined,
       };
     })
     .filter((run): run is AiToolRun => Boolean(run))

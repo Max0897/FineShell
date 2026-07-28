@@ -28,6 +28,7 @@ export interface AiAuditEntry {
   id: string;
   label: string;
   occurredAt: string;
+  planId?: string;
   status: AiAuditStatus;
 }
 
@@ -132,6 +133,7 @@ export function buildAiAuditEntries(
             startedAt + Math.max(0, run.durationMs ?? 0),
             fallbackTime,
           ),
+          planId: run.planId,
           status: toolStatus(run.status),
         });
       }

@@ -30,6 +30,8 @@ function renderTimeline(
         onCopyCommand={() => undefined}
         onCopyCommands={() => undefined}
         onCopyToolRun={() => undefined}
+        onCancelDiagnosticPlan={() => undefined}
+        onConfirmDiagnosticPlan={() => undefined}
         onInsertCommand={async () => undefined}
         onInsertCommandProposal={() => undefined}
         onOpenFileEditReview={() => undefined}
@@ -46,6 +48,7 @@ function renderTimeline(
         onRollbackFileEdit={() => undefined}
         onRollbackFileOperation={() => undefined}
         onSelectPreset={onSelectPreset}
+        onStopDiagnosticPlan={() => undefined}
         onToggleToolRun={() => undefined}
         scrollRef={createRef<HTMLDivElement>()}
         sending={false}

@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppSettings } from "../app-settings";
+import {
+  completeAiDiagnosticPlan,
+  createAiDiagnosticPlan,
+  type AiDiagnosticPlan,
+} from "../ai-diagnostic-plans";
 import { aiReadOnlyToolEnabled } from "../ai-permissions";
 import {
   aiCommandProposalToolResult,
@@ -35,7 +40,6 @@ import {
   aiToolResult,
   aiToolResultSummary,
   aiToolTarget,
-  createAiToolRun,
   currentDirectoryToolValue,
   finishAiToolRun,
   isAiReadOnlyToolName,
@@ -139,6 +143,17 @@ interface ActiveAiRequest {
   requestId: string;
 }
 
+interface AiDiagnosticPlanDecision {
+  selectedCallIds: string[];
+  type: "confirm" | "cancel" | "abort";
+}
+
+interface ActiveDiagnosticPlanLocation {
+  conversationId: string;
+  hostId: string;
+  messageId: string;
+}
+
 const defaultInvoke: AiRequestInvoke = (command, args) =>
   diagnosticInvoke(command, args);
 
@@ -228,7 +243,16 @@ export function useAiRequestOrchestrator({
   >(() => new Set());
   const activeRequestRef = useRef<ActiveAiRequest>();
   const cancelledRequestsRef = useRef(new Set<string>());
+  const diagnosticPlanWaitersRef = useRef(
+    new Map<string, (decision: AiDiagnosticPlanDecision) => void>(),
+  );
+  const activeDiagnosticPlansRef = useRef(
+    new Map<string, ActiveDiagnosticPlanLocation>(),
+  );
+  const stoppedDiagnosticPlansRef = useRef(new Set<string>());
   const summaryRequestsRef = useRef(new Set<string>());
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const callbacksRef = useRef({
     onCancelError,
     onMissingModel,
@@ -246,12 +270,59 @@ export function useAiRequestOrchestrator({
     const requestId = activeRequestRef.current?.requestId;
     if (!requestId) return;
     cancelledRequestsRef.current.add(requestId);
+    for (const resolve of diagnosticPlanWaitersRef.current.values()) {
+      resolve({ selectedCallIds: [], type: "abort" });
+    }
+    diagnosticPlanWaitersRef.current.clear();
     try {
       await invoke("ai_chat_cancel", { requestId });
     } catch (error) {
       callbacksRef.current.onCancelError?.(error);
     }
   }, [invoke]);
+
+  const confirmDiagnosticPlan = useCallback(
+    (planId: string, selectedCallIds: string[]) => {
+      const resolve = diagnosticPlanWaitersRef.current.get(planId);
+      if (!resolve) return;
+      diagnosticPlanWaitersRef.current.delete(planId);
+      resolve({ selectedCallIds, type: "confirm" });
+    },
+    [],
+  );
+
+  const cancelDiagnosticPlan = useCallback((planId: string) => {
+    const resolve = diagnosticPlanWaitersRef.current.get(planId);
+    if (!resolve) return;
+    diagnosticPlanWaitersRef.current.delete(planId);
+    resolve({ selectedCallIds: [], type: "cancel" });
+  }, []);
+
+  const stopDiagnosticPlan = useCallback(
+    (planId: string) => {
+      stoppedDiagnosticPlansRef.current.add(planId);
+      const location = activeDiagnosticPlansRef.current.get(planId);
+      if (!location) return;
+      updateMessages(
+        location.hostId,
+        location.conversationId,
+        (messages) =>
+          messages.map((message) =>
+            message.id === location.messageId
+              ? {
+                  ...message,
+                  diagnosticPlans: message.diagnosticPlans?.map((plan) =>
+                    plan.id === planId
+                      ? { ...plan, stopRequested: true }
+                      : plan,
+                  ),
+                }
+              : message,
+          ),
+      );
+    },
+    [updateMessages],
+  );
 
   useEffect(() => {
     const activeRequest = activeRequestRef.current;
@@ -262,6 +333,12 @@ export function useAiRequestOrchestrator({
       }).catch(() => undefined);
     }
     activeRequestRef.current = undefined;
+    for (const resolve of diagnosticPlanWaitersRef.current.values()) {
+      resolve({ selectedCallIds: [], type: "abort" });
+    }
+    diagnosticPlanWaitersRef.current.clear();
+    activeDiagnosticPlansRef.current.clear();
+    stoppedDiagnosticPlansRef.current.clear();
     setSending(false);
   }, [invoke, sessionId]);
 
@@ -449,7 +526,15 @@ export function useAiRequestOrchestrator({
               toolRounds,
             },
           });
-          if (result.content.trim()) responseParts.push(result.content.trim());
+          const diagnosticCalls = result.toolCalls.filter(
+            (call) =>
+              !isAiFileEditToolCall(call) &&
+              !isAiFileOperationToolCall(call) &&
+              !isAiCommandProposalToolCall(call),
+          );
+          if (result.content.trim() && !diagnosticCalls.length) {
+            responseParts.push(result.content.trim());
+          }
 
           if (!result.toolCalls.length) {
             completed = updateMessages(
@@ -473,14 +558,18 @@ export function useAiRequestOrchestrator({
             throw new Error("AI 连续请求工具次数过多，请缩小问题范围后重试");
           }
 
-          const nextRuns = result.toolCalls
-            .filter(
-              (call) =>
-                !isAiFileEditToolCall(call) &&
-                !isAiFileOperationToolCall(call) &&
-                !isAiCommandProposalToolCall(call),
-            )
-            .map((call) => createAiToolRun(call));
+          let nextPlan: AiDiagnosticPlan | undefined;
+          let nextRuns: AiToolRun[] = [];
+          if (diagnosticCalls.length) {
+            const created = createAiDiagnosticPlan(
+              createId("ai-diagnostic-plan"),
+              diagnosticCalls,
+              result.content,
+              settingsRef.current.aiReadOnlyTools,
+            );
+            nextPlan = created.plan;
+            nextRuns = created.runs;
+          }
           const nextProposals: AiFileEditProposal[] = [];
           const nextOperationProposals: AiFileOperationProposal[] = [];
           const nextCommandProposals: AiCommandProposal[] = [];
@@ -580,11 +669,82 @@ export function useAiRequestOrchestrator({
                       ...(message.commandProposals ?? []),
                       ...nextCommandProposals,
                     ],
+                    diagnosticPlans: nextPlan
+                      ? [...(message.diagnosticPlans ?? []), nextPlan]
+                      : message.diagnosticPlans,
                     toolRuns: [...(message.toolRuns ?? []), ...nextRuns],
                   }
                 : message,
             ),
           );
+
+          const syncDiagnosticPlan = () => {
+            if (!nextPlan) return;
+            const displayedPlan = stoppedDiagnosticPlansRef.current.has(
+              nextPlan.id,
+            )
+              ? { ...nextPlan, stopRequested: true }
+              : nextPlan;
+            const runsById = new Map(
+              nextRuns.map((run) => [run.callId, run] as const),
+            );
+            updateMessages(targetHostId, targetConversationId, (current) =>
+              current.map((message) =>
+                message.id === assistantMessage.id
+                  ? {
+                      ...message,
+                      diagnosticPlans: message.diagnosticPlans?.map((plan) =>
+                        plan.id === displayedPlan.id ? displayedPlan : plan,
+                      ),
+                      toolRuns: message.toolRuns?.map(
+                        (run) => runsById.get(run.callId) ?? run,
+                      ),
+                    }
+                  : message,
+              ),
+            );
+          };
+
+          let planDecision: AiDiagnosticPlanDecision | undefined;
+          if (nextPlan) {
+            activeDiagnosticPlansRef.current.set(nextPlan.id, {
+              conversationId: targetConversationId,
+              hostId: targetHostId,
+              messageId: assistantMessage.id,
+            });
+            if (nextRuns.some((run) => run.status === "pending")) {
+              planDecision = await new Promise<AiDiagnosticPlanDecision>(
+                (resolve) => {
+                  diagnosticPlanWaitersRef.current.set(nextPlan!.id, resolve);
+                },
+              );
+            } else {
+              planDecision = { selectedCallIds: [], type: "confirm" };
+            }
+            if (
+              planDecision.type === "abort" ||
+              cancelledRequestsRef.current.has(requestId)
+            ) {
+              throw new Error("AI 请求已取消");
+            }
+            if (planDecision.type === "cancel") {
+              nextRuns = nextRuns.map((run) =>
+                run.status === "pending"
+                  ? finishAiToolRun(
+                      { ...run, startedAt: Date.now() },
+                      {
+                        status: "cancelled",
+                        summary: "用户取消了诊断计划",
+                      },
+                    )
+                  : run,
+              );
+              nextPlan = completeAiDiagnosticPlan(nextPlan, nextRuns);
+            } else {
+              nextPlan = { ...nextPlan, status: "running" };
+            }
+            syncDiagnosticPlan();
+          }
 
           const toolResults: AiToolResult[] = [];
           for (const call of result.toolCalls) {
@@ -618,25 +778,66 @@ export function useAiRequestOrchestrator({
               );
               continue;
             }
+            const runIndex = nextRuns.findIndex(
+              (run) => run.callId === call.id,
+            );
+            const run = nextRuns[runIndex];
+            if (!nextPlan || !run || !planDecision) {
+              throw new Error(`AI 请求了不支持的工具：${call.name}`);
+            }
             let toolResult: AiToolResult;
             let toolError: string | undefined;
-            let toolStatus: "success" | "failed" | "cancelled" = "success";
-            const hasPermission = aiReadOnlyToolEnabled(
-              settings.aiReadOnlyTools,
-              call.name,
+            let terminalStatus:
+              | "success"
+              | "failed"
+              | "cancelled"
+              | "skipped"
+              | "unavailable" = "success";
+            const selected =
+              !run.optional ||
+              planDecision.selectedCallIds.includes(run.callId);
+            const dependencyFailed = run.dependsOn?.some(
+              (dependencyId) =>
+                nextRuns.find((item) => item.callId === dependencyId)?.status !==
+                "success",
             );
-            const allowed =
-              hasPermission && (await confirmToolExecution(call));
-            if (cancelledRequestsRef.current.has(requestId)) {
-              throw new Error("AI 请求已取消");
-            }
-            if (!allowed) {
-              toolError = hasPermission
-                ? "用户未授权主动网络探测"
-                : "只读工具权限已关闭";
-              toolStatus = "cancelled";
+            if (run.status === "unavailable") {
+              toolError = "只读工具权限已关闭";
+              terminalStatus = "unavailable";
+              toolResult = aiToolResult(call, { ok: false, error: toolError });
+            } else if (planDecision.type === "cancel" || !selected) {
+              toolError =
+                planDecision.type === "cancel"
+                  ? "用户取消了诊断计划"
+                  : "用户取消了可选诊断步骤";
+              terminalStatus = "cancelled";
+              toolResult = aiToolResult(call, { ok: false, error: toolError });
+            } else if (stoppedDiagnosticPlansRef.current.has(nextPlan.id)) {
+              toolError = "用户停止了剩余诊断步骤";
+              terminalStatus = "cancelled";
+              toolResult = aiToolResult(call, { ok: false, error: toolError });
+            } else if (dependencyFailed) {
+              toolError = "依赖的诊断步骤未成功，已跳过";
+              terminalStatus = "skipped";
+              toolResult = aiToolResult(call, { ok: false, error: toolError });
+            } else if (
+              !aiReadOnlyToolEnabled(
+                settingsRef.current.aiReadOnlyTools,
+                call.name,
+              )
+            ) {
+              toolError = "只读工具权限已关闭";
+              terminalStatus = "unavailable";
               toolResult = aiToolResult(call, { ok: false, error: toolError });
             } else {
+              nextRuns[runIndex] = {
+                ...run,
+                error: undefined,
+                startedAt: Date.now(),
+                status: "running",
+                summary: undefined,
+              };
+              syncDiagnosticPlan();
               try {
                 toolResult = await executeAiReadOnlyTool(
                   call,
@@ -646,7 +847,7 @@ export function useAiRequestOrchestrator({
                 );
               } catch (error) {
                 toolError = commandErrorMessage(error);
-                toolStatus = "failed";
+                terminalStatus = "failed";
                 toolResult = aiToolResult(call, {
                   ok: false,
                   error: toolError,
@@ -654,25 +855,25 @@ export function useAiRequestOrchestrator({
               }
             }
             const toolSummary = aiToolResultSummary(call, toolResult);
-            toolResults.push(toolResult);
-            updateMessages(targetHostId, targetConversationId, (current) =>
-              current.map((message) =>
-                message.id === assistantMessage.id
-                  ? {
-                      ...message,
-                      toolRuns: message.toolRuns?.map((run) =>
-                        run.callId === call.id
-                          ? finishAiToolRun(run, {
-                              error: toolError,
-                              status: toolStatus,
-                              summary: toolSummary,
-                            })
-                          : run,
-                      ),
-                    }
-                  : message,
-              ),
+            const currentRun = nextRuns[runIndex]!;
+            nextRuns[runIndex] = finishAiToolRun(
+              currentRun.status === "running"
+                ? currentRun
+                : { ...currentRun, startedAt: Date.now() },
+              {
+                error: toolError,
+                status: terminalStatus,
+                summary: toolSummary,
+              },
             );
+            toolResults.push(toolResult);
+            syncDiagnosticPlan();
+          }
+          if (nextPlan) {
+            nextPlan = completeAiDiagnosticPlan(nextPlan, nextRuns);
+            syncDiagnosticPlan();
+            activeDiagnosticPlansRef.current.delete(nextPlan.id);
+            stoppedDiagnosticPlansRef.current.delete(nextPlan.id);
           }
           toolRounds.push({
             calls: result.toolCalls,
@@ -690,28 +891,48 @@ export function useAiRequestOrchestrator({
         updateMessages(targetHostId, targetConversationId, (current) =>
           current.map((message) =>
             message.id === assistantMessage.id
-              ? {
-                  ...message,
-                  failed: true,
-                  error: cancelled ? "已停止生成" : commandErrorMessage(error),
-                  toolRuns: message.toolRuns?.map((run) =>
-                    run.status === "running"
-                      ? finishAiToolRun(run, {
-                          error: cancelled ? "已停止" : "调用未完成",
-                          status: cancelled ? "cancelled" : "failed",
-                          summary: cancelled
-                            ? "用户已停止生成"
-                            : "调用未完成",
-                        })
+              ? (() => {
+                  const toolRuns = message.toolRuns?.map((run) =>
+                    run.status === "running" || run.status === "pending"
+                      ? finishAiToolRun(
+                          run.status === "pending"
+                            ? { ...run, startedAt: Date.now() }
+                            : run,
+                          {
+                            error: cancelled ? "已停止" : "调用未完成",
+                            status: cancelled ? "cancelled" : "failed",
+                            summary: cancelled
+                              ? "用户已停止生成"
+                              : "调用未完成",
+                          },
+                        )
                       : run,
-                  ),
-                }
+                  );
+                  return {
+                    ...message,
+                    failed: true,
+                    error: cancelled ? "已停止生成" : commandErrorMessage(error),
+                    diagnosticPlans: message.diagnosticPlans?.map((plan) =>
+                      plan.status === "pending" || plan.status === "running"
+                        ? completeAiDiagnosticPlan(plan, toolRuns ?? [])
+                        : plan,
+                    ),
+                    toolRuns,
+                  };
+                })()
               : message,
           ),
         );
         return undefined;
       } finally {
         cancelledRequestsRef.current.delete(requestId);
+        for (const [planId, location] of activeDiagnosticPlansRef.current) {
+          if (location.messageId === assistantMessage.id) {
+            activeDiagnosticPlansRef.current.delete(planId);
+            stoppedDiagnosticPlansRef.current.delete(planId);
+            diagnosticPlanWaitersRef.current.delete(planId);
+          }
+        }
         if (activeRequestRef.current?.requestId === requestId) {
           activeRequestRef.current = undefined;
           setSending(false);
@@ -820,10 +1041,13 @@ export function useAiRequestOrchestrator({
   );
 
   return {
+    cancelDiagnosticPlan,
     cancelRequest,
+    confirmDiagnosticPlan,
     rerunTool,
     sendMessage,
     sending,
+    stopDiagnosticPlan,
     summarizingConversationIds,
   };
 }

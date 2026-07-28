@@ -1256,6 +1256,11 @@ body.ai-sidebar-resizing::after {
   color: #ff7d00;
 }
 
+.ai-tool-run-skipped .ai-tool-run-icon,
+.ai-tool-run-unavailable .ai-tool-run-icon {
+  color: #86909c;
+}
+
 .ai-tool-run-actions {
   display: inline-flex;
   align-items: center;
@@ -1284,6 +1289,128 @@ body.ai-sidebar-resizing::after {
 
 .ai-tool-confirmation .arco-typography {
   margin-top: 0;
+}
+
+.ai-diagnostic-plans {
+  margin: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-diagnostic-plan {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #c9cdd4;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.ai-diagnostic-plan-heading {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid #f2f3f5;
+}
+
+.ai-diagnostic-plan-heading > .arco-typography {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-diagnostic-plan-description {
+  margin: 0;
+  padding: 8px 10px;
+  color: #4e5969;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-diagnostic-plan-preview {
+  border-top: 1px solid #f2f3f5;
+}
+
+.ai-diagnostic-plan-step {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.ai-diagnostic-plan-step + .ai-diagnostic-plan-step {
+  border-top: 1px solid #f7f8fa;
+}
+
+.ai-diagnostic-plan-step-index {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #f2f3f5;
+  color: #4e5969;
+  font-size: 11px;
+}
+
+.ai-diagnostic-plan-step-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ai-diagnostic-plan-step-content > .arco-typography {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ai-diagnostic-plan-step-title {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.ai-diagnostic-plan-step-title > .arco-typography {
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-diagnostic-plan-step > .arco-checkbox {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.ai-diagnostic-plan-actions {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid #f2f3f5;
+  background: #f7f8fa;
+}
+
+.ai-diagnostic-plan > .ai-tool-runs {
+  margin: 0;
+  padding: 8px;
 }
 
 .ai-command-proposals {
