@@ -410,5 +410,11 @@ describe("useAiRequestOrchestrator", () => {
       error: "只读工具权限已关闭",
       status: "cancelled",
     });
+    expect(
+      callbacks.current().messages[1]?.toolRuns?.[0]?.startedAt,
+    ).toBeGreaterThan(1_000_000_000_000);
+    expect(
+      callbacks.current().messages[1]?.toolRuns?.[0]?.durationMs,
+    ).toBeLessThan(60_001);
   });
 });

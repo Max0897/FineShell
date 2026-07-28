@@ -139,7 +139,7 @@ export function finishAiToolRun(
   const summary = boundedSafeText(completion.summary, 4_000);
   return {
     ...run,
-    durationMs: Math.max(0, finishedAt - run.startedAt),
+    durationMs: Math.min(60_000, Math.max(0, finishedAt - run.startedAt)),
     error,
     summary,
     status: completion.status ?? (error ? "failed" : "success"),

@@ -480,7 +480,7 @@ export function useAiRequestOrchestrator({
                 !isAiFileOperationToolCall(call) &&
                 !isAiCommandProposalToolCall(call),
             )
-            .map(createAiToolRun);
+            .map((call) => createAiToolRun(call));
           const nextProposals: AiFileEditProposal[] = [];
           const nextOperationProposals: AiFileOperationProposal[] = [];
           const nextCommandProposals: AiCommandProposal[] = [];
