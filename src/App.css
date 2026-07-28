@@ -952,6 +952,11 @@ body.ai-sidebar-resizing::after {
   font-size: 12px;
 }
 
+.ai-assistant-heading > .arco-tag {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
 .ai-conversation-history {
   height: 100%;
 }

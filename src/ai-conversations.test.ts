@@ -101,6 +101,23 @@ describe("AI conversation persistence", () => {
     );
   });
 
+  test("persists a redacted conversation summary and its watermark", () => {
+    const sanitized = sanitizeAiConversation({
+      ...conversation(),
+      summary: {
+        content: "已确认 password=must-not-be-saved",
+        throughMessageId: "message-2",
+        updatedAt: "2026-07-28T02:00:00.000Z",
+      },
+    })!;
+
+    expect(sanitized.summary).toEqual({
+      content: "已确认 password=[已隐藏]",
+      throughMessageId: "message-2",
+      updatedAt: "2026-07-28T02:00:00.000Z",
+    });
+  });
+
   test("creates bounded titles and filesystem-safe export names", () => {
     expect(aiConversationTitleFromPrompt("  检查   nginx 配置  ")).toBe(
       "检查 nginx 配置",

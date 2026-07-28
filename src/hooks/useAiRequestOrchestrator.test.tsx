@@ -231,6 +231,93 @@ describe("useAiRequestOrchestrator", () => {
     });
   });
 
+  test("summarizes older messages in the background after saving the answer", async () => {
+    const invokeMock = mock(
+      async (_command: string, args?: Record<string, unknown>) => {
+        const request = args?.request as { requestId: string };
+        return request.requestId.startsWith("ai-summary-")
+          ? { content: "## 目标\n确认服务状态", toolCalls: [] }
+          : { content: "本次回答", toolCalls: [] };
+      },
+    );
+    const callbacks = createConversationCallbacks();
+    const persistConversation = mock(async () => undefined);
+    const history: AiMessage[] = Array.from({ length: 18 }, (_, index) => ({
+      content: `第 ${index + 1} 条消息`,
+      id: `history-${index + 1}`,
+      role: index % 2 === 0 ? "user" : "assistant",
+    }));
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        confirmToolExecution: async () => true,
+        invoke: invokeMock as unknown as AiRequestInvoke,
+        listenToStream: async () => () => undefined,
+        persistConversation,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage({ ...baseSendOptions, history });
+    });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(callbacks.current().summary).toMatchObject({
+        content: "## 目标\n确认服务状态",
+        throughMessageId: "history-12",
+      }),
+    );
+    expect(callbacks.current().messages).toHaveLength(20);
+    expect(persistConversation).toHaveBeenCalledTimes(2);
+    expect(result.current.summarizingConversationIds.size).toBe(0);
+  });
+
+  test("keeps the completed conversation when background summarization fails", async () => {
+    const summaryError = new Error("summary unavailable");
+    const invokeMock = mock(
+      async (_command: string, args?: Record<string, unknown>) => {
+        const request = args?.request as { requestId: string };
+        if (request.requestId.startsWith("ai-summary-")) throw summaryError;
+        return { content: "本次回答", toolCalls: [] };
+      },
+    );
+    const callbacks = createConversationCallbacks();
+    const onSummaryError = mock(() => undefined);
+    const history: AiMessage[] = Array.from({ length: 18 }, (_, index) => ({
+      content: `第 ${index + 1} 条消息`,
+      id: `history-${index + 1}`,
+      role: index % 2 === 0 ? "user" : "assistant",
+    }));
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        confirmToolExecution: async () => true,
+        invoke: invokeMock as unknown as AiRequestInvoke,
+        listenToStream: async () => () => undefined,
+        onSummaryError,
+        persistConversation: async () => undefined,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage({ ...baseSendOptions, history });
+    });
+    await waitFor(() => expect(onSummaryError).toHaveBeenCalledWith(summaryError));
+    expect(callbacks.current().summary).toBeUndefined();
+    const completedMessages = callbacks.current().messages;
+    expect(completedMessages[completedMessages.length - 1]?.content).toBe(
+      "本次回答",
+    );
+  });
+
   test("cancels the active backend request and marks a rejected request as stopped", async () => {
     const response = deferred<AiChatResult>();
     const invokeMock = mock(

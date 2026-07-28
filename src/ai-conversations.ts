@@ -34,12 +34,19 @@ export interface AiConversationMessageRecord {
   toolRuns?: AiToolRun[];
 }
 
+export interface AiConversationSummaryRecord {
+  content: string;
+  throughMessageId: string;
+  updatedAt: string;
+}
+
 export interface AiConversationRecord {
   createdAt: string;
   hostId: string;
   hostName: string;
   id: string;
   messages: AiConversationMessageRecord[];
+  summary?: AiConversationSummaryRecord;
   title: string;
   updatedAt: string;
 }
@@ -311,6 +318,20 @@ function sanitizeMessages(value: unknown) {
   return messages;
 }
 
+function sanitizeSummary(
+  value: unknown,
+): AiConversationSummaryRecord | undefined {
+  if (!isRecord(value)) return undefined;
+  const content = boundedText(value.content, 4_000);
+  const throughMessageId = boundedText(value.throughMessageId, 160);
+  if (!content || !throughMessageId) return undefined;
+  return {
+    content: redactAiContext(content),
+    throughMessageId,
+    updatedAt: isoDate(value.updatedAt, new Date().toISOString()),
+  };
+}
+
 export function sanitizeAiConversation(
   value: unknown,
 ): AiConversationRecord | undefined {
@@ -328,6 +349,7 @@ export function sanitizeAiConversation(
     createdAt,
     updatedAt: isoDate(value.updatedAt, createdAt),
     messages: sanitizeMessages(value.messages),
+    summary: sanitizeSummary(value.summary),
   };
 }
 

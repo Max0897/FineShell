@@ -5,6 +5,7 @@ import {
   Message,
   Modal,
   Space,
+  Tag,
   Tooltip,
   Typography,
 } from "@arco-design/web-react";
@@ -19,6 +20,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import type { AppSettings } from "../app-settings";
+import { buildAiConversationRequestMessages } from "../ai-summaries";
 import {
   aiToolRequiresConfirmation,
   aiToolTarget,
@@ -44,7 +46,10 @@ import {
   type AiContextSourceId,
   type AiRemoteFileContext,
 } from "../ai-utils";
-import { diagnosticInvoke as invoke } from "../diagnostics";
+import {
+  diagnosticInvoke as invoke,
+  recordDiagnostic,
+} from "../diagnostics";
 import {
   commandErrorMessage,
   type AiToolCall,
@@ -381,10 +386,15 @@ function AiAssistantPanel({
     rerunTool: rerunRequestTool,
     sendMessage,
     sending,
+    summarizingConversationIds,
   } = useAiRequestOrchestrator({
     confirmToolExecution: confirmAiToolExecution,
     onCancelError: (error) => Message.error(commandErrorMessage(error)),
     onMissingModel: () => Message.warning("请先在设置中配置 AI 模型"),
+    onSummaryError: (error) =>
+      recordDiagnostic("warn", "ai.summary", "后台整理对话摘要失败", {
+        error: commandErrorMessage(error),
+      }),
     persistConversation,
     sessionId,
     settings,
@@ -449,7 +459,7 @@ function AiAssistantPanel({
   );
   const context = contextPayload.content;
   const tokenBudget = estimateAiRequestTokenBudget(
-    messages,
+    buildAiConversationRequestMessages(messages, activeConversation?.summary),
     question,
     contextPayload,
     settings.aiContextMaxChars,
@@ -545,6 +555,7 @@ function AiAssistantPanel({
     void sendMessage({
       commandProposalEnabled:
         canInsertCommand && settings.aiCommandProposalsEnabled,
+      conversationSummary: activeConversation.summary,
       context,
       contextLabels: selectedContextSources.map(contextSourceDisplayLabel),
       currentOperationDirectory: operationDirectory,
@@ -575,6 +586,20 @@ function AiAssistantPanel({
     void sendMessage({
       commandProposalEnabled:
         canInsertCommand && settings.aiCommandProposalsEnabled,
+      conversationSummary:
+        activeConversation.summary &&
+        (messages
+          .slice(0, assistantIndex - 1)
+          .some(
+            (message) =>
+              message.id === activeConversation.summary?.throughMessageId,
+          ) ||
+          !messages.some(
+            (message) =>
+              message.id === activeConversation.summary?.throughMessageId,
+          ))
+          ? activeConversation.summary
+          : undefined,
       context: userMessage.context ?? "",
       contextLabels: userMessage.contextLabels ?? [],
       currentOperationDirectory: null,
@@ -604,6 +629,18 @@ function AiAssistantPanel({
           <Typography.Text ellipsis title={activeConversation?.title}>
             {activeConversation?.title ?? ""}
           </Typography.Text>
+          {activeConversation &&
+            (summarizingConversationIds.has(activeConversation.id) ? (
+              <Tooltip content="正在后台压缩较早的对话，不影响当前操作">
+                <Tag color="arcoblue" size="small">
+                  整理中
+                </Tag>
+              </Tooltip>
+            ) : activeConversation.summary ? (
+              <Tooltip content="较早对话已压缩为摘要，最近消息仍保留原文">
+                <Tag size="small">已摘要</Tag>
+              </Tooltip>
+            ) : null)}
         </span>
         <Space size="mini">
           <Tooltip content="新建对话">

@@ -7,7 +7,16 @@ import {
   isAiCommandProposalToolCall,
   type AiCommandProposal,
 } from "../ai-command-proposals";
-import { aiConversationTitleFromPrompt } from "../ai-conversations";
+import {
+  aiConversationTitleFromPrompt,
+  sanitizeAiConversation,
+  type AiConversationSummaryRecord,
+} from "../ai-conversations";
+import {
+  buildAiConversationRequestMessages,
+  completeAiConversationSummary,
+  createAiConversationSummaryPlan,
+} from "../ai-summaries";
 import {
   aiFileEditToolResult,
   createAiFileEditProposal,
@@ -38,7 +47,7 @@ import {
   traceRouteToolValue,
   type AiToolRun,
 } from "../ai-tools";
-import { buildAiRequestMessages, type AiRemoteFileContext } from "../ai-utils";
+import type { AiRemoteFileContext } from "../ai-utils";
 import { diagnosticInvoke } from "../diagnostics";
 import type {
   NetworkConnectionsResult,
@@ -70,6 +79,7 @@ export type AiStreamListener = (
 
 interface SendAiMessageOptions {
   commandProposalEnabled: boolean;
+  conversationSummary?: AiConversationSummaryRecord;
   context: string;
   contextLabels: string[];
   currentOperationDirectory: string | null;
@@ -98,6 +108,7 @@ interface UseAiRequestOrchestratorOptions {
   listenToStream?: AiStreamListener;
   onCancelError?: (error: unknown) => void;
   onMissingModel?: () => void;
+  onSummaryError?: (error: unknown) => void;
   persistConversation: (conversation?: AiConversation) => Promise<void>;
   sessionId: string | null;
   settings: Pick<
@@ -203,6 +214,7 @@ export function useAiRequestOrchestrator({
   listenToStream = defaultStreamListener,
   onCancelError,
   onMissingModel,
+  onSummaryError,
   persistConversation,
   sessionId,
   settings,
@@ -211,14 +223,24 @@ export function useAiRequestOrchestrator({
   updateMessages,
 }: UseAiRequestOrchestratorOptions) {
   const [sending, setSending] = useState(false);
+  const [summarizingConversationIds, setSummarizingConversationIds] = useState<
+    Set<string>
+  >(() => new Set());
   const activeRequestRef = useRef<ActiveAiRequest>();
   const cancelledRequestsRef = useRef(new Set<string>());
+  const summaryRequestsRef = useRef(new Set<string>());
   const callbacksRef = useRef({
     onCancelError,
     onMissingModel,
+    onSummaryError,
     updateMessages,
   });
-  callbacksRef.current = { onCancelError, onMissingModel, updateMessages };
+  callbacksRef.current = {
+    onCancelError,
+    onMissingModel,
+    onSummaryError,
+    updateMessages,
+  };
 
   const cancelRequest = useCallback(async () => {
     const requestId = activeRequestRef.current?.requestId;
@@ -269,9 +291,81 @@ export function useAiRequestOrchestrator({
     };
   }, [listenToStream]);
 
+  const queueConversationSummary = useCallback(
+    (conversation?: AiConversation) => {
+      if (!conversation || summaryRequestsRef.current.has(conversation.id)) {
+        return;
+      }
+      const sanitized = sanitizeAiConversation(conversation);
+      if (!sanitized) return;
+      const plan = createAiConversationSummaryPlan(sanitized);
+      if (!plan) return;
+
+      summaryRequestsRef.current.add(conversation.id);
+      setSummarizingConversationIds((current) => {
+        const next = new Set(current);
+        next.add(conversation.id);
+        return next;
+      });
+      void (async () => {
+        try {
+          const result = await invoke<AiChatResult>("ai_chat_start", {
+            request: {
+              requestId: createId("ai-summary"),
+              baseUrl: settings.aiBaseUrl,
+              model: settings.aiModel,
+              messages: [{ role: "user", content: plan.prompt }],
+              context: null,
+              enabledTools: [],
+              fileEditEnabled: false,
+              commandProposalEnabled: false,
+              toolRounds: [],
+            },
+          });
+          if (result.toolCalls.length) {
+            throw new Error("对话摘要请求返回了不支持的工具调用");
+          }
+          const summary = completeAiConversationSummary(plan, result.content);
+          let applied = false;
+          const updated = updateConversation(
+            conversation.hostId,
+            conversation.id,
+            (current) => {
+              if (
+                current.summary?.throughMessageId !==
+                plan.previousSummary?.throughMessageId
+              ) {
+                return current;
+              }
+              applied = true;
+              return { ...current, summary };
+            },
+          );
+          if (applied) await persistConversation(updated);
+        } catch (error) {
+          callbacksRef.current.onSummaryError?.(error);
+        } finally {
+          summaryRequestsRef.current.delete(conversation.id);
+          setSummarizingConversationIds((current) => {
+            const next = new Set(current);
+            next.delete(conversation.id);
+            return next;
+          });
+        }
+      })();
+    }, [
+      invoke,
+      persistConversation,
+      settings.aiBaseUrl,
+      settings.aiModel,
+      updateConversation,
+    ],
+  );
+
   const sendMessage = useCallback(
     async ({
       commandProposalEnabled,
+      conversationSummary,
       context,
       contextLabels,
       currentOperationDirectory,
@@ -324,7 +418,7 @@ export function useAiRequestOrchestrator({
 
       try {
         const requestMessages = [
-          ...buildAiRequestMessages(history),
+          ...buildAiConversationRequestMessages(history, conversationSummary),
           { role: "user" as const, content: userMessage.content },
         ];
         const toolRounds: AiToolRound[] = [];
@@ -587,6 +681,7 @@ export function useAiRequestOrchestrator({
           });
         }
         await persistConversation(completed);
+        queueConversationSummary(completed);
         return completed;
       } catch (error) {
         const cancelled =
@@ -627,6 +722,7 @@ export function useAiRequestOrchestrator({
       confirmToolExecution,
       invoke,
       persistConversation,
+      queueConversationSummary,
       setDraft,
       settings.aiBaseUrl,
       settings.aiCommandProposalsEnabled,
@@ -723,5 +819,11 @@ export function useAiRequestOrchestrator({
     ],
   );
 
-  return { cancelRequest, rerunTool, sendMessage, sending };
+  return {
+    cancelRequest,
+    rerunTool,
+    sendMessage,
+    sending,
+    summarizingConversationIds,
+  };
 }
