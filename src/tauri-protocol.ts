@@ -90,12 +90,51 @@ export interface MenuSelectAllPayload {
   invert: boolean;
 }
 
+export interface AiStreamPayload {
+  requestId: string;
+  delta: string;
+}
+
+export interface AiCompletePayload {
+  requestId: string;
+}
+
+export interface AiChatResult {
+  content: string;
+  toolCalls: AiToolCall[];
+}
+
+export interface AiToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface AiToolResult {
+  callId: string;
+  name: string;
+  content: string;
+}
+
+export interface AiToolRound {
+  calls: AiToolCall[];
+  content?: string;
+  results: AiToolResult[];
+}
+
+export interface AiModelInfo {
+  id: string;
+  ownedBy?: string;
+}
+
 interface EventPayloadMap {
   "ssh-output": SshOutputPayload;
   "ssh-status": SshStatusPayload;
   "port-forward-status": PortForwardStatusPayload;
   "sftp-transfer": SftpTransferPayload;
   "sftp-external-edit": ExternalEditPayload;
+  "ai-stream": AiStreamPayload;
+  "ai-complete": AiCompletePayload;
   "configuration:changed": undefined;
   "settings:changed": AppSettings;
   "menu-select-all": MenuSelectAllPayload;

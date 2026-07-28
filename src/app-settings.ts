@@ -1,3 +1,7 @@
+import { inferAiProvider, type AiProvider } from "./ai-providers";
+
+export type { AiProvider } from "./ai-providers";
+
 export type TerminalFontFamily = "system" | "menlo" | "consolas";
 export type TerminalCursorStyle = "block" | "underline" | "bar";
 export type TerminalColorScheme =
@@ -32,6 +36,12 @@ export interface AppSettings {
   connectionHistoryLimit: ConnectionHistoryLimit;
   connectionHistoryRetentionDays: ConnectionHistoryRetentionDays;
   diagnosticLogLevel: DiagnosticLogLevel;
+  aiProvider: AiProvider;
+  aiBaseUrl: string;
+  aiModel: string;
+  aiContextMaxChars: number;
+  aiToolsEnabled: boolean;
+  aiCommandTrackingEnabled: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -56,6 +66,12 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   connectionHistoryLimit: 50,
   connectionHistoryRetentionDays: 0,
   diagnosticLogLevel: "info",
+  aiProvider: "openai",
+  aiBaseUrl: "https://api.openai.com/v1",
+  aiModel: "",
+  aiContextMaxChars: 12_000,
+  aiToolsEnabled: true,
+  aiCommandTrackingEnabled: true,
 };
 
 export const TERMINAL_FONT_FAMILIES: Record<TerminalFontFamily, string> = {
@@ -109,8 +125,19 @@ function connectionHistoryRetentionDaysValue(
   return value === 7 || value === 30 || value === 90 ? value : 0;
 }
 
+function aiProviderValue(value: unknown, baseUrl: string): AiProvider {
+  return value === "openai" ||
+    value === "deepseek" ||
+    value === "ollama" ||
+    value === "custom"
+    ? value
+    : inferAiProvider(baseUrl);
+}
+
 export function sanitizeAppSettings(value: unknown): AppSettings {
   const settings = isRecord(value) ? value : {};
+  const aiBaseUrl =
+    stringValue(settings.aiBaseUrl) || DEFAULT_APP_SETTINGS.aiBaseUrl;
   return {
     terminalColorScheme:
       settings.terminalColorScheme === "graphiteLight" ||
@@ -208,6 +235,23 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
       settings.diagnosticLogLevel === "error"
         ? settings.diagnosticLogLevel
         : DEFAULT_APP_SETTINGS.diagnosticLogLevel,
+    aiProvider: aiProviderValue(settings.aiProvider, aiBaseUrl),
+    aiBaseUrl,
+    aiModel: stringValue(settings.aiModel).slice(0, 160),
+    aiContextMaxChars: numberValue(
+      settings.aiContextMaxChars,
+      DEFAULT_APP_SETTINGS.aiContextMaxChars,
+      2_000,
+      32_000,
+    ),
+    aiToolsEnabled: booleanValue(
+      settings.aiToolsEnabled,
+      DEFAULT_APP_SETTINGS.aiToolsEnabled,
+    ),
+    aiCommandTrackingEnabled: booleanValue(
+      settings.aiCommandTrackingEnabled,
+      DEFAULT_APP_SETTINGS.aiCommandTrackingEnabled,
+    ),
   };
 }
 

@@ -49,6 +49,7 @@ import {
   IconLaunch,
   IconPaste,
   IconRefresh,
+  IconRobot,
   IconScissor,
   IconStar,
   IconStarFill,
@@ -71,6 +72,12 @@ import {
 } from "../config-database";
 import ContextMenu from "./ContextMenu";
 import type { ContextMenuItem } from "./ContextMenu";
+import {
+  MAX_AI_REMOTE_FILES,
+  MAX_AI_REMOTE_FILES_BYTES,
+  aiRemoteFileContextError,
+  type AiRemoteFileContext,
+} from "../ai-utils";
 import {
   formatFileSize,
   formatPermissions,
@@ -147,6 +154,12 @@ interface SftpPanelProps {
   confirmFileDelete: boolean;
   externalEditorName: string;
   externalEditorPath: string;
+  onCurrentPathChange: (sessionId: string | null, path: string) => void;
+  onSendFilesToAi: (
+    sessionId: string,
+    files: AiRemoteFileContext[],
+  ) => void | Promise<void>;
+  refreshRequest: number;
   session: TerminalSession | null;
   showHiddenFiles: boolean;
 }
@@ -253,6 +266,9 @@ function SftpPanel({
   confirmFileDelete,
   externalEditorName,
   externalEditorPath,
+  onCurrentPathChange,
+  onSendFilesToAi,
+  refreshRequest,
   session,
   showHiddenFiles,
 }: SftpPanelProps) {
@@ -311,6 +327,7 @@ function SftpPanel({
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
   const startingTransfersRef = useRef(new Set<string>());
+  const handledRefreshRequestsRef = useRef<Record<string, number>>({});
   const browsersRef = useRef(browsers);
   const transfersRef = useRef(transfers);
   const panelRef = useRef<HTMLElement>(null);
@@ -581,6 +598,19 @@ function SftpPanel({
   }, [browsers, connectAndLoad, session, updateBrowser]);
 
   useEffect(() => {
+    if (!session || refreshRequest <= 0) return;
+    if (
+      (handledRefreshRequestsRef.current[session.id] ?? 0) >= refreshRequest
+    ) {
+      return;
+    }
+    const browser = browsers[session.id];
+    if (!browser || browser.status !== "ready") return;
+    handledRefreshRequestsRef.current[session.id] = refreshRequest;
+    void loadDirectory(session.id, browser.path);
+  }, [browsers, loadDirectory, refreshRequest, session]);
+
+  useEffect(() => {
     if (!isTauri()) return;
 
     let disposed = false;
@@ -775,6 +805,13 @@ function SftpPanel({
       textEditor ? new TextEncoder().encode(textEditor.content).byteLength : 0,
     [textEditor],
   );
+
+  useEffect(() => {
+    onCurrentPathChange(
+      session?.id ?? null,
+      browser?.status === "ready" ? browser.path : "",
+    );
+  }, [browser?.path, browser?.status, onCurrentPathChange, session?.id]);
 
   useEffect(() => {
     setSelectedEntryKeys([]);
@@ -2014,6 +2051,60 @@ function SftpPanel({
     }
   }
 
+  async function sendFilesToAi(entries: SftpEntry[]) {
+    if (!session || operationLoading) return;
+    const files = entries.filter((entry) => entry.kind === "file");
+    if (!files.length) return;
+    if (files.length > MAX_AI_REMOTE_FILES) {
+      Message.warning(`每次最多发送 ${MAX_AI_REMOTE_FILES} 个文件给 AI`);
+      return;
+    }
+    const selectedBytes = files.reduce(
+      (total, entry) => total + entry.size,
+      0,
+    );
+    if (selectedBytes > MAX_AI_REMOTE_FILES_BYTES) {
+      Message.warning("所选文件总大小不能超过 512 KiB");
+      return;
+    }
+    const invalidFile = files.find((entry) =>
+      Boolean(aiRemoteFileContextError(entry.size)),
+    );
+    if (invalidFile) {
+      Message.warning(
+        `${invalidFile.name}：${aiRemoteFileContextError(invalidFile.size)}`,
+      );
+      return;
+    }
+
+    const targetSessionId = session.id;
+    setOperationLoading(true);
+    try {
+      const contexts: AiRemoteFileContext[] = [];
+      for (const entry of files) {
+        const document = await invoke<RemoteTextFile>("sftp_read_text_file", {
+          sessionId: targetSessionId,
+          path: entry.path,
+        });
+        const documentSizeError = aiRemoteFileContextError(document.size);
+        if (documentSizeError) {
+          throw new Error(`${entry.name}：${documentSizeError}`);
+        }
+        contexts.push({
+          content: document.content,
+          name: entry.name,
+          path: document.path,
+          size: document.size,
+        });
+      }
+      await onSendFilesToAi(targetSessionId, contexts);
+    } catch (error) {
+      handleOperationError(error);
+    } finally {
+      setOperationLoading(false);
+    }
+  }
+
   async function saveTextEditor(overwrite = false) {
     if (
       !session ||
@@ -2156,6 +2247,7 @@ function SftpPanel({
 
   function entryContextMenuItems(entries: SftpEntry[]): ContextMenuItem[] {
     const singleEntry = entries.length === 1 ? entries[0] : null;
+    const aiFileEntries = entries.filter((entry) => entry.kind === "file");
     const menuItems: ContextMenuItem[] = [];
 
     if (singleEntry?.kind === "directory") {
@@ -2239,6 +2331,19 @@ function SftpPanel({
         icon: <IconDownload />,
         disabled: operationLoading,
         onClick: () => downloadEntries(entries),
+      });
+    }
+
+    if (aiFileEntries.length) {
+      menuItems.push({
+        key: "send-files-to-ai",
+        label:
+          aiFileEntries.length === 1
+            ? "发送给 AI"
+            : `发送所选文件给 AI（${aiFileEntries.length}）`,
+        icon: <IconRobot />,
+        disabled: operationLoading,
+        onClick: () => sendFilesToAi(aiFileEntries),
       });
     }
 

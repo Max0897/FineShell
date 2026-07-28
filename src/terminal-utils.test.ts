@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
+  appendInjectedTerminalInput,
+  consumeTerminalCommandCandidate,
   decodeSshOutput,
+  EMPTY_TERMINAL_INPUT_STATE,
   jumpHostRequest,
   reconnectDelaySeconds,
   sessionTabName,
   sshCredentialId,
+  trackTerminalInput,
   terminalStatusNoticeKey,
 } from "./terminal-utils";
 
@@ -13,6 +17,57 @@ describe("decodeSshOutput", () => {
     expect(Array.from(decodeSshOutput("AAEC/4A"))).toEqual([
       0, 1, 2, 255, 128,
     ]);
+  });
+});
+
+describe("terminal input tracking", () => {
+  test("matches a manually submitted command that was inserted by AI", () => {
+    const inserted = appendInjectedTerminalInput(
+      EMPTY_TERMINAL_INPUT_STATE,
+      "systemctl status nginx",
+    );
+    const result = trackTerminalInput(inserted, "\r");
+    expect(result.submissions).toEqual(["systemctl status nginx"]);
+    expect(result.state).toEqual(EMPTY_TERMINAL_INPUT_STATE);
+  });
+
+  test("tracks simple edits without guessing shell completion", () => {
+    let result = trackTerminalInput(EMPTY_TERMINAL_INPUT_STATE, "echo noo");
+    result = trackTerminalInput(result.state, "\u007fk");
+    result = trackTerminalInput(result.state, "\r");
+    expect(result.submissions).toEqual(["echo nok"]);
+
+    result = trackTerminalInput(EMPTY_TERMINAL_INPUT_STATE, "echo value\t");
+    result = trackTerminalInput(result.state, "\r");
+    expect(result.submissions).toEqual([]);
+  });
+
+  test("resets after cancel and supports clearing the current line", () => {
+    let result = trackTerminalInput(EMPTY_TERMINAL_INPUT_STATE, "wrong\u0015pwd\r");
+    expect(result.submissions).toEqual(["pwd"]);
+
+    result = trackTerminalInput(EMPTY_TERMINAL_INPUT_STATE, "secret\u0003\r");
+    expect(result.submissions).toEqual([]);
+  });
+
+  test("does not report input after cursor control sequences", () => {
+    let result = trackTerminalInput(
+      EMPTY_TERMINAL_INPUT_STATE,
+      "echo test\u001b[Dchanged",
+    );
+    result = trackTerminalInput(result.state, "\r");
+    expect(result.submissions).toEqual([]);
+    expect(result.state).toEqual(EMPTY_TERMINAL_INPUT_STATE);
+  });
+
+  test("consumes only an exact AI-inserted command candidate", () => {
+    expect(
+      consumeTerminalCommandCandidate(["pwd", "whoami"], "whoami"),
+    ).toEqual({ candidates: ["pwd"], matched: true });
+    expect(consumeTerminalCommandCandidate(["pwd"], "pwd -P")).toEqual({
+      candidates: ["pwd"],
+      matched: false,
+    });
   });
 });
 

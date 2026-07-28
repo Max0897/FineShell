@@ -38,6 +38,12 @@ describe("app settings", () => {
       connectionHistoryLimit: 100,
       connectionHistoryRetentionDays: 30,
       diagnosticLogLevel: "debug",
+      aiProvider: "deepseek",
+      aiBaseUrl: "  https://example.com/v1  ",
+      aiModel: "  model-name  ",
+      aiContextMaxChars: 99_000,
+      aiToolsEnabled: false,
+      aiCommandTrackingEnabled: false,
     });
 
     expect(settings).toMatchObject({
@@ -62,7 +68,24 @@ describe("app settings", () => {
       connectionHistoryLimit: 100,
       connectionHistoryRetentionDays: 30,
       diagnosticLogLevel: "debug",
+      aiProvider: "deepseek",
+      aiBaseUrl: "https://example.com/v1",
+      aiModel: "model-name",
+      aiContextMaxChars: 32_000,
+      aiToolsEnabled: false,
+      aiCommandTrackingEnabled: false,
     });
+  });
+
+  test("infers an AI provider for settings saved before provider presets", () => {
+    expect(
+      sanitizeAppSettings({ aiBaseUrl: "http://localhost:11434/v1/" })
+        .aiProvider,
+    ).toBe("ollama");
+    expect(
+      sanitizeAppSettings({ aiBaseUrl: "https://llm.example.com/v1" })
+        .aiProvider,
+    ).toBe("custom");
   });
 
   test("compares every persisted setting", () => {

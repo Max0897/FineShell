@@ -13,6 +13,7 @@ import {
   IconCopy,
   IconDown,
   IconPaste,
+  IconRobot,
   IconSearch,
   IconSelectAll,
   IconUp,
@@ -35,7 +36,15 @@ import {
   TERMINAL_FONT_FAMILIES,
   type AppSettings,
 } from "../app-settings";
-import { decodeSshOutput, terminalStatusNoticeKey } from "../terminal-utils";
+import {
+  appendInjectedTerminalInput,
+  consumeTerminalCommandCandidate,
+  decodeSshOutput,
+  EMPTY_TERMINAL_INPUT_STATE,
+  terminalStatusNoticeKey,
+  trackTerminalInput,
+  type TerminalInjectedInput,
+} from "../terminal-utils";
 import { TERMINAL_THEMES } from "../terminal-themes";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import { listenProtocolEvent } from "../tauri-protocol";
@@ -43,9 +52,15 @@ import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 interface TerminalViewProps {
   active: boolean;
+  commandTrackingEnabled: boolean;
   focusRequest: number;
+  injectedInput?: TerminalInjectedInput;
   settings: AppSettings;
   session: TerminalSession;
+  onAskAi: (selection: string) => void;
+  onCommandSubmit: (command: string) => void;
+  onRecentOutputChange: (output: string) => void;
+  onSelectionChange: (selection: string) => void;
 }
 
 const EMPTY_SEARCH_RESULT: ISearchResultChangeEvent = {
@@ -89,9 +104,15 @@ async function writeClipboard(value: string) {
 
 function TerminalView({
   active,
+  commandTrackingEnabled,
   focusRequest,
+  injectedInput,
   settings,
   session,
+  onAskAi,
+  onCommandSubmit,
+  onRecentOutputChange,
+  onSelectionChange,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -99,6 +120,13 @@ function TerminalView({
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<RefInputType>(null);
   const connectedRef = useRef(session.status === "connected");
+  const commandSubmitRef = useRef(onCommandSubmit);
+  const commandTrackingEnabledRef = useRef(commandTrackingEnabled);
+  const aiCommandCandidatesRef = useRef<string[]>([]);
+  const inputStateRef = useRef({ ...EMPTY_TERMINAL_INPUT_STATE });
+  const lastInjectedInputIdRef = useRef<string>();
+  const recentOutputChangeRef = useRef(onRecentOutputChange);
+  const selectionChangeRef = useRef(onSelectionChange);
   const settingsRef = useRef(settings);
   const searchVisibleRef = useRef(false);
   const lastStatusNoticeRef = useRef<string>();
@@ -110,10 +138,45 @@ function TerminalView({
 
   searchVisibleRef.current = searchVisible;
   settingsRef.current = settings;
+  commandSubmitRef.current = onCommandSubmit;
+  commandTrackingEnabledRef.current = commandTrackingEnabled;
+  recentOutputChangeRef.current = onRecentOutputChange;
+  selectionChangeRef.current = onSelectionChange;
 
   useEffect(() => {
     connectedRef.current = session.status === "connected";
+    if (session.status !== "connected") {
+      aiCommandCandidatesRef.current = [];
+      inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
+    }
   }, [session.status]);
+
+  useEffect(() => {
+    if (commandTrackingEnabled) return;
+    aiCommandCandidatesRef.current = [];
+    inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
+  }, [commandTrackingEnabled]);
+
+  useEffect(() => {
+    if (
+      !commandTrackingEnabled ||
+      !injectedInput ||
+      lastInjectedInputIdRef.current === injectedInput.id
+    ) {
+      return;
+    }
+    lastInjectedInputIdRef.current = injectedInput.id;
+    aiCommandCandidatesRef.current = [
+      ...aiCommandCandidatesRef.current.filter(
+        (candidate) => candidate !== injectedInput.value,
+      ),
+      injectedInput.value,
+    ].slice(-8);
+    inputStateRef.current = appendInjectedTerminalInput(
+      inputStateRef.current,
+      injectedInput.value,
+    );
+  }, [commandTrackingEnabled, injectedInput]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -143,6 +206,9 @@ function TerminalView({
     lastStatusNoticeRef.current = undefined;
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
+    inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
+    aiCommandCandidatesRef.current = [];
+    lastInjectedInputIdRef.current = undefined;
 
     const fit = () => {
       if (container.clientWidth === 0 || container.clientHeight === 0) return;
@@ -166,6 +232,19 @@ function TerminalView({
 
     const dataDisposable = terminal.onData((data) => {
       if (!connectedRef.current) return;
+      if (commandTrackingEnabledRef.current) {
+        const tracked = trackTerminalInput(inputStateRef.current, data);
+        inputStateRef.current = tracked.state;
+        for (const command of tracked.submissions) {
+          const candidate = consumeTerminalCommandCandidate(
+            aiCommandCandidatesRef.current,
+            command,
+          );
+          aiCommandCandidatesRef.current = candidate.candidates;
+          if (!candidate.matched) continue;
+          commandSubmitRef.current(command);
+        }
+      }
       void invoke("ssh_write", {
         sessionId: session.id,
         data: Array.from(new TextEncoder().encode(data)),
@@ -181,6 +260,7 @@ function TerminalView({
       setSearchResult(result);
     });
     const selectionDisposable = terminal.onSelectionChange(() => {
+      selectionChangeRef.current(terminal.getSelection());
       if (
         !settingsRef.current.terminalCopyOnSelect ||
         !terminal.hasSelection()
@@ -192,9 +272,28 @@ function TerminalView({
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    let recentOutputTimer: ReturnType<typeof setTimeout> | undefined;
+    const emitRecentOutput = () => {
+      recentOutputTimer = undefined;
+      const buffer = terminal.buffer.active;
+      const start = Math.max(0, buffer.length - 100);
+      let output = "";
+      for (let index = start; index < buffer.length; index += 1) {
+        const line = buffer.getLine(index);
+        if (!line) continue;
+        const value = line.translateToString(true);
+        if (line.isWrapped) output += value;
+        else output += `${output ? "\n" : ""}${value}`;
+      }
+      recentOutputChangeRef.current(output.trimEnd());
+    };
+    const scheduleRecentOutput = () => {
+      if (recentOutputTimer) return;
+      recentOutputTimer = setTimeout(emitRecentOutput, 200);
+    };
     void listenProtocolEvent("ssh-output", ({ payload }) => {
       if (payload.sessionId === session.id) {
-        terminal.write(decodeSshOutput(payload.data));
+        terminal.write(decodeSshOutput(payload.data), scheduleRecentOutput);
       }
     }).then((stopListening) => {
       if (disposed) {
@@ -207,6 +306,7 @@ function TerminalView({
     return () => {
       disposed = true;
       unlisten?.();
+      if (recentOutputTimer) clearTimeout(recentOutputTimer);
       resizeObserver.disconnect();
       if (fitFrame !== undefined) cancelAnimationFrame(fitFrame);
       dataDisposable.dispose();
@@ -435,6 +535,15 @@ function TerminalView({
   function terminalContextMenuItems(): ContextMenuItem[] {
     const terminal = terminalRef.current;
     return [
+      {
+        key: "ask-ai",
+        label: "使用 AI 解释",
+        icon: <IconRobot />,
+        disabled: !terminal?.hasSelection(),
+        onClick: () => {
+          if (terminal?.hasSelection()) onAskAi(terminal.getSelection());
+        },
+      },
       {
         key: "copy",
         label: "复制",

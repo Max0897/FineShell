@@ -21,6 +21,7 @@ import {
   IconCommand,
   IconHistory,
   IconInfoCircle,
+  IconRobot,
   IconThunderbolt,
   IconTool,
 } from "@arco-design/web-react/icon";
@@ -49,6 +50,7 @@ import { emitProtocolEventTo } from "../tauri-protocol";
 import { TERMINAL_THEMES } from "../terminal-themes";
 import { isApplePlatform } from "../platform-utils";
 import AdvancedSettings from "./AdvancedSettings";
+import AiSettings from "./AiSettings";
 import AboutSettings from "./AboutSettings";
 import ConfigurationMaintenance from "./ConfigurationMaintenance";
 import KnownHostSettings from "./KnownHostSettings";
@@ -60,6 +62,7 @@ import SshKeySettings from "./SshKeySettings";
 type SettingsSection =
   | "terminal"
   | "quickCommands"
+  | "ai"
   | "files"
   | "monitor"
   | "connection"
@@ -76,6 +79,7 @@ type SettingsCategory =
   | "general"
   | "connectionSecurity"
   | "quickCommands"
+  | "ai"
   | "dataPrivacy"
   | "advanced"
   | "about";
@@ -84,6 +88,7 @@ const CATEGORY_DEFAULT_SECTION: Record<SettingsCategory, SettingsSection> = {
   general: "terminal",
   connectionSecurity: "connection",
   quickCommands: "quickCommands",
+  ai: "ai",
   dataPrivacy: "privacy",
   advanced: "advanced",
   about: "about",
@@ -98,6 +103,7 @@ const SECTION_CATEGORY: Record<SettingsSection, SettingsCategory> = {
   sshKeys: "connectionSecurity",
   knownHosts: "connectionSecurity",
   quickCommands: "quickCommands",
+  ai: "ai",
   privacy: "dataPrivacy",
   backups: "dataPrivacy",
   trash: "dataPrivacy",
@@ -131,6 +137,7 @@ const SECTIONS_WITH_SETTINGS_FOOTER = new Set<SettingsSection>([
   "files",
   "monitor",
   "connection",
+  "ai",
   "privacy",
   "advanced",
 ]);
@@ -522,6 +529,10 @@ function SettingsWindow() {
         );
       case "quickCommands":
         return <QuickCommandSettings />;
+      case "ai":
+        return (
+          <AiSettings settings={settings} updateSetting={updateSetting} />
+        );
       case "monitor":
         return (
           <>
@@ -700,6 +711,10 @@ function SettingsWindow() {
           <Menu.Item key="quickCommands">
             <IconCommand />
             快捷命令
+          </Menu.Item>
+          <Menu.Item key="ai">
+            <IconRobot />
+            AI 助手
           </Menu.Item>
           <Menu.Item key="dataPrivacy">
             <IconHistory />

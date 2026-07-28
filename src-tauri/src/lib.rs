@@ -1,3 +1,4 @@
+mod ai;
 mod config_files;
 mod credentials;
 mod diagnostics;
@@ -15,6 +16,7 @@ mod transport;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .manage(ai::AiRequestManager::default())
         .manage(sftp::SftpSessionManager::default())
         .manage(diagnostics::DiagnosticLogState::default())
         .manage(external_edit::ExternalEditManager::default())
@@ -58,6 +60,13 @@ pub fn run() {
             credentials::delete_private_key_passphrase,
             credentials::store_proxy_password,
             credentials::delete_proxy_password,
+            credentials::store_ai_api_key,
+            credentials::delete_ai_api_key,
+            credentials::ai_api_key_status,
+            ai::ai_list_models,
+            ai::ai_test_connection,
+            ai::ai_chat_start,
+            ai::ai_chat_cancel,
             managed_keys::managed_ssh_key_import,
             managed_keys::managed_ssh_key_delete,
             diagnostics::diagnostic_set_level,
@@ -96,6 +105,7 @@ pub fn run() {
             sftp::sftp_extract_archive,
             sftp::sftp_read_text_file,
             sftp::sftp_write_text_file,
+            sftp::sftp_apply_ai_file_operation,
             external_edit::sftp_start_external_edit,
             external_edit::sftp_external_edit_action,
             external_edit::sftp_close_external_edits,

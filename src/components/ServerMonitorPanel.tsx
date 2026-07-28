@@ -53,6 +53,10 @@ import { commandErrorMessage } from "../tauri-protocol";
 interface ServerMonitorPanelProps {
   refreshIntervalSeconds: number;
   session: TerminalSession | null;
+  onSnapshotChange: (
+    sessionId: string | null,
+    snapshot: ServerMonitorSnapshot | null,
+  ) => void;
   onPortForwardStatusChange: (status: PortForwardStatus) => void;
 }
 
@@ -120,6 +124,7 @@ function tooltipRate(datum?: Record<string, unknown>) {
 function ServerMonitorPanel({
   refreshIntervalSeconds,
   session,
+  onSnapshotChange,
   onPortForwardStatusChange,
 }: ServerMonitorPanelProps) {
   const [snapshot, setSnapshot] = useState<ServerMonitorSnapshot | null>(null);
@@ -145,6 +150,7 @@ function ServerMonitorPanel({
 
   useEffect(() => {
     setSnapshot(null);
+    onSnapshotChange(session?.id ?? null, null);
     setHistory([]);
     setError(undefined);
     setPingResult(null);
@@ -172,6 +178,7 @@ function ServerMonitorPanel({
         );
         if (disposed) return;
         setSnapshot(next);
+        onSnapshotChange(sessionId, next);
         setHistory((current) => appendMonitorHistory(current, next));
         setError(undefined);
       } catch (collectionError) {
@@ -188,7 +195,7 @@ function ServerMonitorPanel({
       disposed = true;
       if (timer) clearTimeout(timer);
     };
-  }, [refreshIntervalSeconds, session?.id, session?.status]);
+  }, [onSnapshotChange, refreshIntervalSeconds, session?.id, session?.status]);
 
   const runPing = async (target = pingTarget) => {
     if (!session) return;

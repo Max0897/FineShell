@@ -19,6 +19,10 @@ describe("diagnostic redaction", () => {
     expect(value).not.toContain("/Users/demo");
     expect(value).not.toContain("hello");
     expect(value).toContain("[USER]@[HOST]");
+
+    const apiKey = String(sanitizeDiagnosticValue("api_key=sk-sensitive"));
+    expect(apiKey).not.toContain("sk-sensitive");
+    expect(apiKey).toContain("api_key=[REDACTED]");
   });
 
   test("redacts sensitive structured fields recursively", () => {

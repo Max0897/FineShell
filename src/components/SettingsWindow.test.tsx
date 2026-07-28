@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import SettingsWindow from "./SettingsWindow";
 
 describe("SettingsWindow", () => {
-  test("groups settings into six primary menu entries", async () => {
+  test("groups settings into seven primary menu entries", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const view = render(<SettingsWindow />);
 
@@ -17,6 +17,7 @@ describe("SettingsWindow", () => {
       "常规",
       "连接与安全",
       "快捷命令",
+      "AI 助手",
       "数据与隐私",
       "高级",
       "关于",
@@ -24,6 +25,23 @@ describe("SettingsWindow", () => {
 
     expect(screen.getByRole("tab", { name: "文件管理" })).not.toBeNull();
     expect(screen.getByRole("tab", { name: "服务器监控" })).not.toBeNull();
+
+    await user.click(screen.getByText("AI 助手"));
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "AI 服务地址" })).not.toBeNull(),
+    );
+    expect(screen.getByRole("combobox", { name: "AI 模型" })).not.toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "测试连接" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "获取 AI 模型列表",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
 
     await user.click(screen.getByText("连接与安全"));
     await waitFor(() =>

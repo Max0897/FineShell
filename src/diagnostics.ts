@@ -69,7 +69,7 @@ function redactText(value: string) {
       "[USER]@[HOST]",
     )
     .replace(
-      /(password|passphrase|token|authorization|secret)\s*[:=]\s*[^\s,;]+/gi,
+      /(password|passphrase|api[_-]?key|token|authorization|secret)\s*[:=]\s*[^\s,;]+/gi,
       "$1=[REDACTED]",
     )
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[HOST]")
