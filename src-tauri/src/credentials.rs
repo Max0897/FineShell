@@ -1,6 +1,8 @@
 const SSH_PASSWORD_SERVICE: &str = "com.fineshell.app.ssh";
 const SSH_PRIVATE_KEY_PASSPHRASE_SERVICE: &str = "com.fineshell.app.ssh-key-passphrase";
 const PROXY_PASSWORD_SERVICE: &str = "com.fineshell.app.proxy";
+const AI_API_KEY_SERVICE: &str = "com.fineshell.app.ai-api-key";
+const AI_API_KEY_ACCOUNT: &str = "default";
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +39,19 @@ fn private_key_passphrase_entry(host_id: &str) -> Result<keyring::Entry, String>
 fn proxy_password_entry(proxy_id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(PROXY_PASSWORD_SERVICE, proxy_id)
         .map_err(|error| format!("无法访问系统凭据库：{error}"))
+}
+
+fn ai_api_key_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(AI_API_KEY_SERVICE, AI_API_KEY_ACCOUNT)
+        .map_err(|error| format!("无法访问系统凭据库：{error}"))
+}
+
+pub(crate) fn get_ai_api_key_optional() -> Result<Option<String>, String> {
+    match ai_api_key_entry()?.get_password() {
+        Ok(api_key) => Ok(Some(api_key)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("读取 AI API Key 失败：{error}")),
+    }
 }
 
 pub(crate) fn get_private_key_passphrase(host_id: &str) -> Result<Option<String>, String> {
@@ -210,6 +225,34 @@ fn delete_proxy_password_inner(proxy_id: String) -> Result<(), String> {
     }
 }
 
+fn store_ai_api_key_inner(api_key: String) -> Result<(), String> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        return Err("AI API Key 不能为空".to_string());
+    }
+    if api_key.len() > 8_192 || api_key.chars().any(char::is_control) {
+        return Err("AI API Key 格式无效".to_string());
+    }
+    ai_api_key_entry()?
+        .set_password(api_key)
+        .map_err(|error| format!("保存 AI API Key 失败：{error}"))
+}
+
+fn delete_ai_api_key_inner() -> Result<(), String> {
+    match ai_api_key_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("删除 AI API Key 失败：{error}")),
+    }
+}
+
+fn ai_api_key_status_inner() -> Result<bool, String> {
+    match ai_api_key_entry()?.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(error) => Err(format!("检查 AI API Key 失败：{error}")),
+    }
+}
+
 fn structured<T>(
     operation: &'static str,
     result: Result<T, String>,
@@ -287,6 +330,21 @@ pub(crate) fn delete_proxy_password(proxy_id: String) -> crate::protocol::Comman
         "delete_proxy_password",
         delete_proxy_password_inner(proxy_id),
     )
+}
+
+#[tauri::command]
+pub(crate) fn store_ai_api_key(api_key: String) -> crate::protocol::CommandResult<()> {
+    structured("store_ai_api_key", store_ai_api_key_inner(api_key))
+}
+
+#[tauri::command]
+pub(crate) fn delete_ai_api_key() -> crate::protocol::CommandResult<()> {
+    structured("delete_ai_api_key", delete_ai_api_key_inner())
+}
+
+#[tauri::command]
+pub(crate) fn ai_api_key_status() -> crate::protocol::CommandResult<bool> {
+    structured("ai_api_key_status", ai_api_key_status_inner())
 }
 
 #[cfg(test)]

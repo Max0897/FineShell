@@ -49,6 +49,7 @@ import {
   IconLaunch,
   IconPaste,
   IconRefresh,
+  IconRobot,
   IconScissor,
   IconStar,
   IconStarFill,
@@ -71,6 +72,12 @@ import {
 } from "../config-database";
 import ContextMenu from "./ContextMenu";
 import type { ContextMenuItem } from "./ContextMenu";
+import {
+  MAX_AI_REMOTE_FILES,
+  MAX_AI_REMOTE_FILES_BYTES,
+  aiRemoteFileContextError,
+  type AiRemoteFileContext,
+} from "../ai-utils";
 import {
   formatFileSize,
   formatPermissions,
@@ -147,6 +154,17 @@ interface SftpPanelProps {
   confirmFileDelete: boolean;
   externalEditorName: string;
   externalEditorPath: string;
+  onCurrentPathChange: (sessionId: string | null, path: string) => void;
+  onSendFilesToAi: (
+    sessionId: string,
+    files: AiRemoteFileContext[],
+  ) => void | Promise<void>;
+  onSendSelectionToAi: (
+    sessionId: string,
+    currentDirectory: string,
+    entries: SftpEntry[],
+  ) => void | Promise<void>;
+  refreshRequest: number;
   session: TerminalSession | null;
   showHiddenFiles: boolean;
 }
@@ -253,6 +271,10 @@ function SftpPanel({
   confirmFileDelete,
   externalEditorName,
   externalEditorPath,
+  onCurrentPathChange,
+  onSendFilesToAi,
+  onSendSelectionToAi,
+  refreshRequest,
   session,
   showHiddenFiles,
 }: SftpPanelProps) {
@@ -276,8 +298,9 @@ function SftpPanel({
       ? []
       : permissionFlagsFromValue(parsedPermissionValue);
   const [operationLoading, setOperationLoading] = useState(false);
-  const [archiveDialog, setArchiveDialog] =
-    useState<ArchiveDialogState | null>(null);
+  const [archiveDialog, setArchiveDialog] = useState<ArchiveDialogState | null>(
+    null,
+  );
   const [archiveBaseName, setArchiveBaseName] = useState("");
   const [archiveFormat, setArchiveFormat] =
     useState<RemoteArchiveFormat>("tarGz");
@@ -311,6 +334,7 @@ function SftpPanel({
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
   const startingTransfersRef = useRef(new Set<string>());
+  const handledRefreshRequestsRef = useRef<Record<string, number>>({});
   const browsersRef = useRef(browsers);
   const transfersRef = useRef(transfers);
   const panelRef = useRef<HTMLElement>(null);
@@ -498,8 +522,7 @@ function SftpPanel({
               username: currentSession.host.username,
               authMethod: currentSession.host.authMethod,
               privateKeyPath: currentSession.host.privateKeyPath,
-              connectTimeoutSeconds:
-                currentSession.host.connectTimeoutSeconds,
+              connectTimeoutSeconds: currentSession.host.connectTimeoutSeconds,
               keepAliveIntervalSeconds:
                 currentSession.host.keepAliveIntervalSeconds,
               expectedFingerprint:
@@ -581,6 +604,19 @@ function SftpPanel({
   }, [browsers, connectAndLoad, session, updateBrowser]);
 
   useEffect(() => {
+    if (!session || refreshRequest <= 0) return;
+    if (
+      (handledRefreshRequestsRef.current[session.id] ?? 0) >= refreshRequest
+    ) {
+      return;
+    }
+    const browser = browsers[session.id];
+    if (!browser || browser.status !== "ready") return;
+    handledRefreshRequestsRef.current[session.id] = refreshRequest;
+    void loadDirectory(session.id, browser.path);
+  }, [browsers, loadDirectory, refreshRequest, session]);
+
+  useEffect(() => {
     if (!isTauri()) return;
 
     let disposed = false;
@@ -596,10 +632,7 @@ function SftpPanel({
       setTransfers((current) => {
         const previous = current[payload.transferId];
         if (!previous) return current;
-        if (
-          previous.status === "cancelled" &&
-          payload.status !== "cancelled"
-        ) {
+        if (previous.status === "cancelled" && payload.status !== "cancelled") {
           return current;
         }
         if (previous.status === "paused" && payload.status === "running") {
@@ -713,17 +746,17 @@ function SftpPanel({
     };
   }, []);
 
-  const browser = session ? browsers[session.id] ?? INITIAL_BROWSER : null;
+  const browser = session ? (browsers[session.id] ?? INITIAL_BROWSER) : null;
   const connected = session?.status === "connected";
   const ready = Boolean(connected && browser?.status === "ready");
   readyRef.current = ready;
   const busy =
     browser?.status === "connecting" || browser?.status === "loading";
   const currentLocation = session
-    ? sftpLocations[session.host.id] ?? {
+    ? (sftpLocations[session.host.id] ?? {
         ...EMPTY_SFTP_LOCATION,
         hostId: session.host.id,
-      }
+      })
     : EMPTY_SFTP_LOCATION;
   const currentPathBookmarked = Boolean(
     browser?.path && currentLocation.bookmarks.includes(browser.path),
@@ -775,6 +808,13 @@ function SftpPanel({
       textEditor ? new TextEncoder().encode(textEditor.content).byteLength : 0,
     [textEditor],
   );
+
+  useEffect(() => {
+    onCurrentPathChange(
+      session?.id ?? null,
+      browser?.status === "ready" ? browser.path : "",
+    );
+  }, [browser?.path, browser?.status, onCurrentPathChange, session?.id]);
 
   useEffect(() => {
     setSelectedEntryKeys([]);
@@ -1131,16 +1171,17 @@ function SftpPanel({
     if (!session || !browser || !ready) return;
     let inspected: LocalUploadFile[];
     try {
-      inspected = await invoke<LocalUploadFile[]>(
-        "sftp_inspect_upload_paths",
-        { paths },
-      );
+      inspected = await invoke<LocalUploadFile[]>("sftp_inspect_upload_paths", {
+        paths,
+      });
     } catch (error) {
       Message.error(commandErrorMessage(error));
       return;
     }
     if (inspected.length < paths.length) {
-      Message.warning(`已跳过 ${paths.length - inspected.length} 个目录或无效路径`);
+      Message.warning(
+        `已跳过 ${paths.length - inspected.length} 个目录或无效路径`,
+      );
     }
     if (inspected.length === 0) {
       Message.warning("没有可上传的文件");
@@ -1154,7 +1195,9 @@ function SftpPanel({
       }
     }
     if (uniqueFiles.size < inspected.length) {
-      Message.warning(`已跳过 ${inspected.length - uniqueFiles.size} 个同名文件`);
+      Message.warning(
+        `已跳过 ${inspected.length - uniqueFiles.size} 个同名文件`,
+      );
     }
     const files = [...uniqueFiles.values()];
     const existingNames = new Set(browser.entries.map((entry) => entry.name));
@@ -1383,10 +1426,7 @@ function SftpPanel({
     Message.error(message);
   }
 
-  function storeClipboard(
-    entries: SftpEntry[],
-    mode: SftpClipboardMode,
-  ) {
+  function storeClipboard(entries: SftpEntry[], mode: SftpClipboardMode) {
     if (!session || entries.length === 0) return;
     setClipboards((current) => ({
       ...current,
@@ -1476,7 +1516,10 @@ function SftpPanel({
             (entry) => !completedSourcePaths.has(entry.path),
           );
           if (remaining.length > 0) {
-            return { ...current, [sessionId]: { ...active, entries: remaining } };
+            return {
+              ...current,
+              [sessionId]: { ...active, entries: remaining },
+            };
           }
           const next = { ...current };
           delete next[sessionId];
@@ -1497,7 +1540,8 @@ function SftpPanel({
         Message.info("没有需要处理的项目");
       }
       if (failures.length > 0) {
-        const remaining = failures.length > 1 ? `，另有 ${failures.length - 1} 项失败` : "";
+        const remaining =
+          failures.length > 1 ? `，另有 ${failures.length - 1} 项失败` : "";
         Message.error(`${failures[0]}${remaining}`);
       }
     } catch (error) {
@@ -1735,9 +1779,7 @@ function SftpPanel({
     mode: ArchiveDialogState["mode"],
   ) {
     const suggestedBase =
-      entries.length === 1
-        ? remoteArchiveBaseName(entries[0].name)
-        : "archive";
+      entries.length === 1 ? remoteArchiveBaseName(entries[0].name) : "archive";
     const suggestedName = nextAvailableRemoteArchiveName(
       suggestedBase || "archive",
       "tarGz",
@@ -1772,12 +1814,7 @@ function SftpPanel({
         title: `打包下载 ${archiveDialog.entries.length} 个项目`,
       });
       if (!target) return;
-      runArchiveDownload(
-        target,
-        sourcePaths,
-        archiveFormat,
-        archiveName,
-      );
+      runArchiveDownload(target, sourcePaths, archiveFormat, archiveName);
       closeArchiveDialog();
       setSelectedEntryKeys([]);
       Message.info("已加入打包下载任务");
@@ -2014,6 +2051,57 @@ function SftpPanel({
     }
   }
 
+  async function sendFilesToAi(entries: SftpEntry[]) {
+    if (!session || operationLoading) return;
+    const files = entries.filter((entry) => entry.kind === "file");
+    if (!files.length) return;
+    if (files.length > MAX_AI_REMOTE_FILES) {
+      Message.warning(`每次最多发送 ${MAX_AI_REMOTE_FILES} 个文件给 AI`);
+      return;
+    }
+    const selectedBytes = files.reduce((total, entry) => total + entry.size, 0);
+    if (selectedBytes > MAX_AI_REMOTE_FILES_BYTES) {
+      Message.warning("所选文件总大小不能超过 512 KiB");
+      return;
+    }
+    const invalidFile = files.find((entry) =>
+      Boolean(aiRemoteFileContextError(entry.size)),
+    );
+    if (invalidFile) {
+      Message.warning(
+        `${invalidFile.name}：${aiRemoteFileContextError(invalidFile.size)}`,
+      );
+      return;
+    }
+
+    const targetSessionId = session.id;
+    setOperationLoading(true);
+    try {
+      const contexts: AiRemoteFileContext[] = [];
+      for (const entry of files) {
+        const document = await invoke<RemoteTextFile>("sftp_read_text_file", {
+          sessionId: targetSessionId,
+          path: entry.path,
+        });
+        const documentSizeError = aiRemoteFileContextError(document.size);
+        if (documentSizeError) {
+          throw new Error(`${entry.name}：${documentSizeError}`);
+        }
+        contexts.push({
+          content: document.content,
+          name: entry.name,
+          path: document.path,
+          size: document.size,
+        });
+      }
+      await onSendFilesToAi(targetSessionId, contexts);
+    } catch (error) {
+      handleOperationError(error);
+    } finally {
+      setOperationLoading(false);
+    }
+  }
+
   async function saveTextEditor(overwrite = false) {
     if (
       !session ||
@@ -2091,10 +2179,13 @@ function SftpPanel({
   async function openExternalEditor(entry: SftpEntry, editorPath?: string) {
     if (!session || entry.kind !== "file") return;
     try {
-      const edit = await invoke<ExternalEditResult>("sftp_start_external_edit", {
-        sessionId: session.id,
-        path: entry.path,
-      });
+      const edit = await invoke<ExternalEditResult>(
+        "sftp_start_external_edit",
+        {
+          sessionId: session.id,
+          path: entry.path,
+        },
+      );
       if (editorPath) {
         await invoke("sftp_launch_external_editor", {
           editId: edit.editId,
@@ -2156,6 +2247,7 @@ function SftpPanel({
 
   function entryContextMenuItems(entries: SftpEntry[]): ContextMenuItem[] {
     const singleEntry = entries.length === 1 ? entries[0] : null;
+    const aiFileEntries = entries.filter((entry) => entry.kind === "file");
     const menuItems: ContextMenuItem[] = [];
 
     if (singleEntry?.kind === "directory") {
@@ -2191,8 +2283,7 @@ function SftpPanel({
             label: externalEditorName || "已配置编辑器",
             icon: <IconLaunch />,
             disabled: operationLoading,
-            onClick: () =>
-              openExternalEditor(singleEntry, externalEditorPath),
+            onClick: () => openExternalEditor(singleEntry, externalEditorPath),
           });
         }
         openItems.push({
@@ -2239,6 +2330,33 @@ function SftpPanel({
         icon: <IconDownload />,
         disabled: operationLoading,
         onClick: () => downloadEntries(entries),
+      });
+    }
+
+    if (entries.length > 0 && aiFileEntries.length === entries.length) {
+      menuItems.push({
+        key: "send-files-to-ai",
+        label:
+          aiFileEntries.length === 1
+            ? "发送给 AI"
+            : `发送所选文件给 AI（${aiFileEntries.length}）`,
+        icon: <IconRobot />,
+        disabled: operationLoading,
+        onClick: () => sendFilesToAi(aiFileEntries),
+      });
+    } else if (entries.length > 0) {
+      menuItems.push({
+        key: "send-selection-to-ai",
+        label:
+          entries.length === 1
+            ? "发送给 AI"
+            : `发送所选项目给 AI（${entries.length}）`,
+        icon: <IconRobot />,
+        disabled: operationLoading,
+        onClick: () => {
+          if (!session || !browser) return;
+          return onSendSelectionToAi(session.id, browser.path, entries);
+        },
       });
     }
 
@@ -2590,11 +2708,11 @@ function SftpPanel({
         const y = position.y / scaleFactor;
         const inside = Boolean(
           readyRef.current &&
-            rect &&
-            x >= rect.left &&
-            x <= rect.right &&
-            y >= rect.top &&
-            y <= rect.bottom,
+          rect &&
+          x >= rect.left &&
+          x <= rect.right &&
+          y >= rect.top &&
+          y <= rect.bottom,
         );
         if (payload.type === "drop") {
           setFileDropActive(false);
@@ -2637,10 +2755,7 @@ function SftpPanel({
               onClick={() =>
                 session &&
                 browser &&
-                void loadDirectory(
-                  session.id,
-                  remoteParentPath(browser.path),
-                )
+                void loadDirectory(session.id, remoteParentPath(browser.path))
               }
               size="mini"
             />
@@ -2678,10 +2793,12 @@ function SftpPanel({
               }
             }}
             onSelect={navigateToPath}
-            value={connected ? browser?.inputPath ?? "/" : ""}
+            value={connected ? (browser?.inputPath ?? "/") : ""}
           />
           <Tooltip
-            content={currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"}
+            content={
+              currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"
+            }
           >
             <Button
               aria-label={
@@ -2844,7 +2961,10 @@ function SftpPanel({
         <div className="panel-empty">
           <div className="empty-action">
             <Empty description={browser.error || "SFTP 连接失败"} />
-            <Button icon={<IconRefresh />} onClick={() => void retryConnection()}>
+            <Button
+              icon={<IconRefresh />}
+              onClick={() => void retryConnection()}
+            >
               重试
             </Button>
           </div>
@@ -2959,9 +3079,7 @@ function SftpPanel({
         <TransferActivityList
           externalEdits={currentExternalEdits}
           onCancel={(transfer) => void cancelTransfer(transfer)}
-          onOpenExternalEdit={(edit) =>
-            void reopenExternalEditLocalFile(edit)
-          }
+          onOpenExternalEdit={(edit) => void reopenExternalEditLocalFile(edit)}
           onPause={(transfer) => void pauseTransfer(transfer)}
           onResolveExternalEdit={setExternalEditConflict}
           onResume={(transfer) => void resumeTransfer(transfer)}
@@ -2977,9 +3095,9 @@ function SftpPanel({
         okButtonProps={{
           disabled: Boolean(
             textEditor?.loading ||
-              !textEditor?.document ||
-              textEditor.content === textEditor.document.content ||
-              textEditorByteLength > REMOTE_TEXT_MAX_BYTES,
+            !textEditor?.document ||
+            textEditor.content === textEditor.document.content ||
+            textEditorByteLength > REMOTE_TEXT_MAX_BYTES,
           ),
         }}
         okText="保存"
@@ -3101,7 +3219,8 @@ function SftpPanel({
       >
         <div className="sftp-paste-conflict">
           <Typography.Paragraph>
-            目标目录中有 {pendingPaste?.conflictCount ?? 0} 个同名项目，请选择处理方式。
+            目标目录中有 {pendingPaste?.conflictCount ?? 0}{" "}
+            个同名项目，请选择处理方式。
           </Typography.Paragraph>
           <Radio.Group
             direction="vertical"
@@ -3142,9 +3261,7 @@ function SftpPanel({
             value={archiveBaseName}
           />
           <Select
-            onChange={(value) =>
-              setArchiveFormat(value as RemoteArchiveFormat)
-            }
+            onChange={(value) => setArchiveFormat(value as RemoteArchiveFormat)}
             options={ARCHIVE_FORMAT_OPTIONS}
             value={archiveFormat}
           />
@@ -3219,9 +3336,7 @@ function SftpPanel({
               setPermissionValue(value.replace(/[^0-7]/g, "").slice(0, 4))
             }
             onPressEnter={() => void updatePermissions()}
-            placeholder={
-              permissionEntries.length > 1 ? "留空保持不变" : "755"
-            }
+            placeholder={permissionEntries.length > 1 ? "留空保持不变" : "755"}
             status={
               permissionValue && parsedPermissionValue === null
                 ? "error"

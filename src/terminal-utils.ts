@@ -4,6 +4,114 @@ import type {
   TerminalSessionStatus,
 } from "./models";
 
+const MAX_TRACKED_TERMINAL_INPUT_CHARS = 4_096;
+
+export interface TerminalInputState {
+  reliable: boolean;
+  value: string;
+}
+
+export interface TerminalInjectedInput {
+  id: string;
+  value: string;
+}
+
+export interface TerminalCommandSubmission {
+  command: string;
+  completedAt?: string;
+  durationMs?: number;
+  exitCode?: number;
+  hostId: string;
+  id: string;
+  output?: string;
+  outputTruncated?: boolean;
+  phase?: "submitted" | "completed" | "unavailable";
+  reason?: string;
+  sessionId: string;
+  submittedAt: string;
+}
+
+export const EMPTY_TERMINAL_INPUT_STATE: TerminalInputState = {
+  reliable: true,
+  value: "",
+};
+
+function removeLastCharacter(value: string) {
+  return Array.from(value).slice(0, -1).join("");
+}
+
+function removeLastWord(value: string) {
+  return value.replace(/\s+$/u, "").replace(/\S+$/u, "");
+}
+
+export function appendInjectedTerminalInput(
+  state: TerminalInputState,
+  value: string,
+): TerminalInputState {
+  if (!state.reliable) return state;
+  const nextValue = `${state.value}${value}`;
+  return nextValue.length <= MAX_TRACKED_TERMINAL_INPUT_CHARS
+    ? { reliable: true, value: nextValue }
+    : { reliable: false, value: "" };
+}
+
+export function consumeTerminalCommandCandidate(
+  candidates: string[],
+  command: string,
+): { candidates: string[]; matched: boolean } {
+  const index = candidates.lastIndexOf(command);
+  if (index < 0) return { candidates, matched: false };
+  return {
+    candidates: candidates.filter(
+      (_, candidateIndex) => candidateIndex !== index,
+    ),
+    matched: true,
+  };
+}
+
+export function trackTerminalInput(
+  state: TerminalInputState,
+  data: string,
+): { state: TerminalInputState; submissions: string[] } {
+  let current = { ...state };
+  const submissions: string[] = [];
+
+  for (const character of Array.from(data)) {
+    if (character === "\r" || character === "\n") {
+      if (current.reliable && current.value.trim()) {
+        submissions.push(current.value.trim());
+      }
+      current = { ...EMPTY_TERMINAL_INPUT_STATE };
+      continue;
+    }
+    if (character === "\u0003" || character === "\u0015") {
+      current = { ...EMPTY_TERMINAL_INPUT_STATE };
+      continue;
+    }
+    if (character === "\b" || character === "\u007f") {
+      if (current.reliable) {
+        current.value = removeLastCharacter(current.value);
+      }
+      continue;
+    }
+    if (character === "\u0017") {
+      if (current.reliable) current.value = removeLastWord(current.value);
+      continue;
+    }
+    if (character.charCodeAt(0) < 32) {
+      current = { reliable: false, value: "" };
+      continue;
+    }
+    if (!current.reliable) continue;
+    current.value += character;
+    if (current.value.length > MAX_TRACKED_TERMINAL_INPUT_CHARS) {
+      current = { reliable: false, value: "" };
+    }
+  }
+
+  return { state: current, submissions };
+}
+
 interface SessionTabTarget {
   id: string;
   host: Pick<HostRecord, "id" | "name">;

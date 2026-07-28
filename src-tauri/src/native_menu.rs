@@ -190,7 +190,12 @@ pub fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     };
 
     if let Err(error) = result {
-        eprintln!("无法打开辅助窗口: {error}");
+        crate::diagnostics::record_native_error(
+            app,
+            "window.auxiliary",
+            "无法打开辅助窗口",
+            Some(serde_json::json!({ "error": error })),
+        );
     }
 }
 

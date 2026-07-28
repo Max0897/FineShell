@@ -13,6 +13,7 @@ dist-ssr
 *.local
 TODO.md
 FEATURES.md
+/dev-docs/
 
 # Editor directories and files
 .vscode/*

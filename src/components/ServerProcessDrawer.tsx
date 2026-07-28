@@ -17,6 +17,7 @@ import {
 import type { TableColumnProps } from "@arco-design/web-react";
 import {
   IconRefresh,
+  IconRobot,
   IconStop,
   IconThunderbolt,
 } from "@arco-design/web-react/icon";
@@ -33,9 +34,11 @@ import {
   formatProcessPercent,
 } from "../process-utils";
 import { commandErrorMessage } from "../tauri-protocol";
+import { createProcessesAiHandoff, type AiHandoffRequest } from "../ai-handoff";
 
 interface ServerProcessDrawerProps {
   onCancel: () => void;
+  onSendToAi: (request: AiHandoffRequest) => void;
   session: TerminalSession;
   visible: boolean;
 }
@@ -67,6 +70,7 @@ function processStateColor(state: string) {
 
 function ServerProcessDrawer({
   onCancel,
+  onSendToAi,
   session,
   visible,
 }: ServerProcessDrawerProps) {
@@ -75,6 +79,7 @@ function ServerProcessDrawer({
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
+  const [selectedProcessIds, setSelectedProcessIds] = useState<string[]>([]);
   const [signalingProcess, setSignalingProcess] = useState<{
     force: boolean;
     pid: number;
@@ -117,6 +122,7 @@ function ServerProcessDrawer({
     setError(undefined);
     setLoading(false);
     setSignalingProcess(null);
+    setSelectedProcessIds([]);
   }, [session.id]);
 
   useEffect(() => {
@@ -144,6 +150,12 @@ function ServerProcessDrawer({
     () => filterServerProcesses(result?.processes ?? [], query),
     [query, result],
   );
+  const selectedProcesses = useMemo(() => {
+    const selectedIds = new Set(selectedProcessIds);
+    return (result?.processes ?? []).filter((process) =>
+      selectedIds.has(process.id),
+    );
+  }, [result, selectedProcessIds]);
   const signalProcess = useCallback(
     async (process: ServerProcess, force: boolean) => {
       setSignalingProcess({ force, pid: process.pid });
@@ -221,8 +233,7 @@ function ServerProcessDrawer({
       {
         dataIndex: "cpuUsagePercent",
         defaultSortOrder: "descend",
-        sorter: (left, right) =>
-          left.cpuUsagePercent - right.cpuUsagePercent,
+        sorter: (left, right) => left.cpuUsagePercent - right.cpuUsagePercent,
         title: "CPU",
         width: 88,
         render: (value: number) => formatProcessPercent(value),
@@ -326,6 +337,15 @@ function ServerProcessDrawer({
               onClick={() => void loadProcesses()}
             />
           </Tooltip>
+          <Button
+            disabled={!selectedProcesses.length}
+            icon={<IconRobot />}
+            onClick={() =>
+              onSendToAi(createProcessesAiHandoff(selectedProcesses))
+            }
+          >
+            交给 AI
+          </Button>
         </Space>
       </div>
       {(error || result?.truncated) && (
@@ -345,9 +365,19 @@ function ServerProcessDrawer({
         columns={columns}
         data={filteredProcesses}
         loading={loading && !result}
-        noDataElement={<Empty description={query ? "没有匹配的进程" : "暂无进程"} />}
+        noDataElement={
+          <Empty description={query ? "没有匹配的进程" : "暂无进程"} />
+        }
         pagination={false}
         rowKey="id"
+        rowSelection={{
+          checkAll: true,
+          columnWidth: 42,
+          onChange: (keys) =>
+            setSelectedProcessIds(keys.map((key) => String(key))),
+          selectedRowKeys: selectedProcessIds,
+          type: "checkbox",
+        }}
         scroll={{ x: PROCESS_TABLE_WIDTH, y: "calc(100vh - 180px)" }}
         size="small"
         tableLayoutFixed

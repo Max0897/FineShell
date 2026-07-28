@@ -3,6 +3,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -14,6 +15,7 @@ import {
   Typography,
 } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import {
   IconClose,
   IconCloseCircle,
@@ -26,10 +28,12 @@ import type {
   PortForwardStatus,
   ProxyRecord,
   QuickCommandRecord,
+  ServerMonitorSnapshot,
   TerminalSession,
 } from "./models";
 import type { ContextMenuItem } from "./components/ContextMenu";
 import HostManagerPanel from "./components/HostManagerPanel";
+import AiAssistantPanel from "./components/AiAssistantPanel";
 import QuickCommandDrawer from "./components/QuickCommandDrawer";
 import ReleaseNotesMarkdown from "./components/ReleaseNotesMarkdown";
 import SftpPanel from "./components/SftpPanel";
@@ -47,6 +51,28 @@ import {
   type AppSettings,
 } from "./app-settings";
 import {
+  type AiContextSource,
+  type AiContextSourceId,
+  type AiRemoteFileContext,
+  aiRemoteFileContextSource,
+  mergeAiRemoteFileContexts,
+  formatAiServerContext,
+  normalizeAiTerminalCommand,
+} from "./ai-utils";
+import {
+  createSftpSelectionAiHandoff,
+  type AiHandoffRequest,
+} from "./ai-handoff";
+import type {
+  AiFileOperationExecutionRequest,
+  AiFileOperationResult,
+} from "./ai-file-operations";
+import {
+  AI_SIDEBAR_DEFAULT_WIDTH,
+  aiWindowTargetWidth,
+  clampAiSidebarWidth,
+} from "./ai-sidebar";
+import {
   applicationUpdater,
   checkForApplicationUpdateOnStartup,
   setApplicationUpdateNotice,
@@ -56,6 +82,8 @@ import {
   jumpHostRequest,
   reconnectDelaySeconds,
   sshCredentialId,
+  type TerminalCommandSubmission,
+  type TerminalInjectedInput,
 } from "./terminal-utils";
 import {
   configureDiagnosticLogging,
@@ -132,9 +160,7 @@ function openAuxiliaryWindow(view: AuxiliaryWindow) {
   }
 
   const command =
-    view === "settings"
-      ? "open_settings_window"
-      : "open_shortcut_guide_window";
+    view === "settings" ? "open_settings_window" : "open_shortcut_guide_window";
   void invoke(command).catch((error) => {
     const title = view === "settings" ? "设置" : "快捷键说明";
     Message.error(`无法打开${title}：${commandErrorMessage(error)}`);
@@ -230,7 +256,50 @@ function App() {
   const [quickCommands, setQuickCommands] = useState<QuickCommandRecord[]>([]);
   const [quickCommandDrawerVisible, setQuickCommandDrawerVisible] =
     useState(false);
+  const [aiAssistantVisible, setAiAssistantVisible] = useState(false);
+  const [aiSidebarWidth, setAiSidebarWidth] = useState(
+    AI_SIDEBAR_DEFAULT_WIDTH,
+  );
+  const [mainWorkspaceFrozenWidth, setMainWorkspaceFrozenWidth] = useState<
+    number | null
+  >(null);
+  const [aiInitialPrompt, setAiInitialPrompt] = useState("");
+  const [aiInitialContextIds, setAiInitialContextIds] = useState<
+    AiContextSourceId[]
+  >([]);
+  const [aiInitialPromptRequest, setAiInitialPromptRequest] = useState(0);
+  const [terminalSelections, setTerminalSelections] = useState<
+    Record<string, string>
+  >({});
+  const [terminalRecentOutputs, setTerminalRecentOutputs] = useState<
+    Record<string, string>
+  >({});
+  const [terminalInjectedInputs, setTerminalInjectedInputs] = useState<
+    Record<string, TerminalInjectedInput>
+  >({});
+  const [terminalCommandSubmission, setTerminalCommandSubmission] =
+    useState<TerminalCommandSubmission | null>(null);
+  const [monitorSnapshots, setMonitorSnapshots] = useState<
+    Record<string, ServerMonitorSnapshot>
+  >({});
+  const [sftpCurrentPaths, setSftpCurrentPaths] = useState<
+    Record<string, string>
+  >({});
+  const [aiRemoteFileContexts, setAiRemoteFileContexts] = useState<
+    Record<string, AiRemoteFileContext[]>
+  >({});
+  const [aiBusinessContexts, setAiBusinessContexts] = useState<
+    Record<string, AiContextSource[]>
+  >({});
+  const [sftpRefreshRequests, setSftpRefreshRequests] = useState<
+    Record<string, number>
+  >({});
   const [terminalFocusRequest, setTerminalFocusRequest] = useState(0);
+  const aiWindowShouldExpandRef = useRef(false);
+  const aiWindowExpandedRef = useRef(false);
+  const aiWindowExpansionRef = useRef(0);
+  const aiWindowResizeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const mainSplitRef = useRef<HTMLElement | null>(null);
   const sessionsRef = useRef<TerminalSession[]>([]);
   const reconnectTimersRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
@@ -274,6 +343,40 @@ function App() {
         });
         sessionsRef.current = next;
         return next;
+      });
+    },
+    [],
+  );
+
+  const updateMonitorSnapshot = useCallback(
+    (sessionId: string | null, snapshot: ServerMonitorSnapshot | null) => {
+      if (!sessionId) return;
+      setMonitorSnapshots((current) => {
+        if (!snapshot) {
+          if (!(sessionId in current)) return current;
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        }
+        return { ...current, [sessionId]: snapshot };
+      });
+    },
+    [],
+  );
+
+  const updateSftpCurrentPath = useCallback(
+    (sessionId: string | null, path: string) => {
+      if (!sessionId) return;
+      setSftpCurrentPaths((current) => {
+        if (!path) {
+          if (!(sessionId in current)) return current;
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        }
+        return current[sessionId] === path
+          ? current
+          : { ...current, [sessionId]: path };
       });
     },
     [],
@@ -416,11 +519,7 @@ function App() {
   );
 
   const openSession = useCallback(
-    (
-      host: HostRecord,
-      proxy?: ProxyRecord,
-      jumpHost?: JumpHostConnection,
-    ) => {
+    (host: HostRecord, proxy?: ProxyRecord, jumpHost?: JumpHostConnection) => {
       const normalizedHost = withHostDefaults(host);
       const session: TerminalSession = {
         id: createId("session"),
@@ -576,13 +675,10 @@ function App() {
       }
     });
 
-    void listenProtocolEvent(
-      "port-forward-status",
-      ({ payload }) => {
-        const { sessionId, ...status } = payload;
-        updatePortForwardStatus(sessionId, status);
-      },
-    ).then((stopListening) => {
+    void listenProtocolEvent("port-forward-status", ({ payload }) => {
+      const { sessionId, ...status } = payload;
+      updatePortForwardStatus(sessionId, status);
+    }).then((stopListening) => {
       if (disposed) {
         stopListening();
       } else {
@@ -661,6 +757,22 @@ function App() {
       disposed = true;
     };
   }, []);
+
+  useEffect(
+    () => () => document.body.classList.remove("ai-sidebar-resizing"),
+    [],
+  );
+
+  useEffect(() => {
+    if (!terminalCommandSubmission) return;
+    const submissionId = terminalCommandSubmission.id;
+    const timer = window.setTimeout(() => {
+      setTerminalCommandSubmission((current) =>
+        current?.id === submissionId ? null : current,
+      );
+    }, 10_000);
+    return () => window.clearTimeout(timer);
+  }, [terminalCommandSubmission]);
 
   useEffect(() => {
     if (!applicationUpdater.canInstallUpdates) return;
@@ -757,9 +869,49 @@ function App() {
   const activeSession =
     sessions.find((session) => session.id === activeSessionId) ?? null;
 
+  const aiContextSources = useMemo<AiContextSource[]>(() => {
+    if (!activeSessionId) return [];
+    const snapshot = monitorSnapshots[activeSessionId];
+    const remoteFiles = aiRemoteFileContexts[activeSessionId] ?? [];
+    const sources: AiContextSource[] = [
+      {
+        id: "terminal-selection",
+        label: "终端选区",
+        content: terminalSelections[activeSessionId] ?? "",
+      },
+      {
+        id: "terminal-output",
+        label: "最近终端输出",
+        content: terminalRecentOutputs[activeSessionId] ?? "",
+      },
+      {
+        id: "server-monitor",
+        label: "服务器状态",
+        content: snapshot ? formatAiServerContext(snapshot) : "",
+      },
+      {
+        id: "sftp-path",
+        label: "当前远程目录",
+        content: sftpCurrentPaths[activeSessionId] ?? "",
+      },
+    ];
+    sources.push(...(aiBusinessContexts[activeSessionId] ?? []));
+    sources.push(...remoteFiles.map(aiRemoteFileContextSource));
+    return sources;
+  }, [
+    activeSessionId,
+    aiBusinessContexts,
+    aiRemoteFileContexts,
+    monitorSnapshots,
+    sftpCurrentPaths,
+    terminalRecentOutputs,
+    terminalSelections,
+  ]);
+
   useEffect(() => {
     if (!activeSessionId) {
       setQuickCommandDrawerVisible(false);
+      closeAiAssistant();
       return;
     }
     const handleQuickCommandShortcut = (event: KeyboardEvent) => {
@@ -790,6 +942,245 @@ function App() {
     });
     setQuickCommandDrawerVisible(false);
     Message.success(execute ? "命令已发送" : "命令已填入终端");
+  }
+
+  async function insertAiCommand(command: string) {
+    if (!activeSession || activeSession.status !== "connected") {
+      throw new Error("当前终端未连接");
+    }
+    const value = normalizeAiTerminalCommand(command);
+    await invoke("ssh_write", {
+      sessionId: activeSession.id,
+      data: Array.from(new TextEncoder().encode(value)),
+    });
+    if (settings.aiCommandTrackingEnabled) {
+      setTerminalInjectedInputs((current) => ({
+        ...current,
+        [activeSession.id]: {
+          id: createId("terminal-input"),
+          value,
+        },
+      }));
+    }
+    Message.success("命令已填入终端");
+  }
+
+  async function applyAiRemoteFileEdit(
+    sessionId: string,
+    file: AiRemoteFileContext,
+    content: string,
+  ) {
+    const targetSession = sessionsRef.current.find(
+      (session) => session.id === sessionId,
+    );
+    if (!targetSession || targetSession.status !== "connected") {
+      throw new Error("目标会话已断开，无法应用文件修改");
+    }
+    const result = await invoke<{
+      content: string;
+      path: string;
+      size: number;
+    }>("sftp_write_text_file", {
+      sessionId,
+      path: file.path,
+      content,
+      originalContent: file.content,
+      overwrite: false,
+    });
+    const updatedFile: AiRemoteFileContext = {
+      content: result.content,
+      name: file.name,
+      path: result.path,
+      size: result.size,
+    };
+    setAiRemoteFileContexts((current) => ({
+      ...current,
+      [sessionId]: (current[sessionId] ?? []).map((candidate) =>
+        candidate.path === updatedFile.path ? updatedFile : candidate,
+      ),
+    }));
+    setSftpRefreshRequests((current) => ({
+      ...current,
+      [sessionId]: (current[sessionId] ?? 0) + 1,
+    }));
+    return updatedFile;
+  }
+
+  async function applyAiRemoteFileOperation(
+    sessionId: string,
+    request: AiFileOperationExecutionRequest,
+  ): Promise<AiFileOperationResult> {
+    const targetSession = sessionsRef.current.find(
+      (session) => session.id === sessionId,
+    );
+    if (!targetSession || targetSession.status !== "connected") {
+      throw new Error("目标会话已断开，无法应用文件操作");
+    }
+    const result = await invoke<{
+      file: { content: string; path: string; size: number } | null;
+    }>("sftp_apply_ai_file_operation", { sessionId, request });
+    const updatedFile = result.file
+      ? {
+          content: result.file.content,
+          name: result.file.path.split("/").pop() || result.file.path,
+          path: result.file.path,
+          size: result.file.size,
+        }
+      : null;
+    setAiRemoteFileContexts((current) => {
+      const remaining = (current[sessionId] ?? []).filter(
+        (file) =>
+          file.path !== request.path && file.path !== request.targetPath,
+      );
+      if (!updatedFile) {
+        return { ...current, [sessionId]: remaining };
+      }
+      let nextFiles = remaining;
+      try {
+        nextFiles = mergeAiRemoteFileContexts(remaining, [updatedFile]);
+      } catch {
+        // The remote operation already succeeded; omit the optional AI context
+        // when adding it would exceed the local context limits.
+      }
+      return {
+        ...current,
+        [sessionId]: nextFiles,
+      };
+    });
+    setSftpRefreshRequests((current) => ({
+      ...current,
+      [sessionId]: (current[sessionId] ?? 0) + 1,
+    }));
+    return { file: updatedFile };
+  }
+
+  async function openAiAssistant(
+    prompt = "",
+    contextIds: AiContextSourceId[] = [],
+  ) {
+    if (!activeSession) {
+      Message.warning("请先打开终端会话");
+      return;
+    }
+    setAiInitialPrompt(prompt);
+    setAiInitialContextIds(contextIds);
+    setAiInitialPromptRequest((current) => current + 1);
+    if (aiWindowShouldExpandRef.current) return;
+
+    aiWindowShouldExpandRef.current = true;
+    if (!isTauri()) {
+      setAiAssistantVisible(true);
+      return;
+    }
+
+    const currentMainWidth =
+      mainSplitRef.current?.getBoundingClientRect().width;
+    if (currentMainWidth) {
+      setMainWorkspaceFrozenWidth(currentMainWidth);
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+    }
+    await synchronizeAiWindowWidth();
+    if (aiWindowShouldExpandRef.current) {
+      setAiAssistantVisible(true);
+      setMainWorkspaceFrozenWidth(null);
+    }
+  }
+
+  async function handoffToAi(sessionId: string, request: AiHandoffRequest) {
+    if (sessionId !== activeSessionId) {
+      Message.warning("当前会话已切换，请重新选择要分析的内容");
+      return;
+    }
+    setAiBusinessContexts((current) => {
+      const sources = current[sessionId] ?? [];
+      return {
+        ...current,
+        [sessionId]: [
+          ...sources.filter((source) => source.id !== request.source.id),
+          request.source,
+        ],
+      };
+    });
+    await openAiAssistant(request.prompt, [request.source.id]);
+  }
+
+  async function closeAiAssistant() {
+    if (!aiWindowShouldExpandRef.current && !aiAssistantVisible) return;
+    aiWindowShouldExpandRef.current = false;
+    if (!isTauri()) {
+      setAiAssistantVisible(false);
+      setTerminalFocusRequest((current) => current + 1);
+      return;
+    }
+
+    const currentMainWidth =
+      mainSplitRef.current?.getBoundingClientRect().width;
+    if (currentMainWidth) setMainWorkspaceFrozenWidth(currentMainWidth);
+    setAiAssistantVisible(false);
+    if (currentMainWidth) {
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+    }
+    await synchronizeAiWindowWidth();
+    if (!aiWindowShouldExpandRef.current) setMainWorkspaceFrozenWidth(null);
+    setTerminalFocusRequest((current) => current + 1);
+  }
+
+  function toggleAiAssistant() {
+    if (aiWindowShouldExpandRef.current || aiAssistantVisible) {
+      void closeAiAssistant();
+    } else {
+      void openAiAssistant();
+    }
+  }
+
+  function synchronizeAiWindowWidth() {
+    if (!isTauri()) return Promise.resolve();
+    aiWindowResizeQueueRef.current = aiWindowResizeQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const shouldExpand = aiWindowShouldExpandRef.current;
+        const expanded = aiWindowExpandedRef.current;
+        const appliedExpansion = aiWindowExpansionRef.current;
+        if (shouldExpand === expanded) return;
+
+        const appWindow = getCurrentWindow();
+        const scaleFactor = await appWindow.scaleFactor();
+        const before = (await appWindow.innerSize()).toLogical(scaleFactor);
+        const targetWidth = aiWindowTargetWidth(
+          before.width,
+          shouldExpand,
+          appliedExpansion,
+        );
+        await appWindow.setSize(new LogicalSize(targetWidth, before.height));
+
+        if (shouldExpand) {
+          aiWindowExpandedRef.current = true;
+          aiWindowExpansionRef.current = AI_SIDEBAR_DEFAULT_WIDTH;
+          const after = (await appWindow.innerSize()).toLogical(scaleFactor);
+          aiWindowExpansionRef.current = Math.max(
+            0,
+            after.width - before.width,
+          );
+        } else {
+          aiWindowExpandedRef.current = false;
+          aiWindowExpansionRef.current = 0;
+        }
+      })
+      .catch((error) => {
+        recordDiagnostic(
+          "warn",
+          "application.window",
+          "AI 侧栏窗口尺寸调整失败",
+          {
+            error: commandErrorMessage(error),
+          },
+        );
+      });
+    return aiWindowResizeQueueRef.current;
   }
 
   function disconnectSession(sessionId: string) {
@@ -828,11 +1219,23 @@ function App() {
       void invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
       void invoke("sftp_disconnect", { sessionId }).catch(() => undefined);
     });
-    const remaining = current.filter(
-      (session) => !closingIds.has(session.id),
-    );
+    const remaining = current.filter((session) => !closingIds.has(session.id));
     sessionsRef.current = remaining;
     setSessions(remaining);
+    setAiRemoteFileContexts((currentContexts) =>
+      Object.fromEntries(
+        Object.entries(currentContexts).filter(
+          ([sessionId]) => !closingIds.has(sessionId),
+        ),
+      ),
+    );
+    setAiBusinessContexts((currentContexts) =>
+      Object.fromEntries(
+        Object.entries(currentContexts).filter(
+          ([sessionId]) => !closingIds.has(sessionId),
+        ),
+      ),
+    );
 
     setActiveSessionId((currentActiveId) => {
       if (!currentActiveId || !closingIds.has(currentActiveId)) {
@@ -916,6 +1319,10 @@ function App() {
           }
         >
           <ServerMonitorPanel
+            onSendToAi={(sessionId, request) =>
+              void handoffToAi(sessionId, request)
+            }
+            onSnapshotChange={updateMonitorSnapshot}
             onPortForwardStatusChange={(status) =>
               activeSession && updatePortForwardStatus(activeSession.id, status)
             }
@@ -931,22 +1338,56 @@ function App() {
     <section className="panel terminal-panel">
       <SessionTabs
         activeSessionId={activeSessionId}
+        aiAssistantVisible={aiAssistantVisible}
         homeContent={
           <HostManagerPanel onConnect={openSession} settings={settings} />
         }
         onActiveSessionChange={setActiveSessionId}
         onCloseSession={closeSession}
         onOpenQuickCommands={() => setQuickCommandDrawerVisible(true)}
+        onToggleAiAssistant={toggleAiAssistant}
         onOpenSettings={() => openAuxiliaryWindow("settings")}
         onOpenShortcutGuide={() => openAuxiliaryWindow("shortcuts")}
         renderSession={(session) => (
           <TerminalView
             active={session.id === activeSessionId}
+            commandTrackingEnabled={settings.aiCommandTrackingEnabled}
             focusRequest={
               session.id === activeSessionId ? terminalFocusRequest : 0
             }
+            injectedInput={terminalInjectedInputs[session.id]}
             settings={settings}
             session={session}
+            onAskAi={(selection) => {
+              setTerminalSelections((current) => ({
+                ...current,
+                [session.id]: selection,
+              }));
+              openAiAssistant("请解释这段终端输出，并给出排查建议。");
+            }}
+            onCommandLifecycle={setTerminalCommandSubmission}
+            onRecentOutputChange={(output) =>
+              setTerminalRecentOutputs((current) => {
+                const next = output.slice(-settings.aiContextMaxChars);
+                return current[session.id] === next
+                  ? current
+                  : { ...current, [session.id]: next };
+              })
+            }
+            onSelectionChange={(selection) =>
+              setTerminalSelections((current) =>
+                current[session.id] ===
+                selection.slice(0, settings.aiContextMaxChars)
+                  ? current
+                  : {
+                      ...current,
+                      [session.id]: selection.slice(
+                        0,
+                        settings.aiContextMaxChars,
+                      ),
+                    },
+              )
+            }
           />
         )}
         sessionContextMenuItems={sessionContextMenuItems}
@@ -955,9 +1396,7 @@ function App() {
       <QuickCommandDrawer
         canSend={activeSession?.status === "connected"}
         commands={quickCommands}
-        onAfterClose={() =>
-          setTerminalFocusRequest((current) => current + 1)
-        }
+        onAfterClose={() => setTerminalFocusRequest((current) => current + 1)}
         onCancel={() => setQuickCommandDrawerVisible(false)}
         onSend={sendQuickCommand}
         visible={quickCommandDrawerVisible}
@@ -970,6 +1409,33 @@ function App() {
       confirmFileDelete={settings.confirmFileDelete}
       externalEditorName={settings.externalEditorName}
       externalEditorPath={settings.externalEditorPath}
+      onCurrentPathChange={updateSftpCurrentPath}
+      onSendFilesToAi={async (sessionId, files) => {
+        if (sessionId !== activeSessionId) {
+          throw new Error("当前会话已切换，请重新选择文件");
+        }
+        const nextFiles = mergeAiRemoteFileContexts(
+          aiRemoteFileContexts[sessionId] ?? [],
+          files,
+        );
+        setAiRemoteFileContexts((current) => ({
+          ...current,
+          [sessionId]: nextFiles,
+        }));
+        await openAiAssistant(
+          "",
+          files.map((file) => aiRemoteFileContextSource(file).id),
+        );
+      }}
+      onSendSelectionToAi={(sessionId, currentDirectory, entries) =>
+        handoffToAi(
+          sessionId,
+          createSftpSelectionAiHandoff(currentDirectory, entries),
+        )
+      }
+      refreshRequest={
+        activeSessionId ? (sftpRefreshRequests[activeSessionId] ?? 0) : 0
+      }
       session={activeSession}
       showHiddenFiles={settings.showHiddenFiles}
     />
@@ -988,19 +1454,89 @@ function App() {
 
   return (
     <main className="app-shell">
-      <ResizeBox.SplitGroup
-        className="main-split"
-        direction="horizontal"
-        panes={[
-          {
-            content: serverMonitorPanel,
-            size: "220px",
-            min: "220px",
-            max: "400px",
-          },
-          { content: rightPanels, min: "480px" },
-        ]}
-      />
+      <div className="app-workspace">
+        <ResizeBox.SplitGroup
+          className="main-split"
+          direction="horizontal"
+          panes={[
+            {
+              content: serverMonitorPanel,
+              size: "220px",
+              min: "220px",
+              max: "400px",
+            },
+            { content: rightPanels, min: "480px" },
+          ]}
+          ref={mainSplitRef}
+          style={
+            mainWorkspaceFrozenWidth === null
+              ? undefined
+              : {
+                  flex: `0 0 ${mainWorkspaceFrozenWidth}px`,
+                  width: mainWorkspaceFrozenWidth,
+                }
+          }
+        />
+        <ResizeBox
+          className={`ai-assistant-sidebar${
+            aiAssistantVisible ? "" : " ai-assistant-sidebar-hidden"
+          }`}
+          directions={["left"]}
+          onMoving={(_, size) => {
+            const workspaceWidth =
+              mainSplitRef.current?.parentElement?.getBoundingClientRect()
+                .width ?? window.innerWidth;
+            setAiSidebarWidth(clampAiSidebarWidth(size.width, workspaceWidth));
+          }}
+          onMovingEnd={() =>
+            document.body.classList.remove("ai-sidebar-resizing")
+          }
+          onMovingStart={() =>
+            document.body.classList.add("ai-sidebar-resizing")
+          }
+          width={aiSidebarWidth}
+        >
+          <AiAssistantPanel
+            canInsertCommand={activeSession?.status === "connected"}
+            commandSubmission={
+              settings.aiCommandTrackingEnabled
+                ? terminalCommandSubmission
+                : null
+            }
+            contextSources={aiContextSources}
+            hostId={activeSession?.host.id ?? null}
+            hostName={activeSession?.host.name ?? ""}
+            initialPrompt={aiInitialPrompt}
+            initialContextIds={aiInitialContextIds}
+            initialPromptRequest={aiInitialPromptRequest}
+            onClose={closeAiAssistant}
+            onApplyRemoteFileEdit={applyAiRemoteFileEdit}
+            onApplyRemoteFileOperation={applyAiRemoteFileOperation}
+            onInsertCommand={insertAiCommand}
+            onRemoveRemoteFile={(sessionId, path) =>
+              setAiRemoteFileContexts((current) => {
+                const remaining = (current[sessionId] ?? []).filter(
+                  (file) => file.path !== path,
+                );
+                if (remaining.length) {
+                  return { ...current, [sessionId]: remaining };
+                }
+                const next = { ...current };
+                delete next[sessionId];
+                return next;
+              })
+            }
+            remoteFiles={
+              activeSessionId
+                ? (aiRemoteFileContexts[activeSessionId] ?? [])
+                : []
+            }
+            sessionId={activeSessionId}
+            settings={settings}
+            visible={aiAssistantVisible}
+          />
+        </ResizeBox>
+      </div>
     </main>
   );
 }

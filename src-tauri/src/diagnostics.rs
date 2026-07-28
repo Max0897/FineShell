@@ -1,19 +1,14 @@
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::{
-    collections::VecDeque,
     fs,
-    path::Path,
+    path::PathBuf,
     sync::{Mutex, OnceLock},
-    time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager, Runtime, State};
 
-const DIAGNOSTIC_CAPACITY: usize = 1_000;
-const DUPLICATE_WINDOW_MS: u64 = 10_000;
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 enum DiagnosticLogLevel {
     Debug,
@@ -43,12 +38,12 @@ impl DiagnosticLogLevel {
         }
     }
 
-    const fn as_str(self) -> &'static str {
+    const fn as_log_level(self) -> log::Level {
         match self {
-            Self::Debug => "debug",
-            Self::Info => "info",
-            Self::Warn => "warn",
-            Self::Error => "error",
+            Self::Debug => log::Level::Debug,
+            Self::Info => log::Level::Info,
+            Self::Warn => log::Level::Warn,
+            Self::Error => log::Level::Error,
         }
     }
 }
@@ -62,49 +57,9 @@ pub(crate) struct DiagnosticRecordInput {
     context: Option<Value>,
 }
 
-#[derive(Clone, Debug)]
-struct DiagnosticEntry {
-    timestamp_ms: u64,
-    level: DiagnosticLogLevel,
-    scope: String,
-    message: String,
-    context: Option<Value>,
-    repetitions: u32,
-}
-
-#[derive(Default)]
-struct DiagnosticBuffer {
-    entries: VecDeque<DiagnosticEntry>,
-    level: DiagnosticLogLevel,
-}
-
 #[derive(Default)]
 pub(crate) struct DiagnosticLogState {
-    buffer: Mutex<DiagnosticBuffer>,
-}
-
-#[derive(Default, Serialize)]
-struct DiagnosticLogCounts {
-    debug: usize,
-    info: usize,
-    warn: usize,
-    error: usize,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct DiagnosticSummary {
-    capacity: usize,
-    counts: DiagnosticLogCounts,
-    latest_at: Option<u64>,
-    level: DiagnosticLogLevel,
-    total: usize,
-}
-
-fn timestamp_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis() as u64)
+    level: Mutex<DiagnosticLogLevel>,
 }
 
 fn private_key_regex() -> &'static Regex {
@@ -134,8 +89,10 @@ fn user_host_regex() -> &'static Regex {
 fn secret_regex() -> &'static Regex {
     static VALUE: OnceLock<Regex> = OnceLock::new();
     VALUE.get_or_init(|| {
-        Regex::new(r"(?i)(password|passphrase|token|authorization|secret)\s*[:=]\s*[^\s,;]+")
-            .expect("secret redaction regex must be valid")
+        Regex::new(
+            r"(?i)(password|passphrase|api[_-]?key|token|authorization|secret)\s*[:=]\s*[^\s,;]+",
+        )
+        .expect("secret redaction regex must be valid")
     })
 }
 
@@ -245,68 +202,69 @@ fn sanitize_value(value: &Value) -> Value {
     }
 }
 
+fn sanitize_scope(value: &str) -> String {
+    let scope = value
+        .trim()
+        .chars()
+        .filter(|value| value.is_ascii_alphanumeric() || matches!(value, '.' | '_' | ':' | '-'))
+        .take(80)
+        .collect::<String>();
+    if scope.is_empty() {
+        "application".to_string()
+    } else {
+        scope
+    }
+}
+
+fn format_entry(input: &DiagnosticRecordInput) -> String {
+    let scope = sanitize_scope(&input.scope);
+    let message = redact_text(&input.message)
+        .chars()
+        .take(2_000)
+        .collect::<String>()
+        .replace('\r', "")
+        .replace('\n', "\\n");
+    match input.context.as_ref().map(sanitize_value) {
+        Some(context) if !context.is_null() => {
+            format!("[{scope}] {message} context={context}")
+        }
+        _ => format!("[{scope}] {message}"),
+    }
+}
+
+fn log_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    let directory = app
+        .path()
+        .app_log_dir()
+        .map_err(|error| format!("无法定位本地日志目录: {error}"))?;
+    fs::create_dir_all(&directory).map_err(|error| format!("无法创建本地日志目录: {error}"))?;
+    Ok(directory)
+}
+
+fn current_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let path = log_directory(app)?.join("fineshell.log");
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| format!("无法创建本地日志文件: {error}"))?;
+    Ok(path)
+}
+
 impl DiagnosticLogState {
     fn record(&self, input: DiagnosticRecordInput) -> Result<(), String> {
-        let mut buffer = self
-            .buffer
+        let configured_level = *self
+            .level
             .lock()
-            .map_err(|_| "诊断日志缓冲区不可用".to_string())?;
-        if input.level.rank() < buffer.level.rank() {
+            .map_err(|_| "诊断日志级别不可用".to_string())?;
+        if input.level.rank() < configured_level.rank() {
             return Ok(());
         }
 
-        let now = timestamp_ms();
-        let scope = redact_text(&input.scope).chars().take(80).collect();
-        let message = redact_text(&input.message).chars().take(2_000).collect();
-        let context = input.context.as_ref().map(sanitize_value);
-        if let Some(previous) = buffer.entries.back_mut() {
-            if previous.level == input.level
-                && previous.scope == scope
-                && previous.message == message
-                && previous.context == context
-                && now.saturating_sub(previous.timestamp_ms) <= DUPLICATE_WINDOW_MS
-            {
-                previous.timestamp_ms = now;
-                previous.repetitions = previous.repetitions.saturating_add(1);
-                return Ok(());
-            }
-        }
-
-        buffer.entries.push_back(DiagnosticEntry {
-            timestamp_ms: now,
-            level: input.level,
-            scope,
-            message,
-            context,
-            repetitions: 1,
-        });
-        while buffer.entries.len() > DIAGNOSTIC_CAPACITY {
-            buffer.entries.pop_front();
-        }
+        let level = input.level.as_log_level();
+        let entry = format_entry(&input);
+        log::log!(target: "fineshell::diagnostics", level, "{entry}");
         Ok(())
-    }
-
-    fn summary(&self) -> Result<DiagnosticSummary, String> {
-        let buffer = self
-            .buffer
-            .lock()
-            .map_err(|_| "诊断日志缓冲区不可用".to_string())?;
-        let mut counts = DiagnosticLogCounts::default();
-        for entry in &buffer.entries {
-            match entry.level {
-                DiagnosticLogLevel::Debug => counts.debug += 1,
-                DiagnosticLogLevel::Info => counts.info += 1,
-                DiagnosticLogLevel::Warn => counts.warn += 1,
-                DiagnosticLogLevel::Error => counts.error += 1,
-            }
-        }
-        Ok(DiagnosticSummary {
-            capacity: DIAGNOSTIC_CAPACITY,
-            counts,
-            latest_at: buffer.entries.back().map(|entry| entry.timestamp_ms),
-            level: buffer.level,
-            total: buffer.entries.len(),
-        })
     }
 }
 
@@ -316,11 +274,10 @@ pub(crate) fn diagnostic_set_level(
     level: String,
 ) -> Result<(), String> {
     let level = DiagnosticLogLevel::parse(&level)?;
-    state
-        .buffer
+    *state
+        .level
         .lock()
-        .map_err(|_| "诊断日志缓冲区不可用".to_string())?
-        .level = level;
+        .map_err(|_| "诊断日志级别不可用".to_string())? = level;
     Ok(())
 }
 
@@ -333,68 +290,17 @@ pub(crate) fn diagnostic_record(
 }
 
 #[tauri::command]
-pub(crate) fn diagnostic_summary(
-    state: State<'_, DiagnosticLogState>,
-) -> Result<DiagnosticSummary, String> {
-    state.summary()
+pub(crate) fn diagnostic_open_log(app: AppHandle) -> Result<(), String> {
+    let path = current_log_path(&app)?;
+    tauri_plugin_opener::open_path(path, None::<&str>)
+        .map_err(|error| format!("无法使用默认程序打开日志: {error}"))
 }
 
 #[tauri::command]
-pub(crate) fn diagnostic_clear(state: State<'_, DiagnosticLogState>) -> Result<(), String> {
-    state
-        .buffer
-        .lock()
-        .map_err(|_| "诊断日志缓冲区不可用".to_string())?
-        .entries
-        .clear();
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn diagnostic_export(
-    app: AppHandle,
-    state: State<'_, DiagnosticLogState>,
-    path: String,
-) -> Result<usize, String> {
-    let buffer = state
-        .buffer
-        .lock()
-        .map_err(|_| "诊断日志缓冲区不可用".to_string())?;
-    let mut report = format!(
-        "FineShell diagnostic log\nversion={}\nplatform={}\narch={}\nexported_at_ms={}\nlevel={}\nentries={}\n\n",
-        app.package_info().version,
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        timestamp_ms(),
-        buffer.level.as_str(),
-        buffer.entries.len(),
-    );
-    for entry in &buffer.entries {
-        let context = entry
-            .context
-            .as_ref()
-            .map_or_else(|| "{}".to_string(), Value::to_string);
-        report.push_str(&format!(
-            "timestamp_ms={} level={} scope={} repetitions={} message={} context={}\n",
-            entry.timestamp_ms,
-            entry.level.as_str(),
-            entry.scope,
-            entry.repetitions,
-            entry.message.replace('\n', "\\n"),
-            context,
-        ));
-    }
-    let entry_count = buffer.entries.len();
-    drop(buffer);
-
-    let path = Path::new(&path);
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|error| format!("无法创建诊断目录: {error}"))?;
-        }
-    }
-    fs::write(path, report).map_err(|error| format!("无法导出诊断日志: {error}"))?;
-    Ok(entry_count)
+pub(crate) fn diagnostic_open_log_directory(app: AppHandle) -> Result<(), String> {
+    let path = current_log_path(&app)?;
+    tauri_plugin_opener::reveal_item_in_dir(path)
+        .map_err(|error| format!("无法打开本地日志目录: {error}"))
 }
 
 pub(crate) fn record_startup(app: &AppHandle) {
@@ -416,10 +322,30 @@ pub(crate) fn record_native_info<R: Runtime>(
     message: &str,
     context: Option<Value>,
 ) {
+    record_native(app, DiagnosticLogLevel::Info, scope, message, context);
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn record_native_error<R: Runtime>(
+    app: &AppHandle<R>,
+    scope: &str,
+    message: &str,
+    context: Option<Value>,
+) {
+    record_native(app, DiagnosticLogLevel::Error, scope, message, context);
+}
+
+fn record_native<R: Runtime>(
+    app: &AppHandle<R>,
+    level: DiagnosticLogLevel,
+    scope: &str,
+    message: &str,
+    context: Option<Value>,
+) {
     let _ = app
         .state::<DiagnosticLogState>()
         .record(DiagnosticRecordInput {
-            level: DiagnosticLogLevel::Info,
+            level,
             scope: scope.to_string(),
             message: message.to_string(),
             context,
@@ -433,13 +359,15 @@ mod tests {
 
     #[test]
     fn redacts_sensitive_text() {
-        let value =
-            redact_text("root@server.example.com 192.168.1.10 /Users/demo/.ssh/id password=hello");
+        let value = redact_text(
+            "root@server.example.com 192.168.1.10 /Users/demo/.ssh/id password=hello api_key=sk-sensitive",
+        );
         assert!(!value.contains("root"));
         assert!(!value.contains("server.example.com"));
         assert!(!value.contains("192.168.1.10"));
         assert!(!value.contains("/Users/demo"));
         assert!(!value.contains("hello"));
+        assert!(!value.contains("sk-sensitive"));
     }
 
     #[test]
@@ -471,46 +399,17 @@ mod tests {
     }
 
     #[test]
-    fn merges_repeated_entries_and_respects_level() {
-        let state = DiagnosticLogState::default();
-        state
-            .record(DiagnosticRecordInput {
-                level: DiagnosticLogLevel::Debug,
-                scope: "test".to_string(),
-                message: "ignored".to_string(),
-                context: None,
-            })
-            .unwrap();
-        let input = DiagnosticRecordInput {
+    fn formats_a_single_readable_sanitized_line() {
+        let entry = format_entry(&DiagnosticRecordInput {
             level: DiagnosticLogLevel::Error,
-            scope: "test".to_string(),
-            message: "failed".to_string(),
-            context: None,
-        };
-        state.record(input.clone()).unwrap();
-        state.record(input).unwrap();
+            scope: "ssh session".to_string(),
+            message: "连接 server.example.com 失败\n正在重试".to_string(),
+            context: Some(json!({ "status": "failed", "address": "192.168.1.10" })),
+        });
 
-        let buffer = state.buffer.lock().unwrap();
-        assert_eq!(buffer.entries.len(), 1);
-        assert_eq!(buffer.entries[0].repetitions, 2);
-    }
-
-    #[test]
-    fn bounds_the_ring_buffer() {
-        let state = DiagnosticLogState::default();
-        for index in 0..(DIAGNOSTIC_CAPACITY + 5) {
-            state
-                .record(DiagnosticRecordInput {
-                    level: DiagnosticLogLevel::Info,
-                    scope: "test".to_string(),
-                    message: format!("entry-{index}"),
-                    context: None,
-                })
-                .unwrap();
-        }
-
-        let buffer = state.buffer.lock().unwrap();
-        assert_eq!(buffer.entries.len(), DIAGNOSTIC_CAPACITY);
-        assert_eq!(buffer.entries.front().unwrap().message, "entry-5");
+        assert_eq!(
+            entry,
+            "[sshsession] 连接 [HOST] 失败\\n正在重试 context={\"address\":\"[REDACTED]\",\"status\":\"failed\"}"
+        );
     }
 }

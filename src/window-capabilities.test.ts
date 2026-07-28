@@ -10,6 +10,9 @@ describe("window capabilities", () => {
     expect(defaultCapability.permissions).not.toContain(
       "core:window:allow-destroy",
     );
+    expect(defaultCapability.permissions).toContain(
+      "core:window:allow-set-size",
+    );
   });
 
   test("allows update checks from both application entry points", () => {

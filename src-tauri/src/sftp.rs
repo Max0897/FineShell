@@ -81,6 +81,30 @@ pub(crate) struct SftpTextFile {
     pub(crate) permissions: Option<u32>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AiSftpFileOperationKind {
+    Create,
+    Rename,
+    Delete,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct AiSftpFileOperationRequest {
+    operation: AiSftpFileOperationKind,
+    path: String,
+    target_path: Option<String>,
+    content: Option<String>,
+    expected_content: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiSftpFileOperationResult {
+    file: Option<SftpTextFile>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LocalUploadFile {
@@ -178,6 +202,10 @@ enum SftpCommand {
         original_content: String,
         overwrite: bool,
         reply: Sender<Result<SftpTextFile, String>>,
+    },
+    ApplyAiFileOperation {
+        request: AiSftpFileOperationRequest,
+        reply: Sender<Result<AiSftpFileOperationResult, String>>,
     },
     Close,
 }
@@ -1217,6 +1245,211 @@ fn write_remote_text_file(
     result
 }
 
+fn validate_ai_file_operation_content(content: &str, label: &str) -> Result<(), String> {
+    if content.len() > REMOTE_TEXT_MAX_BYTES {
+        return Err(format!("{label}超过 2 MiB 限制"));
+    }
+    if content.as_bytes().contains(&0) {
+        return Err(format!("{label}包含空字符"));
+    }
+    Ok(())
+}
+
+fn ai_file_operation_temporary_path(path: &Path, action: &str) -> Result<PathBuf, String> {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("无法生成 AI 文件操作临时路径：{error}"))?
+        .as_nanos();
+    remote_upload_temporary_path(
+        path,
+        &format!("ai-{action}-{}-{suffix}", std::process::id()),
+    )
+}
+
+fn create_ai_remote_text_file(
+    sftp: &Sftp,
+    path: &str,
+    content: String,
+) -> Result<SftpTextFile, String> {
+    validate_ai_file_operation_content(&content, "新建文件内容")?;
+    let path = normalize_remote_operation_path(path)?;
+    if path == "/" {
+        return Err("禁止将远程根目录作为新建文件".to_string());
+    }
+    let remote_path = Path::new(&path);
+    if remote_exists(sftp, remote_path) {
+        return Err("远程目标已存在，已阻止新建文件".to_string());
+    }
+    let temporary_path = ai_file_operation_temporary_path(remote_path, "create")?;
+    let result = (|| -> Result<SftpTextFile, String> {
+        let mut temporary = sftp
+            .open_mode(
+                &temporary_path,
+                OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::EXCLUSIVE,
+                0o644,
+                OpenType::File,
+            )
+            .map_err(|error| format!("无法创建 AI 文件操作临时文件：{error}"))?;
+        temporary
+            .write_all(content.as_bytes())
+            .map_err(|error| format!("无法写入 AI 新建文件内容：{error}"))?;
+        temporary
+            .flush()
+            .map_err(|error| format!("无法刷新 AI 新建文件内容：{error}"))?;
+        drop(temporary);
+        sftp.rename(&temporary_path, remote_path, Some(RenameFlags::empty()))
+            .map_err(|error| format!("无法保存 AI 新建文件，目标可能已存在：{error}"))?;
+        let stat = sftp
+            .lstat(remote_path)
+            .map_err(|error| format!("无法确认 AI 新建文件状态：{error}"))?;
+        Ok(SftpTextFile {
+            path: path.clone(),
+            size: content.len() as u64,
+            content,
+            modified_at: stat.mtime,
+            permissions: stat.perm.map(|value| value & 0o7777),
+        })
+    })();
+    if result.is_err() {
+        let _ = sftp.unlink(&temporary_path);
+    }
+    result
+}
+
+fn rename_ai_remote_text_file(
+    sftp: &Sftp,
+    source_path: &str,
+    target_path: &str,
+    expected_content: &str,
+) -> Result<SftpTextFile, String> {
+    validate_ai_file_operation_content(expected_content, "重命名文件快照")?;
+    let source_path = normalize_remote_operation_path(source_path)?;
+    let target_path = normalize_remote_operation_path(target_path)?;
+    if source_path == "/" || target_path == "/" || source_path == target_path {
+        return Err("AI 重命名路径无效".to_string());
+    }
+    if remote_exists(sftp, Path::new(&target_path)) {
+        return Err("远程目标已存在，已阻止重命名".to_string());
+    }
+    let before = read_remote_text_file(sftp, &source_path)?;
+    if before.content != expected_content {
+        return Err(REMOTE_TEXT_CONFLICT_ERROR.to_string());
+    }
+    sftp.rename(
+        Path::new(&source_path),
+        Path::new(&target_path),
+        Some(RenameFlags::empty()),
+    )
+    .map_err(|error| format!("AI 重命名远程文件失败：{error}"))?;
+    match read_remote_text_file(sftp, &target_path) {
+        Ok(after) if after.content == expected_content => Ok(after),
+        verification => {
+            let detail = verification
+                .err()
+                .unwrap_or_else(|| REMOTE_TEXT_CONFLICT_ERROR.to_string());
+            match sftp.rename(
+                Path::new(&target_path),
+                Path::new(&source_path),
+                Some(RenameFlags::empty()),
+            ) {
+                Ok(()) => Err(format!("{REMOTE_TEXT_CONFLICT_ERROR}：{detail}")),
+                Err(restore_error) => Err(format!(
+                    "{REMOTE_TEXT_CONFLICT_ERROR}；文件位于 {target_path}，自动恢复失败：{restore_error}"
+                )),
+            }
+        }
+    }
+}
+
+fn delete_ai_remote_text_file(
+    sftp: &Sftp,
+    path: &str,
+    expected_content: &str,
+) -> Result<(), String> {
+    validate_ai_file_operation_content(expected_content, "删除文件快照")?;
+    let path = normalize_remote_operation_path(path)?;
+    if path == "/" {
+        return Err("禁止删除远程根目录".to_string());
+    }
+    let before = read_remote_text_file(sftp, &path)?;
+    if before.content != expected_content {
+        return Err(REMOTE_TEXT_CONFLICT_ERROR.to_string());
+    }
+    let remote_path = Path::new(&path);
+    let temporary_path = ai_file_operation_temporary_path(remote_path, "delete")?;
+    sftp.rename(remote_path, &temporary_path, Some(RenameFlags::empty()))
+        .map_err(|error| format!("无法暂存待删除的远程文件：{error}"))?;
+    let verification = read_remote_text_file(
+        sftp,
+        temporary_path
+            .to_str()
+            .ok_or_else(|| "AI 文件操作临时路径无效".to_string())?,
+    );
+    if !matches!(verification, Ok(ref file) if file.content == expected_content) {
+        return match sftp.rename(&temporary_path, remote_path, Some(RenameFlags::empty())) {
+            Ok(()) => Err(REMOTE_TEXT_CONFLICT_ERROR.to_string()),
+            Err(restore_error) => Err(format!(
+                "{REMOTE_TEXT_CONFLICT_ERROR}；文件保留在 {}，自动恢复失败：{restore_error}",
+                temporary_path.display()
+            )),
+        };
+    }
+    sftp.unlink(&temporary_path)
+        .map_err(|error| format!("无法删除已校验的远程文件：{error}"))
+}
+
+fn apply_ai_sftp_file_operation(
+    sftp: &Sftp,
+    request: AiSftpFileOperationRequest,
+) -> Result<AiSftpFileOperationResult, String> {
+    let file = match request.operation {
+        AiSftpFileOperationKind::Create => {
+            if request.target_path.is_some() || request.expected_content.is_some() {
+                return Err("AI 新建文件参数无效".to_string());
+            }
+            Some(create_ai_remote_text_file(
+                sftp,
+                &request.path,
+                request
+                    .content
+                    .ok_or_else(|| "AI 新建文件缺少内容".to_string())?,
+            )?)
+        }
+        AiSftpFileOperationKind::Rename => {
+            if request.content.is_some() {
+                return Err("AI 重命名参数无效".to_string());
+            }
+            Some(rename_ai_remote_text_file(
+                sftp,
+                &request.path,
+                request
+                    .target_path
+                    .as_deref()
+                    .ok_or_else(|| "AI 重命名缺少目标路径".to_string())?,
+                request
+                    .expected_content
+                    .as_deref()
+                    .ok_or_else(|| "AI 重命名缺少文件快照".to_string())?,
+            )?)
+        }
+        AiSftpFileOperationKind::Delete => {
+            if request.content.is_some() || request.target_path.is_some() {
+                return Err("AI 删除文件参数无效".to_string());
+            }
+            delete_ai_remote_text_file(
+                sftp,
+                &request.path,
+                request
+                    .expected_content
+                    .as_deref()
+                    .ok_or_else(|| "AI 删除文件缺少文件快照".to_string())?,
+            )?;
+            None
+        }
+    };
+    Ok(AiSftpFileOperationResult { file })
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -2023,6 +2256,9 @@ fn run_session(
                     overwrite,
                 ));
             }
+            SftpCommand::ApplyAiFileOperation { request, reply } => {
+                let _ = reply.send(apply_ai_sftp_file_operation(&sftp, request));
+            }
             SftpCommand::Close => break,
         }
     }
@@ -2387,6 +2623,18 @@ pub(crate) async fn sftp_write_text_file(
 }
 
 #[tauri::command]
+pub(crate) async fn sftp_apply_ai_file_operation(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    request: AiSftpFileOperationRequest,
+) -> Result<AiSftpFileOperationResult, String> {
+    dispatch(manager.inner().clone(), session_id, move |reply| {
+        SftpCommand::ApplyAiFileOperation { request, reply }
+    })
+    .await
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn sftp_upload(
     app: AppHandle,
@@ -2622,7 +2870,8 @@ mod tests {
         is_remote_descendant, normalize_remote_operation_path, parse_identity_names,
         remote_archive_temporary_directory, remote_text_backup_path, remote_text_temporary_path,
         remote_upload_temporary_path, replace_download_file, shell_quote,
-        validate_archive_file_name, RemoteArchiveFormat, RemoteIdentityCache, SftpCommand,
+        validate_ai_file_operation_content, validate_archive_file_name, AiSftpFileOperationKind,
+        AiSftpFileOperationRequest, RemoteArchiveFormat, RemoteIdentityCache, SftpCommand,
         SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
     };
     use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
@@ -2660,6 +2909,28 @@ mod tests {
 
         assert_eq!(entry_kind(&directory), "directory");
         assert_eq!(entry_kind(&file), "file");
+    }
+
+    #[test]
+    fn deserializes_and_bounds_ai_file_operation_requests() {
+        let request = serde_json::from_str::<AiSftpFileOperationRequest>(
+            r#"{"operation":"rename","path":"/etc/app.conf","targetPath":"/etc/app.old.conf","expectedContent":"port=80\n"}"#,
+        )
+        .unwrap();
+        assert_eq!(request.operation, AiSftpFileOperationKind::Rename);
+        assert_eq!(request.path, "/etc/app.conf");
+        assert_eq!(request.target_path.as_deref(), Some("/etc/app.old.conf"));
+        assert_eq!(request.expected_content.as_deref(), Some("port=80\n"));
+        assert!(serde_json::from_str::<AiSftpFileOperationRequest>(
+            r#"{"operation":"delete","path":"/etc/app.conf","unexpected":true}"#,
+        )
+        .is_err());
+        assert!(validate_ai_file_operation_content("plain text", "内容").is_ok());
+        assert!(validate_ai_file_operation_content("binary\0text", "内容").is_err());
+        assert!(
+            validate_ai_file_operation_content(&"x".repeat(REMOTE_TEXT_MAX_BYTES + 1), "内容")
+                .is_err()
+        );
     }
 
     #[test]

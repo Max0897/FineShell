@@ -1,26 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import {
-  Alert,
   Button,
   Message,
-  Popconfirm,
   Select,
   Space,
-  Spin,
+  Tooltip,
   Typography,
 } from "@arco-design/web-react";
-import {
-  IconDelete,
-  IconDownload,
-  IconRefresh,
-} from "@arco-design/web-react/icon";
+import { IconEye, IconFolder } from "@arco-design/web-react/icon";
 import type { AppSettings } from "../app-settings";
-import {
-  clearDiagnosticLogs,
-  exportDiagnosticLogsWithDialog,
-  loadDiagnosticSummary,
-  type DiagnosticSummary,
-} from "../diagnostics";
+import { openDiagnosticLog, openDiagnosticLogDirectory } from "../diagnostics";
 
 interface AdvancedSettingsProps {
   settings: AppSettings;
@@ -30,65 +19,23 @@ interface AdvancedSettingsProps {
   ) => void;
 }
 
-const LEVEL_LABELS: Record<AppSettings["diagnosticLogLevel"], string> = {
-  debug: "调试",
-  info: "信息",
-  warn: "警告",
-  error: "错误",
-};
-
-function formatDiagnosticTime(timestamp?: number) {
-  if (!timestamp) return "暂无记录";
-  return new Intl.DateTimeFormat("zh-CN", {
-    dateStyle: "medium",
-    timeStyle: "medium",
-  }).format(new Date(timestamp));
-}
-
 function AdvancedSettings({ settings, updateSetting }: AdvancedSettingsProps) {
-  const [summary, setSummary] = useState<DiagnosticSummary>();
-  const [loading, setLoading] = useState(true);
-  const [clearing, setClearing] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [openingLog, setOpeningLog] = useState<"file" | "directory" | null>(
+    null,
+  );
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const openLog = async (target: "file" | "directory") => {
+    setOpeningLog(target);
     try {
-      setSummary(await loadDiagnosticSummary());
+      if (target === "file") {
+        await openDiagnosticLog();
+      } else {
+        await openDiagnosticLogDirectory();
+      }
     } catch (error) {
-      Message.error(String(error));
+      Message.error(`打开日志失败：${String(error)}`);
     } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const clearLogs = async () => {
-    setClearing(true);
-    try {
-      await clearDiagnosticLogs();
-      await refresh();
-      Message.success("诊断日志已清空");
-    } catch (error) {
-      Message.error(String(error));
-    } finally {
-      setClearing(false);
-    }
-  };
-
-  const exportLogs = async () => {
-    setExporting(true);
-    try {
-      const count = await exportDiagnosticLogsWithDialog();
-      if (count === null) return;
-      Message.success(`已导出 ${count} 条脱敏诊断日志`);
-    } catch (error) {
-      Message.error(String(error));
-    } finally {
-      setExporting(false);
+      setOpeningLog(null);
     }
   };
 
@@ -100,15 +47,27 @@ function AdvancedSettings({ settings, updateSetting }: AdvancedSettingsProps) {
           <div>
             <Typography.Title heading={6}>诊断日志</Typography.Title>
             <Typography.Text type="secondary">
-              日志仅保存在本次运行的内存中，退出应用后自动清除
+              脱敏日志会按容量限制保存在本地，可使用系统默认程序查看
             </Typography.Text>
           </div>
-          <Button
-            aria-label="刷新诊断摘要"
-            icon={<IconRefresh />}
-            loading={loading}
-            onClick={() => void refresh()}
-          />
+          <Space size={8}>
+            <Button
+              icon={<IconEye />}
+              loading={openingLog === "file"}
+              onClick={() => void openLog("file")}
+              type="primary"
+            >
+              打开日志
+            </Button>
+            <Tooltip content="打开日志目录">
+              <Button
+                aria-label="打开日志目录"
+                icon={<IconFolder />}
+                loading={openingLog === "directory"}
+                onClick={() => void openLog("directory")}
+              />
+            </Tooltip>
+          </Space>
         </div>
 
         <div className="settings-group advanced-log-settings">
@@ -133,68 +92,6 @@ function AdvancedSettings({ settings, updateSetting }: AdvancedSettingsProps) {
               />
             </div>
           </div>
-        </div>
-
-        <Alert
-          content="导出前会再次脱敏主机地址、用户名、本地路径、命令参数和凭据字段；密码、私钥及口令不会写入日志。"
-          type="info"
-        />
-
-        <Spin className="diagnostic-summary-loading" loading={loading}>
-          <div className="diagnostic-summary">
-            <div>
-              <Typography.Text type="secondary">记录</Typography.Text>
-              <Typography.Text>
-                {summary?.total ?? 0} / {summary?.capacity ?? 1_000}
-              </Typography.Text>
-            </div>
-            <div>
-              <Typography.Text type="secondary">错误</Typography.Text>
-              <Typography.Text>{summary?.counts.error ?? 0}</Typography.Text>
-            </div>
-            <div>
-              <Typography.Text type="secondary">警告</Typography.Text>
-              <Typography.Text>{summary?.counts.warn ?? 0}</Typography.Text>
-            </div>
-            <div>
-              <Typography.Text type="secondary">当前级别</Typography.Text>
-              <Typography.Text>
-                {LEVEL_LABELS[summary?.level ?? settings.diagnosticLogLevel]}
-              </Typography.Text>
-            </div>
-          </div>
-        </Spin>
-
-        <div className="advanced-log-footer">
-          <div className="diagnostic-summary-time">
-            <Typography.Text type="secondary">最近记录</Typography.Text>
-            <Typography.Text>
-              {formatDiagnosticTime(summary?.latestAt)}
-            </Typography.Text>
-          </div>
-          <Space className="advanced-log-actions">
-            <Button
-              icon={<IconDownload />}
-              loading={exporting}
-              onClick={() => void exportLogs()}
-              type="primary"
-            >
-              导出日志
-            </Button>
-            <Popconfirm
-              disabled={!summary?.total}
-              onOk={() => clearLogs()}
-              title="清空本次运行产生的全部诊断日志？"
-            >
-              <Button
-                disabled={!summary?.total}
-                icon={<IconDelete />}
-                loading={clearing}
-              >
-                清空
-              </Button>
-            </Popconfirm>
-          </Space>
         </div>
       </section>
     </div>

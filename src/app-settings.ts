@@ -1,10 +1,16 @@
+import { inferAiProvider, type AiProvider } from "./ai-providers";
+import {
+  ALL_AI_READ_ONLY_TOOLS,
+  sanitizeAiReadOnlyTools,
+  type AiReadOnlyToolName,
+} from "./ai-permissions";
+
+export type { AiProvider } from "./ai-providers";
+
 export type TerminalFontFamily = "system" | "menlo" | "consolas";
 export type TerminalCursorStyle = "block" | "underline" | "bar";
 export type TerminalColorScheme =
-  | "fineshellDark"
-  | "graphiteLight"
-  | "solarizedDark"
-  | "dracula";
+  "fineshellDark" | "graphiteLight" | "solarizedDark" | "dracula";
 export type TerminalRightClickAction = "menu" | "paste";
 export type ConnectionHistoryLimit = 0 | 20 | 50 | 100;
 export type ConnectionHistoryRetentionDays = 0 | 7 | 30 | 90;
@@ -32,6 +38,15 @@ export interface AppSettings {
   connectionHistoryLimit: ConnectionHistoryLimit;
   connectionHistoryRetentionDays: ConnectionHistoryRetentionDays;
   diagnosticLogLevel: DiagnosticLogLevel;
+  aiProvider: AiProvider;
+  aiBaseUrl: string;
+  aiModel: string;
+  aiContextMaxChars: number;
+  aiReadOnlyTools: AiReadOnlyToolName[];
+  aiFileProposalsEnabled: boolean;
+  aiCommandProposalsEnabled: boolean;
+  aiCommandTrackingEnabled: boolean;
+  aiShellIntegrationEnabled: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -56,6 +71,15 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   connectionHistoryLimit: 50,
   connectionHistoryRetentionDays: 0,
   diagnosticLogLevel: "info",
+  aiProvider: "openai",
+  aiBaseUrl: "https://api.openai.com/v1",
+  aiModel: "",
+  aiContextMaxChars: 12_000,
+  aiReadOnlyTools: [...ALL_AI_READ_ONLY_TOOLS],
+  aiFileProposalsEnabled: true,
+  aiCommandProposalsEnabled: true,
+  aiCommandTrackingEnabled: true,
+  aiShellIntegrationEnabled: false,
 };
 
 export const TERMINAL_FONT_FAMILIES: Record<TerminalFontFamily, string> = {
@@ -109,8 +133,19 @@ function connectionHistoryRetentionDaysValue(
   return value === 7 || value === 30 || value === 90 ? value : 0;
 }
 
+function aiProviderValue(value: unknown, baseUrl: string): AiProvider {
+  return value === "openai" ||
+    value === "deepseek" ||
+    value === "ollama" ||
+    value === "custom"
+    ? value
+    : inferAiProvider(baseUrl);
+}
+
 export function sanitizeAppSettings(value: unknown): AppSettings {
   const settings = isRecord(value) ? value : {};
+  const aiBaseUrl =
+    stringValue(settings.aiBaseUrl) || DEFAULT_APP_SETTINGS.aiBaseUrl;
   return {
     terminalColorScheme:
       settings.terminalColorScheme === "graphiteLight" ||
@@ -208,11 +243,43 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
       settings.diagnosticLogLevel === "error"
         ? settings.diagnosticLogLevel
         : DEFAULT_APP_SETTINGS.diagnosticLogLevel,
+    aiProvider: aiProviderValue(settings.aiProvider, aiBaseUrl),
+    aiBaseUrl,
+    aiModel: stringValue(settings.aiModel).slice(0, 160),
+    aiContextMaxChars: numberValue(
+      settings.aiContextMaxChars,
+      DEFAULT_APP_SETTINGS.aiContextMaxChars,
+      2_000,
+      32_000,
+    ),
+    aiReadOnlyTools: sanitizeAiReadOnlyTools(
+      settings.aiReadOnlyTools,
+      settings.aiToolsEnabled,
+    ),
+    aiFileProposalsEnabled: booleanValue(
+      settings.aiFileProposalsEnabled,
+      DEFAULT_APP_SETTINGS.aiFileProposalsEnabled,
+    ),
+    aiCommandProposalsEnabled: booleanValue(
+      settings.aiCommandProposalsEnabled,
+      DEFAULT_APP_SETTINGS.aiCommandProposalsEnabled,
+    ),
+    aiCommandTrackingEnabled: booleanValue(
+      settings.aiCommandTrackingEnabled,
+      DEFAULT_APP_SETTINGS.aiCommandTrackingEnabled,
+    ),
+    aiShellIntegrationEnabled: booleanValue(
+      settings.aiShellIntegrationEnabled,
+      DEFAULT_APP_SETTINGS.aiShellIntegrationEnabled,
+    ),
   };
 }
 
 export function appSettingsEqual(left: AppSettings, right: AppSettings) {
   return (Object.keys(DEFAULT_APP_SETTINGS) as (keyof AppSettings)[]).every(
-    (key) => left[key] === right[key],
+    (key) =>
+      Array.isArray(left[key]) && Array.isArray(right[key])
+        ? JSON.stringify(left[key]) === JSON.stringify(right[key])
+        : left[key] === right[key],
   );
 }
