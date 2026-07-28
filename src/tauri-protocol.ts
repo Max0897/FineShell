@@ -127,6 +127,20 @@ export interface AiModelInfo {
   ownedBy?: string;
 }
 
+export type AiCapabilityState = "supported" | "unsupported" | "unknown";
+
+export interface AiCapability {
+  state: AiCapabilityState;
+  detail: string;
+}
+
+export interface AiServiceCapabilities {
+  chat: AiCapability;
+  models: AiCapability;
+  streaming: AiCapability;
+  tools: AiCapability;
+}
+
 interface EventPayloadMap {
   "ssh-output": SshOutputPayload;
   "ssh-status": SshStatusPayload;

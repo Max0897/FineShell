@@ -119,6 +119,60 @@ pub(crate) struct AiModelInfo {
     owned_by: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum AiCapabilityState {
+    Supported,
+    Unsupported,
+    Unknown,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiCapability {
+    state: AiCapabilityState,
+    detail: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiServiceCapabilities {
+    chat: AiCapability,
+    models: AiCapability,
+    streaming: AiCapability,
+    tools: AiCapability,
+}
+
+impl AiCapability {
+    fn supported(detail: impl Into<String>) -> Self {
+        Self {
+            state: AiCapabilityState::Supported,
+            detail: detail.into(),
+        }
+    }
+
+    fn unsupported(detail: impl Into<String>) -> Self {
+        Self {
+            state: AiCapabilityState::Unsupported,
+            detail: detail.into(),
+        }
+    }
+
+    fn unknown(detail: impl Into<String>) -> Self {
+        Self {
+            state: AiCapabilityState::Unknown,
+            detail: detail.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AiCapabilityKind {
+    Models,
+    Streaming,
+    Tools,
+}
+
 #[derive(Deserialize)]
 struct AiModelsResponse {
     data: Vec<AiModelEntry>,
@@ -815,6 +869,56 @@ fn is_tool_unsupported_error(status: u16, error: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
+fn capability_http_failure(kind: AiCapabilityKind, status: u16, error: String) -> AiCapability {
+    let normalized = error.to_lowercase();
+    let unsupported = match kind {
+        AiCapabilityKind::Models => matches!(status, 404 | 405 | 501),
+        AiCapabilityKind::Streaming => {
+            matches!(status, 404 | 405 | 501)
+                || (matches!(status, 400 | 422)
+                    && (normalized.contains("stream")
+                        || normalized.contains("不支持")
+                        || normalized.contains("unsupported")))
+        }
+        AiCapabilityKind::Tools => {
+            matches!(status, 404 | 405 | 501) || is_tool_unsupported_error(status, &error)
+        }
+    };
+    if unsupported {
+        AiCapability::unsupported(error)
+    } else {
+        AiCapability::unknown(error)
+    }
+}
+
+fn valid_stream_probe_event(data: &str) -> Result<bool, String> {
+    if data == "[DONE]" {
+        return Ok(true);
+    }
+    let value: Value =
+        serde_json::from_str(data).map_err(|error| format!("流式响应格式无效：{error}"))?;
+    if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
+        return Err(format!("AI 服务返回错误：{message}"));
+    }
+    Ok(value.pointer("/choices/0/delta").is_some())
+}
+
+fn tool_probe_supported(value: &Value) -> bool {
+    value
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|calls| {
+            calls.iter().any(|call| {
+                call.pointer("/function/name").and_then(Value::as_str)
+                    == Some("fineshell_capability_probe")
+            })
+        })
+        || value
+            .pointer("/choices/0/message/function_call/name")
+            .and_then(Value::as_str)
+            == Some("fineshell_capability_probe")
+}
+
 #[derive(Default)]
 struct SseParser {
     buffer: String,
@@ -972,6 +1076,146 @@ fn complete_tool_calls(calls: Vec<ToolCallAccumulator>) -> Result<Vec<AiToolCall
     Ok(calls)
 }
 
+async fn test_basic_chat(
+    client: &Client,
+    endpoint: Url,
+    api_key: Option<&str>,
+    model: &str,
+) -> Result<(), String> {
+    let response = with_api_key(client.post(endpoint), api_key)
+        .json(&json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": "Reply with OK." }],
+            "stream": false
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("无法连接 AI 服务：{error}"))?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(response_error(response).await)
+    }
+}
+
+async fn probe_models(client: &Client, endpoint: Url, api_key: Option<&str>) -> AiCapability {
+    let response = match with_api_key(client.get(endpoint), api_key).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return AiCapability::unknown(format!("模型列表探测失败：{error}"));
+        }
+    };
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let error = response_error(response).await;
+        return capability_http_failure(AiCapabilityKind::Models, status, error);
+    }
+    match response.json::<AiModelsResponse>().await {
+        Ok(response) => AiCapability::supported(format!(
+            "模型列表接口可用，返回 {} 个模型",
+            normalize_models(response.data).len()
+        )),
+        Err(error) => AiCapability::unknown(format!("模型列表格式不兼容：{error}")),
+    }
+}
+
+async fn probe_streaming(
+    client: &Client,
+    endpoint: Url,
+    api_key: Option<&str>,
+    model: &str,
+) -> AiCapability {
+    let response = match with_api_key(client.post(endpoint), api_key)
+        .json(&json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": "Reply with OK." }],
+            "stream": true
+        }))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return AiCapability::unknown(format!("流式响应探测失败：{error}")),
+    };
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let error = response_error(response).await;
+        return capability_http_failure(AiCapabilityKind::Streaming, status, error);
+    }
+
+    let mut parser = SseParser::default();
+    let mut received = 0usize;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                return AiCapability::unknown(format!("读取流式响应失败：{error}"));
+            }
+        };
+        received = received.saturating_add(chunk.len());
+        if received > 128 * 1024 {
+            return AiCapability::unknown("流式探测响应超过 128 KiB 限制");
+        }
+        for event in parser.push(&chunk) {
+            match valid_stream_probe_event(&event) {
+                Ok(true) => return AiCapability::supported("返回了标准 SSE 流式响应"),
+                Ok(false) => {}
+                Err(error) => return AiCapability::unknown(error),
+            }
+        }
+    }
+    AiCapability::unknown("服务接受了流式参数，但未返回标准 SSE 事件")
+}
+
+async fn probe_tools(
+    client: &Client,
+    endpoint: Url,
+    api_key: Option<&str>,
+    model: &str,
+) -> AiCapability {
+    let response = match with_api_key(client.post(endpoint), api_key)
+        .json(&json!({
+            "model": model,
+            "messages": [{
+                "role": "user",
+                "content": "Call the provided fineshell_capability_probe function."
+            }],
+            "stream": false,
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "fineshell_capability_probe",
+                    "description": "Confirm function calling support without performing any action.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    }
+                }
+            }],
+            "tool_choice": "auto"
+        }))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return AiCapability::unknown(format!("工具调用探测失败：{error}")),
+    };
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let error = response_error(response).await;
+        return capability_http_failure(AiCapabilityKind::Tools, status, error);
+    }
+    match response.json::<Value>().await {
+        Ok(value) if tool_probe_supported(&value) => {
+            AiCapability::supported("模型返回了标准工具调用")
+        }
+        Ok(_) => AiCapability::unknown("服务接受了工具参数，但模型未返回工具调用"),
+        Err(error) => AiCapability::unknown(format!("工具调用响应格式不兼容：{error}")),
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn ai_list_models(request: AiModelsRequest) -> CommandResult<Vec<AiModelInfo>> {
     let operation = "ai_list_models";
@@ -1002,23 +1246,39 @@ pub(crate) async fn ai_test_connection(request: AiConnectionRequest) -> CommandR
         .map_err(|e| structured(operation, e))?;
     let model = validate_model(&request.model).map_err(|e| structured(operation, e))?;
     let api_key = api_key_for_endpoint(&endpoint).map_err(|e| structured(operation, e))?;
-    let request = client(Duration::from_secs(30))
-        .map_err(|e| structured(operation, e))?
-        .post(endpoint);
-    let response = with_api_key(request, api_key.as_deref())
-        .json(&json!({
-            "model": model,
-            "messages": [{ "role": "user", "content": "Reply with OK." }],
-            "stream": false
-        }))
-        .send()
+    let client = client(Duration::from_secs(30)).map_err(|e| structured(operation, e))?;
+    test_basic_chat(&client, endpoint, api_key.as_deref(), model)
         .await
-        .map_err(|error| structured(operation, format!("无法连接 AI 服务：{error}")))?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        Err(structured(operation, response_error(response).await))
-    }
+        .map_err(|e| structured(operation, e))
+}
+
+#[tauri::command]
+pub(crate) async fn ai_probe_capabilities(
+    request: AiConnectionRequest,
+) -> CommandResult<AiServiceCapabilities> {
+    let operation = "ai_probe_capabilities";
+    let chat_endpoint = service_endpoint(&request.base_url, "chat/completions")
+        .map_err(|e| structured(operation, e))?;
+    let models_endpoint =
+        service_endpoint(&request.base_url, "models").map_err(|e| structured(operation, e))?;
+    let model = validate_model(&request.model).map_err(|e| structured(operation, e))?;
+    let api_key = api_key_for_endpoint(&chat_endpoint).map_err(|e| structured(operation, e))?;
+    let client = client(Duration::from_secs(30)).map_err(|e| structured(operation, e))?;
+
+    test_basic_chat(&client, chat_endpoint.clone(), api_key.as_deref(), model)
+        .await
+        .map_err(|e| structured(operation, e))?;
+    let (models, streaming, tools) = tokio::join!(
+        probe_models(&client, models_endpoint, api_key.as_deref()),
+        probe_streaming(&client, chat_endpoint.clone(), api_key.as_deref(), model),
+        probe_tools(&client, chat_endpoint, api_key.as_deref(), model),
+    );
+    Ok(AiServiceCapabilities {
+        chat: AiCapability::supported("基础对话请求成功"),
+        models,
+        streaming,
+        tools,
+    })
 }
 
 #[tauri::command]
@@ -1245,12 +1505,14 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        apply_tool_call_delta, complete_tool_calls, enabled_diagnostic_tools,
-        filter_tool_definitions, http_messages, is_local_endpoint, is_tool_unsupported_error,
-        normalize_models, request_messages, sanitize_context, service_endpoint, stream_delta,
-        stream_tool_call_deltas, tool_allowed, tool_definitions, valid_tool_arguments,
+        apply_tool_call_delta, capability_http_failure, complete_tool_calls,
+        enabled_diagnostic_tools, filter_tool_definitions, http_messages, is_local_endpoint,
+        is_tool_unsupported_error, normalize_models, request_messages, sanitize_context,
+        service_endpoint, stream_delta, stream_tool_call_deltas, tool_allowed, tool_definitions,
+        tool_probe_supported, valid_stream_probe_event, valid_tool_arguments,
         validate_enabled_diagnostic_calls, validate_service_url, validate_tool_rounds,
-        AiChatMessage, AiModelEntry, AiToolCall, AiToolResult, AiToolRound, SseParser,
+        AiCapabilityKind, AiCapabilityState, AiChatMessage, AiModelEntry, AiToolCall, AiToolResult,
+        AiToolRound, SseParser,
     };
 
     #[test]
@@ -1670,6 +1932,79 @@ mod tests {
         ));
         assert!(!is_tool_unsupported_error(401, "tools are unavailable"));
         assert!(!is_tool_unsupported_error(400, "model is missing"));
+    }
+
+    #[test]
+    fn classifies_only_explicit_capability_rejections_as_unsupported() {
+        assert_eq!(
+            capability_http_failure(
+                AiCapabilityKind::Models,
+                404,
+                "models endpoint not found".to_string(),
+            )
+            .state,
+            AiCapabilityState::Unsupported
+        );
+        assert_eq!(
+            capability_http_failure(AiCapabilityKind::Models, 429, "rate limited".to_string(),)
+                .state,
+            AiCapabilityState::Unknown
+        );
+        assert_eq!(
+            capability_http_failure(
+                AiCapabilityKind::Streaming,
+                400,
+                "stream is unsupported".to_string(),
+            )
+            .state,
+            AiCapabilityState::Unsupported
+        );
+        assert_eq!(
+            capability_http_failure(
+                AiCapabilityKind::Streaming,
+                500,
+                "temporary failure".to_string(),
+            )
+            .state,
+            AiCapabilityState::Unknown
+        );
+        assert_eq!(
+            capability_http_failure(
+                AiCapabilityKind::Tools,
+                400,
+                "model does not support tools".to_string(),
+            )
+            .state,
+            AiCapabilityState::Unsupported
+        );
+        assert_eq!(
+            capability_http_failure(
+                AiCapabilityKind::Tools,
+                400,
+                "model is temporarily unavailable".to_string(),
+            )
+            .state,
+            AiCapabilityState::Unknown
+        );
+    }
+
+    #[test]
+    fn recognizes_standard_stream_and_tool_probe_responses() {
+        assert!(valid_stream_probe_event("[DONE]").unwrap());
+        assert!(valid_stream_probe_event(r#"{"choices":[{"delta":{"content":"OK"}}]}"#).unwrap());
+        assert!(!valid_stream_probe_event(r#"{"choices":[]}"#).unwrap());
+        assert!(tool_probe_supported(&serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": { "name": "fineshell_capability_probe" }
+                    }]
+                }
+            }]
+        })));
+        assert!(!tool_probe_supported(&serde_json::json!({
+            "choices": [{ "message": { "content": "OK" } }]
+        })));
     }
 
     #[test]

@@ -2660,6 +2660,26 @@ body.sftp-remote-dragging * {
   gap: 8px;
 }
 
+.ai-capability-setting {
+  width: 440px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.ai-capability-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ai-capability-item > .arco-typography {
+  margin: 0;
+  font-size: 12px;
+}
+
 .ai-model-setting {
   display: flex;
   flex-direction: column;

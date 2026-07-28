@@ -14,6 +14,11 @@ import {
   Typography,
 } from "@arco-design/web-react";
 import { IconRefresh } from "@arco-design/web-react/icon";
+import {
+  AI_CAPABILITY_DEFINITIONS,
+  aiCapabilityStateColor,
+  aiCapabilityStateLabel,
+} from "../ai-capabilities";
 import type { AppSettings, AiProvider } from "../app-settings";
 import {
   AI_READ_ONLY_TOOL_OPTIONS,
@@ -29,9 +34,17 @@ import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
   commandErrorMessage,
   type AiModelInfo,
+  type AiServiceCapabilities,
+  type TauriCommand,
 } from "../tauri-protocol";
 
+export type AiSettingsInvoke = <T = void>(
+  command: TauriCommand,
+  args?: Record<string, unknown>,
+) => Promise<T>;
+
 interface AiSettingsProps {
+  invokeCommand?: AiSettingsInvoke;
   settings: AppSettings;
   updateSetting: <Key extends keyof AppSettings>(
     key: Key,
@@ -41,7 +54,11 @@ interface AiSettingsProps {
 
 type ConnectionState = "success" | "failed" | null;
 
-function AiSettings({ settings, updateSetting }: AiSettingsProps) {
+function AiSettings({
+  invokeCommand = invoke,
+  settings,
+  updateSetting,
+}: AiSettingsProps) {
   const [apiKey, setApiKey] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
   const [loadingKeyStatus, setLoadingKeyStatus] = useState(true);
@@ -53,18 +70,21 @@ function AiSettings({ settings, updateSetting }: AiSettingsProps) {
   const [testing, setTesting] = useState(false);
   const [connectionState, setConnectionState] =
     useState<ConnectionState>(null);
+  const [capabilities, setCapabilities] =
+    useState<AiServiceCapabilities | null>(null);
   const localService = useMemo(
     () => isLocalAiBaseUrl(settings.aiBaseUrl),
     [settings.aiBaseUrl],
   );
   const canAuthenticate = localService || hasApiKey;
   const modelRequestRef = useRef(0);
+  const capabilityRequestRef = useRef(0);
   const lastAutoFetchSignatureRef = useRef("");
   const autoFetchTimerRef = useRef<number>();
 
   useEffect(() => {
     let disposed = false;
-    void invoke<boolean>("ai_api_key_status")
+    void invokeCommand<boolean>("ai_api_key_status")
       .then((exists) => {
         if (!disposed) setHasApiKey(exists);
       })
@@ -77,25 +97,32 @@ function AiSettings({ settings, updateSetting }: AiSettingsProps) {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [invokeCommand]);
 
   useEffect(
     () => () => {
       modelRequestRef.current += 1;
+      capabilityRequestRef.current += 1;
     },
     [],
   );
 
   useEffect(() => {
     modelRequestRef.current += 1;
+    capabilityRequestRef.current += 1;
     setLoadingModels(false);
+    setTesting(false);
     setModels([]);
     setModelListError("");
     setConnectionState(null);
+    setCapabilities(null);
   }, [settings.aiBaseUrl]);
 
   useEffect(() => {
+    capabilityRequestRef.current += 1;
+    setTesting(false);
     setConnectionState(null);
+    setCapabilities(null);
   }, [settings.aiModel]);
 
   const changeProvider = (provider: AiProvider) => {
@@ -119,11 +146,13 @@ function AiSettings({ settings, updateSetting }: AiSettingsProps) {
     }
     setSavingKey(true);
     try {
-      await invoke("store_ai_api_key", { apiKey: apiKey.trim() });
+      await invokeCommand("store_ai_api_key", { apiKey: apiKey.trim() });
       setApiKey("");
       setHasApiKey(true);
       setCredentialRevision((current) => current + 1);
+      capabilityRequestRef.current += 1;
       setConnectionState(null);
+      setCapabilities(null);
       Message.success("API Key 已保存到系统凭据库");
     } catch (error) {
       Message.error(commandErrorMessage(error));
@@ -134,12 +163,14 @@ function AiSettings({ settings, updateSetting }: AiSettingsProps) {
 
   const deleteApiKey = async () => {
     try {
-      await invoke("delete_ai_api_key");
+      await invokeCommand("delete_ai_api_key");
       setApiKey("");
       setHasApiKey(false);
+      capabilityRequestRef.current += 1;
       setModels([]);
       setModelListError("");
       setConnectionState(null);
+      setCapabilities(null);
       Message.success("API Key 已删除");
     } catch (error) {
       Message.error(commandErrorMessage(error));
@@ -160,7 +191,7 @@ function AiSettings({ settings, updateSetting }: AiSettingsProps) {
     setLoadingModels(true);
     setModelListError("");
     try {
-      const result = await invoke<AiModelInfo[]>("ai_list_models", {
+      const result = await invokeCommand<AiModelInfo[]>("ai_list_models", {
         request: { baseUrl: settings.aiBaseUrl },
       });
       if (modelRequestRef.current !== requestId) return;
@@ -228,22 +259,31 @@ function AiSettings({ settings, updateSetting }: AiSettingsProps) {
       Message.warning("请先保存 API Key");
       return;
     }
+    const requestId = capabilityRequestRef.current + 1;
+    capabilityRequestRef.current = requestId;
     setTesting(true);
     setConnectionState(null);
+    setCapabilities(null);
     try {
-      await invoke("ai_test_connection", {
-        request: {
-          baseUrl: settings.aiBaseUrl,
-          model: settings.aiModel,
+      const result = await invokeCommand<AiServiceCapabilities>(
+        "ai_probe_capabilities",
+        {
+          request: {
+            baseUrl: settings.aiBaseUrl,
+            model: settings.aiModel,
+          },
         },
-      });
+      );
+      if (capabilityRequestRef.current !== requestId) return;
+      setCapabilities(result);
       setConnectionState("success");
-      Message.success("AI 服务连接正常");
+      Message.success("AI 服务能力检测完成");
     } catch (error) {
+      if (capabilityRequestRef.current !== requestId) return;
       setConnectionState("failed");
       Message.error(commandErrorMessage(error));
     } finally {
-      setTesting(false);
+      if (capabilityRequestRef.current === requestId) setTesting(false);
     }
   };
 
@@ -435,15 +475,33 @@ function AiSettings({ settings, updateSetting }: AiSettingsProps) {
         </div>
       </div>
       <div className="settings-row">
-        <Typography.Text>连接状态</Typography.Text>
-        <div className="settings-control ai-connection-control">
-          {connectionState === "success" && <Tag color="green">正常</Tag>}
+        <span className="settings-label-with-description">
+          <Typography.Text>服务能力</Typography.Text>
+          <Typography.Text type="secondary">
+            会发起少量测试请求，不执行服务器操作
+          </Typography.Text>
+        </span>
+        <div className="settings-control ai-capability-setting">
           {connectionState === "failed" && <Tag color="red">失败</Tag>}
+          {capabilities &&
+            AI_CAPABILITY_DEFINITIONS.map(({ key, label }) => {
+              const capability = capabilities[key];
+              return (
+                <Tooltip content={capability.detail} key={key}>
+                  <span className="ai-capability-item">
+                    <Typography.Text>{label}</Typography.Text>
+                    <Tag color={aiCapabilityStateColor(capability.state)}>
+                      {aiCapabilityStateLabel(capability.state)}
+                    </Tag>
+                  </span>
+                </Tooltip>
+              );
+            })}
           <Button
             loading={testing}
             onClick={() => void testConnection()}
           >
-            测试连接
+            检测能力
           </Button>
         </div>
       </div>

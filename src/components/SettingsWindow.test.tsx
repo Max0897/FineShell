@@ -34,7 +34,7 @@ describe("SettingsWindow", () => {
     );
     expect(screen.getByRole("combobox", { name: "AI 模型" })).not.toBeNull();
     expect(
-      (screen.getByRole("button", { name: "测试连接" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "检测能力" }) as HTMLButtonElement)
         .disabled,
     ).toBe(false);
     expect(

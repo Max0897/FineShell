@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 10,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -19,6 +19,7 @@
     "ai_api_key_status": true,
     "ai_list_models": true,
     "ai_test_connection": true,
+    "ai_probe_capabilities": true,
     "ai_chat_start": true,
     "ai_chat_cancel": true,
     "managed_ssh_key_import": true,

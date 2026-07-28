@@ -84,6 +84,7 @@ pub fn run() {
             credentials::ai_api_key_status,
             ai::ai_list_models,
             ai::ai_test_connection,
+            ai::ai_probe_capabilities,
             ai::ai_chat_start,
             ai::ai_chat_cancel,
             managed_keys::managed_ssh_key_import,
