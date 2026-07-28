@@ -22,6 +22,7 @@ import {
   IconNav,
   IconRefresh,
   IconReply,
+  IconRobot,
 } from "@arco-design/web-react/icon";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import type { ITooltipLineActual } from "@visactor/vchart";
@@ -49,6 +50,11 @@ import {
 import ServerProcessDrawer from "./ServerProcessDrawer";
 import PortForwardDrawer from "./PortForwardDrawer";
 import { commandErrorMessage } from "../tauri-protocol";
+import {
+  createMonitorAiHandoff,
+  createNetworkAiHandoff,
+  type AiHandoffRequest,
+} from "../ai-handoff";
 
 interface ServerMonitorPanelProps {
   refreshIntervalSeconds: number;
@@ -58,6 +64,7 @@ interface ServerMonitorPanelProps {
     snapshot: ServerMonitorSnapshot | null,
   ) => void;
   onPortForwardStatusChange: (status: PortForwardStatus) => void;
+  onSendToAi: (sessionId: string, request: AiHandoffRequest) => void;
 }
 
 function enforcePercentTooltipContent(content?: ITooltipLineActual[]) {
@@ -74,9 +81,7 @@ function enforcePercentTooltipContent(content?: ITooltipLineActual[]) {
 }
 
 const PERCENT_TOOLTIP_CONTENT = {
-  content: [
-    { key: { field: "metric" }, value: { field: "displayValue" } },
-  ],
+  content: [{ key: { field: "metric" }, value: { field: "displayValue" } }],
   updateContent: enforcePercentTooltipContent,
 };
 
@@ -126,6 +131,7 @@ function ServerMonitorPanel({
   session,
   onSnapshotChange,
   onPortForwardStatusChange,
+  onSendToAi,
 }: ServerMonitorPanelProps) {
   const [snapshot, setSnapshot] = useState<ServerMonitorSnapshot | null>(null);
   const [history, setHistory] = useState<ServerMonitorHistoryPoint[]>([]);
@@ -144,7 +150,9 @@ function ServerMonitorPanel({
   const [connectionsError, setConnectionsError] = useState<string>();
   const [connectionFilter, setConnectionFilter] =
     useState<ConnectionFilter>("all");
-  const [traceResult, setTraceResult] = useState<NetworkTraceResult | null>(null);
+  const [traceResult, setTraceResult] = useState<NetworkTraceResult | null>(
+    null,
+  );
   const [traceLoading, setTraceLoading] = useState(false);
   const [traceError, setTraceError] = useState<string>();
 
@@ -395,12 +403,37 @@ function ServerMonitorPanel({
   );
 
   const connected = session?.status === "connected";
+  const sendMonitorToAi = () => {
+    if (!session || !snapshot) return;
+    onSendToAi(session.id, createMonitorAiHandoff(snapshot, history));
+  };
+  const sendNetworkToAi = () => {
+    if (!session || (!pingResult && !traceResult && !connectionsResult)) return;
+    onSendToAi(
+      session.id,
+      createNetworkAiHandoff({
+        connections: connectionsResult,
+        ping: pingResult,
+        trace: traceResult,
+      }),
+    );
+  };
 
   return (
     <section className="server-monitor">
       <div className="server-monitor-heading">
         <Typography.Text bold>服务器监控</Typography.Text>
         <Space size="mini">
+          <Tooltip content="交给 AI 分析监控数据">
+            <Button
+              aria-label="交给 AI 分析监控数据"
+              disabled={!snapshot}
+              icon={<IconRobot />}
+              onClick={sendMonitorToAi}
+              size="mini"
+              type="text"
+            />
+          </Tooltip>
           <Tooltip content="进程管理">
             <Button
               aria-label="打开进程管理"
@@ -435,215 +468,224 @@ function ServerMonitorPanel({
       </div>
       {error && <Alert content={error} showIcon type="warning" />}
       <dl className="monitor-system-facts">
-            <div>
-              <dt>系统</dt>
-              <dd>{snapshot?.operatingSystem || "-"}</dd>
-            </div>
-            <div>
-              <dt>主机名</dt>
-              <dd>{snapshot?.hostname || "-"}</dd>
-            </div>
-            <div>
-              <dt>内核</dt>
-              <dd>{snapshot?.kernel || "-"}</dd>
-            </div>
-            <div>
-              <dt>运行时间</dt>
-              <dd>{snapshot ? formatUptime(snapshot.uptimeSeconds) : "-"}</dd>
-            </div>
-            <div>
-              <dt>负载</dt>
-              <dd>
-                {snapshot
-                  ? snapshot.loadAverage
-                      .map((value) => value.toFixed(2))
-                      .join(" / ")
-                  : "-"}
-              </dd>
-            </div>
+        <div>
+          <dt>系统</dt>
+          <dd>{snapshot?.operatingSystem || "-"}</dd>
+        </div>
+        <div>
+          <dt>主机名</dt>
+          <dd>{snapshot?.hostname || "-"}</dd>
+        </div>
+        <div>
+          <dt>内核</dt>
+          <dd>{snapshot?.kernel || "-"}</dd>
+        </div>
+        <div>
+          <dt>运行时间</dt>
+          <dd>{snapshot ? formatUptime(snapshot.uptimeSeconds) : "-"}</dd>
+        </div>
+        <div>
+          <dt>负载</dt>
+          <dd>
+            {snapshot
+              ? snapshot.loadAverage
+                  .map((value) => value.toFixed(2))
+                  .join(" / ")
+              : "-"}
+          </dd>
+        </div>
       </dl>
 
       <div className="monitor-chart-section">
-            <div className="monitor-chart-heading">
-              <Typography.Text bold>资源占用</Typography.Text>
-              <Typography.Text type="secondary">
-                {snapshot
-                  ? `内存 ${formatMonitorBytes(snapshot.memoryUsedBytes)} / ${formatMonitorBytes(snapshot.memoryTotalBytes)}`
-                  : "内存 - / -"}
-              </Typography.Text>
-            </div>
-            <div className="monitor-current-values">
-              {utilizationData.map((item) => (
-                <span key={item.metric}>
-                  <span>{item.metric}</span>
-                  <strong>{item.displayValue}</strong>
-                </span>
-              ))}
-            </div>
-            <BarChart
-              animation={false}
-              axes={[
-                {
-                  orient: "left",
-                  type: "band",
-                  label: { style: { fill: "#4e5969", fontSize: 11 } },
-                  tick: { visible: false },
-                },
-                {
-                  max: 100,
-                  min: 0,
-                  orient: "bottom",
-                  type: "linear",
-                  label: { visible: false },
-                  tick: { visible: false },
-                },
-              ]}
-              bar={{ style: { cornerRadius: 2 } }}
-              className="monitor-chart"
-              color={["#165dff", "#00b42a", "#f7ba1e"]}
-              data={[{ id: "utilization", values: utilizationData }]}
-              direction="horizontal"
-              height={105}
-              padding={{ bottom: 8, left: 0, right: 0, top: 4 }}
-              seriesField="metric"
-              tooltip={PERCENT_TOOLTIP}
-              xField="value"
-              yField="metric"
-            />
+        <div className="monitor-chart-heading">
+          <Typography.Text bold>资源占用</Typography.Text>
+          <Typography.Text type="secondary">
+            {snapshot
+              ? `内存 ${formatMonitorBytes(snapshot.memoryUsedBytes)} / ${formatMonitorBytes(snapshot.memoryTotalBytes)}`
+              : "内存 - / -"}
+          </Typography.Text>
+        </div>
+        <div className="monitor-current-values">
+          {utilizationData.map((item) => (
+            <span key={item.metric}>
+              <span>{item.metric}</span>
+              <strong>{item.displayValue}</strong>
+            </span>
+          ))}
+        </div>
+        <BarChart
+          animation={false}
+          axes={[
+            {
+              orient: "left",
+              type: "band",
+              label: { style: { fill: "#4e5969", fontSize: 11 } },
+              tick: { visible: false },
+            },
+            {
+              max: 100,
+              min: 0,
+              orient: "bottom",
+              type: "linear",
+              label: { visible: false },
+              tick: { visible: false },
+            },
+          ]}
+          bar={{ style: { cornerRadius: 2 } }}
+          className="monitor-chart"
+          color={["#165dff", "#00b42a", "#f7ba1e"]}
+          data={[{ id: "utilization", values: utilizationData }]}
+          direction="horizontal"
+          height={105}
+          padding={{ bottom: 8, left: 0, right: 0, top: 4 }}
+          seriesField="metric"
+          tooltip={PERCENT_TOOLTIP}
+          xField="value"
+          yField="metric"
+        />
       </div>
 
       <div className="monitor-chart-section">
-            <div className="monitor-chart-heading">
-              <Typography.Text bold>资源趋势</Typography.Text>
-              <Typography.Text type="secondary">
-                {snapshot
-                  ? `磁盘 ${formatMonitorBytes(snapshot.diskUsedBytes)} / ${formatMonitorBytes(snapshot.diskTotalBytes)}`
-                  : "磁盘 - / -"}
-              </Typography.Text>
-            </div>
-            <AreaChart
-              animation={false}
-              area={{ style: { fillOpacity: 0.12 } }}
-              axes={[
-                {
-                  orient: "bottom",
-                  type: "band",
-                  label: { visible: false },
-                  tick: { visible: false },
-                },
-                {
-                  max: 100,
-                  min: 0,
-                  orient: "left",
-                  type: "linear",
-                  label: {
-                    formatMethod: (value) => `${value}%`,
-                    style: { fill: "#86909c", fontSize: 10 },
-                  },
-                  tick: { visible: false },
-                },
-              ]}
-              className="monitor-chart"
-              color={["#165dff", "#00b42a"]}
-              data={[{ id: "resource-trend", values: trendData }]}
-              height={128}
-              legends={{
-                orient: "top",
-                position: "start",
-                item: { label: { style: { fill: "#4e5969", fontSize: 10 } } },
-              }}
-              line={{ style: { lineWidth: 2 } }}
-              padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
-              point={{ style: { size: 2 }, visible: history.length < 2 }}
-              seriesField="metric"
-              tooltip={PERCENT_TOOLTIP}
-              xField="time"
-              yField="value"
-            />
+        <div className="monitor-chart-heading">
+          <Typography.Text bold>资源趋势</Typography.Text>
+          <Typography.Text type="secondary">
+            {snapshot
+              ? `磁盘 ${formatMonitorBytes(snapshot.diskUsedBytes)} / ${formatMonitorBytes(snapshot.diskTotalBytes)}`
+              : "磁盘 - / -"}
+          </Typography.Text>
+        </div>
+        <AreaChart
+          animation={false}
+          area={{ style: { fillOpacity: 0.12 } }}
+          axes={[
+            {
+              orient: "bottom",
+              type: "band",
+              label: { visible: false },
+              tick: { visible: false },
+            },
+            {
+              max: 100,
+              min: 0,
+              orient: "left",
+              type: "linear",
+              label: {
+                formatMethod: (value) => `${value}%`,
+                style: { fill: "#86909c", fontSize: 10 },
+              },
+              tick: { visible: false },
+            },
+          ]}
+          className="monitor-chart"
+          color={["#165dff", "#00b42a"]}
+          data={[{ id: "resource-trend", values: trendData }]}
+          height={128}
+          legends={{
+            orient: "top",
+            position: "start",
+            item: { label: { style: { fill: "#4e5969", fontSize: 10 } } },
+          }}
+          line={{ style: { lineWidth: 2 } }}
+          padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
+          point={{ style: { size: 2 }, visible: history.length < 2 }}
+          seriesField="metric"
+          tooltip={PERCENT_TOOLTIP}
+          xField="time"
+          yField="value"
+        />
       </div>
 
       <div className="monitor-chart-section">
-            <div className="monitor-chart-heading">
-              <Typography.Text bold>网络流量</Typography.Text>
-              <Typography.Text type="secondary">
-                {snapshot
-                  ? `累计 ↓ ${formatMonitorBytes(snapshot.networkReceiveBytes)} / ↑ ${formatMonitorBytes(snapshot.networkTransmitBytes)}`
-                  : "累计 ↓ - / ↑ -"}
-              </Typography.Text>
-            </div>
-            <div className="monitor-current-values monitor-network-values">
-              <span>
-                <span>下载</span>
-                <strong>
-                  {snapshot
-                    ? formatMonitorRate(
-                        latestHistoryPoint?.networkReceiveBytesPerSecond ?? 0,
-                      )
-                    : "-"}
-                </strong>
-              </span>
-              <span>
-                <span>上传</span>
-                <strong>
-                  {snapshot
-                    ? formatMonitorRate(
-                        latestHistoryPoint?.networkTransmitBytesPerSecond ?? 0,
-                      )
-                    : "-"}
-                </strong>
-              </span>
-            </div>
-            <AreaChart
-              animation={false}
-              area={{ style: { fillOpacity: 0.12 } }}
-              axes={[
-                {
-                  orient: "bottom",
-                  type: "band",
-                  label: { visible: false },
-                  tick: { visible: false },
-                },
-                {
-                  orient: "left",
-                  type: "linear",
-                  label: { visible: false },
-                  tick: { visible: false },
-                },
-              ]}
-              className="monitor-chart"
-              color={["#165dff", "#f77234"]}
-              data={[{ id: "network-trend", values: networkTrendData }]}
-              height={128}
-              legends={{
-                orient: "top",
-                position: "start",
-                item: { label: { style: { fill: "#4e5969", fontSize: 10 } } },
-              }}
-              line={{ style: { lineWidth: 2 } }}
-              padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
-              point={{ style: { size: 2 }, visible: history.length < 2 }}
-              seriesField="metric"
-              tooltip={{
-                dimension: {
-                  content: [
-                    { key: tooltipMetric, value: tooltipRate },
-                  ],
-                },
-                mark: {
-                  content: [
-                    { key: tooltipMetric, value: tooltipRate },
-                  ],
-                },
-              }}
-              xField="time"
-              yField="value"
-            />
+        <div className="monitor-chart-heading">
+          <Typography.Text bold>网络流量</Typography.Text>
+          <Typography.Text type="secondary">
+            {snapshot
+              ? `累计 ↓ ${formatMonitorBytes(snapshot.networkReceiveBytes)} / ↑ ${formatMonitorBytes(snapshot.networkTransmitBytes)}`
+              : "累计 ↓ - / ↑ -"}
+          </Typography.Text>
+        </div>
+        <div className="monitor-current-values monitor-network-values">
+          <span>
+            <span>下载</span>
+            <strong>
+              {snapshot
+                ? formatMonitorRate(
+                    latestHistoryPoint?.networkReceiveBytesPerSecond ?? 0,
+                  )
+                : "-"}
+            </strong>
+          </span>
+          <span>
+            <span>上传</span>
+            <strong>
+              {snapshot
+                ? formatMonitorRate(
+                    latestHistoryPoint?.networkTransmitBytesPerSecond ?? 0,
+                  )
+                : "-"}
+            </strong>
+          </span>
+        </div>
+        <AreaChart
+          animation={false}
+          area={{ style: { fillOpacity: 0.12 } }}
+          axes={[
+            {
+              orient: "bottom",
+              type: "band",
+              label: { visible: false },
+              tick: { visible: false },
+            },
+            {
+              orient: "left",
+              type: "linear",
+              label: { visible: false },
+              tick: { visible: false },
+            },
+          ]}
+          className="monitor-chart"
+          color={["#165dff", "#f77234"]}
+          data={[{ id: "network-trend", values: networkTrendData }]}
+          height={128}
+          legends={{
+            orient: "top",
+            position: "start",
+            item: { label: { style: { fill: "#4e5969", fontSize: 10 } } },
+          }}
+          line={{ style: { lineWidth: 2 } }}
+          padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
+          point={{ style: { size: 2 }, visible: history.length < 2 }}
+          seriesField="metric"
+          tooltip={{
+            dimension: {
+              content: [{ key: tooltipMetric, value: tooltipRate }],
+            },
+            mark: {
+              content: [{ key: tooltipMetric, value: tooltipRate }],
+            },
+          }}
+          xField="time"
+          yField="value"
+        />
       </div>
       <Drawer
         className="network-diagnostics-drawer"
         footer={null}
         onCancel={() => setDiagnosticsVisible(false)}
-        title="网络诊断"
+        title={
+          <div className="network-diagnostics-drawer-title">
+            <span>网络诊断</span>
+            <Button
+              disabled={!pingResult && !traceResult && !connectionsResult}
+              icon={<IconRobot />}
+              onClick={sendNetworkToAi}
+              size="small"
+              type="text"
+            >
+              交给 AI
+            </Button>
+          </div>
+        }
         visible={diagnosticsVisible}
         width={720}
       >
@@ -720,7 +762,10 @@ function ServerMonitorPanel({
           </div>
           {traceError && <Alert content={traceError} showIcon type="error" />}
           {traceLoading && !traceResult && (
-            <Skeleton animation text={{ rows: 3, width: ["70%", "85%", "60%"] }} />
+            <Skeleton
+              animation
+              text={{ rows: 3, width: ["70%", "85%", "60%"] }}
+            />
           )}
           {traceResult && (
             <>
@@ -797,7 +842,11 @@ function ServerMonitorPanel({
             <Alert content={connectionsError} showIcon type="error" />
           )}
           {connectionsResult?.truncated && (
-            <Alert content="连接数量较多，仅显示前 500 条" showIcon type="warning" />
+            <Alert
+              content="连接数量较多，仅显示前 500 条"
+              showIcon
+              type="warning"
+            />
           )}
           <Table
             border={false}
@@ -816,6 +865,7 @@ function ServerMonitorPanel({
         <>
           <ServerProcessDrawer
             onCancel={() => setProcessDrawerVisible(false)}
+            onSendToAi={(request) => onSendToAi(session.id, request)}
             session={session}
             visible={processDrawerVisible}
           />

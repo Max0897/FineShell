@@ -390,6 +390,13 @@ body.ai-sidebar-resizing::after {
   gap: 8px;
 }
 
+.network-diagnostics-drawer-title {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+}
+
 .network-diagnostics-section-heading > span {
   min-width: 0;
   display: flex;

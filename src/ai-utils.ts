@@ -15,7 +15,11 @@ export type AiContextSourceId =
   | "terminal-selection"
   | "terminal-output"
   | "server-monitor"
+  | "server-trend"
+  | "process-selection"
+  | "network-diagnostic"
   | "sftp-path"
+  | "sftp-selection"
   | "sftp-file"
   | `sftp-file:${string}`;
 
@@ -190,8 +194,7 @@ const SECRET_TOKEN_PATTERN =
   /\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b/g;
 const SECRET_ARGUMENT_PATTERN =
   /(^|[\s"'\\])(--?(?:password|passphrase|api[_-]?key|access[_-]?token|secret|token)\s+)["']?([^\s,"';&|}]+)/gi;
-const CREDENTIAL_URL_PATTERN =
-  /\b(https?:\/\/[^\s/:@]+:)([^\s/@]+)(@)/gi;
+const CREDENTIAL_URL_PATTERN = /\b(https?:\/\/[^\s/:@]+:)([^\s/@]+)(@)/gi;
 
 export function redactAiContext(value: string) {
   return value
@@ -246,7 +249,8 @@ export function buildAiContextPayloadResult(
     );
     if (!completed.length) {
       pending.forEach((index, offset) => {
-        allocations[index] = share + (offset < remaining % pending.length ? 1 : 0);
+        allocations[index] =
+          share + (offset < remaining % pending.length ? 1 : 0);
       });
       break;
     }
@@ -351,9 +355,7 @@ export function formatAiServerContext(snapshot: ServerMonitorSnapshot) {
   ].join("\n");
 }
 
-export function assessAiTerminalCommand(
-  command: string,
-): AiCommandAssessment {
+export function assessAiTerminalCommand(command: string): AiCommandAssessment {
   try {
     normalizeAiTerminalCommand(command);
   } catch (error) {

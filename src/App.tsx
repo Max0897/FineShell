@@ -59,6 +59,10 @@ import {
   formatAiServerContext,
   normalizeAiTerminalCommand,
 } from "./ai-utils";
+import {
+  createSftpSelectionAiHandoff,
+  type AiHandoffRequest,
+} from "./ai-handoff";
 import type {
   AiFileOperationExecutionRequest,
   AiFileOperationResult,
@@ -156,9 +160,7 @@ function openAuxiliaryWindow(view: AuxiliaryWindow) {
   }
 
   const command =
-    view === "settings"
-      ? "open_settings_window"
-      : "open_shortcut_guide_window";
+    view === "settings" ? "open_settings_window" : "open_shortcut_guide_window";
   void invoke(command).catch((error) => {
     const title = view === "settings" ? "设置" : "快捷键说明";
     Message.error(`无法打开${title}：${commandErrorMessage(error)}`);
@@ -285,6 +287,9 @@ function App() {
   >({});
   const [aiRemoteFileContexts, setAiRemoteFileContexts] = useState<
     Record<string, AiRemoteFileContext[]>
+  >({});
+  const [aiBusinessContexts, setAiBusinessContexts] = useState<
+    Record<string, AiContextSource[]>
   >({});
   const [sftpRefreshRequests, setSftpRefreshRequests] = useState<
     Record<string, number>
@@ -514,11 +519,7 @@ function App() {
   );
 
   const openSession = useCallback(
-    (
-      host: HostRecord,
-      proxy?: ProxyRecord,
-      jumpHost?: JumpHostConnection,
-    ) => {
+    (host: HostRecord, proxy?: ProxyRecord, jumpHost?: JumpHostConnection) => {
       const normalizedHost = withHostDefaults(host);
       const session: TerminalSession = {
         id: createId("session"),
@@ -674,13 +675,10 @@ function App() {
       }
     });
 
-    void listenProtocolEvent(
-      "port-forward-status",
-      ({ payload }) => {
-        const { sessionId, ...status } = payload;
-        updatePortForwardStatus(sessionId, status);
-      },
-    ).then((stopListening) => {
+    void listenProtocolEvent("port-forward-status", ({ payload }) => {
+      const { sessionId, ...status } = payload;
+      updatePortForwardStatus(sessionId, status);
+    }).then((stopListening) => {
       if (disposed) {
         stopListening();
       } else {
@@ -897,10 +895,12 @@ function App() {
         content: sftpCurrentPaths[activeSessionId] ?? "",
       },
     ];
+    sources.push(...(aiBusinessContexts[activeSessionId] ?? []));
     sources.push(...remoteFiles.map(aiRemoteFileContextSource));
     return sources;
   }, [
     activeSessionId,
+    aiBusinessContexts,
     aiRemoteFileContexts,
     monitorSnapshots,
     sftpCurrentPaths,
@@ -1029,7 +1029,8 @@ function App() {
       : null;
     setAiRemoteFileContexts((current) => {
       const remaining = (current[sessionId] ?? []).filter(
-        (file) => file.path !== request.path && file.path !== request.targetPath,
+        (file) =>
+          file.path !== request.path && file.path !== request.targetPath,
       );
       if (!updatedFile) {
         return { ...current, [sessionId]: remaining };
@@ -1072,16 +1073,37 @@ function App() {
       return;
     }
 
-    const currentMainWidth = mainSplitRef.current?.getBoundingClientRect().width;
+    const currentMainWidth =
+      mainSplitRef.current?.getBoundingClientRect().width;
     if (currentMainWidth) {
       setMainWorkspaceFrozenWidth(currentMainWidth);
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
     }
     await synchronizeAiWindowWidth();
     if (aiWindowShouldExpandRef.current) {
       setAiAssistantVisible(true);
       setMainWorkspaceFrozenWidth(null);
     }
+  }
+
+  async function handoffToAi(sessionId: string, request: AiHandoffRequest) {
+    if (sessionId !== activeSessionId) {
+      Message.warning("当前会话已切换，请重新选择要分析的内容");
+      return;
+    }
+    setAiBusinessContexts((current) => {
+      const sources = current[sessionId] ?? [];
+      return {
+        ...current,
+        [sessionId]: [
+          ...sources.filter((source) => source.id !== request.source.id),
+          request.source,
+        ],
+      };
+    });
+    await openAiAssistant(request.prompt, [request.source.id]);
   }
 
   async function closeAiAssistant() {
@@ -1093,11 +1115,14 @@ function App() {
       return;
     }
 
-    const currentMainWidth = mainSplitRef.current?.getBoundingClientRect().width;
+    const currentMainWidth =
+      mainSplitRef.current?.getBoundingClientRect().width;
     if (currentMainWidth) setMainWorkspaceFrozenWidth(currentMainWidth);
     setAiAssistantVisible(false);
     if (currentMainWidth) {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
     }
     await synchronizeAiWindowWidth();
     if (!aiWindowShouldExpandRef.current) setMainWorkspaceFrozenWidth(null);
@@ -1146,9 +1171,14 @@ function App() {
         }
       })
       .catch((error) => {
-        recordDiagnostic("warn", "application.window", "AI 侧栏窗口尺寸调整失败", {
-          error: commandErrorMessage(error),
-        });
+        recordDiagnostic(
+          "warn",
+          "application.window",
+          "AI 侧栏窗口尺寸调整失败",
+          {
+            error: commandErrorMessage(error),
+          },
+        );
       });
     return aiWindowResizeQueueRef.current;
   }
@@ -1189,12 +1219,17 @@ function App() {
       void invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
       void invoke("sftp_disconnect", { sessionId }).catch(() => undefined);
     });
-    const remaining = current.filter(
-      (session) => !closingIds.has(session.id),
-    );
+    const remaining = current.filter((session) => !closingIds.has(session.id));
     sessionsRef.current = remaining;
     setSessions(remaining);
     setAiRemoteFileContexts((currentContexts) =>
+      Object.fromEntries(
+        Object.entries(currentContexts).filter(
+          ([sessionId]) => !closingIds.has(sessionId),
+        ),
+      ),
+    );
+    setAiBusinessContexts((currentContexts) =>
       Object.fromEntries(
         Object.entries(currentContexts).filter(
           ([sessionId]) => !closingIds.has(sessionId),
@@ -1284,6 +1319,9 @@ function App() {
           }
         >
           <ServerMonitorPanel
+            onSendToAi={(sessionId, request) =>
+              void handoffToAi(sessionId, request)
+            }
             onSnapshotChange={updateMonitorSnapshot}
             onPortForwardStatusChange={(status) =>
               activeSession && updatePortForwardStatus(activeSession.id, status)
@@ -1366,9 +1404,7 @@ function App() {
       <QuickCommandDrawer
         canSend={activeSession?.status === "connected"}
         commands={quickCommands}
-        onAfterClose={() =>
-          setTerminalFocusRequest((current) => current + 1)
-        }
+        onAfterClose={() => setTerminalFocusRequest((current) => current + 1)}
         onCancel={() => setQuickCommandDrawerVisible(false)}
         onSend={sendQuickCommand}
         visible={quickCommandDrawerVisible}
@@ -1399,8 +1435,14 @@ function App() {
           files.map((file) => aiRemoteFileContextSource(file).id),
         );
       }}
+      onSendSelectionToAi={(sessionId, currentDirectory, entries) =>
+        handoffToAi(
+          sessionId,
+          createSftpSelectionAiHandoff(currentDirectory, entries),
+        )
+      }
       refreshRequest={
-        activeSessionId ? sftpRefreshRequests[activeSessionId] ?? 0 : 0
+        activeSessionId ? (sftpRefreshRequests[activeSessionId] ?? 0) : 0
       }
       session={activeSession}
       showHiddenFiles={settings.showHiddenFiles}
@@ -1450,11 +1492,9 @@ function App() {
           directions={["left"]}
           onMoving={(_, size) => {
             const workspaceWidth =
-              mainSplitRef.current?.parentElement?.getBoundingClientRect().width ??
-              window.innerWidth;
-            setAiSidebarWidth(
-              clampAiSidebarWidth(size.width, workspaceWidth),
-            );
+              mainSplitRef.current?.parentElement?.getBoundingClientRect()
+                .width ?? window.innerWidth;
+            setAiSidebarWidth(clampAiSidebarWidth(size.width, workspaceWidth));
           }}
           onMovingEnd={() =>
             document.body.classList.remove("ai-sidebar-resizing")
@@ -1496,7 +1536,7 @@ function App() {
             }
             remoteFiles={
               activeSessionId
-                ? aiRemoteFileContexts[activeSessionId] ?? []
+                ? (aiRemoteFileContexts[activeSessionId] ?? [])
                 : []
             }
             sessionId={activeSessionId}
