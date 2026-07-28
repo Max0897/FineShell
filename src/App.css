@@ -2958,55 +2958,6 @@ body.sftp-remote-dragging * {
 
 .advanced-log-settings {
   max-width: none;
-  margin-bottom: 16px;
-}
-
-.advanced-section > .arco-alert {
-  margin-bottom: 16px;
-}
-
-.diagnostic-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  border-top: 1px solid #e5e6eb;
-  border-bottom: 1px solid #e5e6eb;
-}
-
-.diagnostic-summary-loading {
-  display: block;
-  width: 100%;
-}
-
-.diagnostic-summary > div {
-  min-width: 0;
-  min-height: 64px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 4px;
-}
-
-.diagnostic-summary .arco-typography {
-  margin: 0;
-}
-
-.diagnostic-summary-time {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.advanced-log-footer {
-  margin-top: 16px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.advanced-log-actions {
-  flex: none;
 }
 
 .credential-cleanup-table tbody > .arco-table-tr:last-child > .arco-table-td,

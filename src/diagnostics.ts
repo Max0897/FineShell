@@ -1,5 +1,4 @@
 import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
 import type { DiagnosticLogLevel } from "./app-settings";
 import {
   commandErrorMessage,
@@ -10,21 +9,6 @@ import {
 
 export type { DiagnosticLogLevel } from "./app-settings";
 
-export interface DiagnosticLogCounts {
-  debug: number;
-  info: number;
-  warn: number;
-  error: number;
-}
-
-export interface DiagnosticSummary {
-  capacity: number;
-  counts: DiagnosticLogCounts;
-  latestAt?: number;
-  level: DiagnosticLogLevel;
-  total: number;
-}
-
 interface DiagnosticRecordInput {
   context?: unknown;
   level: DiagnosticLogLevel;
@@ -32,7 +16,6 @@ interface DiagnosticRecordInput {
   scope: string;
 }
 
-const LOCAL_CAPACITY = 1_000;
 const HIGH_FREQUENCY_COMMANDS = new Set<TauriCommand>([
   "ssh_monitor_snapshot",
   "ssh_resize",
@@ -48,7 +31,6 @@ const SENSITIVE_KEY =
   /(address|args?|command|contents?|data|host(name)?|password|passphrase|path|private.?key|request|secret|target|token|username)/i;
 
 let configuredLevel: DiagnosticLogLevel = "info";
-let localEntries: (DiagnosticRecordInput & { timestampMs: number })[] = [];
 
 function redactText(value: string) {
   return value
@@ -56,14 +38,8 @@ function redactText(value: string) {
       /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gi,
       "[PRIVATE_KEY]",
     )
-    .replace(
-      /([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi,
-      "$1[CREDENTIALS]@",
-    )
-    .replace(
-      /\b[a-z_][\w.-]*@(?:[a-z0-9-]+\.)+[a-z]{2,}\b/gi,
-      "[USER]@[HOST]",
-    )
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1[CREDENTIALS]@")
+    .replace(/\b[a-z_][\w.-]*@(?:[a-z0-9-]+\.)+[a-z]{2,}\b/gi, "[USER]@[HOST]")
     .replace(
       /\b[a-z_][\w.-]*@(?:(?:\d{1,3}\.){3}\d{1,3}|\[[0-9a-f:]+\])/gi,
       "[USER]@[HOST]",
@@ -99,17 +75,14 @@ export function sanitizeDiagnosticValue(value: unknown): unknown {
 function sanitizeRecord(input: DiagnosticRecordInput): DiagnosticRecordInput {
   return {
     level: input.level,
-    scope: redactText(input.scope).slice(0, 80),
+    scope:
+      input.scope
+        .trim()
+        .replace(/[^a-z0-9._:-]+/gi, "_")
+        .slice(0, 80) || "application",
     message: redactText(input.message).slice(0, 2_000),
     context: sanitizeDiagnosticValue(input.context),
   };
-}
-
-function appendLocal(input: DiagnosticRecordInput) {
-  localEntries.push({ ...input, timestampMs: Date.now() });
-  if (localEntries.length > LOCAL_CAPACITY) {
-    localEntries = localEntries.slice(-LOCAL_CAPACITY);
-  }
 }
 
 export async function configureDiagnosticLogging(level: DiagnosticLogLevel) {
@@ -126,10 +99,7 @@ export function recordDiagnostic(
 ) {
   if (LEVEL_RANK[level] < LEVEL_RANK[configuredLevel]) return;
   const entry = sanitizeRecord({ context, level, message, scope });
-  if (!isTauri()) {
-    appendLocal(entry);
-    return;
-  }
+  if (!isTauri()) return;
   void tauriInvoke("diagnostic_record", { entry }).catch(() => undefined);
 }
 
@@ -165,50 +135,14 @@ export async function diagnosticInvoke<T>(
   }
 }
 
-export async function loadDiagnosticSummary(): Promise<DiagnosticSummary> {
-  if (isTauri()) {
-    return tauriInvoke<DiagnosticSummary>("diagnostic_summary");
-  }
-  const counts: DiagnosticLogCounts = { debug: 0, info: 0, warn: 0, error: 0 };
-  localEntries.forEach((entry) => {
-    counts[entry.level] += 1;
-  });
-  return {
-    capacity: LOCAL_CAPACITY,
-    counts,
-    latestAt: localEntries[localEntries.length - 1]?.timestampMs,
-    level: configuredLevel,
-    total: localEntries.length,
-  };
+export async function openDiagnosticLog() {
+  if (!isTauri()) throw new Error("打开诊断日志仅支持桌面应用");
+  await tauriInvoke("diagnostic_open_log");
 }
 
-export async function clearDiagnosticLogs() {
-  if (isTauri()) {
-    await tauriInvoke("diagnostic_clear");
-    return;
-  }
-  localEntries = [];
-}
-
-export async function exportDiagnosticLogs(path: string) {
-  if (!isTauri()) throw new Error("诊断日志导出仅支持桌面应用");
-  return tauriInvoke<number>("diagnostic_export", { path });
-}
-
-export function diagnosticFilename(now = new Date()) {
-  const timestamp = now.toISOString().replace(/[:.]/g, "-");
-  return `fineshell-diagnostics-${timestamp}.log`;
-}
-
-export async function exportDiagnosticLogsWithDialog() {
-  if (!isTauri()) throw new Error("诊断日志导出仅支持桌面应用");
-  const path = await save({
-    defaultPath: diagnosticFilename(),
-    filters: [{ extensions: ["log"], name: "诊断日志" }],
-    title: "导出诊断日志",
-  });
-  if (!path) return null;
-  return exportDiagnosticLogs(path);
+export async function openDiagnosticLogDirectory() {
+  if (!isTauri()) throw new Error("打开诊断日志目录仅支持桌面应用");
+  await tauriInvoke("diagnostic_open_log_directory");
 }
 
 export function installGlobalDiagnostics() {

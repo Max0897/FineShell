@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -25,9 +25,8 @@
     "managed_ssh_key_delete": true,
     "diagnostic_set_level": true,
     "diagnostic_record": true,
-    "diagnostic_summary": true,
-    "diagnostic_clear": true,
-    "diagnostic_export": true,
+    "diagnostic_open_log": true,
+    "diagnostic_open_log_directory": true,
     "ssh_connect": true,
     "ssh_write": true,
     "ssh_resize": true,

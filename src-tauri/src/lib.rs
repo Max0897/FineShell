@@ -15,6 +15,24 @@ mod transport;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let log_target = tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+        file_name: Some("fineshell".into()),
+    })
+    .filter(|metadata| metadata.target().starts_with("fineshell"));
+    let mut log_builder = tauri_plugin_log::Builder::new()
+        .clear_targets()
+        .target(log_target)
+        .level(log::LevelFilter::Trace)
+        .max_file_size(2 * 1024 * 1024)
+        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(5));
+    #[cfg(debug_assertions)]
+    {
+        log_builder = log_builder.target(
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout)
+                .filter(|metadata| metadata.target().starts_with("fineshell")),
+        );
+    }
+
     let builder = tauri::Builder::default()
         .manage(ai::AiRequestManager::default())
         .manage(sftp::SftpSessionManager::default())
@@ -24,7 +42,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_process::init());
+        .plugin(tauri_plugin_process::init())
+        .plugin(log_builder.build());
 
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
@@ -71,9 +90,8 @@ pub fn run() {
             managed_keys::managed_ssh_key_delete,
             diagnostics::diagnostic_set_level,
             diagnostics::diagnostic_record,
-            diagnostics::diagnostic_summary,
-            diagnostics::diagnostic_clear,
-            diagnostics::diagnostic_export,
+            diagnostics::diagnostic_open_log,
+            diagnostics::diagnostic_open_log_directory,
             ssh::ssh_connect,
             ssh::ssh_write,
             ssh::ssh_resize,

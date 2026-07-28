@@ -28,7 +28,9 @@ describe("SettingsWindow", () => {
 
     await user.click(screen.getByText("AI 助手"));
     await waitFor(() =>
-      expect(screen.getByRole("textbox", { name: "AI 服务地址" })).not.toBeNull(),
+      expect(
+        screen.getByRole("textbox", { name: "AI 服务地址" }),
+      ).not.toBeNull(),
     );
     expect(screen.getByRole("combobox", { name: "AI 模型" })).not.toBeNull();
     expect(
@@ -47,9 +49,7 @@ describe("SettingsWindow", () => {
     await waitFor(() =>
       expect(screen.getByRole("tab", { name: "连接默认值" })).not.toBeNull(),
     );
-    expect(
-      screen.queryByRole("heading", { name: "连接默认值" }),
-    ).toBeNull();
+    expect(screen.queryByRole("heading", { name: "连接默认值" })).toBeNull();
     expect(screen.getByRole("tab", { name: "代理" })).not.toBeNull();
     expect(screen.getByRole("tab", { name: "密钥" })).not.toBeNull();
     expect(screen.getByRole("tab", { name: "已知主机" })).not.toBeNull();
@@ -58,11 +58,17 @@ describe("SettingsWindow", () => {
     await waitFor(() =>
       expect(screen.getByRole("tab", { name: "隐私与清理" })).not.toBeNull(),
     );
-    expect(
-      screen.queryByRole("heading", { name: "隐私与清理" }),
-    ).toBeNull();
+    expect(screen.queryByRole("heading", { name: "隐私与清理" })).toBeNull();
     expect(screen.getByRole("tab", { name: "备份与恢复" })).not.toBeNull();
     expect(screen.getByRole("tab", { name: "回收站" })).not.toBeNull();
-  });
 
+    await user.click(screen.getByText("高级"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "打开日志" })).not.toBeNull(),
+    );
+    expect(screen.getByRole("button", { name: "打开日志目录" })).not.toBeNull();
+    expect(
+      screen.getByRole("combobox", { name: "诊断日志级别" }),
+    ).not.toBeNull();
+  });
 });
