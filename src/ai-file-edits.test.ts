@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   aiFileEditDiff,
+  aiFileEditDiffLines,
   aiFileEditEligibilityError,
   aiFileEditLineSummary,
   aiFileEditRollbackEligibilityError,
+  aiFileEditSideBySideRows,
   aiFileEditToolResult,
   createAiFileEditProposal,
   markAiFileEditApplied,
@@ -155,6 +157,49 @@ describe("AI file edit proposals", () => {
       arguments: "{}",
     });
     expect(result.content).toContain("尚未写入远程文件");
+  });
+
+  test("assigns stable old and new line numbers without a trailing phantom line", () => {
+    expect(
+      aiFileEditDiffLines(
+        "first\nold\nkeep\n",
+        "first\nnew\nkeep\nadded\n",
+      ),
+    ).toEqual([
+      {
+        content: "first",
+        kind: "unchanged",
+        newLineNumber: 1,
+        oldLineNumber: 1,
+      },
+      { content: "old", kind: "removed", oldLineNumber: 2 },
+      { content: "new", kind: "added", newLineNumber: 2 },
+      {
+        content: "keep",
+        kind: "unchanged",
+        newLineNumber: 3,
+        oldLineNumber: 3,
+      },
+      { content: "added", kind: "added", newLineNumber: 4 },
+    ]);
+  });
+
+  test("aligns uneven replacement blocks in the side-by-side view", () => {
+    expect(aiFileEditSideBySideRows("one\ntwo\n", "first\nsecond\nthree\n"))
+      .toEqual([
+        {
+          left: { content: "one", kind: "removed", oldLineNumber: 1 },
+          right: { content: "first", kind: "added", newLineNumber: 1 },
+        },
+        {
+          left: { content: "two", kind: "removed", oldLineNumber: 2 },
+          right: { content: "second", kind: "added", newLineNumber: 2 },
+        },
+        {
+          left: undefined,
+          right: { content: "three", kind: "added", newLineNumber: 3 },
+        },
+      ]);
   });
 
   test("keeps both snapshots so applied changes can be rolled back safely", () => {

@@ -23,11 +23,14 @@ function remoteFile(path: string, content: string): AiRemoteFileContext {
   };
 }
 
-function fileEditProposal(): AiFileEditProposal {
+function fileEditProposal(
+  id = "edit-1",
+  path = "/srv/app.conf",
+): AiFileEditProposal {
   return {
     content: "updated\n",
-    id: "edit-1",
-    originalFile: remoteFile("/srv/app.conf", "original\n"),
+    id,
+    originalFile: remoteFile(path, "original\n"),
     sessionId: "session-1",
     status: "pending",
   };
@@ -169,7 +172,7 @@ describe("useAiFileChangeWorkflow", () => {
         status: "applied",
       }),
     );
-    expect(result.current.workflow.fileEditReview).toBeNull();
+    expect(result.current.workflow.fileChangeReview).toBeNull();
     expect(onNotice).toHaveBeenCalledWith("success", "已更新 app.conf");
   });
 
@@ -206,6 +209,76 @@ describe("useAiFileChangeWorkflow", () => {
       "error",
       "远程文件已变化，请重新发送给 AI",
     );
+    expect(result.current.workflow.fileChangeReview?.activeKey).toBe("edit:edit-1");
+  });
+
+  test("preserves per-file drafts while navigating a unified review", async () => {
+    const first = fileEditProposal("edit-1", "/srv/one.conf");
+    const second = fileEditProposal("edit-2", "/srv/two.conf");
+    const { result } = renderHook(() =>
+      useWorkflowHarness({
+        initialMessages: [assistantMessage([first, second])],
+        onApplyRemoteFileEdit: async (_sessionId, file, content) =>
+          remoteFile(file.path, content),
+        onApplyRemoteFileOperation: unusedOperation,
+        onConfirm: () => undefined,
+        onNotice: () => undefined,
+      }),
+    );
+
+    act(() => {
+      result.current.workflow.openFileEditReview("assistant-1", first);
+      result.current.workflow.setFileEditReviewContent("first draft\n");
+    });
+    await waitFor(() =>
+      expect(result.current.workflow.reviewedFileEditContent).toBe("first draft\n"),
+    );
+    act(() => {
+      result.current.workflow.selectFileChangeReview("edit:edit-2");
+      result.current.workflow.setFileEditReviewContent("second draft\n");
+    });
+    await waitFor(() =>
+      expect(result.current.workflow.reviewedFileEditContent).toBe("second draft\n"),
+    );
+    act(() => {
+      result.current.workflow.selectFileChangeReview("edit:edit-1");
+    });
+
+    expect(result.current.workflow.reviewedFileEditContent).toBe("first draft\n");
+    expect(
+      result.current.messages[0]?.fileEditProposals?.map(
+        (proposal) => proposal.reviewed,
+      ),
+    ).toEqual([true, true]);
+  });
+
+  test("opens the next unreviewed item after applying the current file", async () => {
+    const first = fileEditProposal("edit-1", "/srv/one.conf");
+    const second = fileEditProposal("edit-2", "/srv/two.conf");
+    const { result } = renderHook(() =>
+      useWorkflowHarness({
+        initialMessages: [assistantMessage([first, second])],
+        onApplyRemoteFileEdit: async (_sessionId, file, content) =>
+          remoteFile(file.path, content),
+        onApplyRemoteFileOperation: unusedOperation,
+        onConfirm: () => undefined,
+        onNotice: () => undefined,
+      }),
+    );
+
+    act(() => {
+      result.current.workflow.openFileEditReview("assistant-1", first);
+    });
+    await waitFor(() =>
+      expect(result.current.workflow.reviewedFileEditProposal?.reviewed).toBe(true),
+    );
+    await act(async () => {
+      await result.current.workflow.applyReviewedFileEdit();
+    });
+
+    expect(result.current.workflow.fileChangeReview?.activeKey).toBe("edit:edit-2");
+    expect(result.current.workflow.reviewedFileEditProposal?.id).toBe("edit-2");
+    expect(result.current.workflow.reviewedFileEditProposal?.reviewed).toBe(true);
   });
 
   test("rolls back applied file operations in reverse order", async () => {

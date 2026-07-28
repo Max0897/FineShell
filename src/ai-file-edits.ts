@@ -58,6 +58,18 @@ export interface AiFileEditDiffPart {
   value: string;
 }
 
+export interface AiFileEditDiffLine {
+  content: string;
+  kind: AiFileEditDiffPart["kind"];
+  newLineNumber?: number;
+  oldLineNumber?: number;
+}
+
+export interface AiFileEditSideBySideRow {
+  left?: AiFileEditDiffLine;
+  right?: AiFileEditDiffLine;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -194,10 +206,83 @@ export function aiFileEditDiff(
   return values.map((change) => ({
     count:
       ("count" in change ? change.count : undefined) ??
-      change.value.split("\n").length,
+      (change.value
+        ? change.value.split("\n").length - (change.value.endsWith("\n") ? 1 : 0)
+        : 0),
     kind: change.added ? "added" : change.removed ? "removed" : "unchanged",
     value: change.value,
   }));
+}
+
+function diffPartLines(value: string) {
+  if (!value) return [];
+  const lines = value.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines.map((line) => line.endsWith("\r") ? line.slice(0, -1) : line);
+}
+
+export function aiFileEditDiffLines(
+  originalContent: string,
+  proposedContent: string,
+): AiFileEditDiffLine[] {
+  let oldLineNumber = 1;
+  let newLineNumber = 1;
+  const lines: AiFileEditDiffLine[] = [];
+
+  for (const part of aiFileEditDiff(originalContent, proposedContent)) {
+    for (const content of diffPartLines(part.value)) {
+      if (part.kind === "added") {
+        lines.push({ content, kind: part.kind, newLineNumber });
+        newLineNumber += 1;
+      } else if (part.kind === "removed") {
+        lines.push({ content, kind: part.kind, oldLineNumber });
+        oldLineNumber += 1;
+      } else {
+        lines.push({
+          content,
+          kind: part.kind,
+          newLineNumber,
+          oldLineNumber,
+        });
+        newLineNumber += 1;
+        oldLineNumber += 1;
+      }
+    }
+  }
+
+  return lines;
+}
+
+export function aiFileEditSideBySideRows(
+  originalContent: string,
+  proposedContent: string,
+): AiFileEditSideBySideRow[] {
+  const lines = aiFileEditDiffLines(originalContent, proposedContent);
+  const rows: AiFileEditSideBySideRow[] = [];
+
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    if (line.kind === "unchanged") {
+      rows.push({ left: line, right: line });
+      index += 1;
+      continue;
+    }
+
+    const removed: AiFileEditDiffLine[] = [];
+    const added: AiFileEditDiffLine[] = [];
+    while (index < lines.length && lines[index].kind !== "unchanged") {
+      const changedLine = lines[index];
+      if (changedLine.kind === "removed") removed.push(changedLine);
+      if (changedLine.kind === "added") added.push(changedLine);
+      index += 1;
+    }
+    const rowCount = Math.max(removed.length, added.length);
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      rows.push({ left: removed[rowIndex], right: added[rowIndex] });
+    }
+  }
+
+  return rows;
 }
 
 export function aiFileEditLineSummary(

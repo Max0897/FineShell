@@ -355,21 +355,20 @@ function AiAssistantPanel({
     applying: fileEditApplying,
     applyReviewedFileEdit,
     applyReviewedFileOperation,
-    closeFileEditReview,
-    closeFileOperationReview,
+    closeFileChangeReview,
     confirmApplyAllFileEdits,
     confirmApplyAllFileOperations,
     confirmRollbackAllFileEdits,
     confirmRollbackAllFileOperations,
     confirmRollbackFileEdit: confirmRollbackAppliedFileEdit,
     confirmRollbackFileOperation,
-    fileEditReview,
-    fileOperationReview,
+    fileChangeReview,
+    fileChangeReviewItems,
     openFileEditReview,
     openFileOperationReview,
     reviewedFileEditError,
-    reviewedFileEditProposal,
-    reviewedFileOperationProposal,
+    reviewedFileEditContent,
+    selectFileChangeReview,
     setFileEditReviewContent,
   } = useAiFileChangeWorkflow({
     messages,
@@ -754,18 +753,17 @@ function AiAssistantPanel({
         />
       </div>
       <AiFileChangeReviewModals
+        activeKey={fileChangeReview?.activeKey}
         applying={fileEditApplying}
-        editContent={fileEditReview?.content ?? ""}
+        editContent={reviewedFileEditContent}
         editError={reviewedFileEditError}
-        editProposal={reviewedFileEditProposal}
-        editVisible={Boolean(fileEditReview)}
+        items={fileChangeReviewItems}
         onApplyEdit={applyReviewedFileEdit}
         onApplyOperation={applyReviewedFileOperation}
         onChangeEditContent={setFileEditReviewContent}
-        onCloseEdit={closeFileEditReview}
-        onCloseOperation={closeFileOperationReview}
-        operationProposal={reviewedFileOperationProposal}
-        operationVisible={Boolean(fileOperationReview)}
+        onClose={closeFileChangeReview}
+        onSelect={selectFileChangeReview}
+        visible={Boolean(fileChangeReview)}
       />
       <AiConversationHistoryDrawer
         activeConversationId={activeConversationId ?? null}

@@ -31,15 +31,23 @@ export interface AiFileChangeConfirmation {
 
 export type AiFileChangeNotice = "error" | "success" | "warning";
 
-interface FileEditReviewState {
-  content: string;
-  messageId: string;
-  proposalId: string;
-}
+export type AiFileChangeReviewItem =
+  | {
+      content: string;
+      key: `edit:${string}`;
+      kind: "edit";
+      proposal: AiFileEditProposal;
+    }
+  | {
+      key: `operation:${string}`;
+      kind: "operation";
+      proposal: AiFileOperationProposal;
+    };
 
-interface FileOperationReviewState {
+interface FileChangeReviewState {
+  activeKey: AiFileChangeReviewItem["key"];
+  editDrafts: Record<string, string>;
   messageId: string;
-  proposalId: string;
 }
 
 interface UseAiFileChangeWorkflowOptions {
@@ -89,36 +97,66 @@ export function useAiFileChangeWorkflow({
   updateFileOperationProposal,
 }: UseAiFileChangeWorkflowOptions) {
   const [applying, setApplying] = useState(false);
-  const [fileEditReview, setFileEditReview] =
-    useState<FileEditReviewState | null>(null);
-  const [fileOperationReview, setFileOperationReview] =
-    useState<FileOperationReviewState | null>(null);
+  const [fileChangeReview, setFileChangeReview] =
+    useState<FileChangeReviewState | null>(null);
 
-  const reviewedFileEditProposal = fileEditReview
-    ? messages
-        .find((message) => message.id === fileEditReview.messageId)
-        ?.fileEditProposals?.find(
-          (proposal) => proposal.id === fileEditReview.proposalId,
-        )
+  const reviewedMessage = fileChangeReview
+    ? messages.find((message) => message.id === fileChangeReview.messageId)
     : undefined;
+  const fileChangeReviewItems: AiFileChangeReviewItem[] = fileChangeReview
+    ? [
+        ...(reviewedMessage?.fileEditProposals ?? []).map((proposal) => ({
+          content: fileChangeReview.editDrafts[proposal.id] ?? proposal.content,
+          key: `edit:${proposal.id}` as const,
+          kind: "edit" as const,
+          proposal,
+        })),
+        ...(reviewedMessage?.fileOperationProposals ?? []).map((proposal) => ({
+          key: `operation:${proposal.id}` as const,
+          kind: "operation" as const,
+          proposal,
+        })),
+      ]
+    : [];
+  const reviewedItem = fileChangeReviewItems.find(
+    (item) => item.key === fileChangeReview?.activeKey,
+  );
+  const reviewedFileEditProposal = reviewedItem?.kind === "edit"
+    ? reviewedItem.proposal
+    : undefined;
+  const reviewedFileEditContent = reviewedItem?.kind === "edit"
+    ? reviewedItem.content
+    : "";
   const reviewedFileEditError = reviewedFileEditProposal
     ? proposedFileContentError(
-        fileEditReview?.content ?? "",
+        reviewedFileEditContent,
         reviewedFileEditProposal.originalFile.content,
       )
-    : "文件修改建议已不可用";
-  const reviewedFileOperationProposal = fileOperationReview
-    ? messages
-        .find((message) => message.id === fileOperationReview.messageId)
-        ?.fileOperationProposals?.find(
-          (proposal) => proposal.id === fileOperationReview.proposalId,
-        )
+    : null;
+  const reviewedFileOperationProposal = reviewedItem?.kind === "operation"
+    ? reviewedItem.proposal
     : undefined;
 
   useEffect(() => {
-    setFileEditReview(null);
-    setFileOperationReview(null);
+    setFileChangeReview(null);
   }, [sessionId]);
+
+  const markReviewItemReviewed = (
+    messageId: string,
+    item: AiFileChangeReviewItem,
+  ) => {
+    if (item.kind === "edit") {
+      updateFileEditProposal(messageId, item.proposal.id, (current) => ({
+        ...current,
+        reviewed: true,
+      }));
+    } else {
+      updateFileOperationProposal(messageId, item.proposal.id, (current) => ({
+        ...current,
+        reviewed: true,
+      }));
+    }
+  };
 
   const openFileEditReview = (
     messageId: string,
@@ -128,10 +166,10 @@ export function useAiFileChangeWorkflow({
       ...current,
       reviewed: true,
     }));
-    setFileEditReview({
-      content: proposal.content,
+    setFileChangeReview({
+      activeKey: `edit:${proposal.id}`,
+      editDrafts: { [proposal.id]: proposal.content },
       messageId,
-      proposalId: proposal.id,
     });
   };
 
@@ -143,21 +181,68 @@ export function useAiFileChangeWorkflow({
       ...current,
       reviewed: true,
     }));
-    setFileOperationReview({ messageId, proposalId: proposal.id });
+    setFileChangeReview({
+      activeKey: `operation:${proposal.id}`,
+      editDrafts: {},
+      messageId,
+    });
   };
 
-  const closeFileEditReview = () => {
-    if (!applying) setFileEditReview(null);
-  };
-
-  const closeFileOperationReview = () => {
-    if (!applying) setFileOperationReview(null);
+  const closeFileChangeReview = () => {
+    if (!applying) setFileChangeReview(null);
   };
 
   const setFileEditReviewContent = (content: string) => {
-    setFileEditReview((current) =>
-      current ? { ...current, content } : current,
+    setFileChangeReview((current) => {
+      if (!current || !current.activeKey.startsWith("edit:")) return current;
+      const proposalId = current.activeKey.slice("edit:".length);
+      return {
+        ...current,
+        editDrafts: { ...current.editDrafts, [proposalId]: content },
+      };
+    });
+  };
+
+  const selectFileChangeReview = (key: AiFileChangeReviewItem["key"]) => {
+    if (!fileChangeReview || applying) return;
+    const item = fileChangeReviewItems.find((candidate) => candidate.key === key);
+    if (!item) return;
+    markReviewItemReviewed(fileChangeReview.messageId, item);
+    setFileChangeReview((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        activeKey: key,
+        editDrafts: item.kind === "edit" && !(item.proposal.id in current.editDrafts)
+          ? { ...current.editDrafts, [item.proposal.id]: item.proposal.content }
+          : current.editDrafts,
+      };
+    });
+  };
+
+  const advanceToNextUnreviewed = (activeKey: AiFileChangeReviewItem["key"]) => {
+    const activeIndex = fileChangeReviewItems.findIndex(
+      (item) => item.key === activeKey,
     );
+    const candidates = [
+      ...fileChangeReviewItems.slice(activeIndex + 1),
+      ...fileChangeReviewItems.slice(0, Math.max(activeIndex, 0)),
+    ];
+    const next = candidates.find(
+      (item) => item.proposal.status === "pending" && !item.proposal.reviewed,
+    );
+    if (!next || !fileChangeReview) {
+      setFileChangeReview(null);
+      return;
+    }
+    markReviewItemReviewed(fileChangeReview.messageId, next);
+    setFileChangeReview((current) => current ? {
+      ...current,
+      activeKey: next.key,
+      editDrafts: next.kind === "edit" && !(next.proposal.id in current.editDrafts)
+        ? { ...current.editDrafts, [next.proposal.id]: next.proposal.content }
+        : current.editDrafts,
+    } : current);
   };
 
   const applyFileEditProposal = async (
@@ -276,7 +361,7 @@ export function useAiFileChangeWorkflow({
 
   const applyReviewedFileEdit = async () => {
     if (
-      !fileEditReview ||
+      !fileChangeReview ||
       !reviewedFileEditProposal ||
       reviewedFileEditProposal.status !== "pending" ||
       reviewedFileEditError ||
@@ -286,19 +371,18 @@ export function useAiFileChangeWorkflow({
     }
     setApplying(true);
     const result = await applyFileEditProposal(
-      fileEditReview.messageId,
+      fileChangeReview.messageId,
       reviewedFileEditProposal,
-      fileEditReview.content,
+      reviewedFileEditContent,
     );
     setApplying(false);
     if (result === "applied") {
-      setFileEditReview(null);
       onNotice(
         "success",
         `已更新 ${reviewedFileEditProposal.originalFile.name}`,
       );
+      advanceToNextUnreviewed(fileChangeReview.activeKey);
     } else if (result === "conflict") {
-      setFileEditReview(null);
       onNotice("error", "远程文件已变化，请重新发送给 AI");
     } else {
       onNotice("error", "文件修改应用失败，请查看错误信息");
@@ -307,7 +391,7 @@ export function useAiFileChangeWorkflow({
 
   const applyReviewedFileOperation = async () => {
     if (
-      !fileOperationReview ||
+      !fileChangeReview ||
       !reviewedFileOperationProposal ||
       reviewedFileOperationProposal.status !== "pending" ||
       applying
@@ -316,16 +400,16 @@ export function useAiFileChangeWorkflow({
     }
     setApplying(true);
     const result = await applyFileOperationProposal(
-      fileOperationReview.messageId,
+      fileChangeReview.messageId,
       reviewedFileOperationProposal,
     );
     setApplying(false);
-    setFileOperationReview(null);
     if (result === "applied") {
       onNotice(
         "success",
         `已${aiFileOperationLabel(reviewedFileOperationProposal.operation)} ${aiFileOperationDisplayName(reviewedFileOperationProposal)}`,
       );
+      advanceToNextUnreviewed(fileChangeReview.activeKey);
     } else if (result === "conflict") {
       onNotice("warning", "远端文件状态已变化，未执行操作");
     } else {
@@ -536,21 +620,22 @@ export function useAiFileChangeWorkflow({
     applying,
     applyReviewedFileEdit,
     applyReviewedFileOperation,
-    closeFileEditReview,
-    closeFileOperationReview,
+    closeFileChangeReview,
     confirmApplyAllFileEdits,
     confirmApplyAllFileOperations,
     confirmRollbackAllFileEdits,
     confirmRollbackAllFileOperations,
     confirmRollbackFileEdit,
     confirmRollbackFileOperation,
-    fileEditReview,
-    fileOperationReview,
+    fileChangeReview,
+    fileChangeReviewItems,
     openFileEditReview,
     openFileOperationReview,
     reviewedFileEditError,
+    reviewedFileEditContent,
     reviewedFileEditProposal,
     reviewedFileOperationProposal,
+    selectFileChangeReview,
     setFileEditReviewContent,
   };
 }
