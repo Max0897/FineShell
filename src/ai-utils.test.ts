@@ -7,7 +7,10 @@ import {
   appendAiContextMentions,
   assessAiTerminalCommand,
   buildAiContextPayload,
+  buildAiContextPayloadResult,
   buildAiRequestMessages,
+  estimateAiRequestTokenBudget,
+  estimateAiTokenCount,
   normalizeAiTerminalCommand,
   mergeAiRemoteFileContexts,
   redactAiContext,
@@ -127,6 +130,53 @@ describe("AI terminal command safety", () => {
     expect(context).toContain("## 服务器状态");
     expect(context).toContain("## 当前远程目录\n/srv/app");
     expect(context.length).toBeLessThanOrEqual(300);
+  });
+
+  test("reports when selected context is truncated by its budget", () => {
+    const result = buildAiContextPayloadResult(
+      [
+        {
+          id: "terminal-output",
+          label: "最近输出",
+          content: "x".repeat(500),
+        },
+      ],
+      ["terminal-output"],
+      100,
+    );
+
+    expect(result.content.length).toBe(100);
+    expect(result.usedChars).toBe(100);
+    expect(result.sourceChars).toBeGreaterThan(100);
+    expect(result.truncated).toBe(true);
+  });
+
+  test("estimates multilingual tokens and request budget components", () => {
+    expect(estimateAiTokenCount("hello world")).toBe(4);
+    expect(estimateAiTokenCount("检查服务器")).toBe(5);
+
+    const context = buildAiContextPayloadResult(
+      [{ id: "server-monitor", label: "服务器状态", content: "CPU 20%" }],
+      ["server-monitor"],
+      100,
+    );
+    const budget = estimateAiRequestTokenBudget(
+      [
+        { role: "user", content: "旧问题" },
+        { role: "assistant", content: "旧回答" },
+      ],
+      "继续分析",
+      context,
+      100,
+    );
+
+    expect(budget.historyTokens).toBeGreaterThan(0);
+    expect(budget.inputTokens).toBe(4);
+    expect(budget.contextTokens).toBeGreaterThan(0);
+    expect(budget.totalTokens).toBe(
+      budget.historyTokens + budget.inputTokens + budget.contextTokens,
+    );
+    expect(budget.contextUsagePercent).toBe(context.usedChars);
   });
 
   test("bounds remote files before adding them to AI context", () => {

@@ -17,6 +17,17 @@ textareaStyles.textContent = `
 beforeAll(() => document.head.appendChild(textareaStyles));
 afterAll(() => textareaStyles.remove());
 
+const tokenBudget = {
+  contextChars: 3_000,
+  contextLimitChars: 12_000,
+  contextTokens: 900,
+  contextTruncated: false,
+  contextUsagePercent: 25,
+  historyTokens: 1_100,
+  inputTokens: 20,
+  totalTokens: 2_020,
+};
+
 function renderComposer({
   onChange = mock(() => undefined),
   onSend = mock(() => undefined),
@@ -57,6 +68,7 @@ function renderComposer({
         selectedContextIds={[]}
         sendEnabled
         sending={false}
+        tokenBudget={tokenBudget}
       />,
     ),
   };
@@ -115,6 +127,7 @@ describe("AiComposer", () => {
         selectedContextIds={[]}
         sendEnabled={false}
         sending={false}
+        tokenBudget={tokenBudget}
       />,
     );
 
@@ -124,5 +137,20 @@ describe("AiComposer", () => {
       expect.objectContaining({ path: "/etc/nginx/nginx.conf" }),
       true,
     );
+  });
+
+  test("shows the estimated request tokens and context budget", () => {
+    renderComposer();
+
+    expect(screen.queryByText("约 2.0k Token")).toBeNull();
+    const budget = screen.getByLabelText(
+      "本次请求约 2020 Token，上下文占用 25%",
+    );
+    const progress = screen.getByRole("progressbar");
+    expect(progress.getAttribute("aria-valuenow")).toBe("25");
+    expect(
+      budget.compareDocumentPosition(screen.getByRole("button", { name: "发送" })) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });

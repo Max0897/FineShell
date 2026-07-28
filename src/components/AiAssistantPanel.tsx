@@ -36,7 +36,8 @@ import {
 import {
   aiContextMentionIds,
   aiRemoteFileContextSource,
-  buildAiContextPayload,
+  buildAiContextPayloadResult,
+  estimateAiRequestTokenBudget,
   stripAiContextMentions,
   isAiRemoteFileContextSourceId,
   type AiContextSource,
@@ -441,9 +442,16 @@ function AiAssistantPanel({
     (source) =>
       selectedContextIds.includes(source.id) && Boolean(source.content.trim()),
   );
-  const context = buildAiContextPayload(
+  const contextPayload = buildAiContextPayloadResult(
     contextSources,
     selectedContextIds,
+    settings.aiContextMaxChars,
+  );
+  const context = contextPayload.content;
+  const tokenBudget = estimateAiRequestTokenBudget(
+    messages,
+    question,
+    contextPayload,
     settings.aiContextMaxChars,
   );
   const selectedRemoteFiles = remoteFiles.filter((file) =>
@@ -705,6 +713,7 @@ function AiAssistantPanel({
           selectedContextIds={selectedContextIds}
           sendEnabled={Boolean(question && activeConversation)}
           sending={sending}
+          tokenBudget={tokenBudget}
         />
       </div>
       <AiFileChangeReviewModals

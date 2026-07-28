@@ -27,6 +27,24 @@ export interface AiContextSource {
   truncateFrom?: "start" | "end";
 }
 
+export interface AiContextPayloadResult {
+  content: string;
+  sourceChars: number;
+  truncated: boolean;
+  usedChars: number;
+}
+
+export interface AiRequestTokenBudget {
+  contextChars: number;
+  contextLimitChars: number;
+  contextTokens: number;
+  contextTruncated: boolean;
+  contextUsagePercent: number;
+  historyTokens: number;
+  inputTokens: number;
+  totalTokens: number;
+}
+
 export interface AiRemoteFileContext {
   content: string;
   name: string;
@@ -171,14 +189,16 @@ export function redactAiContext(value: string) {
     .replace(CREDENTIAL_URL_PATTERN, "$1[已隐藏]$3");
 }
 
-export function buildAiContextPayload(
+export function buildAiContextPayloadResult(
   sources: AiContextSource[],
   selectedIds: AiContextSourceId[],
   maxChars: number,
-) {
+): AiContextPayloadResult {
   const selected = new Set(selectedIds);
   const limit = Math.max(0, maxChars);
-  if (!limit) return "";
+  if (!limit) {
+    return { content: "", sourceChars: 0, truncated: false, usedChars: 0 };
+  }
   const entries = sources
     .filter((source) => selected.has(source.id) && source.content.trim())
     .map((source) => ({
@@ -188,12 +208,19 @@ export function buildAiContextPayload(
       heading: `## ${source.label}\n`,
       truncateFrom: source.truncateFrom ?? "end",
     }));
-  if (!entries.length) return "";
+  if (!entries.length) {
+    return { content: "", sourceChars: 0, truncated: false, usedChars: 0 };
+  }
 
   const overhead =
     entries.reduce((total, entry) => total + entry.heading.length, 0) +
     Math.max(0, entries.length - 1) * 2;
-  if (overhead >= limit) return "";
+  const sourceChars =
+    overhead +
+    entries.reduce((total, entry) => total + entry.content.length, 0);
+  if (overhead >= limit) {
+    return { content: "", sourceChars, truncated: true, usedChars: 0 };
+  }
 
   const allocations = entries.map(() => 0);
   let remaining = limit - overhead;
@@ -217,7 +244,7 @@ export function buildAiContextPayload(
     pending = pending.filter((index) => !completedSet.has(index));
   }
 
-  return entries
+  const content = entries
     .map(
       (entry, index) =>
         `${entry.heading}${
@@ -227,6 +254,61 @@ export function buildAiContextPayload(
         }`,
     )
     .join("\n\n");
+  return {
+    content,
+    sourceChars,
+    truncated: sourceChars > content.length,
+    usedChars: content.length,
+  };
+}
+
+export function buildAiContextPayload(
+  sources: AiContextSource[],
+  selectedIds: AiContextSourceId[],
+  maxChars: number,
+) {
+  return buildAiContextPayloadResult(sources, selectedIds, maxChars).content;
+}
+
+export function estimateAiTokenCount(value: string) {
+  if (!value.trim()) return 0;
+  let tokens = 0;
+  for (const match of value.matchAll(/[\p{L}\p{N}_]+|[^\s]/gu)) {
+    const segment = match[0];
+    tokens += /^[A-Za-z0-9_]+$/.test(segment)
+      ? Math.ceil(segment.length / 4)
+      : Array.from(segment).length;
+  }
+  tokens += (value.match(/\n/g) ?? []).length;
+  return Math.max(1, tokens);
+}
+
+export function estimateAiRequestTokenBudget(
+  history: AiHistoryMessage[],
+  input: string,
+  context: AiContextPayloadResult,
+  contextLimitChars: number,
+): AiRequestTokenBudget {
+  const requestHistory = buildAiRequestMessages(history);
+  const historyText = requestHistory
+    .map((message) => `${message.role}: ${message.content}`)
+    .join("\n");
+  const safeLimit = Math.max(0, contextLimitChars);
+  return {
+    contextChars: context.usedChars,
+    contextLimitChars: safeLimit,
+    contextTokens: estimateAiTokenCount(context.content),
+    contextTruncated: context.truncated,
+    contextUsagePercent: safeLimit
+      ? Math.min(100, Math.round((context.usedChars / safeLimit) * 100))
+      : 0,
+    historyTokens: estimateAiTokenCount(historyText),
+    inputTokens: estimateAiTokenCount(input),
+    totalTokens:
+      estimateAiTokenCount(historyText) +
+      estimateAiTokenCount(input) +
+      estimateAiTokenCount(context.content),
+  };
 }
 
 function formatContextBytes(value: number) {

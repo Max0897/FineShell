@@ -1846,6 +1846,28 @@ body.ai-sidebar-resizing::after {
   white-space: nowrap;
 }
 
+.ai-assistant-composer-submit {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-token-budget {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  display: inline-flex;
+  cursor: default;
+}
+
+.ai-token-budget-tooltip {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .quick-command-group-title {
   padding: 16px 0 8px;
   display: block;

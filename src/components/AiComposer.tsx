@@ -2,6 +2,7 @@ import { memo } from "react";
 import {
   Button,
   Mentions,
+  Progress,
   Tag,
   Tooltip,
   Typography,
@@ -19,6 +20,7 @@ import {
   type AiContextSource,
   type AiContextSourceId,
   type AiRemoteFileContext,
+  type AiRequestTokenBudget,
 } from "../ai-utils";
 
 interface AiComposerProps {
@@ -37,6 +39,13 @@ interface AiComposerProps {
   selectedContextIds: AiContextSourceId[];
   sendEnabled: boolean;
   sending: boolean;
+  tokenBudget: AiRequestTokenBudget;
+}
+
+function formatTokenCount(value: number) {
+  if (value < 1_000) return String(value);
+  const scaled = value / 1_000;
+  return `${scaled >= 10 ? Math.round(scaled) : scaled.toFixed(1)}k`;
 }
 
 function AiComposer({
@@ -55,6 +64,7 @@ function AiComposer({
   selectedContextIds,
   sendEnabled,
   sending,
+  tokenBudget,
 }: AiComposerProps) {
   const remoteFileContextBytes = remoteFiles.reduce(
     (total, file) => total + file.size,
@@ -194,20 +204,46 @@ function AiComposer({
             </Tooltip>
           )}
         </span>
-        {sending ? (
-          <Button icon={<IconStop />} onClick={() => void onCancel()}>
-            停止
-          </Button>
-        ) : (
-          <Button
-            disabled={!sendEnabled}
-            icon={<IconSend />}
-            onClick={onSend}
-            type="primary"
+        <span className="ai-assistant-composer-submit">
+          <Tooltip
+            content={
+              <div className="ai-token-budget-tooltip">
+                <div>对话历史：约 {formatTokenCount(tokenBudget.historyTokens)} Token</div>
+                <div>当前输入：约 {formatTokenCount(tokenBudget.inputTokens)} Token</div>
+                <div>上下文：约 {formatTokenCount(tokenBudget.contextTokens)} Token</div>
+                {tokenBudget.contextTruncated && (
+                  <div>上下文已按设置上限截断</div>
+                )}
+              </div>
+            }
           >
-            发送
-          </Button>
-        )}
+            <span
+              aria-label={`本次请求约 ${tokenBudget.totalTokens} Token，上下文占用 ${tokenBudget.contextUsagePercent}%`}
+              className="ai-token-budget"
+            >
+              <Progress
+                percent={tokenBudget.contextUsagePercent}
+                showText={false}
+                size="mini"
+                status={tokenBudget.contextTruncated ? "warning" : "normal"}
+              />
+            </span>
+          </Tooltip>
+          {sending ? (
+            <Button icon={<IconStop />} onClick={() => void onCancel()}>
+              停止
+            </Button>
+          ) : (
+            <Button
+              disabled={!sendEnabled}
+              icon={<IconSend />}
+              onClick={onSend}
+              type="primary"
+            >
+              发送
+            </Button>
+          )}
+        </span>
       </div>
     </div>
   );
