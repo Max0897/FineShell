@@ -272,7 +272,7 @@ fn normalize_models(entries: Vec<AiModelEntry>) -> Vec<AiModelInfo> {
             )
         })
         .collect::<Vec<_>>();
-    models.sort_by(|left, right| left.id.to_lowercase().cmp(&right.id.to_lowercase()));
+    models.sort_by_cached_key(|model| model.id.to_lowercase());
     models.truncate(500);
     models
 }
