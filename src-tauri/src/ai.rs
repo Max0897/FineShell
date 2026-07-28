@@ -68,7 +68,10 @@ pub(crate) struct AiChatRequest {
     model: String,
     messages: Vec<AiChatMessage>,
     context: Option<String>,
+    #[serde(default)]
     tools_enabled: bool,
+    #[serde(default)]
+    enabled_tools: Vec<String>,
     #[serde(default)]
     file_edit_enabled: bool,
     #[serde(default)]
@@ -311,6 +314,49 @@ fn command_proposal_tool(name: &str) -> bool {
 
 fn diagnostic_tool(name: &str) -> bool {
     !file_mutation_tool(name) && !command_proposal_tool(name) && supported_tool(name)
+}
+
+fn enabled_diagnostic_tools(
+    values: Vec<String>,
+    legacy_enabled: bool,
+) -> Result<HashSet<String>, String> {
+    if values.is_empty() && legacy_enabled {
+        return Ok([
+            "get_server_status",
+            "list_processes",
+            "get_current_directory",
+            "get_network_connections",
+            "ping_target",
+            "trace_route",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect());
+    }
+    if values.len() > 6 {
+        return Err("AI 只读工具权限数量无效".to_string());
+    }
+    let mut enabled = HashSet::new();
+    for value in values {
+        if !diagnostic_tool(&value) || !enabled.insert(value) {
+            return Err("AI 只读工具权限无效".to_string());
+        }
+    }
+    Ok(enabled)
+}
+
+fn validate_enabled_diagnostic_calls(
+    rounds: &[AiToolRound],
+    enabled_tools: &HashSet<String>,
+) -> Result<(), String> {
+    if rounds
+        .iter()
+        .flat_map(|round| &round.calls)
+        .any(|call| diagnostic_tool(&call.name) && !enabled_tools.contains(&call.name))
+    {
+        return Err("AI 工具调用未获得权限".to_string());
+    }
+    Ok(())
 }
 
 fn tool_allowed(
@@ -708,6 +754,23 @@ fn tool_definitions(
     Value::Array(definitions)
 }
 
+fn filter_tool_definitions(definitions: Value, enabled_tools: &HashSet<String>) -> Value {
+    let Value::Array(definitions) = definitions else {
+        return Value::Array(Vec::new());
+    };
+    Value::Array(
+        definitions
+            .into_iter()
+            .filter(|definition| {
+                definition
+                    .pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .is_none_or(|name| !diagnostic_tool(name) || enabled_tools.contains(name))
+            })
+            .collect(),
+    )
+}
+
 fn client(timeout: Duration) -> Result<Client, String> {
     Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -972,7 +1035,9 @@ pub(crate) async fn ai_chat_start(
         .map_err(|e| structured(operation, e))?;
     let model = validate_model(&request.model).map_err(|e| structured(operation, e))?;
     let messages = validate_messages(request.messages).map_err(|e| structured(operation, e))?;
-    let tools_enabled = request.tools_enabled;
+    let enabled_tools = enabled_diagnostic_tools(request.enabled_tools, request.tools_enabled)
+        .map_err(|e| structured(operation, e))?;
+    let tools_enabled = !enabled_tools.is_empty();
     let file_edit_enabled = request.file_edit_enabled;
     let command_proposal_enabled = request.command_proposal_enabled;
     let any_tools_enabled = tools_enabled || file_edit_enabled || command_proposal_enabled;
@@ -983,6 +1048,8 @@ pub(crate) async fn ai_chat_start(
         command_proposal_enabled,
     )
     .map_err(|e| structured(operation, e))?;
+    validate_enabled_diagnostic_calls(&tool_rounds, &enabled_tools)
+        .map_err(|e| structured(operation, e))?;
     let fallback_messages = http_messages(
         messages.clone(),
         request.context.as_deref(),
@@ -1024,7 +1091,14 @@ pub(crate) async fn ai_chat_start(
             if let Some(body) = tool_body.as_object_mut() {
                 body.insert(
                     "tools".to_string(),
-                    tool_definitions(tools_enabled, file_edit_enabled, command_proposal_enabled),
+                    filter_tool_definitions(
+                        tool_definitions(
+                            tools_enabled,
+                            file_edit_enabled,
+                            command_proposal_enabled,
+                        ),
+                        &enabled_tools,
+                    ),
                 );
                 body.insert("tool_choice".to_string(), json!("auto"));
             }
@@ -1122,7 +1196,7 @@ pub(crate) async fn ai_chat_start(
                 tools_enabled,
                 file_edit_enabled,
                 command_proposal_enabled,
-            )
+            ) || (diagnostic_tool(&call.name) && !enabled_tools.contains(&call.name))
         }) {
             return Err(structured(operation, "AI 返回了未启用的工具调用"));
         }
@@ -1171,11 +1245,12 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        apply_tool_call_delta, complete_tool_calls, http_messages, is_local_endpoint,
-        is_tool_unsupported_error, normalize_models, request_messages, sanitize_context,
-        service_endpoint, stream_delta, stream_tool_call_deltas, tool_allowed, tool_definitions,
-        valid_tool_arguments, validate_service_url, validate_tool_rounds, AiChatMessage,
-        AiModelEntry, AiToolCall, AiToolResult, AiToolRound, SseParser,
+        apply_tool_call_delta, complete_tool_calls, enabled_diagnostic_tools,
+        filter_tool_definitions, http_messages, is_local_endpoint, is_tool_unsupported_error,
+        normalize_models, request_messages, sanitize_context, service_endpoint, stream_delta,
+        stream_tool_call_deltas, tool_allowed, tool_definitions, valid_tool_arguments,
+        validate_enabled_diagnostic_calls, validate_service_url, validate_tool_rounds,
+        AiChatMessage, AiModelEntry, AiToolCall, AiToolResult, AiToolRound, SseParser,
     };
 
     #[test]
@@ -1268,6 +1343,39 @@ mod tests {
         assert_eq!(calls[0].id, "call-1");
         assert_eq!(calls[0].name, "get_server_status");
         assert_eq!(calls[0].arguments, "{}");
+    }
+
+    #[test]
+    fn exposes_and_validates_only_explicitly_enabled_diagnostic_tools() {
+        let enabled = enabled_diagnostic_tools(
+            vec!["get_server_status".to_string(), "ping_target".to_string()],
+            false,
+        )
+        .unwrap();
+        let definitions = filter_tool_definitions(tool_definitions(true, false, false), &enabled);
+        let names = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|value| value.pointer("/function/name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["get_server_status", "ping_target"]);
+
+        let disabled_round = AiToolRound {
+            calls: vec![AiToolCall {
+                id: "call-1".to_string(),
+                name: "trace_route".to_string(),
+                arguments: r#"{"target":"example.com"}"#.to_string(),
+            }],
+            content: None,
+            results: vec![AiToolResult {
+                call_id: "call-1".to_string(),
+                name: "trace_route".to_string(),
+                content: r#"{"ok":true}"#.to_string(),
+            }],
+        };
+        assert!(validate_enabled_diagnostic_calls(&[disabled_round], &enabled).is_err());
+        assert!(enabled_diagnostic_tools(vec!["run_shell_command".to_string()], false).is_err());
     }
 
     #[test]

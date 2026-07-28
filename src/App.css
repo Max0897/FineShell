@@ -1025,6 +1025,102 @@ body.ai-sidebar-resizing::after {
   gap: 1px;
 }
 
+.ai-audit-drawer .arco-drawer-body {
+  min-height: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ai-audit-title {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ai-audit-title .arco-typography {
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-audit-toolbar {
+  padding: 12px 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 128px 32px;
+  gap: 8px;
+  border-bottom: 1px solid #e5e6eb;
+}
+
+.ai-audit-toolbar .arco-select {
+  width: 100%;
+}
+
+.ai-audit-loading {
+  min-height: 0;
+  flex: 1;
+  display: block;
+}
+
+.ai-audit-loading > .arco-spin-children {
+  height: 100%;
+}
+
+.ai-audit-list {
+  height: 100%;
+  overflow: auto;
+}
+
+.ai-audit-list > .arco-empty {
+  height: 100%;
+  min-height: 180px;
+  display: grid;
+  place-content: center;
+}
+
+.ai-audit-entry {
+  padding: 10px 16px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  border-bottom: 1px solid #f2f3f5;
+}
+
+.ai-audit-entry-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: #4e5969;
+}
+
+.ai-audit-entry-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ai-audit-entry-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-audit-entry-heading > .arco-typography {
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+}
+
+.ai-audit-entry-heading + .arco-typography {
+  margin: 0;
+  font-size: 12px;
+}
+
 .ai-assistant-layout {
   height: 100%;
   min-height: 0;
@@ -2578,6 +2674,17 @@ body.sftp-remote-dragging * {
 
 .ai-settings .ai-model-control .arco-select {
   width: 320px;
+}
+
+.ai-permission-control .arco-checkbox-group {
+  width: 360px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.ai-permission-control .arco-checkbox {
+  margin-right: 0;
 }
 
 .terminal-theme-option {

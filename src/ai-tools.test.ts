@@ -230,7 +230,7 @@ describe("AI read-only tools", () => {
     expect(runs?.[0]).toMatchObject({
       label: "Ping",
       name: "ping_target",
-      startedAt: 0,
+      startedAt: 123,
       status: "success",
     });
     expect(runs?.[0]?.summary).toContain("[已隐藏]");

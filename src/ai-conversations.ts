@@ -209,7 +209,13 @@ function sanitizeCommandRecords(value: unknown) {
             ? "not-inserted"
             : undefined;
       if (!id || !purpose || !risk || !status) return undefined;
-      return { id, purpose, risk, status };
+      return {
+        id,
+        occurredAt: optionalIsoDate(item.occurredAt),
+        purpose,
+        risk,
+        status,
+      };
     })
     .filter((item): item is AiCommandRecord => Boolean(item))
     .slice(0, 8);
@@ -487,6 +493,21 @@ export async function loadAiConversations(hostId: string) {
     .filter((record): record is AiConversationRecord => Boolean(record))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, MAX_AI_CONVERSATIONS_PER_HOST);
+}
+
+export async function loadAllAiConversations() {
+  const database = await openDatabase();
+  const transaction = database.transaction(CONVERSATION_STORE, "readonly");
+  const completed = transactionDone(transaction);
+  const records = await requestResult(
+    transaction.objectStore(CONVERSATION_STORE).getAll(),
+  );
+  await completed;
+  return records
+    .map(sanitizeAiConversation)
+    .filter((record): record is AiConversationRecord => Boolean(record))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, MAX_AI_CONVERSATIONS_TOTAL);
 }
 
 export async function saveAiConversation(value: AiConversationRecord) {

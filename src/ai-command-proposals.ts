@@ -32,6 +32,7 @@ export interface AiCommandProposal {
 
 export interface AiCommandRecord {
   id: string;
+  occurredAt?: string;
   purpose: string;
   risk: AiCommandAssessment["risk"];
   status: "inserted" | "executed" | "verified" | "rejected" | "not-inserted";
@@ -170,6 +171,8 @@ export function aiCommandRecordFromProposal(
 ): AiCommandRecord {
   return {
     id: proposal.id,
+    occurredAt:
+      proposal.verifiedAt ?? proposal.executedAt ?? proposal.insertedAt,
     purpose: redactAiContext(proposal.purpose).slice(
       0,
       MAX_AI_COMMAND_PURPOSE_CHARS,

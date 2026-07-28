@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
+  Checkbox,
   Input,
   InputNumber,
   Message,
@@ -14,6 +15,10 @@ import {
 } from "@arco-design/web-react";
 import { IconRefresh } from "@arco-design/web-react/icon";
 import type { AppSettings, AiProvider } from "../app-settings";
+import {
+  AI_READ_ONLY_TOOL_OPTIONS,
+  type AiReadOnlyToolName,
+} from "../ai-permissions";
 import {
   AI_PROVIDER_PRESETS,
   aiModelFetchSignature,
@@ -353,16 +358,61 @@ function AiSettings({ settings, updateSetting }: AiSettingsProps) {
       </div>
       <div className="settings-row">
         <span className="settings-label-with-description">
-          <Typography.Text>只读诊断工具</Typography.Text>
+          <Typography.Text>只读工具权限</Typography.Text>
           <Typography.Text type="secondary">
-            允许 AI 读取状态、进程、目录并执行受限网络探测
+            仅向模型提供已勾选的工具
+          </Typography.Text>
+        </span>
+        <div className="settings-control ai-permission-control">
+          <Checkbox.Group
+            aria-label="AI 只读工具权限"
+            onChange={(values) =>
+              updateSetting(
+                "aiReadOnlyTools",
+                values as AiReadOnlyToolName[],
+              )
+            }
+            value={settings.aiReadOnlyTools}
+          >
+            {AI_READ_ONLY_TOOL_OPTIONS.map((option) => (
+              <Checkbox key={option.value} value={option.value}>
+                {option.label}
+              </Checkbox>
+            ))}
+          </Checkbox.Group>
+        </div>
+      </div>
+      <div className="settings-row">
+        <span className="settings-label-with-description">
+          <Typography.Text>文件变更提案</Typography.Text>
+          <Typography.Text type="secondary">
+            允许生成需人工审阅的修改、新建、重命名和删除建议
           </Typography.Text>
         </span>
         <div className="settings-control">
           <Switch
-            aria-label="允许 AI 使用只读诊断工具"
-            checked={settings.aiToolsEnabled}
-            onChange={(checked) => updateSetting("aiToolsEnabled", checked)}
+            aria-label="允许 AI 生成文件变更提案"
+            checked={settings.aiFileProposalsEnabled}
+            onChange={(checked) =>
+              updateSetting("aiFileProposalsEnabled", checked)
+            }
+          />
+        </div>
+      </div>
+      <div className="settings-row">
+        <span className="settings-label-with-description">
+          <Typography.Text>终端命令提案</Typography.Text>
+          <Typography.Text type="secondary">
+            允许生成只可复制或填入、不会自动执行的命令建议
+          </Typography.Text>
+        </span>
+        <div className="settings-control">
+          <Switch
+            aria-label="允许 AI 生成终端命令提案"
+            checked={settings.aiCommandProposalsEnabled}
+            onChange={(checked) =>
+              updateSetting("aiCommandProposalsEnabled", checked)
+            }
           />
         </div>
       </div>
@@ -377,6 +427,7 @@ function AiSettings({ settings, updateSetting }: AiSettingsProps) {
           <Switch
             aria-label="关联 AI 命令提案与终端提交"
             checked={settings.aiCommandTrackingEnabled}
+            disabled={!settings.aiCommandProposalsEnabled}
             onChange={(checked) =>
               updateSetting("aiCommandTrackingEnabled", checked)
             }

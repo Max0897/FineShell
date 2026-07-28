@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppSettings } from "../app-settings";
+import { aiReadOnlyToolEnabled } from "../ai-permissions";
 import {
   aiCommandProposalToolResult,
   createAiCommandProposal,
@@ -101,7 +102,11 @@ interface UseAiRequestOrchestratorOptions {
   sessionId: string | null;
   settings: Pick<
     AppSettings,
-    "aiBaseUrl" | "aiModel" | "aiToolsEnabled"
+    | "aiBaseUrl"
+    | "aiModel"
+    | "aiReadOnlyTools"
+    | "aiFileProposalsEnabled"
+    | "aiCommandProposalsEnabled"
   >;
   setDraft: (conversationId: string, value: string) => void;
   updateConversation: (
@@ -326,6 +331,11 @@ export function useAiRequestOrchestrator({
         const responseParts: string[] = [];
         const proposedFilePaths = new Set<string>();
         const proposedCommands = new Set<string>();
+        const fileProposalEnabled =
+          settings.aiFileProposalsEnabled &&
+          (editableFiles.length > 0 || Boolean(currentOperationDirectory));
+        const terminalProposalEnabled =
+          settings.aiCommandProposalsEnabled && commandProposalEnabled;
         let completed: AiConversation | undefined;
 
         for (;;) {
@@ -339,10 +349,9 @@ export function useAiRequestOrchestrator({
               model: settings.aiModel,
               messages: requestMessages,
               context: context || null,
-              toolsEnabled: settings.aiToolsEnabled,
-              fileEditEnabled:
-                editableFiles.length > 0 || Boolean(currentOperationDirectory),
-              commandProposalEnabled,
+              enabledTools: settings.aiReadOnlyTools,
+              fileEditEnabled: fileProposalEnabled,
+              commandProposalEnabled: terminalProposalEnabled,
               toolRounds,
             },
           });
@@ -386,7 +395,7 @@ export function useAiRequestOrchestrator({
           for (const call of result.toolCalls.filter(isAiFileEditToolCall)) {
             let proposalError: string | undefined;
             try {
-              if (!editableFiles.length) {
+              if (!fileProposalEnabled || !editableFiles.length) {
                 throw new Error("当前文件上下文不允许生成可应用的修改");
               }
               const proposal = createAiFileEditProposal(
@@ -410,6 +419,9 @@ export function useAiRequestOrchestrator({
           for (const call of result.toolCalls.filter(isAiFileOperationToolCall)) {
             let proposalError: string | undefined;
             try {
+              if (!fileProposalEnabled) {
+                throw new Error("文件变更提案权限已关闭");
+              }
               const proposal = createAiFileOperationProposal(
                 call,
                 editableFiles,
@@ -435,7 +447,7 @@ export function useAiRequestOrchestrator({
           for (const call of result.toolCalls.filter(isAiCommandProposalToolCall)) {
             let proposalError: string | undefined;
             try {
-              if (!commandProposalEnabled) {
+              if (!terminalProposalEnabled) {
                 throw new Error("当前终端会话不允许填入命令");
               }
               const proposal = createAiCommandProposal(
@@ -515,12 +527,19 @@ export function useAiRequestOrchestrator({
             let toolResult: AiToolResult;
             let toolError: string | undefined;
             let toolStatus: "success" | "failed" | "cancelled" = "success";
-            const allowed = await confirmToolExecution(call);
+            const hasPermission = aiReadOnlyToolEnabled(
+              settings.aiReadOnlyTools,
+              call.name,
+            );
+            const allowed =
+              hasPermission && (await confirmToolExecution(call));
             if (cancelledRequestsRef.current.has(requestId)) {
               throw new Error("AI 请求已取消");
             }
             if (!allowed) {
-              toolError = "用户未授权主动网络探测";
+              toolError = hasPermission
+                ? "用户未授权主动网络探测"
+                : "只读工具权限已关闭";
               toolStatus = "cancelled";
               toolResult = aiToolResult(call, { ok: false, error: toolError });
             } else {
@@ -610,8 +629,10 @@ export function useAiRequestOrchestrator({
       persistConversation,
       setDraft,
       settings.aiBaseUrl,
+      settings.aiCommandProposalsEnabled,
+      settings.aiFileProposalsEnabled,
       settings.aiModel,
-      settings.aiToolsEnabled,
+      settings.aiReadOnlyTools,
       updateConversation,
       updateMessages,
     ],
@@ -628,6 +649,29 @@ export function useAiRequestOrchestrator({
     }: RerunAiToolOptions) => {
       if (activeRequestRef.current) return;
       const call = aiToolCallFromRun(run);
+      if (!aiReadOnlyToolEnabled(settings.aiReadOnlyTools, call.name)) {
+        const message = "该只读工具权限已关闭";
+        const updated = updateMessages(hostId, conversationId, (current) =>
+          current.map((item) =>
+            item.id === messageId
+              ? {
+                  ...item,
+                  toolRuns: item.toolRuns?.map((toolRun) =>
+                    toolRun.callId === run.callId
+                      ? finishAiToolRun(restartAiToolRun(toolRun), {
+                          error: message,
+                          status: "failed",
+                          summary: message,
+                        })
+                      : toolRun,
+                  ),
+                }
+              : item,
+          ),
+        );
+        await persistConversation(updated);
+        return;
+      }
       if (!(await confirmToolExecution(call))) return;
       updateMessages(hostId, conversationId, (current) =>
         current.map((message) =>
@@ -674,6 +718,7 @@ export function useAiRequestOrchestrator({
       confirmToolExecution,
       invoke,
       persistConversation,
+      settings.aiReadOnlyTools,
       updateMessages,
     ],
   );

@@ -43,6 +43,8 @@ describe("app settings", () => {
       aiModel: "  model-name  ",
       aiContextMaxChars: 99_000,
       aiToolsEnabled: false,
+      aiFileProposalsEnabled: false,
+      aiCommandProposalsEnabled: false,
       aiCommandTrackingEnabled: false,
     });
 
@@ -72,7 +74,9 @@ describe("app settings", () => {
       aiBaseUrl: "https://example.com/v1",
       aiModel: "model-name",
       aiContextMaxChars: 32_000,
-      aiToolsEnabled: false,
+      aiReadOnlyTools: [],
+      aiFileProposalsEnabled: false,
+      aiCommandProposalsEnabled: false,
       aiCommandTrackingEnabled: false,
     });
   });
@@ -88,6 +92,13 @@ describe("app settings", () => {
     ).toBe("custom");
   });
 
+  test("sanitizes fine-grained AI permissions", () => {
+    const settings = sanitizeAppSettings({
+      aiReadOnlyTools: ["list_processes", "unknown", "list_processes"],
+    });
+    expect(settings.aiReadOnlyTools).toEqual(["list_processes"]);
+  });
+
   test("compares every persisted setting", () => {
     expect(appSettingsEqual(DEFAULT_APP_SETTINGS, DEFAULT_APP_SETTINGS)).toBe(
       true,
@@ -96,6 +107,12 @@ describe("app settings", () => {
       appSettingsEqual(DEFAULT_APP_SETTINGS, {
         ...DEFAULT_APP_SETTINGS,
         terminalFontSize: 14,
+      }),
+    ).toBe(false);
+    expect(
+      appSettingsEqual(DEFAULT_APP_SETTINGS, {
+        ...DEFAULT_APP_SETTINGS,
+        aiReadOnlyTools: ["get_server_status"],
       }),
     ).toBe(false);
   });

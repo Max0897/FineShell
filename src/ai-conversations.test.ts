@@ -93,7 +93,7 @@ describe("AI conversation persistence", () => {
     expect(sanitized.messages[1]?.toolRuns?.[0]).toMatchObject({
       label: "Ping",
       name: "ping_target",
-      startedAt: 0,
+      startedAt: 123,
       status: "success",
     });
     expect(sanitized.messages[1]?.toolRuns?.[0]?.summary).not.toContain(

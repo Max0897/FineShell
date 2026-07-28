@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { act, renderHook, waitFor } from "@testing-library/react";
+import type { AppSettings } from "../app-settings";
 import type { AiChatResult, AiToolCall } from "../tauri-protocol";
 import {
   executeAiReadOnlyTool,
@@ -75,6 +76,28 @@ const baseSendOptions = {
   value: "检查系统状态",
 };
 
+const aiSettings: Pick<
+  AppSettings,
+  | "aiBaseUrl"
+  | "aiModel"
+  | "aiReadOnlyTools"
+  | "aiFileProposalsEnabled"
+  | "aiCommandProposalsEnabled"
+> = {
+  aiBaseUrl: "https://example.com/v1",
+  aiModel: "test-model",
+  aiReadOnlyTools: [
+    "get_server_status",
+    "list_processes",
+    "get_current_directory",
+    "get_network_connections",
+    "ping_target",
+    "trace_route",
+  ],
+  aiFileProposalsEnabled: true,
+  aiCommandProposalsEnabled: true,
+};
+
 describe("executeAiReadOnlyTool", () => {
   test("uses the captured SFTP directory without invoking a remote command", async () => {
     const invoke = mock(async () => {
@@ -132,11 +155,7 @@ describe("useAiRequestOrchestrator", () => {
         listenToStream,
         persistConversation,
         sessionId: "session-1",
-        settings: {
-          aiBaseUrl: "https://example.com/v1",
-          aiModel: "test-model",
-          aiToolsEnabled: true,
-        },
+        settings: aiSettings,
         setDraft,
         updateConversation: callbacks.updateConversation,
         updateMessages: callbacks.updateMessages,
@@ -150,8 +169,14 @@ describe("useAiRequestOrchestrator", () => {
     });
     await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
     const request = invokeMock.mock.calls[0]?.[1]?.request as {
+      commandProposalEnabled: boolean;
+      enabledTools: string[];
+      fileEditEnabled: boolean;
       requestId: string;
     };
+    expect(request.enabledTools).toEqual(aiSettings.aiReadOnlyTools);
+    expect(request.fileEditEnabled).toBe(false);
+    expect(request.commandProposalEnabled).toBe(true);
 
     act(() => {
       onStream({ delta: "正在分析", requestId: request.requestId });
@@ -182,11 +207,7 @@ describe("useAiRequestOrchestrator", () => {
         listenToStream: async () => () => undefined,
         persistConversation: async () => undefined,
         sessionId: "session-1",
-        settings: {
-          aiBaseUrl: "https://example.com/v1",
-          aiModel: "test-model",
-          aiToolsEnabled: true,
-        },
+        settings: aiSettings,
         setDraft: () => undefined,
         updateConversation: callbacks.updateConversation,
         updateMessages: callbacks.updateMessages,
@@ -227,11 +248,7 @@ describe("useAiRequestOrchestrator", () => {
         listenToStream: async () => () => undefined,
         persistConversation: async () => undefined,
         sessionId: "session-1",
-        settings: {
-          aiBaseUrl: "https://example.com/v1",
-          aiModel: "test-model",
-          aiToolsEnabled: true,
-        },
+        settings: aiSettings,
         setDraft: () => undefined,
         updateConversation: callbacks.updateConversation,
         updateMessages: callbacks.updateMessages,
@@ -255,5 +272,56 @@ describe("useAiRequestOrchestrator", () => {
     expect(callbacks.current().messages[1]).toEqual(
       expect.objectContaining({ error: "已停止生成", failed: true }),
     );
+  });
+
+  test("does not execute a read-only tool disabled by the current settings", async () => {
+    let chatRequests = 0;
+    const invokeMock = mock(async (command: string) => {
+      if (command !== "ai_chat_start") {
+        throw new Error("不应执行远端诊断命令");
+      }
+      chatRequests += 1;
+      return chatRequests === 1
+        ? {
+            content: "",
+            toolCalls: [
+              {
+                arguments: '{"target":"example.com"}',
+                id: "call-disabled",
+                name: "trace_route",
+              },
+            ],
+          }
+        : { content: "权限已关闭", toolCalls: [] };
+    });
+    const confirmToolExecution = mock(async () => true);
+    const callbacks = createConversationCallbacks();
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        confirmToolExecution,
+        invoke: invokeMock as unknown as AiRequestInvoke,
+        listenToStream: async () => () => undefined,
+        persistConversation: async () => undefined,
+        sessionId: "session-1",
+        settings: {
+          ...aiSettings,
+          aiReadOnlyTools: ["get_server_status"],
+        },
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage(baseSendOptions);
+    });
+
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(confirmToolExecution).not.toHaveBeenCalled();
+    expect(callbacks.current().messages[1]?.toolRuns?.[0]).toMatchObject({
+      error: "只读工具权限已关闭",
+      status: "cancelled",
+    });
   });
 });

@@ -76,6 +76,7 @@ describe("AI terminal command proposals", () => {
     const record = aiCommandRecordFromProposal(inserted);
     expect(record).toEqual({
       id: "command-1",
+      occurredAt: "2026-07-28T08:00:00.000Z",
       purpose: "使用 token=[已隐藏] 检查服务",
       risk: proposal.assessment.risk,
       status: "inserted",

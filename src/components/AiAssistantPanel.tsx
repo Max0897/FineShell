@@ -13,6 +13,7 @@ import {
   IconDelete,
   IconHistory,
   IconPlus,
+  IconSafe,
 } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
@@ -72,6 +73,7 @@ import {
 import { useAiProposalState } from "../hooks/useAiProposalState";
 import { useAiRequestOrchestrator } from "../hooks/useAiRequestOrchestrator";
 import AiComposer from "./AiComposer";
+import AiAuditDrawer from "./AiAuditDrawer";
 import AiConversationHistoryDrawer from "./AiConversationHistoryDrawer";
 import AiFileChangeReviewModals from "./AiFileChangeReviewModals";
 import AiMessageTimeline from "./AiMessageTimeline";
@@ -269,6 +271,7 @@ function AiAssistantPanel({
   const [expandedToolRuns, setExpandedToolRuns] = useState<Set<string>>(
     () => new Set(),
   );
+  const [auditVisible, setAuditVisible] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -446,7 +449,8 @@ function AiAssistantPanel({
   const selectedRemoteFiles = remoteFiles.filter((file) =>
     selectedContextIds.includes(aiRemoteFileContextSource(file).id),
   );
-  const editableRemoteFiles = canInsertCommand
+  const editableRemoteFiles =
+    settings.aiFileProposalsEnabled && canInsertCommand
     ? selectedRemoteFiles.filter(
         (file) =>
           !aiFileEditEligibilityError(
@@ -465,10 +469,14 @@ function AiAssistantPanel({
       ?.content.trim(),
   );
   const operationDirectory =
-    canInsertCommand && selectedContextIds.includes("sftp-path")
+    settings.aiFileProposalsEnabled &&
+    canInsertCommand &&
+    selectedContextIds.includes("sftp-path")
       ? currentRemoteDirectory
       : null;
-  const fileEditEligibility = !selectedRemoteFiles.length
+  const fileEditEligibility = !settings.aiFileProposalsEnabled
+    ? "文件变更提案权限已在设置中关闭"
+    : !selectedRemoteFiles.length
     ? "请在输入框中提及远程文件后再生成修改建议"
     : !canInsertCommand
       ? "当前终端会话未连接，不能应用文件修改"
@@ -527,7 +535,8 @@ function AiAssistantPanel({
     if (!hostId || !sessionId || !activeConversation) return;
     const verificationTarget = captureVerificationTarget(prompt);
     void sendMessage({
-      commandProposalEnabled: canInsertCommand,
+      commandProposalEnabled:
+        canInsertCommand && settings.aiCommandProposalsEnabled,
       context,
       contextLabels: selectedContextSources.map(contextSourceDisplayLabel),
       currentOperationDirectory: operationDirectory,
@@ -556,7 +565,8 @@ function AiAssistantPanel({
       return;
     }
     void sendMessage({
-      commandProposalEnabled: canInsertCommand,
+      commandProposalEnabled:
+        canInsertCommand && settings.aiCommandProposalsEnabled,
       context: userMessage.context ?? "",
       contextLabels: userMessage.contextLabels ?? [],
       currentOperationDirectory: null,
@@ -573,6 +583,7 @@ function AiAssistantPanel({
 
   const closePanel = () => {
     if (sending) void cancelRequest();
+    setAuditVisible(false);
     closeHistory();
     onClose();
   };
@@ -601,7 +612,22 @@ function AiAssistantPanel({
               aria-label="对话历史"
               disabled={!sessionId || sending}
               icon={<IconHistory />}
-              onClick={openHistory}
+              onClick={() => {
+                setAuditVisible(false);
+                openHistory();
+              }}
+              type="text"
+            />
+          </Tooltip>
+          <Tooltip content="操作审计">
+            <Button
+              aria-label="AI 操作审计"
+              disabled={!sessionId}
+              icon={<IconSafe />}
+              onClick={() => {
+                closeHistory();
+                setAuditVisible(true);
+              }}
               type="text"
             />
           </Tooltip>
@@ -705,6 +731,10 @@ function AiAssistantPanel({
         onRename={renameConversation}
         onSelect={selectConversation}
         visible={historyVisible}
+      />
+      <AiAuditDrawer
+        onClose={() => setAuditVisible(false)}
+        visible={auditVisible}
       />
     </aside>
   );

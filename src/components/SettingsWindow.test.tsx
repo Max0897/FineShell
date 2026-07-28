@@ -44,6 +44,18 @@ describe("SettingsWindow", () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(false);
+    expect(
+      screen.getByRole("checkbox", { name: "服务器状态" }),
+    ).not.toBeNull();
+    expect(
+      screen.getByRole("checkbox", { name: "路由追踪" }),
+    ).not.toBeNull();
+    expect(
+      screen.getByLabelText("允许 AI 生成文件变更提案"),
+    ).not.toBeNull();
+    expect(
+      screen.getByLabelText("允许 AI 生成终端命令提案"),
+    ).not.toBeNull();
 
     await user.click(screen.getByText("连接与安全"));
     await waitFor(() =>

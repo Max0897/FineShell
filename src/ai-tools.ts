@@ -7,14 +7,13 @@ import type {
 } from "./models";
 import type { AiToolCall, AiToolResult } from "./tauri-protocol";
 import { redactAiContext } from "./ai-utils";
+import {
+  isAiReadOnlyToolName,
+  type AiReadOnlyToolName,
+} from "./ai-permissions";
 
-export type AiReadOnlyToolName =
-  | "get_server_status"
-  | "list_processes"
-  | "get_current_directory"
-  | "get_network_connections"
-  | "ping_target"
-  | "trace_route";
+export type { AiReadOnlyToolName } from "./ai-permissions";
+export { isAiReadOnlyToolName } from "./ai-permissions";
 
 export type AiToolRunStatus =
   | "running"
@@ -49,6 +48,7 @@ const TARGET_TOOLS = new Set<AiReadOnlyToolName>([
   "ping_target",
   "trace_route",
 ]);
+const MAX_DATE_TIMESTAMP = 8_640_000_000_000_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -99,12 +99,6 @@ export function aiToolTarget(call: AiToolCall): string | undefined {
     throw new Error("AI 提供的网络诊断目标格式无效");
   }
   return target.trim();
-}
-
-export function isAiReadOnlyToolName(
-  value: string,
-): value is AiReadOnlyToolName {
-  return Object.prototype.hasOwnProperty.call(TOOL_LABELS, value);
 }
 
 export function aiToolRequiresConfirmation(name: string) {
@@ -284,6 +278,7 @@ export function sanitizePersistedAiToolRuns(value: unknown): AiToolRun[] | undef
       const callId = boundedSafeText(item.callId, 160);
       if (!callId) return undefined;
       const duration = finiteNumber(item.durationMs);
+      const startedAt = finiteNumber(item.startedAt);
       return {
         callId,
         detail: boundedSafeText(item.detail, 253),
@@ -294,7 +289,12 @@ export function sanitizePersistedAiToolRuns(value: unknown): AiToolRun[] | undef
         error: boundedSafeText(item.error, 300),
         label: TOOL_LABELS[name],
         name,
-        startedAt: 0,
+        startedAt:
+          startedAt === undefined ||
+          startedAt < 0 ||
+          startedAt > MAX_DATE_TIMESTAMP
+            ? 0
+            : Math.round(startedAt),
         status: item.status,
         summary: boundedSafeText(item.summary, 4_000),
       };

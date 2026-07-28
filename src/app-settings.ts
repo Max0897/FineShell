@@ -1,4 +1,9 @@
 import { inferAiProvider, type AiProvider } from "./ai-providers";
+import {
+  ALL_AI_READ_ONLY_TOOLS,
+  sanitizeAiReadOnlyTools,
+  type AiReadOnlyToolName,
+} from "./ai-permissions";
 
 export type { AiProvider } from "./ai-providers";
 
@@ -40,7 +45,9 @@ export interface AppSettings {
   aiBaseUrl: string;
   aiModel: string;
   aiContextMaxChars: number;
-  aiToolsEnabled: boolean;
+  aiReadOnlyTools: AiReadOnlyToolName[];
+  aiFileProposalsEnabled: boolean;
+  aiCommandProposalsEnabled: boolean;
   aiCommandTrackingEnabled: boolean;
 }
 
@@ -70,7 +77,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   aiBaseUrl: "https://api.openai.com/v1",
   aiModel: "",
   aiContextMaxChars: 12_000,
-  aiToolsEnabled: true,
+  aiReadOnlyTools: [...ALL_AI_READ_ONLY_TOOLS],
+  aiFileProposalsEnabled: true,
+  aiCommandProposalsEnabled: true,
   aiCommandTrackingEnabled: true,
 };
 
@@ -244,9 +253,17 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
       2_000,
       32_000,
     ),
-    aiToolsEnabled: booleanValue(
+    aiReadOnlyTools: sanitizeAiReadOnlyTools(
+      settings.aiReadOnlyTools,
       settings.aiToolsEnabled,
-      DEFAULT_APP_SETTINGS.aiToolsEnabled,
+    ),
+    aiFileProposalsEnabled: booleanValue(
+      settings.aiFileProposalsEnabled,
+      DEFAULT_APP_SETTINGS.aiFileProposalsEnabled,
+    ),
+    aiCommandProposalsEnabled: booleanValue(
+      settings.aiCommandProposalsEnabled,
+      DEFAULT_APP_SETTINGS.aiCommandProposalsEnabled,
     ),
     aiCommandTrackingEnabled: booleanValue(
       settings.aiCommandTrackingEnabled,
@@ -257,6 +274,9 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
 
 export function appSettingsEqual(left: AppSettings, right: AppSettings) {
   return (Object.keys(DEFAULT_APP_SETTINGS) as (keyof AppSettings)[]).every(
-    (key) => left[key] === right[key],
+    (key) =>
+      Array.isArray(left[key]) && Array.isArray(right[key])
+        ? JSON.stringify(left[key]) === JSON.stringify(right[key])
+        : left[key] === right[key],
   );
 }
