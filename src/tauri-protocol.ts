@@ -161,6 +161,19 @@ export interface AgentActionTransitionRequest {
   error?: string;
 }
 
+export interface AgentCommandObservationRequest {
+  taskId: string;
+  actionId: string;
+  hostId: string;
+  sessionId: string;
+  submissionId: string;
+  phase: "submitted" | "completed" | "unavailable";
+  command: string;
+  exitCode?: number;
+  durationMs?: number;
+  reason?: string;
+}
+
 export interface AgentActionExecutionResult {
   actionId: string;
   actionType: "file_edit" | "file_operation" | "terminal_command";

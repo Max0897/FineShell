@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::watch;
 
-use crate::agent_actions::normalize_remote_action_path;
+use crate::agent_actions::{normalize_remote_action_path, valid_command};
 use crate::agent_approvals::{
     action_fingerprint, ApprovalCredential, ApprovalCredentialStore, ApprovalScope,
 };
@@ -23,6 +23,7 @@ const MAX_AGENT_ACTION_MESSAGE_CHARS: usize = 500;
 const MAX_AGENT_WRITABLE_FILES: usize = 8;
 const MAX_AGENT_WRITABLE_FILE_BYTES: usize = 256 * 1024;
 const MAX_AGENT_WRITABLE_FILES_BYTES: usize = 512 * 1024;
+const MAX_OBSERVED_COMMAND_DURATION_MS: u64 = 24 * 60 * 60 * 1_000;
 const APPROVAL_CREDENTIAL_TTL_MS: u64 = 10 * 60 * 1_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -176,6 +177,8 @@ pub(crate) struct AgentActionState {
     duration_ms: Option<u64>,
     #[serde(skip_serializing)]
     arguments: serde_json::Value,
+    #[serde(skip_serializing)]
+    command_submission_id: Option<String>,
 }
 
 impl AgentActionState {
@@ -193,6 +196,7 @@ impl AgentActionState {
             started_at: None,
             completed_at: None,
             duration_ms: None,
+            command_submission_id: None,
         }
     }
 }
@@ -376,6 +380,29 @@ pub(crate) struct AgentActionTransitionRequest {
     pub(crate) transition: AgentActionTransition,
     pub(crate) summary: Option<String>,
     pub(crate) error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentCommandObservationPhase {
+    Submitted,
+    Completed,
+    Unavailable,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct AgentCommandObservationRequest {
+    task_id: String,
+    action_id: String,
+    host_id: String,
+    session_id: String,
+    submission_id: String,
+    phase: AgentCommandObservationPhase,
+    command: String,
+    exit_code: Option<u16>,
+    duration_ms: Option<u64>,
+    reason: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1010,9 +1037,180 @@ impl AgentTaskManager {
                     task.actions[index].started_at = None;
                     task.actions[index].completed_at = None;
                     task.actions[index].duration_ms = None;
+                    task.actions[index].command_submission_id = None;
                     task.result = None;
                     task.refresh_action_status();
                     events.push(task.action_event(AgentTaskEventKind::ActionRetried, &action_id));
+                }
+            }
+            if task.model_completed && !task.has_unresolved_actions() {
+                task.complete_actions();
+                events.push(task.event(AgentTaskEventKind::TaskCompleted));
+            }
+            events
+        };
+        if events
+            .last()
+            .is_some_and(|event| event.kind == AgentTaskEventKind::TaskCompleted)
+        {
+            self.revoke_task_approvals(&task_id)?;
+        }
+        Ok(events)
+    }
+
+    pub(crate) fn observe_command_execution(
+        &self,
+        request: AgentCommandObservationRequest,
+    ) -> Result<Vec<AgentTaskEvent>, String> {
+        if [
+            request.task_id.as_str(),
+            request.action_id.as_str(),
+            request.host_id.as_str(),
+            request.session_id.as_str(),
+            request.submission_id.as_str(),
+        ]
+        .into_iter()
+        .any(|value| !valid_identifier(value))
+            || !valid_command(&request.command)
+        {
+            return Err("终端命令观察范围无效".to_string());
+        }
+        if request
+            .duration_ms
+            .is_some_and(|duration| duration > MAX_OBSERVED_COMMAND_DURATION_MS)
+            || request.exit_code.is_some_and(|exit_code| exit_code > 255)
+        {
+            return Err("终端命令观察结果无效".to_string());
+        }
+        let reason = bounded_action_message(request.reason)?;
+        match request.phase {
+            AgentCommandObservationPhase::Submitted
+                if request.exit_code.is_some()
+                    || request.duration_ms.is_some()
+                    || reason.is_some() =>
+            {
+                return Err("终端命令提交事件包含无效结果".to_string());
+            }
+            AgentCommandObservationPhase::Completed
+                if request.exit_code.is_none()
+                    || request.duration_ms.is_none()
+                    || reason.is_some() =>
+            {
+                return Err("终端命令完成事件缺少退出信息".to_string());
+            }
+            AgentCommandObservationPhase::Unavailable
+                if request.exit_code.is_some()
+                    || request.duration_ms.is_none()
+                    || reason.is_none() =>
+            {
+                return Err("终端命令不可用事件缺少原因".to_string());
+            }
+            _ => {}
+        }
+
+        let task_id = request.task_id;
+        let events = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .map_err(|_| "AI 任务状态不可用".to_string())?;
+            let task = tasks
+                .get_mut(&task_id)
+                .ok_or_else(|| "AI 任务不存在".to_string())?;
+            let index = task
+                .actions
+                .iter()
+                .position(|action| action.id == request.action_id)
+                .ok_or_else(|| "AI 动作不存在".to_string())?;
+            if task.actions[index].tool != "propose_terminal_command" {
+                return Err("AI 动作不是终端命令提案".to_string());
+            }
+            let trusted_command = task.actions[index]
+                .arguments
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "AI 命令缺少可信参数".to_string())?;
+            if task.host_id != request.host_id
+                || task.terminal_session_id.as_deref() != Some(request.session_id.as_str())
+                || trusted_command != request.command.trim()
+            {
+                return Err("终端提交与 AI 命令提案不匹配".to_string());
+            }
+            let same_submission = task.actions[index].command_submission_id.as_deref()
+                == Some(request.submission_id.as_str());
+            if matches!(
+                task.actions[index].status,
+                AgentActionStatus::Succeeded | AgentActionStatus::Failed
+            ) {
+                if same_submission {
+                    return Ok(Vec::new());
+                }
+                return Err("AI 命令已经由其他终端提交结束".to_string());
+            }
+            if matches!(
+                task.status,
+                AgentTaskStatus::Completed | AgentTaskStatus::Failed | AgentTaskStatus::Cancelled
+            ) {
+                return Err("AI 任务已经结束".to_string());
+            }
+
+            let action_id = task.actions[index].id.clone();
+            let now = timestamp_ms();
+            let mut events = Vec::with_capacity(3);
+            match task.actions[index].status {
+                AgentActionStatus::Approved => {
+                    task.actions[index].command_submission_id = Some(request.submission_id.clone());
+                    task.actions[index].status = AgentActionStatus::Running;
+                    task.actions[index].summary = Some("用户已在终端提交命令".to_string());
+                    task.actions[index].error = None;
+                    task.actions[index].started_at = Some(now);
+                    task.actions[index].completed_at = None;
+                    task.actions[index].duration_ms = None;
+                    task.refresh_action_status();
+                    events.push(task.action_event(AgentTaskEventKind::ActionStarted, &action_id));
+                }
+                AgentActionStatus::Running if same_submission => {
+                    if request.phase == AgentCommandObservationPhase::Submitted {
+                        return Ok(Vec::new());
+                    }
+                }
+                AgentActionStatus::Running => {
+                    return Err("AI 命令已经绑定其他终端提交".to_string());
+                }
+                _ => return Err("AI 命令当前不能接收执行结果".to_string()),
+            }
+
+            match request.phase {
+                AgentCommandObservationPhase::Submitted => {}
+                AgentCommandObservationPhase::Completed => {
+                    let exit_code = request.exit_code.unwrap_or_default();
+                    task.actions[index].completed_at = Some(now);
+                    task.actions[index].duration_ms = request.duration_ms;
+                    if exit_code == 0 {
+                        task.actions[index].status = AgentActionStatus::Succeeded;
+                        task.actions[index].summary = Some("终端命令执行成功".to_string());
+                        task.actions[index].error = None;
+                        task.refresh_action_status();
+                        events.push(
+                            task.action_event(AgentTaskEventKind::ActionSucceeded, &action_id),
+                        );
+                    } else {
+                        task.actions[index].status = AgentActionStatus::Failed;
+                        task.actions[index].summary = None;
+                        task.actions[index].error = Some(format!("终端命令退出码 {exit_code}"));
+                        task.refresh_action_status();
+                        events
+                            .push(task.action_event(AgentTaskEventKind::ActionFailed, &action_id));
+                    }
+                }
+                AgentCommandObservationPhase::Unavailable => {
+                    task.actions[index].status = AgentActionStatus::Failed;
+                    task.actions[index].summary = None;
+                    task.actions[index].error = reason;
+                    task.actions[index].completed_at = Some(now);
+                    task.actions[index].duration_ms = request.duration_ms;
+                    task.refresh_action_status();
+                    events.push(task.action_event(AgentTaskEventKind::ActionFailed, &action_id));
                 }
             }
             if task.model_completed && !task.has_unresolved_actions() {
@@ -1641,16 +1839,29 @@ pub(crate) fn ai_task_action_transition(
     Ok(())
 }
 
+#[tauri::command]
+pub(crate) fn ai_task_command_observe(
+    app: AppHandle,
+    manager: State<'_, AgentTaskManager>,
+    request: AgentCommandObservationRequest,
+) -> CommandResult<()> {
+    let events = manager
+        .observe_command_execution(request)
+        .map_err(|error| CommandError::from_message("ai_task_command_observe", error))?;
+    emit_task_events(&app, events);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use super::{
         AgentActionIntent, AgentActionRisk, AgentActionStatus, AgentActionTransition,
-        AgentActionTransitionRequest, AgentApprovalMode, AgentPlan, AgentPlanDecision,
-        AgentPlanDecisionKind, AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep,
-        AgentPlanStepStatus, AgentTaskContext, AgentTaskEventKind, AgentTaskManager,
-        AgentTaskStatus, AgentWritableFile,
+        AgentActionTransitionRequest, AgentApprovalMode, AgentCommandObservationPhase,
+        AgentCommandObservationRequest, AgentPlan, AgentPlanDecision, AgentPlanDecisionKind,
+        AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep, AgentPlanStepStatus,
+        AgentTaskContext, AgentTaskEventKind, AgentTaskManager, AgentTaskStatus, AgentWritableFile,
     };
     use crate::agent_approvals::ApprovalScope;
 
@@ -1767,6 +1978,21 @@ mod tests {
         }
     }
 
+    fn command_observation(phase: AgentCommandObservationPhase) -> AgentCommandObservationRequest {
+        AgentCommandObservationRequest {
+            task_id: "task-1".to_string(),
+            action_id: "command-1".to_string(),
+            host_id: "host-1".to_string(),
+            session_id: "session-1".to_string(),
+            submission_id: "submission-1".to_string(),
+            phase,
+            command: "systemctl status nginx".to_string(),
+            exit_code: None,
+            duration_ms: None,
+            reason: None,
+        }
+    }
+
     fn serialized_values<T: SerializeValues>(values: &[T]) -> BTreeSet<String> {
         values.iter().map(SerializeValues::serialized).collect()
     }
@@ -1822,6 +2048,9 @@ mod tests {
         );
         let serialized = serde_json::to_value(&proposed[0].task).unwrap();
         assert!(serialized["actions"][0].get("arguments").is_none());
+        assert!(serialized["actions"][0]
+            .get("commandSubmissionId")
+            .is_none());
         assert!(serialized.get("writableFiles").is_none());
         assert!(serialized.get("fileOperationDirectory").is_none());
 
@@ -1978,6 +2207,77 @@ mod tests {
         assert_eq!(
             events[0].task.actions[0].status,
             AgentActionStatus::Approved
+        );
+    }
+
+    #[test]
+    fn terminal_command_observations_drive_the_trusted_lifecycle() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        manager
+            .register_actions("task-1", vec![terminal_command_intent()])
+            .unwrap();
+        manager
+            .authorize_action_execution("task-1", "command-1", false, true, None)
+            .unwrap();
+
+        let submitted = manager
+            .observe_command_execution(command_observation(AgentCommandObservationPhase::Submitted))
+            .unwrap();
+        assert_eq!(submitted.len(), 1);
+        assert_eq!(submitted[0].kind, AgentTaskEventKind::ActionStarted);
+        assert_eq!(
+            submitted[0].task.actions[0].status,
+            AgentActionStatus::Running
+        );
+        assert!(manager
+            .observe_command_execution(
+                command_observation(AgentCommandObservationPhase::Submitted,)
+            )
+            .unwrap()
+            .is_empty());
+
+        let mut completed = command_observation(AgentCommandObservationPhase::Completed);
+        completed.exit_code = Some(0);
+        completed.duration_ms = Some(1_250);
+        let completed = manager.observe_command_execution(completed).unwrap();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].kind, AgentTaskEventKind::ActionSucceeded);
+        assert_eq!(completed[0].task.actions[0].duration_ms, Some(1_250));
+        assert_eq!(
+            completed[0].task.actions[0].status,
+            AgentActionStatus::Succeeded
+        );
+    }
+
+    #[test]
+    fn terminal_command_observations_support_batched_failures_and_reject_mismatches() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        manager
+            .register_actions("task-1", vec![terminal_command_intent()])
+            .unwrap();
+        manager
+            .authorize_action_execution("task-1", "command-1", false, true, None)
+            .unwrap();
+
+        let mut mismatched = command_observation(AgentCommandObservationPhase::Submitted);
+        mismatched.command = "systemctl restart nginx".to_string();
+        assert_eq!(
+            manager.observe_command_execution(mismatched).unwrap_err(),
+            "终端提交与 AI 命令提案不匹配"
+        );
+
+        let mut unavailable = command_observation(AgentCommandObservationPhase::Unavailable);
+        unavailable.duration_ms = Some(0);
+        unavailable.reason = Some("Shell Integration 尚未就绪".to_string());
+        let events = manager.observe_command_execution(unavailable).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, AgentTaskEventKind::ActionStarted);
+        assert_eq!(events[1].kind, AgentTaskEventKind::ActionFailed);
+        assert_eq!(
+            events[1].task.actions[0].error.as_deref(),
+            Some("Shell Integration 尚未就绪")
         );
     }
 

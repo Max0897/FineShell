@@ -104,6 +104,7 @@ describe("useAiProposalState", () => {
         isHostLoaded: () => true,
         onActionTransition: async () => undefined,
         onActionTransitionError: () => undefined,
+        onCommandLifecycleObserved: async () => undefined,
         persistConversation,
         updateMessages: harness.updateMessages,
       }),
@@ -148,6 +149,7 @@ describe("useAiProposalState", () => {
       submittedAt: "2026-07-28T09:00:00.000Z",
     };
     const persistConversation = mock(async () => undefined);
+    const observeCommandLifecycle = mock(async () => undefined);
 
     renderHook(() =>
       useAiProposalState({
@@ -159,6 +161,7 @@ describe("useAiProposalState", () => {
         isHostLoaded: () => true,
         onActionTransition: async () => undefined,
         onActionTransitionError: () => undefined,
+        onCommandLifecycleObserved: observeCommandLifecycle,
         persistConversation,
         updateMessages: harness.updateMessages,
       }),
@@ -171,6 +174,11 @@ describe("useAiProposalState", () => {
           status: "executed",
         }),
       ),
+    );
+    expect(observeCommandLifecycle).toHaveBeenCalledWith(
+      "assistant-1",
+      "command-1",
+      submission,
     );
     expect(persistConversation).toHaveBeenCalledTimes(1);
   });
@@ -198,6 +206,7 @@ describe("useAiProposalState", () => {
       sessionId: "session-1",
       submittedAt: "2026-07-28T09:00:00.000Z",
     };
+    const observeCommandLifecycle = mock(async () => undefined);
 
     renderHook(() =>
       useAiProposalState({
@@ -209,6 +218,7 @@ describe("useAiProposalState", () => {
         isHostLoaded: () => true,
         onActionTransition: async () => undefined,
         onActionTransitionError: () => undefined,
+        onCommandLifecycleObserved: observeCommandLifecycle,
         persistConversation: async () => undefined,
         updateMessages: harness.updateMessages,
       }),
@@ -223,6 +233,11 @@ describe("useAiProposalState", () => {
           submissionId: "submission-1",
         }),
       ),
+    );
+    expect(observeCommandLifecycle).toHaveBeenCalledWith(
+      "assistant-1",
+      "command-1",
+      result,
     );
   });
 });

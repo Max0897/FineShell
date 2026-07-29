@@ -52,6 +52,7 @@ import {
   commandErrorMessage,
   type AgentApprovalMode,
   type AgentActionExecutionResult,
+  type AgentCommandObservationRequest,
   type AiToolCall,
 } from "../tauri-protocol";
 import type { TerminalCommandSubmission } from "../terminal-utils";
@@ -373,6 +374,30 @@ function AiAssistantPanel({
     },
     [onAgentActionExecuted, sessionId, taskIdForMessage],
   );
+  const observeAgentCommandLifecycle = useCallback(
+    async (
+      messageId: string,
+      actionId: string,
+      submission: TerminalCommandSubmission,
+    ) => {
+      const taskId = taskIdForMessage(messageId);
+      if (!taskId) throw new Error("AI 命令缺少对应的任务");
+      const request: AgentCommandObservationRequest = {
+        taskId,
+        actionId,
+        hostId: submission.hostId,
+        sessionId: submission.sessionId,
+        submissionId: submission.id,
+        phase: submission.phase ?? "submitted",
+        command: submission.command,
+        exitCode: submission.exitCode,
+        durationMs: submission.durationMs,
+        reason: submission.reason,
+      };
+      await invoke("ai_task_command_observe", { request });
+    },
+    [taskIdForMessage],
+  );
   const availableContextSources = useMemo(() => {
     const sources = new Map(
       contextSources.map((source) => [source.id, source]),
@@ -402,6 +427,7 @@ function AiAssistantPanel({
     onActionTransition: transitionAgentAction,
     onActionTransitionError: (error) =>
       Message.error(`AI 动作状态更新失败：${commandErrorMessage(error)}`),
+    onCommandLifecycleObserved: observeAgentCommandLifecycle,
     persistConversation,
     updateMessages,
   });

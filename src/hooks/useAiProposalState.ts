@@ -18,6 +18,12 @@ type UpdateMessages = (
   update: (messages: AiMessage[]) => AiMessage[],
 ) => AiConversation | undefined;
 
+type ObserveCommandLifecycle = (
+  messageId: string,
+  actionId: string,
+  submission: TerminalCommandSubmission,
+) => Promise<void>;
+
 interface UseAiProposalStateOptions {
   activeConversationId?: string;
   commandSubmission: TerminalCommandSubmission | null;
@@ -27,6 +33,7 @@ interface UseAiProposalStateOptions {
   isHostLoaded: (hostId: string) => boolean;
   onActionTransition: AiActionTransitionHandler;
   onActionTransitionError: (error: unknown) => void;
+  onCommandLifecycleObserved: ObserveCommandLifecycle;
   persistConversation: (conversation?: AiConversation) => Promise<void>;
   updateMessages: UpdateMessages;
 }
@@ -40,6 +47,7 @@ export function useAiProposalState({
   isHostLoaded,
   onActionTransition,
   onActionTransitionError,
+  onCommandLifecycleObserved,
   persistConversation,
   updateMessages,
 }: UseAiProposalStateOptions) {
@@ -265,22 +273,11 @@ export function useAiProposalState({
         if (!proposal) continue;
         void (async () => {
           try {
-            if (phase === "submitted") {
-              await onActionTransition(message.id, proposal.id, "start");
-            } else {
-              if (proposal.status === "inserted") {
-                await onActionTransition(message.id, proposal.id, "start");
-              }
-              const succeeded = phase === "completed" && submission.exitCode === 0;
-              await onActionTransition(
-                message.id,
-                proposal.id,
-                succeeded ? "succeed" : "fail",
-                succeeded
-                  ? { summary: "终端命令执行成功" }
-                  : { error: submission.reason ?? `终端命令退出码 ${submission.exitCode ?? "未知"}` },
-              );
-            }
+            await onCommandLifecycleObserved(
+              message.id,
+              proposal.id,
+              submission,
+            );
             updateCommandProposalInConversation(
               submission.hostId,
               conversation.id,
@@ -310,8 +307,8 @@ export function useAiProposalState({
     conversationsByHost,
     getHostConversations,
     isHostLoaded,
-    onActionTransition,
     onActionTransitionError,
+    onCommandLifecycleObserved,
     updateCommandProposalInConversation,
   ]);
 

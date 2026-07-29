@@ -44,7 +44,7 @@ fn valid_content(content: &str) -> bool {
     content.chars().count() <= MAX_FILE_EDIT_CHARS && !content.contains('\0')
 }
 
-fn valid_command(command: &str) -> bool {
+pub(crate) fn valid_command(command: &str) -> bool {
     let command = command.trim();
     !command.is_empty()
         && command.chars().count() <= MAX_TERMINAL_COMMAND_CHARS
