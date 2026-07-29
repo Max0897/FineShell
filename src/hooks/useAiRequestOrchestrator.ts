@@ -35,7 +35,7 @@ import {
   type AiFileOperationProposal,
 } from "../ai-file-operations";
 import {
-  MAX_AI_TOOL_ROUNDS,
+  aiToolLoopFinalizeReason,
   aiToolCallFromRun,
   aiToolResult,
   aiToolResultSummary,
@@ -65,6 +65,7 @@ import {
   FineShellCommandError,
   listenProtocolEvent,
   type AiChatResult,
+  type AiFinalizeReason,
   type AiToolCall,
   type AiToolResult,
   type AiToolRound,
@@ -502,6 +503,7 @@ export function useAiRequestOrchestrator({
         const responseParts: string[] = [];
         const proposedFilePaths = new Set<string>();
         const proposedCommands = new Set<string>();
+        let finalizeReason: AiFinalizeReason | undefined;
         const fileProposalEnabled =
           settings.aiFileProposalsEnabled &&
           (editableFiles.length > 0 || Boolean(currentOperationDirectory));
@@ -523,6 +525,7 @@ export function useAiRequestOrchestrator({
               enabledTools: settings.aiReadOnlyTools,
               fileEditEnabled: fileProposalEnabled,
               commandProposalEnabled: terminalProposalEnabled,
+              finalizeReason,
               toolRounds,
             },
           });
@@ -554,8 +557,16 @@ export function useAiRequestOrchestrator({
             );
             break;
           }
-          if (toolRounds.length >= MAX_AI_TOOL_ROUNDS) {
-            throw new Error("AI 连续请求工具次数过多，请缩小问题范围后重试");
+          if (finalizeReason) {
+            throw new Error("AI 收尾响应返回了意外的工具调用");
+          }
+          const nextFinalizeReason = aiToolLoopFinalizeReason(
+            toolRounds,
+            result.toolCalls,
+          );
+          if (nextFinalizeReason) {
+            finalizeReason = nextFinalizeReason;
+            continue;
           }
 
           let nextPlan: AiDiagnosticPlan | undefined;

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  MAX_AI_TOOL_ROUNDS,
+  MAX_AI_TOOL_RESULT_CHARS,
+  aiToolCallFingerprint,
   aiToolCallFromRun,
+  aiToolLoopFinalizeReason,
   aiToolLabel,
   aiToolResult,
   aiToolResultSummary,
@@ -19,6 +23,104 @@ import {
 } from "./ai-tools";
 
 describe("AI read-only tools", () => {
+  test("normalizes planning metadata when identifying repeated tool calls", () => {
+    const first = {
+      arguments:
+        '{"target":"example.com","reason":"first check","optional":true}',
+      id: "call-1",
+      name: "ping_target",
+    };
+    const repeated = {
+      arguments:
+        '{"optional":false,"reason":"check again","target":"example.com"}',
+      id: "call-2",
+      name: "ping_target",
+    };
+    expect(aiToolCallFingerprint(first)).toBe(
+      aiToolCallFingerprint(repeated),
+    );
+  });
+
+  test("finalizes tool loops on budget, repeated calls, or consecutive failures", () => {
+    const call = (id: string) => ({
+      arguments: '{"reason":"inspect"}',
+      id,
+      name: "get_server_status",
+    });
+    const successfulRound = (id: string) => ({
+      calls: [call(id)],
+      results: [
+        {
+          callId: id,
+          content: '{"ok":true}',
+          name: "get_server_status",
+        },
+      ],
+    });
+    expect(
+      aiToolLoopFinalizeReason(
+        Array.from({ length: MAX_AI_TOOL_ROUNDS }, (_, index) =>
+          successfulRound(`budget-${index}`),
+        ),
+        [call("budget-next")],
+      ),
+    ).toBe("tool_budget");
+
+    expect(
+      aiToolLoopFinalizeReason(
+        [
+          {
+            calls: [call("large-result")],
+            results: [
+              {
+                callId: "large-result",
+                content: "x".repeat(MAX_AI_TOOL_RESULT_CHARS),
+                name: "get_server_status",
+              },
+            ],
+          },
+        ],
+        [
+          {
+            arguments: "{}",
+            id: "after-large-result",
+            name: "list_processes",
+          },
+        ],
+      ),
+    ).toBe("tool_budget");
+
+    expect(
+      aiToolLoopFinalizeReason(
+        [successfulRound("repeat-1"), successfulRound("repeat-2")],
+        [call("repeat-3")],
+      ),
+    ).toBe("no_progress");
+
+    const failedRound = (id: string) => ({
+      calls: [call(id)],
+      results: [
+        {
+          callId: id,
+          content: '{"ok":false,"error":"unavailable"}',
+          name: "get_server_status",
+        },
+      ],
+    });
+    expect(
+      aiToolLoopFinalizeReason(
+        [failedRound("failed-1"), failedRound("failed-2"), failedRound("failed-3")],
+        [
+          {
+            arguments: "{}",
+            id: "different-call",
+            name: "list_processes",
+          },
+        ],
+      ),
+    ).toBe("consecutive_failures");
+  });
+
   test("accepts only the fixed read-only allowlist", () => {
     expect(isAiReadOnlyToolName("get_server_status")).toBe(true);
     expect(isAiReadOnlyToolName("list_processes")).toBe(true);

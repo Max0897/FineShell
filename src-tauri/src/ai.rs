@@ -21,12 +21,13 @@ const MAX_MESSAGES: usize = 24;
 const MAX_MESSAGE_CHARS: usize = 24_000;
 const MAX_CONTEXT_CHARS: usize = 32_000;
 const MAX_RESPONSE_CHARS: usize = 64_000;
-const MAX_TOOL_ROUNDS: usize = 3;
+const MAX_TOOL_ROUNDS: usize = 8;
+const MAX_TOOL_CALLS: usize = 24;
 const MAX_TOOL_CALLS_PER_ROUND: usize = 8;
 const MAX_DIAGNOSTIC_TOOL_CALLS_PER_ROUND: usize = 6;
 const MAX_DIAGNOSTIC_REASON_CHARS: usize = 240;
 const MAX_TOOL_RESULT_CHARS: usize = 16_000;
-const MAX_TOOL_RESULTS_TOTAL_CHARS: usize = 32_000;
+const MAX_TOOL_RESULTS_TOTAL_CHARS: usize = 80_000;
 const MAX_TOOL_ARGUMENT_CHARS: usize = 400_000;
 const MAX_FILE_EDIT_CHARS: usize = 60_000;
 const MAX_TERMINAL_COMMAND_CHARS: usize = 4_096;
@@ -78,7 +79,17 @@ pub(crate) struct AiChatRequest {
     #[serde(default)]
     command_proposal_enabled: bool,
     #[serde(default)]
+    finalize_reason: Option<AiFinalizeReason>,
+    #[serde(default)]
     tool_rounds: Vec<AiToolRound>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AiFinalizeReason {
+    ToolBudget,
+    NoProgress,
+    ConsecutiveFailures,
 }
 
 #[derive(Serialize)]
@@ -636,8 +647,13 @@ fn validate_tool_rounds(
         return Err("AI 工具调用轮数超过限制".to_string());
     }
     let mut total_result_chars = 0usize;
+    let mut total_tool_calls = 0usize;
     let mut all_call_ids = HashSet::new();
     for round in &mut rounds {
+        total_tool_calls = total_tool_calls.saturating_add(round.calls.len());
+        if total_tool_calls > MAX_TOOL_CALLS {
+            return Err("AI 工具调用总数超过限制".to_string());
+        }
         if round.calls.is_empty()
             || round.calls.len() > MAX_TOOL_CALLS_PER_ROUND
             || round
@@ -778,6 +794,27 @@ fn http_messages(
         }));
     }
     values
+}
+
+fn apply_finalization_instruction(messages: &mut [Value], reason: AiFinalizeReason) {
+    let reason = match reason {
+        AiFinalizeReason::ToolBudget => "the tool execution budget has been exhausted",
+        AiFinalizeReason::NoProgress => "further tool calls are repeating without new evidence",
+        AiFinalizeReason::ConsecutiveFailures => "multiple consecutive tool rounds have failed",
+    };
+    let instruction = format!(
+        " The agent is finishing because {reason}. Do not request or claim to run more tools. Give the best answer supported by the collected evidence, clearly state incomplete or unverified parts, and suggest at most the most useful next step."
+    );
+    if let Some(content) = messages
+        .first()
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        let mut updated = content;
+        updated.push_str(&instruction);
+        messages[0]["content"] = Value::String(updated);
+    }
 }
 
 fn tool_definitions(
@@ -1435,7 +1472,9 @@ pub(crate) async fn ai_chat_start(
     let tools_enabled = !enabled_tools.is_empty();
     let file_edit_enabled = request.file_edit_enabled;
     let command_proposal_enabled = request.command_proposal_enabled;
-    let any_tools_enabled = tools_enabled || file_edit_enabled || command_proposal_enabled;
+    let finalize_reason = request.finalize_reason;
+    let any_tools_configured = tools_enabled || file_edit_enabled || command_proposal_enabled;
+    let any_tools_enabled = any_tools_configured && finalize_reason.is_none();
     let tool_rounds = validate_tool_rounds(
         request.tool_rounds,
         tools_enabled,
@@ -1453,7 +1492,7 @@ pub(crate) async fn ai_chat_start(
         false,
         false,
     );
-    let messages = http_messages(
+    let mut messages = http_messages(
         messages,
         request.context.as_deref(),
         &tool_rounds,
@@ -1461,6 +1500,9 @@ pub(crate) async fn ai_chat_start(
         file_edit_enabled,
         command_proposal_enabled,
     );
+    if let Some(reason) = finalize_reason {
+        apply_finalization_instruction(&mut messages, reason);
+    }
     let api_key = api_key_for_endpoint(&endpoint).map_err(|e| structured(operation, e))?;
     let (cancel, mut cancellation) = watch::channel(false);
     {
@@ -1585,6 +1627,9 @@ pub(crate) async fn ai_chat_start(
         }
         let tool_calls =
             complete_tool_calls(tool_call_accumulators).map_err(|e| structured(operation, e))?;
+        if finalize_reason.is_some() && !tool_calls.is_empty() {
+            return Err(structured(operation, "AI 收尾响应不应包含工具调用"));
+        }
         if tool_calls.iter().any(|call| {
             !tool_allowed(
                 &call.name,
@@ -1640,15 +1685,49 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        apply_tool_call_delta, capability_http_failure, complete_tool_calls,
-        enabled_diagnostic_tools, filter_tool_definitions, http_messages, is_local_endpoint,
-        is_tool_unsupported_error, normalize_models, request_messages, sanitize_context,
-        service_endpoint, stream_delta, stream_tool_call_deltas, tool_allowed, tool_definitions,
-        tool_probe_supported, valid_stream_probe_event, valid_tool_arguments,
+        apply_finalization_instruction, apply_tool_call_delta, capability_http_failure,
+        complete_tool_calls, enabled_diagnostic_tools, filter_tool_definitions, http_messages,
+        is_local_endpoint, is_tool_unsupported_error, normalize_models, request_messages,
+        sanitize_context, service_endpoint, stream_delta, stream_tool_call_deltas, tool_allowed,
+        tool_definitions, tool_probe_supported, valid_stream_probe_event, valid_tool_arguments,
         validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls, validate_service_url,
-        validate_tool_rounds, AiCapabilityKind, AiCapabilityState, AiChatMessage, AiModelEntry,
-        AiToolCall, AiToolResult, AiToolRound, SseParser,
+        validate_tool_rounds, AiCapabilityKind, AiCapabilityState, AiChatMessage, AiFinalizeReason,
+        AiModelEntry, AiToolCall, AiToolResult, AiToolRound, SseParser,
     };
+
+    #[test]
+    fn finalization_keeps_evidence_and_disables_further_tool_requests() {
+        let mut messages = http_messages(
+            vec![AiChatMessage {
+                role: "user".to_string(),
+                content: "Diagnose the server.".to_string(),
+            }],
+            None,
+            &[AiToolRound {
+                calls: vec![AiToolCall {
+                    id: "call-1".to_string(),
+                    name: "get_server_status".to_string(),
+                    arguments: "{}".to_string(),
+                }],
+                content: None,
+                results: vec![AiToolResult {
+                    call_id: "call-1".to_string(),
+                    name: "get_server_status".to_string(),
+                    content: r#"{"ok":true}"#.to_string(),
+                }],
+            }],
+            true,
+            false,
+            false,
+        );
+        apply_finalization_instruction(&mut messages, AiFinalizeReason::ToolBudget);
+
+        assert!(messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Do not request or claim to run more tools"));
+        assert_eq!(messages[messages.len() - 1]["role"], "tool");
+    }
 
     #[test]
     fn builds_chat_completion_endpoint() {

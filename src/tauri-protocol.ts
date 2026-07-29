@@ -104,6 +104,11 @@ export interface AiChatResult {
   toolCalls: AiToolCall[];
 }
 
+export type AiFinalizeReason =
+  | "tool_budget"
+  | "no_progress"
+  | "consecutive_failures";
+
 export interface AiToolCall {
   id: string;
   name: string;

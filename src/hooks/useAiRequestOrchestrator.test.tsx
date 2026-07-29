@@ -131,6 +131,72 @@ describe("executeAiReadOnlyTool", () => {
 });
 
 describe("useAiRequestOrchestrator", () => {
+  test("finishes with collected evidence after the tool budget is exhausted", async () => {
+    const requests: Array<{
+      finalizeReason?: string;
+      toolRounds: unknown[];
+    }> = [];
+    const invokeMock = mock(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command !== "ai_chat_start") {
+          throw new Error(`unexpected command: ${command}`);
+        }
+        const request = args?.request as {
+          finalizeReason?: string;
+          toolRounds: unknown[];
+        };
+        requests.push(request);
+        if (request.finalizeReason) {
+          return {
+            content: "已根据现有诊断结果完成总结，未执行更多工具。",
+            toolCalls: [],
+          };
+        }
+        const index = request.toolRounds.length;
+        return {
+          content: "",
+          toolCalls: [
+            {
+              arguments: JSON.stringify({
+                command: `echo round-${index}`,
+                purpose: `记录第 ${index + 1} 轮建议`,
+              }),
+              id: `call-command-${index}`,
+              name: "propose_terminal_command",
+            },
+          ],
+        };
+      },
+    );
+    const callbacks = createConversationCallbacks();
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        confirmToolExecution: async () => true,
+        invoke: invokeMock as unknown as AiRequestInvoke,
+        listenToStream: async () => () => undefined,
+        persistConversation: async () => undefined,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.sendMessage(baseSendOptions);
+    });
+
+    expect(requests[requests.length - 1]).toMatchObject({
+      finalizeReason: "tool_budget",
+    });
+    expect(callbacks.current().messages[1]).toMatchObject({
+      content: "已根据现有诊断结果完成总结，未执行更多工具。",
+      failed: false,
+    });
+    expect(callbacks.current().messages[1]?.commandProposals).toHaveLength(8);
+  });
+
   test("streams only the active request and persists its completed answer", async () => {
     const response = deferred<AiChatResult>();
     const invokeMock = mock(
