@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 use ssh2::{Channel, HashType, Session};
 use tauri::{AppHandle, Emitter, State};
 
+use crate::agent_verification::{
+    execute_business_verification, AgentBusinessVerification, AgentBusinessVerificationResult,
+};
 use crate::credentials;
 use crate::dynamic_forward::{self, DynamicConnectRequest, DynamicConnectionResult};
 use crate::monitor::{
@@ -251,6 +254,10 @@ enum SessionCommand {
         response: SyncSender<Result<NetworkTraceResult, String>>,
     },
     Processes(SyncSender<Result<ServerProcessListResult, String>>),
+    AgentVerify {
+        verification: AgentBusinessVerification,
+        response: SyncSender<Result<AgentBusinessVerificationResult, String>>,
+    },
     SignalProcess {
         pid: u32,
         force: bool,
@@ -475,6 +482,28 @@ impl SshSessionManager {
         })
         .await
         .map_err(|error| format!("进程采集任务异常结束：{error}"))?
+    }
+
+    pub(crate) async fn verify_agent_condition(
+        &self,
+        session_id: &str,
+        verification: AgentBusinessVerification,
+    ) -> Result<AgentBusinessVerificationResult, String> {
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        self.send(
+            session_id,
+            SessionCommand::AgentVerify {
+                verification,
+                response: response_sender,
+            },
+        )?;
+        tauri::async_runtime::spawn_blocking(move || {
+            response_receiver
+                .recv_timeout(Duration::from_secs(15))
+                .map_err(|error| format!("等待 AI 业务验证结果失败：{error}"))?
+        })
+        .await
+        .map_err(|error| format!("AI 业务验证任务异常结束：{error}"))?
     }
 }
 
@@ -1426,6 +1455,13 @@ fn run_session(
                 }
                 Ok(SessionCommand::Processes(response)) => {
                     let _ = response.send(monitor::collect_processes(&session));
+                    active = true;
+                }
+                Ok(SessionCommand::AgentVerify {
+                    verification,
+                    response,
+                }) => {
+                    let _ = response.send(execute_business_verification(&session, &verification));
                     active = true;
                 }
                 Ok(SessionCommand::SignalProcess {

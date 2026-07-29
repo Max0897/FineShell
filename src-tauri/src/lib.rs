@@ -3,6 +3,7 @@ mod agent_actions;
 mod agent_approvals;
 mod agent_executor;
 mod agent_policy;
+mod agent_verification;
 mod ai;
 mod config_files;
 mod credentials;

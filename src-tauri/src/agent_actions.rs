@@ -1,6 +1,7 @@
 use serde_json::{json, Map, Value};
 
 use crate::agent::{AgentActionIntent, AgentActionRisk};
+use crate::agent_verification::AgentBusinessVerification;
 
 pub(crate) const MAX_FILE_EDIT_CHARS: usize = 60_000;
 pub(crate) const MAX_TERMINAL_COMMAND_CHARS: usize = 4_096;
@@ -195,7 +196,9 @@ pub(crate) fn proposal_action_intent(
             }
         }
         "propose_terminal_command" => {
-            if !exact_keys(&arguments, &["command", "purpose"]) {
+            if !exact_keys(&arguments, &["command", "purpose"])
+                && !exact_keys(&arguments, &["command", "purpose", "verification"])
+            {
                 return Err("AI 终端命令动作参数无效".to_string());
             }
             let command = arguments
@@ -210,10 +213,19 @@ pub(crate) fn proposal_action_intent(
                     .and_then(Value::as_str)
                     .ok_or_else(|| "AI 命令用途无效".to_string())?,
             )?;
+            let verification = arguments
+                .get("verification")
+                .cloned()
+                .map(AgentBusinessVerification::normalized_value)
+                .transpose()?;
+            let mut normalized = json!({ "command": command, "purpose": purpose });
+            if let Some(verification) = verification {
+                normalized["verification"] = verification;
+            }
             intent(
                 id,
                 tool,
-                json!({ "command": command, "purpose": purpose }),
+                normalized,
                 purpose,
                 "在当前终端会话中填入命令，等待用户手动提交",
                 AgentActionRisk::Elevated,
@@ -267,6 +279,18 @@ mod tests {
             })
         );
         assert_eq!(command.risk, AgentActionRisk::Elevated);
+
+        let verified_command = proposal_action_intent(
+            "command-2",
+            "propose_terminal_command",
+            r#"{"command":"systemctl restart nginx","purpose":"重启服务","verification":{"kind":"service_active","service":"nginx.service"}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            verified_command.arguments["verification"],
+            json!({ "kind": "service_active", "service": "nginx.service" })
+        );
     }
 
     #[test]

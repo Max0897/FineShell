@@ -34,6 +34,29 @@ describe("AI action intents", () => {
     ).not.toThrow();
   });
 
+  test("validates a registered command verification descriptor", () => {
+    const call = commandCall();
+    call.arguments = JSON.stringify({
+      command: "systemctl status nginx",
+      purpose: "检查 nginx 状态",
+      verification: {
+        kind: "port_listening",
+        port: 443,
+        protocol: "tcp",
+      },
+    });
+    const intent = commandIntent();
+    intent.arguments = {
+      ...(intent.arguments as Record<string, unknown>),
+      verification: {
+        kind: "port_listening",
+        port: 443,
+        protocol: "tcp",
+      },
+    };
+    expect(() => validateAiActionIntents([call], [intent])).not.toThrow();
+  });
+
   test("rejects missing, duplicated, or mismatched intents", () => {
     expect(() => validateAiActionIntents([commandCall()], [])).toThrow(
       "数量不一致",

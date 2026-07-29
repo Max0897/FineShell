@@ -39,6 +39,37 @@ describe("AI terminal command proposals", () => {
     expect(proposal.assessment.risk).toBe("caution");
   });
 
+  test("accepts only registered business verification descriptors", () => {
+    const proposal = createAiCommandProposal(
+      commandCall({
+        command: "sudo systemctl restart nginx",
+        purpose: "重启 nginx 服务",
+        verification: {
+          kind: "service_active",
+          service: "nginx.service",
+        },
+      }),
+      "session-1",
+    );
+    expect(proposal.verification).toEqual({
+      kind: "service_active",
+      service: "nginx.service",
+    });
+    expect(() =>
+      createAiCommandProposal(
+        commandCall({
+          command: "sudo systemctl restart nginx",
+          purpose: "重启 nginx 服务",
+          verification: {
+            kind: "service_active",
+            service: "nginx; reboot",
+          },
+        }),
+        "session-1",
+      ),
+    ).toThrow("业务验证参数无效");
+  });
+
   test("rejects multiline, oversized, and unknown arguments", () => {
     expect(() =>
       createAiCommandProposal(

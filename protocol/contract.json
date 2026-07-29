@@ -1,5 +1,5 @@
 {
-  "version": 19,
+  "version": 20,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -195,6 +195,9 @@
     "remote_path_state": true,
     "recovery_state_match": true,
     "command_exit_status": true,
+    "service_status": true,
+    "port_listening": true,
+    "config_syntax": true,
     "result_unavailable": true
   },
   "errorCodes": {

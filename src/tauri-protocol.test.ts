@@ -42,7 +42,7 @@ describe("Tauri shared protocol", () => {
     const actionStatus: AgentActionStatus = "running";
     const actionTransition: AgentActionTransition = "rollback_start";
     const verification: AgentVerificationStatus = "unverified";
-    const evidence: AgentVerificationEvidenceKind = "command_exit_status";
+    const evidence: AgentVerificationEvidenceKind = "service_status";
 
     expect(contract.agentTaskStatuses[status]).toBe(true);
     expect(contract.agentTaskStatuses[disconnectedStatus]).toBe(true);

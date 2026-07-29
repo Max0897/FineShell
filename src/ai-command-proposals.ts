@@ -21,6 +21,15 @@ export type AiCommandProposalStatus =
   | "verified"
   | "rejected";
 
+export type AiCommandVerification =
+  | { kind: "service_active"; service: string }
+  | { kind: "port_listening"; port: number; protocol: "tcp" | "udp" }
+  | {
+      kind: "config_syntax";
+      validator: "nginx" | "apache" | "caddy" | "sshd" | "haproxy";
+      path?: string;
+    };
+
 export interface AiCommandProposal {
   assessment: AiCommandAssessment;
   command: string;
@@ -39,6 +48,7 @@ export interface AiCommandProposal {
   status: AiCommandProposalStatus;
   submissionId?: string;
   verifiedAt?: string;
+  verification?: AiCommandVerification;
 }
 
 export interface AiCommandRecord {
@@ -72,6 +82,63 @@ function exactKeys(value: Record<string, unknown>, keys: string[]) {
   );
 }
 
+export function normalizeAiCommandVerification(
+  value: unknown,
+): AiCommandVerification {
+  if (!isRecord(value) || typeof value.kind !== "string") {
+    throw new Error("AI 返回的业务验证参数无效");
+  }
+  if (
+    value.kind === "service_active" &&
+    exactKeys(value, ["kind", "service"]) &&
+    typeof value.service === "string" &&
+    value.service.length > 0 &&
+    value.service.length <= 128 &&
+    !value.service.startsWith("-") &&
+    /^[A-Za-z0-9_.@:-]+$/.test(value.service)
+  ) {
+    return { kind: value.kind, service: value.service };
+  }
+  if (
+    value.kind === "port_listening" &&
+    exactKeys(value, ["kind", "port", "protocol"]) &&
+    Number.isInteger(value.port) &&
+    typeof value.port === "number" &&
+    value.port >= 1 &&
+    value.port <= 65_535 &&
+    (value.protocol === "tcp" || value.protocol === "udp")
+  ) {
+    return { kind: value.kind, port: value.port, protocol: value.protocol };
+  }
+  if (
+    value.kind === "config_syntax" &&
+    (exactKeys(value, ["kind", "validator"]) ||
+      exactKeys(value, ["kind", "validator", "path"])) &&
+    ["nginx", "apache", "caddy", "sshd", "haproxy"].includes(
+      String(value.validator),
+    ) &&
+    (value.path === undefined ||
+      (typeof value.path === "string" &&
+        value.path.startsWith("/") &&
+        value.path.length <= 1_024 &&
+        !value.path.split("/").some((part) => part === "." || part === "..") &&
+        !/[\x00-\x1f\x7f]/.test(value.path)))
+  ) {
+    const validator = value.validator as
+      | "nginx"
+      | "apache"
+      | "caddy"
+      | "sshd"
+      | "haproxy";
+    return {
+      kind: value.kind,
+      validator,
+      ...(typeof value.path === "string" ? { path: value.path } : {}),
+    };
+  }
+  throw new Error("AI 返回的业务验证参数无效");
+}
+
 export function isAiCommandProposalToolCall(call: AiToolCall) {
   return call.name === AI_COMMAND_PROPOSAL_TOOL_NAME;
 }
@@ -90,7 +157,11 @@ export function createAiCommandProposal(
   } catch {
     throw new Error("AI 返回了无效的终端命令参数");
   }
-  if (!isRecord(value) || !exactKeys(value, ["command", "purpose"])) {
+  if (
+    !isRecord(value) ||
+    (!exactKeys(value, ["command", "purpose"]) &&
+      !exactKeys(value, ["command", "purpose", "verification"]))
+  ) {
     throw new Error("AI 返回了无效的终端命令参数");
   }
   if (typeof value.command !== "string") {
@@ -108,6 +179,9 @@ export function createAiCommandProposal(
   ) {
     throw new Error("AI 返回的命令用途无效");
   }
+  const verification = value.verification === undefined
+    ? undefined
+    : normalizeAiCommandVerification(value.verification);
   return {
     assessment: assessAiTerminalCommand(command),
     command,
@@ -116,6 +190,7 @@ export function createAiCommandProposal(
     purpose,
     sessionId,
     status: "pending",
+    verification,
   };
 }
 

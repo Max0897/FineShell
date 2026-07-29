@@ -13,6 +13,9 @@ use crate::agent_approvals::{
     action_fingerprint, ApprovalCredential, ApprovalCredentialStore, ApprovalScope,
 };
 use crate::agent_policy::{registered_action_policy, PolicyDecision};
+use crate::agent_verification::{
+    AgentBusinessVerification, AgentBusinessVerificationKind, AgentBusinessVerificationResult,
+};
 use crate::protocol::{CommandError, CommandResult, AGENT_TASK_EVENT, PROTOCOL_VERSION};
 
 const MAX_AGENT_TASKS: usize = 100;
@@ -170,6 +173,9 @@ pub(crate) enum AgentVerificationEvidenceKind {
     RemotePathState,
     RecoveryStateMatch,
     CommandExitStatus,
+    ServiceStatus,
+    PortListening,
+    ConfigSyntax,
     ResultUnavailable,
 }
 
@@ -472,6 +478,14 @@ pub(crate) struct AuthorizedAgentAction {
     pub(crate) prepares_command: bool,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PendingBusinessVerification {
+    pub(crate) task_id: String,
+    pub(crate) action_id: String,
+    pub(crate) session_id: String,
+    pub(crate) verification: AgentBusinessVerification,
+}
+
 pub(crate) fn timestamp_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -643,9 +657,13 @@ impl AgentTask {
     }
 
     fn has_unresolved_actions(&self) -> bool {
-        self.actions
-            .iter()
-            .any(|action| action.status.is_unresolved())
+        self.actions.iter().any(|action| {
+            action.status.is_unresolved()
+                || (matches!(
+                    action.status,
+                    AgentActionStatus::Succeeded | AgentActionStatus::RolledBack
+                ) && action.verification_status == AgentVerificationStatus::Pending)
+        })
     }
 
     fn refresh_action_status(&mut self) {
@@ -671,6 +689,10 @@ impl AgentTask {
                     | AgentActionStatus::Cancelled
             )
         });
+        let has_verification_failure = self
+            .actions
+            .iter()
+            .any(|action| action.verification_status == AgentVerificationStatus::Failed);
         let (applicable_actions, verified_actions) =
             self.actions
                 .iter()
@@ -689,7 +711,7 @@ impl AgentTask {
                 });
         let verification_status = if applicable_actions == 0 {
             AgentVerificationStatus::NotApplicable
-        } else if has_failure && verified_actions == 0 {
+        } else if (has_failure || has_verification_failure) && verified_actions == 0 {
             AgentVerificationStatus::Failed
         } else if verified_actions == applicable_actions {
             AgentVerificationStatus::Verified
@@ -702,6 +724,8 @@ impl AgentTask {
         self.result = Some(AgentTaskResult {
             summary: if has_failure {
                 "AI 任务已结束，部分动作未成功完成".to_string()
+            } else if has_verification_failure {
+                "AI 任务已完成执行，但业务验证未通过".to_string()
             } else if verification_status == AgentVerificationStatus::Unverified {
                 "AI 任务已完成，但尚无充分验证证据".to_string()
             } else if verification_status == AgentVerificationStatus::Partial {
@@ -1228,6 +1252,12 @@ impl AgentTaskManager {
                 .get("command")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| "AI 命令缺少可信参数".to_string())?;
+            let business_verification = task.actions[index]
+                .arguments
+                .get("verification")
+                .cloned()
+                .map(AgentBusinessVerification::from_value)
+                .transpose()?;
             if task.host_id != request.host_id
                 || task.terminal_session_id.as_deref() != Some(request.session_id.as_str())
                 || trusted_command != request.command.trim()
@@ -1289,12 +1319,24 @@ impl AgentTaskManager {
                         task.actions[index].summary = Some("终端命令执行成功".to_string());
                         task.actions[index].error = None;
                         task.actions[index].record_verification(
-                            AgentVerificationStatus::Unverified,
+                            if business_verification.is_some() {
+                                AgentVerificationStatus::Pending
+                            } else {
+                                AgentVerificationStatus::Unverified
+                            },
                             AgentVerificationEvidenceKind::CommandExitStatus,
-                            "命令退出码为 0，仅确认命令进程正常结束",
+                            if business_verification.is_some() {
+                                "命令退出码为 0，等待业务目标验证"
+                            } else {
+                                "命令退出码为 0，仅确认命令进程正常结束"
+                            },
                             now,
                         );
-                        task.refresh_action_status();
+                        if business_verification.is_some() {
+                            task.status = AgentTaskStatus::Verifying;
+                        } else {
+                            task.refresh_action_status();
+                        }
                         events.push(
                             task.action_event(AgentTaskEventKind::ActionSucceeded, &action_id),
                         );
@@ -1341,6 +1383,113 @@ impl AgentTaskManager {
                     );
                 }
             }
+            if task.model_completed && !task.has_unresolved_actions() {
+                task.complete_actions();
+                events.push(task.event(AgentTaskEventKind::TaskCompleted));
+            }
+            events
+        };
+        if events
+            .last()
+            .is_some_and(|event| event.kind == AgentTaskEventKind::TaskCompleted)
+        {
+            self.revoke_task_approvals(&task_id)?;
+        }
+        Ok(events)
+    }
+
+    pub(crate) fn pending_business_verification(
+        &self,
+        task_id: &str,
+        action_id: &str,
+    ) -> Result<Option<PendingBusinessVerification>, String> {
+        let tasks = self
+            .tasks
+            .lock()
+            .map_err(|_| "AI 任务状态不可用".to_string())?;
+        let Some(task) = tasks.get(task_id) else {
+            return Err("AI 任务不存在".to_string());
+        };
+        let Some(action) = task.actions.iter().find(|action| action.id == action_id) else {
+            return Err("AI 动作不存在".to_string());
+        };
+        if action.status != AgentActionStatus::Succeeded
+            || action.verification_status != AgentVerificationStatus::Pending
+        {
+            return Ok(None);
+        }
+        let verification = action
+            .arguments
+            .get("verification")
+            .cloned()
+            .map(AgentBusinessVerification::from_value)
+            .transpose()?;
+        Ok(
+            verification.map(|verification| PendingBusinessVerification {
+                task_id: task_id.to_string(),
+                action_id: action_id.to_string(),
+                session_id: task.terminal_session_id.clone().unwrap_or_default(),
+                verification,
+            }),
+        )
+    }
+
+    pub(crate) fn complete_business_verification(
+        &self,
+        pending: &PendingBusinessVerification,
+        result: Result<AgentBusinessVerificationResult, String>,
+    ) -> Result<Vec<AgentTaskEvent>, String> {
+        let task_id = pending.task_id.clone();
+        let events = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .map_err(|_| "AI 任务状态不可用".to_string())?;
+            let task = tasks
+                .get_mut(&task_id)
+                .ok_or_else(|| "AI 任务不存在".to_string())?;
+            let index = task
+                .actions
+                .iter()
+                .position(|action| action.id == pending.action_id)
+                .ok_or_else(|| "AI 动作不存在".to_string())?;
+            if task.actions[index].status != AgentActionStatus::Succeeded
+                || task.actions[index].verification_status != AgentVerificationStatus::Pending
+            {
+                return Ok(Vec::new());
+            }
+            let now = timestamp_ms();
+            let (status, kind, summary) = match result {
+                Ok(result) => (
+                    if result.passed {
+                        AgentVerificationStatus::Verified
+                    } else {
+                        AgentVerificationStatus::Failed
+                    },
+                    match pending.verification.kind() {
+                        AgentBusinessVerificationKind::ServiceStatus => {
+                            AgentVerificationEvidenceKind::ServiceStatus
+                        }
+                        AgentBusinessVerificationKind::PortListening => {
+                            AgentVerificationEvidenceKind::PortListening
+                        }
+                        AgentBusinessVerificationKind::ConfigSyntax => {
+                            AgentVerificationEvidenceKind::ConfigSyntax
+                        }
+                    },
+                    result.summary,
+                ),
+                Err(_) => (
+                    AgentVerificationStatus::Failed,
+                    AgentVerificationEvidenceKind::ResultUnavailable,
+                    "无法取得业务验证结果".to_string(),
+                ),
+            };
+            task.actions[index].record_verification(status, kind, summary, now);
+            task.refresh_action_status();
+            let action_id = pending.action_id.clone();
+            let mut events =
+                vec![task.action_event(AgentTaskEventKind::ActionVerificationRecorded, &action_id)];
             if task.model_completed && !task.has_unresolved_actions() {
                 task.complete_actions();
                 events.push(task.event(AgentTaskEventKind::TaskCompleted));
@@ -2079,15 +2228,30 @@ pub(crate) fn ai_task_action_transition(
 }
 
 #[tauri::command]
-pub(crate) fn ai_task_command_observe(
+pub(crate) async fn ai_task_command_observe(
     app: AppHandle,
     manager: State<'_, AgentTaskManager>,
+    ssh_manager: State<'_, crate::ssh::SshSessionManager>,
     request: AgentCommandObservationRequest,
 ) -> CommandResult<()> {
+    let task_id = request.task_id.clone();
+    let action_id = request.action_id.clone();
     let events = manager
         .observe_command_execution(request)
         .map_err(|error| CommandError::from_message("ai_task_command_observe", error))?;
     emit_task_events(&app, events);
+    if let Some(pending) = manager
+        .pending_business_verification(&task_id, &action_id)
+        .map_err(|error| CommandError::from_message("ai_task_command_observe", error))?
+    {
+        let result = ssh_manager
+            .verify_agent_condition(&pending.session_id, pending.verification.clone())
+            .await;
+        let events = manager
+            .complete_business_verification(&pending, result)
+            .map_err(|error| CommandError::from_message("ai_task_command_observe", error))?;
+        emit_task_events(&app, events);
+    }
     Ok(())
 }
 
@@ -2105,6 +2269,7 @@ mod tests {
         AgentWritableFile,
     };
     use crate::agent_approvals::ApprovalScope;
+    use crate::agent_verification::AgentBusinessVerificationResult;
 
     fn context() -> AgentTaskContext {
         AgentTaskContext {
@@ -2192,6 +2357,15 @@ mod tests {
             expected_effect: "将命令填入绑定的终端".to_string(),
             risk: AgentActionRisk::Elevated,
         }
+    }
+
+    fn verified_terminal_command_intent() -> AgentActionIntent {
+        let mut intent = terminal_command_intent();
+        intent.arguments["verification"] = serde_json::json!({
+            "kind": "service_active",
+            "service": "nginx.service",
+        });
+        intent
     }
 
     fn rename_intent(target_path: &str) -> AgentActionIntent {
@@ -2557,6 +2731,58 @@ mod tests {
                 .verification_status,
             AgentVerificationStatus::Unverified
         );
+    }
+
+    #[test]
+    fn registered_business_verification_completes_a_successful_command() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        manager
+            .register_actions("task-1", vec![verified_terminal_command_intent()])
+            .unwrap();
+        manager.finish_model_turn("task-1", false).unwrap();
+        manager
+            .authorize_action_execution("task-1", "command-1", false, true, None)
+            .unwrap();
+        manager
+            .observe_command_execution(command_observation(AgentCommandObservationPhase::Submitted))
+            .unwrap();
+
+        let mut completed = command_observation(AgentCommandObservationPhase::Completed);
+        completed.exit_code = Some(0);
+        completed.duration_ms = Some(250);
+        let events = manager.observe_command_execution(completed).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].task.status, AgentTaskStatus::Verifying);
+        assert_eq!(
+            events[1].task.actions[0].verification_status,
+            AgentVerificationStatus::Pending
+        );
+
+        let pending = manager
+            .pending_business_verification("task-1", "command-1")
+            .unwrap()
+            .unwrap();
+        let events = manager
+            .complete_business_verification(
+                &pending,
+                Ok(AgentBusinessVerificationResult {
+                    passed: true,
+                    summary: "服务 nginx.service 处于运行状态".to_string(),
+                }),
+            )
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].task.actions[0].verification_status,
+            AgentVerificationStatus::Verified
+        );
+        assert_eq!(
+            events[0].task.actions[0].verification_evidence[1].kind,
+            AgentVerificationEvidenceKind::ServiceStatus
+        );
+        assert_eq!(events[1].kind, AgentTaskEventKind::TaskCompleted);
+        assert!(events[1].task.result.as_ref().unwrap().verified);
     }
 
     #[test]
@@ -2966,6 +3192,9 @@ mod tests {
                 AgentVerificationEvidenceKind::RemotePathState,
                 AgentVerificationEvidenceKind::RecoveryStateMatch,
                 AgentVerificationEvidenceKind::CommandExitStatus,
+                AgentVerificationEvidenceKind::ServiceStatus,
+                AgentVerificationEvidenceKind::PortListening,
+                AgentVerificationEvidenceKind::ConfigSyntax,
                 AgentVerificationEvidenceKind::ResultUnavailable,
             ]),
             contract_keys("agentVerificationEvidenceKinds")

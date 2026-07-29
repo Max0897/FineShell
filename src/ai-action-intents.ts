@@ -1,4 +1,5 @@
 import { normalizeAiRemotePath } from "./ai-file-operations";
+import { normalizeAiCommandVerification } from "./ai-command-proposals";
 import { normalizeAiTerminalCommand } from "./ai-utils";
 import type {
   AgentActionIntent,
@@ -94,16 +95,23 @@ function normalizedCallArguments(call: AiToolCall): {
     throw new Error("AI 文件操作动作参数无效");
   }
   if (call.name === "propose_terminal_command") {
-    if (!exactKeys(value, ["command", "purpose"]) ||
+    if ((!exactKeys(value, ["command", "purpose"]) &&
+      !exactKeys(value, ["command", "purpose", "verification"])) ||
       typeof value.command !== "string" ||
       typeof value.purpose !== "string") {
       throw new Error("AI 终端命令动作参数无效");
     }
+    const normalizedArguments: Record<string, unknown> = {
+      command: normalizeAiTerminalCommand(value.command),
+      purpose: value.purpose.trim().replace(/\s+/g, " "),
+    };
+    if (value.verification !== undefined) {
+      normalizedArguments.verification = normalizeAiCommandVerification(
+        value.verification,
+      );
+    }
     return {
-      arguments: {
-        command: normalizeAiTerminalCommand(value.command),
-        purpose: value.purpose.trim().replace(/\s+/g, " "),
-      },
+      arguments: normalizedArguments,
       risk: "elevated",
     };
   }
