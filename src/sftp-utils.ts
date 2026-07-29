@@ -88,6 +88,70 @@ export function localFileName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
+export interface NativeDropPoint {
+  x: number;
+  y: number;
+  inside: boolean;
+  coordinateMode: "logical" | "physical";
+}
+
+interface NativeDropPosition {
+  x: number;
+  y: number;
+}
+
+interface NativeDropBounds {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+function isPointInsideBounds(
+  point: NativeDropPosition,
+  bounds: NativeDropBounds,
+) {
+  return (
+    point.x >= bounds.left &&
+    point.x <= bounds.right &&
+    point.y >= bounds.top &&
+    point.y <= bounds.bottom
+  );
+}
+
+export function resolveNativeDropPoint(
+  position: NativeDropPosition,
+  scaleFactor: number,
+  bounds: NativeDropBounds,
+  preferLogicalCoordinates: boolean,
+): NativeDropPoint {
+  const normalizedScaleFactor =
+    Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+  const logical = { x: position.x, y: position.y };
+  const physical = {
+    x: position.x / normalizedScaleFactor,
+    y: position.y / normalizedScaleFactor,
+  };
+  const candidates = preferLogicalCoordinates
+    ? [
+        { point: logical, coordinateMode: "logical" as const },
+        { point: physical, coordinateMode: "physical" as const },
+      ]
+    : [
+        { point: physical, coordinateMode: "physical" as const },
+        { point: logical, coordinateMode: "logical" as const },
+      ];
+  const matched = candidates.find(({ point }) =>
+    isPointInsideBounds(point, bounds),
+  );
+  const resolved = matched ?? candidates[0];
+  return {
+    ...resolved.point,
+    inside: Boolean(matched),
+    coordinateMode: resolved.coordinateMode,
+  };
+}
+
 export function selectAllSftpEntryKeys(visibleKeys: readonly string[]) {
   return [...visibleKeys];
 }
@@ -110,6 +174,40 @@ export type SftpTransferStatus =
 
 export function isActiveSftpTransfer(status: SftpTransferStatus) {
   return status === "queued" || status === "running" || status === "paused";
+}
+
+export interface SftpTransferBatchSummary {
+  total: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  active: number;
+  finished: boolean;
+}
+
+export function summarizeSftpTransferBatch(
+  statuses: readonly SftpTransferStatus[],
+): SftpTransferBatchSummary {
+  const summary = statuses.reduce<SftpTransferBatchSummary>(
+    (current, status) => {
+      current.total += 1;
+      if (status === "completed") current.completed += 1;
+      else if (status === "failed") current.failed += 1;
+      else if (status === "cancelled") current.cancelled += 1;
+      else current.active += 1;
+      return current;
+    },
+    {
+      total: 0,
+      completed: 0,
+      failed: 0,
+      cancelled: 0,
+      active: 0,
+      finished: false,
+    },
+  );
+  summary.finished = summary.total > 0 && summary.active === 0;
+  return summary;
 }
 
 export function isValidRemoteName(name: string) {

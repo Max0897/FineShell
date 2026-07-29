@@ -46,7 +46,6 @@ export interface AppSettings {
   aiFileProposalsEnabled: boolean;
   aiCommandProposalsEnabled: boolean;
   aiCommandTrackingEnabled: boolean;
-  aiShellIntegrationEnabled: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -79,7 +78,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   aiFileProposalsEnabled: true,
   aiCommandProposalsEnabled: true,
   aiCommandTrackingEnabled: true,
-  aiShellIntegrationEnabled: false,
 };
 
 export const TERMINAL_FONT_FAMILIES: Record<TerminalFontFamily, string> = {
@@ -267,10 +265,6 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
     aiCommandTrackingEnabled: booleanValue(
       settings.aiCommandTrackingEnabled,
       DEFAULT_APP_SETTINGS.aiCommandTrackingEnabled,
-    ),
-    aiShellIntegrationEnabled: booleanValue(
-      settings.aiShellIntegrationEnabled,
-      DEFAULT_APP_SETTINGS.aiShellIntegrationEnabled,
     ),
   };
 }

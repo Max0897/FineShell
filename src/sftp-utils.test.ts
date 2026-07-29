@@ -19,9 +19,11 @@ import {
   remoteArchiveFormatFromName,
   remoteJoinPath,
   remoteParentPath,
+  resolveNativeDropPoint,
   selectAllSftpEntryKeys,
   invertSftpEntryKeys,
   setRemotePathBookmark,
+  summarizeSftpTransferBatch,
 } from "./sftp-utils";
 
 describe("SFTP path helpers", () => {
@@ -120,6 +122,96 @@ describe("SFTP selection helpers", () => {
       "a",
       "c",
     ]);
+  });
+});
+
+describe("SFTP transfer batches", () => {
+  test("keeps a batch active while any transfer is queued or running", () => {
+    expect(
+      summarizeSftpTransferBatch(["completed", "running", "queued"]),
+    ).toEqual({
+      total: 3,
+      completed: 1,
+      failed: 0,
+      cancelled: 0,
+      active: 2,
+      finished: false,
+    });
+  });
+
+  test("summarizes all terminal results when a batch finishes", () => {
+    expect(
+      summarizeSftpTransferBatch([
+        "completed",
+        "completed",
+        "failed",
+        "cancelled",
+      ]),
+    ).toEqual({
+      total: 4,
+      completed: 2,
+      failed: 1,
+      cancelled: 1,
+      active: 0,
+      finished: true,
+    });
+  });
+
+  test("does not treat an empty collection as a finished batch", () => {
+    expect(summarizeSftpTransferBatch([]).finished).toBe(false);
+  });
+});
+
+describe("SFTP native drop coordinates", () => {
+  const bounds = { left: 500, right: 1_200, top: 400, bottom: 800 };
+
+  test("keeps AppKit logical coordinates on a Retina display", () => {
+    expect(
+      resolveNativeDropPoint({ x: 900, y: 650 }, 2, bounds, true),
+    ).toEqual({
+      x: 900,
+      y: 650,
+      inside: true,
+      coordinateMode: "logical",
+    });
+  });
+
+  test("converts physical coordinates when that is the matching coordinate space", () => {
+    expect(
+      resolveNativeDropPoint(
+        { x: 900, y: 600 },
+        1.5,
+        { left: 500, right: 800, top: 300, bottom: 500 },
+        false,
+      ),
+    ).toEqual({
+      x: 600,
+      y: 400,
+      inside: true,
+      coordinateMode: "physical",
+    });
+  });
+
+  test("falls back to the alternate coordinate space when it is the only match", () => {
+    expect(
+      resolveNativeDropPoint({ x: 900, y: 650 }, 2, bounds, false),
+    ).toEqual({
+      x: 900,
+      y: 650,
+      inside: true,
+      coordinateMode: "logical",
+    });
+  });
+
+  test("reports points outside the panel without producing invalid values", () => {
+    expect(
+      resolveNativeDropPoint({ x: 100, y: 100 }, Number.NaN, bounds, true),
+    ).toEqual({
+      x: 100,
+      y: 100,
+      inside: false,
+      coordinateMode: "logical",
+    });
   });
 });
 

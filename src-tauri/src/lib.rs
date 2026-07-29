@@ -113,6 +113,7 @@ pub fn run() {
             sftp::sftp_list,
             sftp::sftp_inspect_upload_paths,
             sftp::sftp_create_directory,
+            sftp::sftp_ensure_upload_directories,
             sftp::sftp_create_file,
             sftp::sftp_rename,
             sftp::sftp_copy,

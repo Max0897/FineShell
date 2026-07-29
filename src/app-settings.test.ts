@@ -46,7 +46,6 @@ describe("app settings", () => {
       aiFileProposalsEnabled: false,
       aiCommandProposalsEnabled: false,
       aiCommandTrackingEnabled: false,
-      aiShellIntegrationEnabled: true,
     });
 
     expect(settings).toMatchObject({
@@ -79,7 +78,6 @@ describe("app settings", () => {
       aiFileProposalsEnabled: false,
       aiCommandProposalsEnabled: false,
       aiCommandTrackingEnabled: false,
-      aiShellIntegrationEnabled: true,
     });
   });
 

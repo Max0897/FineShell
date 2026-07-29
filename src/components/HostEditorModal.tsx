@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Button,
   Form,
@@ -20,6 +20,7 @@ import type {
 } from "../models";
 import type { AppSettings } from "../app-settings";
 import { recordDiagnostic } from "../diagnostics";
+import { collectHostGroupPaths } from "../host-organization";
 import PortForwardRulesEditor from "./PortForwardRulesEditor";
 
 type ConnectionDefaults = Pick<
@@ -82,6 +83,14 @@ function HostEditorModal({
   const [dynamicPortForwards, setDynamicPortForwards] = useState(
     host?.dynamicPortForwards ?? [],
   );
+  const groupOptions = useMemo(
+    () =>
+      collectHostGroupPaths(hosts).map((group) => ({
+        label: group,
+        value: group,
+      })),
+    [hosts],
+  );
 
   useEffect(() => {
     if (visible) {
@@ -120,7 +129,7 @@ function HostEditorModal({
         privateKeyPath: "",
         privateKeyPassphrase: "",
         password: "",
-        group: "",
+        group: undefined,
         proxyId: undefined,
         jumpHostId: undefined,
       };
@@ -205,7 +214,20 @@ function HostEditorModal({
                   <Input autoFocus placeholder="例如：生产服务器" />
                 </Form.Item>
                 <Form.Item field="group" label="分组">
-                  <Input placeholder="可选" />
+                  <Select
+                    allowClear
+                    allowCreate={{
+                      formatter: (inputValue, creating) => ({
+                        label: creating
+                          ? `新建分组“${inputValue}”`
+                          : inputValue,
+                        value: inputValue,
+                      }),
+                    }}
+                    options={groupOptions}
+                    placeholder="选择或输入分组"
+                    showSearch
+                  />
                 </Form.Item>
               </div>
               <div className="host-form-row">

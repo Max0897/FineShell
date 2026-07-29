@@ -1,5 +1,5 @@
 {
-  "version": 10,
+  "version": 11,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -48,6 +48,7 @@
     "sftp_list": true,
     "sftp_inspect_upload_paths": true,
     "sftp_create_directory": true,
+    "sftp_ensure_upload_directories": true,
     "sftp_create_file": true,
     "sftp_rename": true,
     "sftp_copy": true,

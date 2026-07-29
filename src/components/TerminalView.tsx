@@ -48,8 +48,11 @@ import {
   boundedShellCommandOutput,
   buildShellIntegrationInstallCommand,
   buildShellIntegrationUninstallCommand,
+  createShellIntegrationEchoFilter,
   createShellIntegrationNonce,
+  filterShellIntegrationEcho,
   parseShellIntegrationMessage,
+  type ShellIntegrationEchoFilter,
 } from "../shell-integration";
 import { TERMINAL_THEMES } from "../terminal-themes";
 import { diagnosticInvoke as invoke } from "../diagnostics";
@@ -65,6 +68,7 @@ interface TerminalViewProps {
   session: TerminalSession;
   onAskAi: (selection: string) => void;
   onCommandLifecycle: (event: TerminalCommandSubmission) => void;
+  onCurrentDirectoryChange: (sessionId: string, path: string) => void;
   onRecentOutputChange: (output: string) => void;
   onSelectionChange: (selection: string) => void;
 }
@@ -74,6 +78,10 @@ interface PendingShellCommand {
   startedAtMs: number;
   submission: TerminalCommandSubmission;
 }
+
+type ShellIntegrationMutation = "install" | "uninstall";
+
+const SHELL_INTEGRATION_TIMEOUT_MS = 8_000;
 
 const EMPTY_SEARCH_RESULT: ISearchResultChangeEvent = {
   resultCount: 0,
@@ -122,6 +130,7 @@ function TerminalView({
   session,
   onAskAi,
   onCommandLifecycle,
+  onCurrentDirectoryChange,
   onRecentOutputChange,
   onSelectionChange,
 }: TerminalViewProps) {
@@ -133,18 +142,28 @@ function TerminalView({
   const connectedRef = useRef(session.status === "connected");
   const commandLifecycleRef = useRef(onCommandLifecycle);
   const commandTrackingEnabledRef = useRef(commandTrackingEnabled);
-  const shellIntegrationEnabledRef = useRef(settings.aiShellIntegrationEnabled);
+  const shellCommandResultsEnabledRef = useRef(commandTrackingEnabled);
   const shellIntegrationInstalledRef = useRef(false);
   const shellIntegrationNonceRef = useRef(createShellIntegrationNonce());
   const shellIntegrationStateRef = useRef<
     "disabled" | "installing" | "ready" | "unavailable"
   >("disabled");
+  const shellIntegrationMutationRef = useRef<ShellIntegrationMutation>();
+  const shellIntegrationEchoFilterRef = useRef<ShellIntegrationEchoFilter>();
+  const shellIntegrationTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const startShellIntegrationMutationRef = useRef<
+    (mutation: ShellIntegrationMutation) => void
+  >(() => undefined);
+  const settleShellIntegrationMutationRef = useRef<
+    (result: "ready" | "disabled" | "unavailable") => void
+  >(() => undefined);
   const pendingShellCommandsRef = useRef<PendingShellCommand[]>([]);
   const aiCommandCandidatesRef = useRef<string[]>([]);
   const inputStateRef = useRef({ ...EMPTY_TERMINAL_INPUT_STATE });
   const lastInjectedInputIdRef = useRef<string>();
   const recentOutputChangeRef = useRef(onRecentOutputChange);
   const selectionChangeRef = useRef(onSelectionChange);
+  const currentDirectoryChangeRef = useRef(onCurrentDirectoryChange);
   const settingsRef = useRef(settings);
   const searchVisibleRef = useRef(false);
   const lastStatusNoticeRef = useRef<string>();
@@ -159,14 +178,70 @@ function TerminalView({
   settingsRef.current = settings;
   commandLifecycleRef.current = onCommandLifecycle;
   commandTrackingEnabledRef.current = commandTrackingEnabled;
-  shellIntegrationEnabledRef.current =
-    commandTrackingEnabled && settings.aiShellIntegrationEnabled;
+  shellCommandResultsEnabledRef.current = commandTrackingEnabled;
+  currentDirectoryChangeRef.current = onCurrentDirectoryChange;
   recentOutputChangeRef.current = onRecentOutputChange;
   selectionChangeRef.current = onSelectionChange;
+
+  const clearShellIntegrationTimeout = () => {
+    if (!shellIntegrationTimeoutRef.current) return;
+    clearTimeout(shellIntegrationTimeoutRef.current);
+    shellIntegrationTimeoutRef.current = undefined;
+  };
+
+  settleShellIntegrationMutationRef.current = (result) => {
+    const mutation = shellIntegrationMutationRef.current;
+    clearShellIntegrationTimeout();
+    shellIntegrationMutationRef.current = undefined;
+    shellIntegrationEchoFilterRef.current = undefined;
+    if (result === "ready") {
+      shellIntegrationInstalledRef.current = true;
+      shellIntegrationStateRef.current = "ready";
+    } else if (result === "disabled") {
+      shellIntegrationInstalledRef.current = false;
+      shellIntegrationStateRef.current = "disabled";
+    } else {
+      shellIntegrationInstalledRef.current = mutation === "uninstall";
+      shellIntegrationStateRef.current = "unavailable";
+    }
+  };
+
+  startShellIntegrationMutationRef.current = (mutation) => {
+    if (session.status !== "connected" || shellIntegrationMutationRef.current) {
+      return;
+    }
+    shellIntegrationMutationRef.current = mutation;
+    if (mutation === "install") {
+      shellIntegrationInstalledRef.current = true;
+      shellIntegrationStateRef.current = "installing";
+    }
+    const command =
+      mutation === "install"
+        ? buildShellIntegrationInstallCommand(shellIntegrationNonceRef.current)
+        : buildShellIntegrationUninstallCommand(
+            shellIntegrationNonceRef.current,
+          );
+    shellIntegrationEchoFilterRef.current = createShellIntegrationEchoFilter(
+      shellIntegrationNonceRef.current,
+      mutation,
+    );
+    clearShellIntegrationTimeout();
+    shellIntegrationTimeoutRef.current = setTimeout(() => {
+      if (shellIntegrationMutationRef.current !== mutation) return;
+      settleShellIntegrationMutationRef.current("unavailable");
+    }, SHELL_INTEGRATION_TIMEOUT_MS);
+    void invoke("ssh_write", {
+      sessionId: session.id,
+      data: Array.from(new TextEncoder().encode(command)),
+    }).catch(() => {
+      settleShellIntegrationMutationRef.current("unavailable");
+    });
+  };
 
   useEffect(() => {
     connectedRef.current = session.status === "connected";
     if (session.status !== "connected") {
+      currentDirectoryChangeRef.current(session.id, "");
       const completedAt = new Date().toISOString();
       for (const pending of pendingShellCommandsRef.current) {
         commandLifecycleRef.current({
@@ -180,6 +255,9 @@ function TerminalView({
       pendingShellCommandsRef.current = [];
       shellIntegrationInstalledRef.current = false;
       shellIntegrationStateRef.current = "disabled";
+      shellIntegrationMutationRef.current = undefined;
+      shellIntegrationEchoFilterRef.current = undefined;
+      clearShellIntegrationTimeout();
       aiCommandCandidatesRef.current = [];
       inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
     }
@@ -194,47 +272,14 @@ function TerminalView({
 
   useEffect(() => {
     if (session.status !== "connected" || !terminalReady) return;
-    const enabled =
-      commandTrackingEnabled && settings.aiShellIntegrationEnabled;
-    if (enabled && !shellIntegrationInstalledRef.current) {
+    if (!shellIntegrationInstalledRef.current) {
       if (!inputStateRef.current.reliable || inputStateRef.current.value) {
         shellIntegrationStateRef.current = "unavailable";
         return;
       }
-      shellIntegrationInstalledRef.current = true;
-      shellIntegrationStateRef.current = "installing";
-      const command = buildShellIntegrationInstallCommand(
-        shellIntegrationNonceRef.current,
-      );
-      void invoke("ssh_write", {
-        sessionId: session.id,
-        data: Array.from(new TextEncoder().encode(command)),
-      }).catch(() => {
-        shellIntegrationInstalledRef.current = false;
-        shellIntegrationStateRef.current = "unavailable";
-      });
-      return;
+      startShellIntegrationMutationRef.current("install");
     }
-    if (!enabled && shellIntegrationInstalledRef.current) {
-      pendingShellCommandsRef.current = [];
-      if (!inputStateRef.current.reliable || inputStateRef.current.value) {
-        return;
-      }
-      shellIntegrationStateRef.current = "disabled";
-      shellIntegrationInstalledRef.current = false;
-      const command = buildShellIntegrationUninstallCommand();
-      void invoke("ssh_write", {
-        sessionId: session.id,
-        data: Array.from(new TextEncoder().encode(command)),
-      }).catch(() => undefined);
-    }
-  }, [
-    commandTrackingEnabled,
-    session.id,
-    session.status,
-    settings.aiShellIntegrationEnabled,
-    terminalReady,
-  ]);
+  }, [session.id, session.status, terminalReady]);
 
   useEffect(() => {
     if (
@@ -311,7 +356,7 @@ function TerminalView({
     scheduleFit();
 
     const dataDisposable = terminal.onData((data) => {
-      if (!connectedRef.current) return;
+      if (!connectedRef.current || shellIntegrationMutationRef.current) return;
       if (commandTrackingEnabledRef.current) {
         const tracked = trackTerminalInput(inputStateRef.current, data);
         inputStateRef.current = tracked.state;
@@ -332,7 +377,7 @@ function TerminalView({
             submittedAt,
           };
           commandLifecycleRef.current(submission);
-          if (!shellIntegrationEnabledRef.current) continue;
+          if (!shellCommandResultsEnabledRef.current) continue;
           if (shellIntegrationStateRef.current === "ready") {
             const buffer = terminal.buffer.active;
             pendingShellCommandsRef.current.push({
@@ -387,11 +432,24 @@ function TerminalView({
         );
         if (!message) return false;
         if (message.kind === "ready") {
-          shellIntegrationStateRef.current = "ready";
+          settleShellIntegrationMutationRef.current("ready");
+          return true;
+        }
+        if (message.kind === "disabled") {
+          settleShellIntegrationMutationRef.current("disabled");
+          currentDirectoryChangeRef.current(session.id, "");
+          queueMicrotask(() =>
+            startShellIntegrationMutationRef.current("install"),
+          );
+          return true;
+        }
+        if (message.kind === "cwd") {
+          currentDirectoryChangeRef.current(session.id, message.path);
           return true;
         }
         if (message.kind === "unavailable") {
-          shellIntegrationStateRef.current = "unavailable";
+          settleShellIntegrationMutationRef.current("unavailable");
+          currentDirectoryChangeRef.current(session.id, "");
           const completedAt = new Date().toISOString();
           for (const pending of pendingShellCommandsRef.current) {
             commandLifecycleRef.current({
@@ -462,7 +520,18 @@ function TerminalView({
     };
     void listenProtocolEvent("ssh-output", ({ payload }) => {
       if (payload.sessionId === session.id) {
-        terminal.write(decodeSshOutput(payload.data), scheduleRecentOutput);
+        let data: Uint8Array<ArrayBufferLike> = decodeSshOutput(payload.data);
+        if (shellIntegrationEchoFilterRef.current) {
+          const filtered = filterShellIntegrationEcho(
+            shellIntegrationEchoFilterRef.current,
+            data,
+          );
+          data = filtered.data;
+          shellIntegrationEchoFilterRef.current = filtered.filter;
+        }
+        if (data.length > 0) {
+          terminal.write(data, scheduleRecentOutput);
+        }
       }
     }).then((stopListening) => {
       if (disposed) {
@@ -476,6 +545,9 @@ function TerminalView({
     return () => {
       disposed = true;
       setTerminalReady(false);
+      clearShellIntegrationTimeout();
+      shellIntegrationMutationRef.current = undefined;
+      shellIntegrationEchoFilterRef.current = undefined;
       unlisten?.();
       if (recentOutputTimer) clearTimeout(recentOutputTimer);
       resizeObserver.disconnect();

@@ -233,7 +233,11 @@ function AiComposer({
             </span>
           </Tooltip>
           {sending ? (
-            <Button icon={<IconStop />} onClick={() => void onCancel()}>
+            <Button
+              icon={<IconStop />}
+              onClick={() => void onCancel()}
+              size="small"
+            >
               停止
             </Button>
           ) : (
@@ -241,6 +245,7 @@ function AiComposer({
               disabled={!sendEnabled}
               icon={<IconSend />}
               onClick={onSend}
+              size="small"
               type="primary"
             >
               发送

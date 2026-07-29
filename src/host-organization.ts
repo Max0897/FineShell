@@ -38,6 +38,23 @@ export function normalizeGroupPath(group?: string) {
   return normalized || undefined;
 }
 
+export function collectHostGroupPaths(hosts: HostRecord[]) {
+  const paths = new Set<string>();
+  for (const host of hosts) {
+    const group = normalizeGroupPath(host.group);
+    if (!group) continue;
+
+    let currentPath = "";
+    for (const segment of group.split("/")) {
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+      paths.add(currentPath);
+    }
+  }
+  return [...paths].sort((left, right) =>
+    left.localeCompare(right, "zh-CN", { numeric: true }),
+  );
+}
+
 export function hostGroupKey(path: string) {
   return `${HOST_GROUP_KEY_PREFIX}${path}`;
 }
