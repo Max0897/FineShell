@@ -57,6 +57,7 @@ pub fn run() {
 
     let builder = builder.setup(|app| {
         managed_keys::initialize(app.handle()).map_err(std::io::Error::other)?;
+        agent::initialize(app.handle()).map_err(std::io::Error::other)?;
         diagnostics::record_startup(app.handle());
         Ok(())
     });
@@ -95,6 +96,7 @@ pub fn run() {
             ai::ai_chat_start,
             ai::ai_chat_cancel,
             agent::ai_task_get,
+            agent::ai_task_events_since,
             agent::ai_task_plan_decide,
             agent::ai_task_action_transition,
             agent::ai_task_command_observe,

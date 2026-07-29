@@ -563,6 +563,23 @@ export function useAiRequestOrchestrator({
     trackedTaskIdRef.current = restoreTaskId;
     let disposed = false;
     void invoke<AgentTask | null>("ai_task_get", { taskId: restoreTaskId })
+      .then(async (task) => {
+        if (!task) return null;
+        let replayed: AgentTaskEventPayload[];
+        try {
+          replayed = await invoke<AgentTaskEventPayload[]>(
+            "ai_task_events_since",
+            { taskId: task.id, afterSequence: task.lastEventSequence },
+          );
+        } catch {
+          return task;
+        }
+        return replayed.reduce(
+          (latest, event) =>
+            event.sequence > latest.lastEventSequence ? event.task : latest,
+          task,
+        );
+      })
       .then((task) => {
         if (disposed || !task || trackedTaskIdRef.current !== task.id) return;
         setActiveTask((current) =>

@@ -360,8 +360,17 @@ describe("useAiRequestOrchestrator", () => {
 
   test("restores a task snapshot and ignores older events", async () => {
     const restoredTask = agentTask("task-restored", "completed", 5);
+    const replayedTask = agentTask("task-restored", "failed", 6);
     const invoke = mock(async (command: string) => {
       if (command === "ai_task_get") return restoredTask;
+      if (command === "ai_task_events_since") {
+        return [{
+          kind: "task_failed",
+          protocolVersion: PROTOCOL_VERSION,
+          sequence: 6,
+          task: replayedTask,
+        }];
+      }
       throw new Error(`unexpected command: ${command}`);
     }) as unknown as AiRequestInvoke;
     let onTask: Parameters<AiTaskListener>[0] = () => undefined;
@@ -385,7 +394,7 @@ describe("useAiRequestOrchestrator", () => {
       }),
     );
 
-    await waitFor(() => expect(result.current.activeTask).toEqual(restoredTask));
+    await waitFor(() => expect(result.current.activeTask).toEqual(replayedTask));
     act(() => {
       onTask({
         kind: "model_turn_started",
@@ -394,7 +403,7 @@ describe("useAiRequestOrchestrator", () => {
         task: agentTask("task-restored", "running", 4),
       });
     });
-    expect(result.current.activeTask).toEqual(restoredTask);
+    expect(result.current.activeTask).toEqual(replayedTask);
   });
 
   test("renders backend diagnostic plans and sends approval decisions to Rust", async () => {

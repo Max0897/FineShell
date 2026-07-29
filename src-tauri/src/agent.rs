@@ -1,11 +1,13 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
+    fs,
+    path::PathBuf,
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::watch;
 
 use crate::agent_actions::{normalize_remote_action_path, valid_command};
@@ -29,6 +31,9 @@ const MAX_AGENT_WRITABLE_FILES_BYTES: usize = 512 * 1024;
 const MAX_OBSERVED_COMMAND_DURATION_MS: u64 = 24 * 60 * 60 * 1_000;
 const APPROVAL_CREDENTIAL_TTL_MS: u64 = 10 * 60 * 1_000;
 const MAX_AGENT_REPAIR_ATTEMPTS: u8 = 2;
+const MAX_AGENT_EVENTS_PER_TASK: usize = 128;
+const AGENT_RUNTIME_STATE_VERSION: u8 = 1;
+const AGENT_RUNTIME_STATE_FILE: &str = "ai-agent-runtime.json";
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,7 +43,7 @@ pub(crate) enum AgentApprovalMode {
     FullAccess,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 pub(crate) enum AgentTaskStatus {
@@ -62,7 +67,7 @@ impl AgentTaskStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 pub(crate) enum AgentPlanStepStatus {
@@ -73,7 +78,7 @@ pub(crate) enum AgentPlanStepStatus {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentPlanStatus {
     Pending,
@@ -83,7 +88,7 @@ pub(crate) enum AgentPlanStatus {
     Cancelled,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentPlanStep {
     pub(crate) id: String,
@@ -100,7 +105,7 @@ pub(crate) struct AgentPlanStep {
     pub(crate) duration_ms: Option<u64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentPlan {
     pub(crate) id: String,
@@ -110,7 +115,7 @@ pub(crate) struct AgentPlan {
     pub(crate) steps: Vec<AgentPlanStep>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 pub(crate) enum AgentActionRisk {
@@ -139,7 +144,7 @@ pub(crate) struct AgentWritableFile {
     size: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentActionStatus {
     Pending,
@@ -156,7 +161,7 @@ pub(crate) enum AgentActionStatus {
     Cancelled,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentVerificationStatus {
     Pending,
@@ -167,7 +172,7 @@ pub(crate) enum AgentVerificationStatus {
     NotApplicable,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentRepairStopReason {
     VerificationFailed,
@@ -175,7 +180,7 @@ pub(crate) enum AgentRepairStopReason {
     RepairBudgetExhausted,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentRecoveryRecommendation {
     Rollback,
@@ -183,7 +188,7 @@ pub(crate) enum AgentRecoveryRecommendation {
     ManualReview,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentRecoveryStatus {
     Suggested,
@@ -193,7 +198,7 @@ pub(crate) enum AgentRecoveryStatus {
     Failed,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentRecoveryState {
     recommendation: AgentRecoveryRecommendation,
@@ -202,7 +207,7 @@ pub(crate) struct AgentRecoveryState {
     updated_at: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentVerificationEvidenceKind {
     RemoteContentMatch,
@@ -215,7 +220,7 @@ pub(crate) enum AgentVerificationEvidenceKind {
     ResultUnavailable,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentVerificationEvidence {
     kind: AgentVerificationEvidenceKind,
@@ -238,7 +243,7 @@ impl AgentActionStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentActionState {
     id: String,
@@ -255,9 +260,9 @@ pub(crate) struct AgentActionState {
     verification_status: AgentVerificationStatus,
     verification_evidence: Vec<AgentVerificationEvidence>,
     recovery_state: Option<AgentRecoveryState>,
-    #[serde(skip_serializing)]
+    #[serde(default, skip_serializing)]
     arguments: serde_json::Value,
-    #[serde(skip_serializing)]
+    #[serde(default, skip_serializing)]
     command_submission_id: Option<String>,
 }
 
@@ -364,7 +369,7 @@ impl AgentActionState {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentTaskResult {
     summary: String,
@@ -389,7 +394,7 @@ pub(crate) struct AgentTaskContext {
     approval_mode: AgentApprovalMode,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentTask {
     id: String,
@@ -397,9 +402,9 @@ pub(crate) struct AgentTask {
     host_id: String,
     terminal_session_id: Option<String>,
     current_directory: Option<String>,
-    #[serde(skip_serializing)]
+    #[serde(default, skip_serializing)]
     file_operation_directory: Option<String>,
-    #[serde(skip_serializing)]
+    #[serde(default, skip_serializing)]
     writable_files: Vec<AgentWritableFile>,
     approval_mode: AgentApprovalMode,
     status: AgentTaskStatus,
@@ -419,7 +424,7 @@ pub(crate) struct AgentTask {
     updated_at: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentTaskEventKind {
     TaskCreated,
@@ -449,7 +454,7 @@ pub(crate) enum AgentTaskEventKind {
     TaskCancelled,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentTaskEvent {
     protocol_version: u16,
@@ -462,8 +467,18 @@ pub(crate) struct AgentTaskEvent {
 
 pub(crate) struct AgentTaskManager {
     tasks: Mutex<HashMap<String, AgentTask>>,
+    events: Mutex<HashMap<String, VecDeque<AgentTaskEvent>>>,
+    storage_path: Mutex<Option<PathBuf>>,
     plan_controls: Mutex<HashMap<String, AgentPlanControl>>,
     approval_credentials: Mutex<ApprovalCredentialStore>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedAgentRuntime {
+    version: u8,
+    tasks: Vec<AgentTask>,
+    events: Vec<AgentTaskEvent>,
 }
 
 struct AgentPlanControl {
@@ -502,10 +517,172 @@ impl Default for AgentTaskManager {
     fn default() -> Self {
         Self {
             tasks: Mutex::new(HashMap::new()),
+            events: Mutex::new(HashMap::new()),
+            storage_path: Mutex::new(None),
             plan_controls: Mutex::new(HashMap::new()),
             approval_credentials: Mutex::new(ApprovalCredentialStore::default()),
         }
     }
+}
+
+impl AgentTaskManager {
+    fn initialize_storage(&self, path: PathBuf) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("无法创建 AI 运行时目录：{error}"))?;
+        }
+        let restored = match fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice::<PersistedAgentRuntime>(&bytes) {
+                Ok(state) if state.version == AGENT_RUNTIME_STATE_VERSION => Some(state),
+                Ok(_) => {
+                    log::warn!(target: "fineshell::agent", "忽略不兼容的 AI 运行时状态文件");
+                    None
+                }
+                Err(error) => {
+                    log::warn!(target: "fineshell::agent", "忽略损坏的 AI 运行时状态文件: {error}");
+                    None
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("无法读取 AI 运行时状态：{error}")),
+        };
+
+        *self
+            .storage_path
+            .lock()
+            .map_err(|_| "AI 运行时存储状态不可用".to_string())? = Some(path);
+        let Some(restored) = restored else {
+            return Ok(());
+        };
+
+        let mut tasks = HashMap::new();
+        for mut task in restored.tasks.into_iter().take(MAX_AGENT_TASKS) {
+            if !valid_identifier(&task.id) {
+                continue;
+            }
+            task = task.redacted_for_persistence();
+            if !task.status.is_terminal() {
+                task.status = AgentTaskStatus::Paused;
+                task.active_step_id = None;
+                task.error = Some("应用重启后任务已暂停，仅供查看".to_string());
+            }
+            tasks.insert(task.id.clone(), task);
+        }
+        *self
+            .tasks
+            .lock()
+            .map_err(|_| "AI 任务状态不可用".to_string())? = tasks;
+
+        let known_task_ids = self
+            .tasks
+            .lock()
+            .map_err(|_| "AI 任务状态不可用".to_string())?
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut events_by_task: HashMap<String, VecDeque<AgentTaskEvent>> = HashMap::new();
+        for mut event in restored.events {
+            if !valid_identifier(&event.task.id) || !known_task_ids.contains(&event.task.id) {
+                continue;
+            }
+            event.protocol_version = PROTOCOL_VERSION;
+            event.task = event.task.redacted_for_persistence();
+            let queue = events_by_task.entry(event.task.id.clone()).or_default();
+            queue.push_back(event);
+            while queue.len() > MAX_AGENT_EVENTS_PER_TASK {
+                queue.pop_front();
+            }
+        }
+        *self
+            .events
+            .lock()
+            .map_err(|_| "AI 事件状态不可用".to_string())? = events_by_task;
+        Ok(())
+    }
+
+    fn record_events(&self, events: &[AgentTaskEvent]) {
+        if events.is_empty() {
+            return;
+        }
+        let Ok(mut stored) = self.events.lock() else {
+            return;
+        };
+        for event in events {
+            let mut event = event.clone();
+            event.task = event.task.redacted_for_persistence();
+            let queue = stored.entry(event.task.id.clone()).or_default();
+            queue.push_back(event);
+            while queue.len() > MAX_AGENT_EVENTS_PER_TASK {
+                queue.pop_front();
+            }
+        }
+        drop(stored);
+        if let Err(error) = self.persist_state() {
+            log::warn!(target: "fineshell::agent", "保存 AI 运行时状态失败: {error}");
+        }
+    }
+
+    fn persist_state(&self) -> Result<(), String> {
+        let Some(path) = self
+            .storage_path
+            .lock()
+            .map_err(|_| "AI 运行时存储状态不可用".to_string())?
+            .clone()
+        else {
+            return Ok(());
+        };
+        let mut tasks = self
+            .tasks
+            .lock()
+            .map_err(|_| "AI 任务状态不可用".to_string())?
+            .values()
+            .map(AgentTask::redacted_for_persistence)
+            .collect::<Vec<_>>();
+        tasks.sort_by_key(|task| task.updated_at);
+        let mut events = self
+            .events
+            .lock()
+            .map_err(|_| "AI 事件状态不可用".to_string())?
+            .values()
+            .flat_map(|events| events.iter().cloned())
+            .collect::<Vec<_>>();
+        events.sort_by_key(|event| (event.task.updated_at, event.sequence));
+        let bytes = serde_json::to_vec(&PersistedAgentRuntime {
+            version: AGENT_RUNTIME_STATE_VERSION,
+            tasks,
+            events,
+        })
+        .map_err(|error| format!("无法序列化 AI 运行时状态：{error}"))?;
+        fs::write(path, bytes).map_err(|error| format!("无法写入 AI 运行时状态：{error}"))
+    }
+
+    fn events_since(
+        &self,
+        task_id: &str,
+        after_sequence: u64,
+    ) -> Result<Vec<AgentTaskEvent>, String> {
+        let events = self
+            .events
+            .lock()
+            .map_err(|_| "AI 事件状态不可用".to_string())?;
+        Ok(events
+            .get(task_id)
+            .into_iter()
+            .flatten()
+            .filter(|event| event.sequence > after_sequence)
+            .cloned()
+            .collect())
+    }
+}
+
+pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位 AI 运行时目录：{error}"))?
+        .join(AGENT_RUNTIME_STATE_FILE);
+    app.state::<AgentTaskManager>().initialize_storage(path)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -745,6 +922,54 @@ impl AgentTask {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    fn redacted_for_persistence(&self) -> Self {
+        let mut task = self.clone();
+        task.objective = "任务内容已脱敏".to_string();
+        task.current_directory = None;
+        task.file_operation_directory = None;
+        task.writable_files.clear();
+        task.error = task
+            .error
+            .as_ref()
+            .map(|_| "任务包含未公开的错误详情".to_string());
+        if let Some(plan) = task.plan.as_mut() {
+            plan.description = None;
+            for step in &mut plan.steps {
+                step.title = "已脱敏的计划步骤".to_string();
+                step.detail = None;
+                step.reason = "计划原因已脱敏".to_string();
+                step.summary = step.summary.as_ref().map(|_| "计划步骤已结束".to_string());
+                step.error = step.error.as_ref().map(|_| "计划步骤未成功".to_string());
+            }
+        }
+        for action in &mut task.actions {
+            action.reason = match action.tool.as_str() {
+                "propose_file_edit" => "远程文件修改".to_string(),
+                "propose_file_operation" => "远程文件操作".to_string(),
+                "insert_terminal_command" => "终端命令填入".to_string(),
+                _ => "受控动作".to_string(),
+            };
+            action.expected_effect = "动作效果已脱敏".to_string();
+            action.summary = action
+                .summary
+                .as_ref()
+                .map(|_| "动作状态已更新".to_string());
+            action.error = action.error.as_ref().map(|_| "动作未成功".to_string());
+            action.arguments = serde_json::Value::Null;
+            action.command_submission_id = None;
+            for evidence in &mut action.verification_evidence {
+                evidence.summary = "验证证据已脱敏".to_string();
+            }
+            if let Some(recovery) = action.recovery_state.as_mut() {
+                recovery.summary = "恢复状态已记录".to_string();
+            }
+        }
+        if let Some(result) = task.result.as_mut() {
+            result.summary = "任务结果已记录".to_string();
+        }
+        task
     }
 
     fn event(&mut self, kind: AgentTaskEventKind) -> AgentTaskEvent {
@@ -994,6 +1219,9 @@ impl AgentTaskManager {
         let task = tasks
             .get_mut(&context.id)
             .ok_or_else(|| "AI 任务不存在".to_string())?;
+        if task.status == AgentTaskStatus::Paused {
+            return Err("应用重启前的 AI 任务仅供查看，请发起新任务".to_string());
+        }
         if !context.matches(task) {
             return Err("AI 任务作用域与已有任务不一致".to_string());
         }
@@ -2407,9 +2635,27 @@ impl AgentTaskManager {
 }
 
 pub(crate) fn emit_task_events(app: &AppHandle, events: Vec<AgentTaskEvent>) {
+    if let Some(manager) = app.try_state::<AgentTaskManager>() {
+        manager.record_events(&events);
+    }
     for event in events {
         let _ = app.emit_to("main", AGENT_TASK_EVENT, event);
     }
+}
+
+#[tauri::command]
+pub(crate) fn ai_task_events_since(
+    manager: State<'_, AgentTaskManager>,
+    task_id: String,
+    after_sequence: u64,
+) -> CommandResult<Vec<AgentTaskEvent>> {
+    let operation = "ai_task_events_since";
+    if !valid_identifier(&task_id) {
+        return Err(CommandError::from_message(operation, "AI 任务标识无效"));
+    }
+    manager
+        .events_since(&task_id, after_sequence)
+        .map_err(|error| CommandError::from_message(operation, error))
 }
 
 #[tauri::command]
@@ -2489,7 +2735,7 @@ mod tests {
         AgentPlanStepStatus, AgentRecoveryRecommendation, AgentRecoveryStatus,
         AgentRepairStopReason, AgentTaskContext, AgentTaskEventKind, AgentTaskManager,
         AgentTaskStatus, AgentTrustedVerification, AgentVerificationEvidenceKind,
-        AgentVerificationStatus, AgentWritableFile,
+        AgentVerificationStatus, AgentWritableFile, AGENT_RUNTIME_STATE_FILE,
     };
     use crate::agent_approvals::ApprovalScope;
     use crate::agent_verification::AgentBusinessVerificationResult;
@@ -2633,6 +2879,54 @@ mod tests {
 
     fn serialized_values<T: SerializeValues>(values: &[T]) -> BTreeSet<String> {
         values.iter().map(SerializeValues::serialized).collect()
+    }
+
+    #[test]
+    fn persists_only_redacted_snapshots_and_replays_bounded_events() {
+        let directory = std::env::temp_dir().join(format!(
+            "fineshell-agent-state-{}-{}",
+            std::process::id(),
+            super::timestamp_ms()
+        ));
+        let path = directory.join(AGENT_RUNTIME_STATE_FILE);
+        let manager = AgentTaskManager::default();
+        manager.initialize_storage(path.clone()).unwrap();
+
+        let mut task_context = context();
+        task_context.objective = "使用 password=secret 修复 /etc/nginx.conf".to_string();
+        let started = manager.begin_model_turn(&task_context).unwrap();
+        manager.record_events(&started);
+        let proposed = manager
+            .register_actions("task-1", vec![file_edit_intent()])
+            .unwrap();
+        manager.record_events(&proposed);
+
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("任务内容已脱敏"));
+        assert!(!persisted.contains("password=secret"));
+        assert!(!persisted.contains("/etc/nginx.conf"));
+        assert!(!persisted.contains("server {}"));
+
+        let restored = AgentTaskManager::default();
+        restored.initialize_storage(path.clone()).unwrap();
+        let task = restored.get_task("task-1").unwrap().unwrap();
+        assert_eq!(task.status, AgentTaskStatus::Paused);
+        assert_eq!(task.objective, "任务内容已脱敏");
+        assert_eq!(task.actions[0].arguments, serde_json::Value::Null);
+        let replayed = restored.events_since("task-1", 1).unwrap();
+        assert_eq!(
+            replayed
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(
+            restored.begin_model_turn(&task_context).unwrap_err(),
+            "应用重启前的 AI 任务仅供查看，请发起新任务"
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     trait SerializeValues {
