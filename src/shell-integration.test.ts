@@ -28,6 +28,18 @@ describe("shell integration", () => {
       parseShellIntegrationMessage("FineShell;nonce;disabled;tty", "nonce"),
     ).toEqual({ kind: "disabled" });
     expect(
+      parseShellIntegrationMessage(
+        "FineShell;nonce;cwd;/srv/apps;preview",
+        "nonce",
+      ),
+    ).toEqual({ kind: "cwd", path: "/srv/apps;preview" });
+    expect(
+      parseShellIntegrationMessage("FineShell;nonce;cwd;relative", "nonce"),
+    ).toBeNull();
+    expect(
+      parseShellIntegrationMessage("FineShell;nonce;cwd;/tmp\nunsafe", "nonce"),
+    ).toBeNull();
+    expect(
       parseShellIntegrationMessage("FineShell;other;end;0", "nonce"),
     ).toBeNull();
     expect(
@@ -42,6 +54,8 @@ describe("shell integration", () => {
     expect(install).toContain("ZSH_VERSION");
     expect(install).toContain("PROMPT_COMMAND");
     expect(install).toContain("add-zsh-hook");
+    expect(install).toContain("cwd;%s");
+    expect(install).toContain('"$PWD"');
     expect(install).toContain("history -d");
     expect(install.endsWith("\r")).toBe(true);
 

@@ -4,6 +4,7 @@ export const MAX_SHELL_COMMAND_RESULT_CHARS = 12_000;
 export type ShellIntegrationMessage =
   | { kind: "ready"; shell: "bash" | "zsh" }
   | { kind: "disabled" }
+  | { kind: "cwd"; path: string }
   | { kind: "end"; exitCode: number }
   | { kind: "unavailable"; reason: string };
 
@@ -27,14 +28,23 @@ export function parseShellIntegrationMessage(
   data: string,
   expectedNonce: string,
 ): ShellIntegrationMessage | null {
-  const [namespace, nonce, kind, value, ...extra] = data.split(";");
-  if (
-    namespace !== "FineShell" ||
-    nonce !== expectedNonce ||
-    extra.length > 0
-  ) {
+  const [namespace, nonce, kind, ...values] = data.split(";");
+  if (namespace !== "FineShell" || nonce !== expectedNonce) {
     return null;
   }
+  const value = values[0];
+  if (kind === "cwd") {
+    const path = values.join(";");
+    if (
+      path.startsWith("/") &&
+      path.length <= 4_096 &&
+      !/[\u0000-\u001f\u007f-\u009f]/u.test(path)
+    ) {
+      return { kind, path };
+    }
+    return null;
+  }
+  if (values.length !== 1) return null;
   if (kind === "ready" && (value === "bash" || value === "zsh")) {
     return { kind, shell: value };
   }
@@ -132,7 +142,8 @@ function bashHistoryCleanup(safeNonce: string) {
 
 export function buildShellIntegrationInstallCommand(nonce: string) {
   const safeNonce = shellSingleQuote(nonce);
-  const bashMarker = `printf '\\033]${FINESHELL_OSC_ID};FineShell;%s;end;%s\\007' "$__fineshell_nonce" "$__fineshell_status"`;
+  const endMarker = `printf '\\033]${FINESHELL_OSC_ID};FineShell;%s;end;%s\\007' "$__fineshell_nonce" "$__fineshell_status"`;
+  const cwdMarker = `case "$PWD" in *[[:cntrl:]]*) ;; /*) printf '\\033]${FINESHELL_OSC_ID};FineShell;%s;cwd;%s\\007' "$__fineshell_nonce" "$PWD";; esac`;
   const readyMarker = (shell: string) =>
     `printf '\\r\\033[2K\\033]${FINESHELL_OSC_ID};FineShell;%s;ready;${shell}\\007' "$__fineshell_nonce"`;
   const unavailableMarker = `printf '\\r\\033[2K\\033]${FINESHELL_OSC_ID};FineShell;%s;unavailable;unsupported-shell\\007' ${safeNonce}`;
@@ -142,7 +153,7 @@ export function buildShellIntegrationInstallCommand(nonce: string) {
     `__fineshell_nonce=${safeNonce};`,
     "__fineshell_pc_was_set=${PROMPT_COMMAND+x};",
     "__fineshell_pc_decl=$(declare -p PROMPT_COMMAND 2>/dev/null || true);",
-    `__fineshell_prompt_command(){ __fineshell_status="$1"; ${bashMarker}; return "$__fineshell_status"; };`,
+    `__fineshell_prompt_command(){ __fineshell_status="$1"; ${endMarker}; ${cwdMarker}; return "$__fineshell_status"; };`,
     "if declare -p PROMPT_COMMAND 2>/dev/null | grep -q 'declare -a'; then PROMPT_COMMAND=('__fineshell_prompt_command \"$?\"' \"${PROMPT_COMMAND[@]}\"); else PROMPT_COMMAND='__fineshell_prompt_command \"$?\"; '" +
       '"${PROMPT_COMMAND-}"; fi;',
     bashHistoryCleanup(safeNonce),
@@ -150,7 +161,7 @@ export function buildShellIntegrationInstallCommand(nonce: string) {
     'elif [ -n "${ZSH_VERSION-}" ]; then',
     `__fineshell_nonce=${safeNonce};`,
     "autoload -Uz add-zsh-hook;",
-    `__fineshell_precmd(){ local __fineshell_status=$?; ${bashMarker}; return "$__fineshell_status"; };`,
+    `__fineshell_precmd(){ local __fineshell_status=$?; ${endMarker}; ${cwdMarker}; return "$__fineshell_status"; };`,
     "add-zsh-hook -d precmd __fineshell_precmd 2>/dev/null || true;",
     "add-zsh-hook precmd __fineshell_precmd;",
     `${readyMarker("zsh")};`,

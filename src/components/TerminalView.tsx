@@ -68,6 +68,7 @@ interface TerminalViewProps {
   session: TerminalSession;
   onAskAi: (selection: string) => void;
   onCommandLifecycle: (event: TerminalCommandSubmission) => void;
+  onCurrentDirectoryChange: (sessionId: string, path: string) => void;
   onRecentOutputChange: (output: string) => void;
   onSelectionChange: (selection: string) => void;
 }
@@ -129,6 +130,7 @@ function TerminalView({
   session,
   onAskAi,
   onCommandLifecycle,
+  onCurrentDirectoryChange,
   onRecentOutputChange,
   onSelectionChange,
 }: TerminalViewProps) {
@@ -140,7 +142,7 @@ function TerminalView({
   const connectedRef = useRef(session.status === "connected");
   const commandLifecycleRef = useRef(onCommandLifecycle);
   const commandTrackingEnabledRef = useRef(commandTrackingEnabled);
-  const shellIntegrationEnabledRef = useRef(settings.aiShellIntegrationEnabled);
+  const shellCommandResultsEnabledRef = useRef(commandTrackingEnabled);
   const shellIntegrationInstalledRef = useRef(false);
   const shellIntegrationNonceRef = useRef(createShellIntegrationNonce());
   const shellIntegrationStateRef = useRef<
@@ -161,6 +163,7 @@ function TerminalView({
   const lastInjectedInputIdRef = useRef<string>();
   const recentOutputChangeRef = useRef(onRecentOutputChange);
   const selectionChangeRef = useRef(onSelectionChange);
+  const currentDirectoryChangeRef = useRef(onCurrentDirectoryChange);
   const settingsRef = useRef(settings);
   const searchVisibleRef = useRef(false);
   const lastStatusNoticeRef = useRef<string>();
@@ -175,8 +178,8 @@ function TerminalView({
   settingsRef.current = settings;
   commandLifecycleRef.current = onCommandLifecycle;
   commandTrackingEnabledRef.current = commandTrackingEnabled;
-  shellIntegrationEnabledRef.current =
-    commandTrackingEnabled && settings.aiShellIntegrationEnabled;
+  shellCommandResultsEnabledRef.current = commandTrackingEnabled;
+  currentDirectoryChangeRef.current = onCurrentDirectoryChange;
   recentOutputChangeRef.current = onRecentOutputChange;
   selectionChangeRef.current = onSelectionChange;
 
@@ -238,6 +241,7 @@ function TerminalView({
   useEffect(() => {
     connectedRef.current = session.status === "connected";
     if (session.status !== "connected") {
+      currentDirectoryChangeRef.current(session.id, "");
       const completedAt = new Date().toISOString();
       for (const pending of pendingShellCommandsRef.current) {
         commandLifecycleRef.current({
@@ -268,30 +272,14 @@ function TerminalView({
 
   useEffect(() => {
     if (session.status !== "connected" || !terminalReady) return;
-    const enabled =
-      commandTrackingEnabled && settings.aiShellIntegrationEnabled;
-    if (enabled && !shellIntegrationInstalledRef.current) {
+    if (!shellIntegrationInstalledRef.current) {
       if (!inputStateRef.current.reliable || inputStateRef.current.value) {
         shellIntegrationStateRef.current = "unavailable";
         return;
       }
       startShellIntegrationMutationRef.current("install");
-      return;
     }
-    if (!enabled && shellIntegrationInstalledRef.current) {
-      pendingShellCommandsRef.current = [];
-      if (!inputStateRef.current.reliable || inputStateRef.current.value) {
-        return;
-      }
-      startShellIntegrationMutationRef.current("uninstall");
-    }
-  }, [
-    commandTrackingEnabled,
-    session.id,
-    session.status,
-    settings.aiShellIntegrationEnabled,
-    terminalReady,
-  ]);
+  }, [session.id, session.status, terminalReady]);
 
   useEffect(() => {
     if (
@@ -389,7 +377,7 @@ function TerminalView({
             submittedAt,
           };
           commandLifecycleRef.current(submission);
-          if (!shellIntegrationEnabledRef.current) continue;
+          if (!shellCommandResultsEnabledRef.current) continue;
           if (shellIntegrationStateRef.current === "ready") {
             const buffer = terminal.buffer.active;
             pendingShellCommandsRef.current.push({
@@ -445,24 +433,23 @@ function TerminalView({
         if (!message) return false;
         if (message.kind === "ready") {
           settleShellIntegrationMutationRef.current("ready");
-          if (!shellIntegrationEnabledRef.current) {
-            queueMicrotask(() =>
-              startShellIntegrationMutationRef.current("uninstall"),
-            );
-          }
           return true;
         }
         if (message.kind === "disabled") {
           settleShellIntegrationMutationRef.current("disabled");
-          if (shellIntegrationEnabledRef.current) {
-            queueMicrotask(() =>
-              startShellIntegrationMutationRef.current("install"),
-            );
-          }
+          currentDirectoryChangeRef.current(session.id, "");
+          queueMicrotask(() =>
+            startShellIntegrationMutationRef.current("install"),
+          );
+          return true;
+        }
+        if (message.kind === "cwd") {
+          currentDirectoryChangeRef.current(session.id, message.path);
           return true;
         }
         if (message.kind === "unavailable") {
           settleShellIntegrationMutationRef.current("unavailable");
+          currentDirectoryChangeRef.current(session.id, "");
           const completedAt = new Date().toISOString();
           for (const pending of pendingShellCommandsRef.current) {
             commandLifecycleRef.current({

@@ -468,28 +468,6 @@ function AiSettings({
       </div>
       <div className="settings-row">
         <span className="settings-label-with-description">
-          <Typography.Text>Shell Integration</Typography.Text>
-          <Typography.Text type="secondary">
-            在当前 Bash/Zsh
-            会话中临时获取命令结束边界与退出码，不修改远端配置文件
-          </Typography.Text>
-        </span>
-        <div className="settings-control">
-          <Switch
-            aria-label="启用 Shell Integration"
-            checked={settings.aiShellIntegrationEnabled}
-            disabled={
-              !settings.aiCommandProposalsEnabled ||
-              !settings.aiCommandTrackingEnabled
-            }
-            onChange={(checked) =>
-              updateSetting("aiShellIntegrationEnabled", checked)
-            }
-          />
-        </div>
-      </div>
-      <div className="settings-row">
-        <span className="settings-label-with-description">
           <Typography.Text>服务能力</Typography.Text>
           <Typography.Text type="secondary">
             会发起少量测试请求，不执行服务器操作

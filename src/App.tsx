@@ -285,6 +285,9 @@ function App() {
   const [sftpCurrentPaths, setSftpCurrentPaths] = useState<
     Record<string, string>
   >({});
+  const [terminalCurrentDirectories, setTerminalCurrentDirectories] = useState<
+    Record<string, { path: string; revision: number }>
+  >({});
   const [aiRemoteFileContexts, setAiRemoteFileContexts] = useState<
     Record<string, AiRemoteFileContext[]>
   >({});
@@ -377,6 +380,27 @@ function App() {
         return current[sessionId] === path
           ? current
           : { ...current, [sessionId]: path };
+      });
+    },
+    [],
+  );
+
+  const updateTerminalCurrentDirectory = useCallback(
+    (sessionId: string, path: string) => {
+      setTerminalCurrentDirectories((current) => {
+        if (!path) {
+          if (!(sessionId in current)) return current;
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        }
+        return {
+          ...current,
+          [sessionId]: {
+            path,
+            revision: (current[sessionId]?.revision ?? 0) + 1,
+          },
+        };
       });
     },
     [],
@@ -1229,6 +1253,13 @@ function App() {
         ),
       ),
     );
+    setTerminalCurrentDirectories((currentDirectories) =>
+      Object.fromEntries(
+        Object.entries(currentDirectories).filter(
+          ([sessionId]) => !closingIds.has(sessionId),
+        ),
+      ),
+    );
     setAiBusinessContexts((currentContexts) =>
       Object.fromEntries(
         Object.entries(currentContexts).filter(
@@ -1366,6 +1397,7 @@ function App() {
               openAiAssistant("请解释这段终端输出，并给出排查建议。");
             }}
             onCommandLifecycle={setTerminalCommandSubmission}
+            onCurrentDirectoryChange={updateTerminalCurrentDirectory}
             onRecentOutputChange={(output) =>
               setTerminalRecentOutputs((current) => {
                 const next = output.slice(-settings.aiContextMaxChars);
@@ -1438,6 +1470,11 @@ function App() {
       }
       session={activeSession}
       showHiddenFiles={settings.showHiddenFiles}
+      terminalDirectory={
+        activeSessionId
+          ? terminalCurrentDirectories[activeSessionId]
+          : undefined
+      }
     />
   );
 

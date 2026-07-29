@@ -167,6 +167,7 @@ interface SftpPanelProps {
   refreshRequest: number;
   session: TerminalSession | null;
   showHiddenFiles: boolean;
+  terminalDirectory?: { path: string; revision: number };
 }
 
 type TransferRecord = TransferActivityRecord;
@@ -277,6 +278,7 @@ function SftpPanel({
   refreshRequest,
   session,
   showHiddenFiles,
+  terminalDirectory,
 }: SftpPanelProps) {
   const [browsers, setBrowsers] = useState<Record<string, BrowserState>>({});
   const [transfers, setTransfers] = useState<Record<string, TransferRecord>>(
@@ -335,6 +337,9 @@ function SftpPanel({
   const connectedHomesRef = useRef(new Map<string, string>());
   const startingTransfersRef = useRef(new Set<string>());
   const handledRefreshRequestsRef = useRef<Record<string, number>>({});
+  const handledTerminalDirectoryRevisionsRef = useRef(
+    new Map<string, number>(),
+  );
   const browsersRef = useRef(browsers);
   const transfersRef = useRef(transfers);
   const panelRef = useRef<HTMLElement>(null);
@@ -808,6 +813,28 @@ function SftpPanel({
       textEditor ? new TextEncoder().encode(textEditor.content).byteLength : 0,
     [textEditor],
   );
+
+  useEffect(() => {
+    if (!session) return;
+    if (!terminalDirectory) {
+      handledTerminalDirectoryRevisionsRef.current.delete(session.id);
+      return;
+    }
+    if (browser?.status !== "ready") return;
+    if (
+      handledTerminalDirectoryRevisionsRef.current.get(session.id) ===
+      terminalDirectory.revision
+    ) {
+      return;
+    }
+    handledTerminalDirectoryRevisionsRef.current.set(
+      session.id,
+      terminalDirectory.revision,
+    );
+    if (browser.path !== terminalDirectory.path) {
+      void loadDirectory(session.id, terminalDirectory.path);
+    }
+  }, [browser?.path, browser?.status, loadDirectory, session, terminalDirectory]);
 
   useEffect(() => {
     onCurrentPathChange(
