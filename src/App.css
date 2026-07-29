@@ -2325,6 +2325,10 @@ body.ai-sidebar-resizing::after {
   overflow-wrap: anywhere;
 }
 
+.quick-command-parameter-modal .modal-actions {
+  margin-top: 16px;
+}
+
 @container (max-width: 360px) {
   .terminal-search-result {
     display: none;
