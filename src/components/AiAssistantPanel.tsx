@@ -845,6 +845,7 @@ function AiAssistantPanel({
       </div>
       <div className="ai-assistant-layout">
         <AiMessageTimeline
+          activeTask={activeTask}
           activeConversationAvailable={Boolean(activeConversation)}
           applyingFileChanges={fileEditApplying}
           canInsertCommand={canInsertCommand}

@@ -34,13 +34,15 @@ import {
 } from "../ai-presets";
 import type { AiToolRun } from "../ai-tools";
 import type { AiMessage } from "../hooks/useAiConversations";
-import { commandErrorMessage } from "../tauri-protocol";
+import { commandErrorMessage, type AgentTask } from "../tauri-protocol";
 import AiCommandProposalList from "./AiCommandProposalList";
 import AiDiagnosticPlanList from "./AiDiagnosticPlanList";
 import AiFileChangePanels from "./AiFileChangePanels";
 import AiToolRunList from "./AiToolRunList";
+import AiTaskTimeline from "./AiTaskTimeline";
 
 interface AiMessageTimelineProps {
+  activeTask?: AgentTask;
   activeConversationAvailable: boolean;
   applyingFileChanges: boolean;
   canInsertCommand: boolean;
@@ -203,6 +205,7 @@ function AiMarkdown({
 }
 
 function AiMessageTimeline({
+  activeTask,
   activeConversationAvailable,
   applyingFileChanges,
   canInsertCommand,
@@ -244,6 +247,7 @@ function AiMessageTimeline({
 }: AiMessageTimelineProps) {
   return (
     <div className="ai-assistant-messages" ref={scrollRef}>
+      <AiTaskTimeline task={activeTask} />
       {loading && !activeConversationAvailable ? (
         <Spin />
       ) : messages.length ? (
