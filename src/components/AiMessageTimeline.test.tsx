@@ -38,7 +38,6 @@ function renderTimeline(
         onRejectCommand={() => undefined}
         onRejectFileEdit={() => undefined}
         onRejectFileOperation={() => undefined}
-        onRerunTool={() => undefined}
         onRetryFileEdit={() => undefined}
         onRetryFileOperation={() => undefined}
         onRetryMessage={onRetryMessage}

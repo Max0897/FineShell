@@ -217,6 +217,16 @@ export interface AgentTaskResult {
   stopReason: string | null;
 }
 
+export interface AgentTaskDiagnostics {
+  durationMs: number;
+  modelTurnCount: number;
+  planStepCount: number;
+  actionCount: number;
+  verificationEvidenceCount: number;
+  repairAttemptCount: number;
+  stopReason: string | null;
+}
+
 export interface AgentTaskContext {
   id: string;
   conversationId: string;
@@ -250,6 +260,7 @@ export interface AgentTask {
   repairAttempts: number;
   repairLimit: number;
   repairStopReason: AgentRepairStopReason | null;
+  diagnostics: AgentTaskDiagnostics;
   lastEventSequence: number;
   result: AgentTaskResult | null;
   error: string | null;

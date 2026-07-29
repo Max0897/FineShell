@@ -3,14 +3,11 @@ import {
   MAX_AI_TOOL_ROUNDS,
   MAX_AI_TOOL_RESULT_CHARS,
   aiToolCallFingerprint,
-  aiToolCallFromRun,
   aiToolLoopFinalizeReason,
   aiToolLabel,
   aiToolResult,
   aiToolResultSummary,
-  aiToolRequiresConfirmation,
   aiToolTarget,
-  createAiToolRun,
   currentDirectoryToolValue,
   finishAiToolRun,
   isAiReadOnlyToolName,
@@ -128,8 +125,6 @@ describe("AI read-only tools", () => {
     expect(isAiReadOnlyToolName("trace_route")).toBe(true);
     expect(isAiReadOnlyToolName("run_shell_command")).toBe(false);
     expect(aiToolLabel("run_shell_command")).toBe("未知只读工具");
-    expect(aiToolRequiresConfirmation("ping_target")).toBe(true);
-    expect(aiToolRequiresConfirmation("get_server_status")).toBe(false);
   });
 
   test("validates network targets before executing diagnostic tools", () => {
@@ -150,14 +145,14 @@ describe("AI read-only tools", () => {
   });
 
   test("records the target, duration, and final status of a tool run", () => {
-    const running = createAiToolRun(
-      {
-        id: "call-1",
-        name: "ping_target",
-        arguments: '{"target":"1.1.1.1"}',
-      },
-      1_000,
-    );
+    const running = {
+      callId: "call-1",
+      detail: "1.1.1.1",
+      label: "Ping",
+      name: "ping_target" as const,
+      startedAt: 1_000,
+      status: "running" as const,
+    };
     expect(running.detail).toBe("1.1.1.1");
     const completed = finishAiToolRun(
       running,
@@ -169,9 +164,6 @@ describe("AI read-only tools", () => {
       status: "success",
       summary: "状态：可达",
     });
-    expect(aiToolCallFromRun(completed).arguments).toBe(
-      '{"target":"1.1.1.1"}',
-    );
   });
 
   test("serializes a bounded server status snapshot", () => {

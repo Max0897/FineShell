@@ -1,8 +1,11 @@
-import {
-  loadAllAiConversations,
-  type AiConversationRecord,
-} from "./ai-conversations";
+import { loadAllAiConversations } from "./ai-conversations";
 import { redactAiContext } from "./ai-utils";
+import {
+  invokeProtocolCommand,
+  type AgentActionState,
+  type AgentTaskEventKind,
+  type AgentTaskEventPayload,
+} from "./tauri-protocol";
 
 export type AiAuditCategory = "diagnostic" | "command" | "file";
 export type AiAuditStatus =
@@ -29,6 +32,7 @@ export interface AiAuditEntry {
   label: string;
   occurredAt: string;
   planId?: string;
+  sequence: number;
   status: AiAuditStatus;
 }
 
@@ -38,6 +42,20 @@ export interface AiAuditQuery {
   limit?: number;
 }
 
+type HostNames = ReadonlyMap<string, string>;
+
+const ACTION_AUDIT_EVENTS = new Set<AgentTaskEventKind>([
+  "action_proposed",
+  "action_rejected",
+  "action_succeeded",
+  "action_conflicted",
+  "action_failed",
+  "action_rolled_back",
+  "action_rollback_conflicted",
+  "action_rollback_failed",
+  "action_verification_recorded",
+]);
+
 function safeLabel(value: string, fallback: string) {
   const label = redactAiContext(value)
     .trim()
@@ -46,145 +64,153 @@ function safeLabel(value: string, fallback: string) {
   return label || fallback;
 }
 
-function validDate(value: unknown, fallback: string) {
-  return typeof value === "string" && Number.isFinite(Date.parse(value))
+function eventTime(value: number) {
+  return Number.isFinite(value) && value >= 0
     ? new Date(value).toISOString()
-    : fallback;
+    : new Date(0).toISOString();
 }
 
-function timestampDate(value: number, fallback: string) {
-  if (!Number.isFinite(value) || value < 0 || value > 8_640_000_000_000_000) {
-    return fallback;
-  }
-  return new Date(value).toISOString();
-}
-
-function toolStatus(status: string): AiAuditStatus {
-  if (status === "success" || status === "cancelled") return status;
-  return "failed";
-}
-
-function commandStatus(status: string): AiAuditStatus {
-  if (status === "succeeded") return "success";
-  if (status === "failed" || status === "unavailable") return "failed";
+function actionCategory(action: AgentActionState): AiAuditCategory {
+  if (action.tool === "insert_terminal_command") return "command";
   if (
-    status === "inserted" ||
-    status === "executed" ||
-    status === "verified" ||
-    status === "rejected"
+    action.tool === "propose_file_edit" ||
+    action.tool === "propose_file_operation"
   ) {
-    return status;
+    return "file";
+  }
+  return "diagnostic";
+}
+
+function actionStatus(
+  kind: AgentTaskEventKind,
+  action: AgentActionState,
+): AiAuditStatus {
+  if (kind === "action_rejected") return "rejected";
+  if (kind === "action_rolled_back") return "rolled-back";
+  if (
+    kind === "action_conflicted" ||
+    kind === "action_rollback_conflicted"
+  ) {
+    return "conflict";
+  }
+  if (kind === "action_failed" || kind === "action_rollback_failed") {
+    return "failed";
+  }
+  if (kind === "action_verification_recorded") {
+    if (action.verificationStatus === "verified") return "verified";
+    if (action.verificationStatus === "failed") return "failed";
+  }
+  if (kind === "action_succeeded") {
+    if (actionCategory(action) === "file") return "applied";
+    if (actionCategory(action) === "command") return "inserted";
+    return "success";
   }
   return "pending";
 }
 
-function fileStatus(status: string): AiAuditStatus {
-  if (
-    status === "applied" ||
-    status === "rolled-back" ||
-    status === "rejected" ||
-    status === "conflict" ||
-    status === "failed"
-  ) {
-    return status;
-  }
-  return "pending";
+function actionFallback(action: AgentActionState) {
+  if (action.tool === "insert_terminal_command") return "终端命令填入";
+  if (action.tool === "propose_file_edit") return "远程文件修改";
+  if (action.tool === "propose_file_operation") return "远程文件操作";
+  return "受控动作";
 }
 
-function fileActionLabel(operation: string, fileName: string, target?: string) {
-  const verb =
-    operation === "create"
-      ? "新建"
-      : operation === "rename"
-        ? "重命名"
-        : operation === "delete"
-          ? "删除"
-          : "修改";
-  return safeLabel(
-    `${verb} ${fileName}${target ? ` -> ${target}` : ""}`,
-    `${verb}远程文件`,
-  );
+function actionEntry(
+  event: AgentTaskEventPayload,
+  hostNames: HostNames,
+): AiAuditEntry | undefined {
+  if (!event.actionId || !ACTION_AUDIT_EVENTS.has(event.kind)) return undefined;
+  const action = event.task.actions.find((item) => item.id === event.actionId);
+  if (!action) return undefined;
+  return {
+    action: action.tool,
+    category: actionCategory(action),
+    conversationId: event.task.conversationId,
+    durationMs: action.durationMs ?? undefined,
+    hostId: event.task.hostId,
+    hostName: hostNames.get(event.task.hostId) ?? event.task.hostId,
+    id: `${event.task.id}:${event.sequence}`,
+    label: safeLabel(action.reason, actionFallback(action)),
+    occurredAt: eventTime(event.task.updatedAt),
+    planId: event.task.plan?.id,
+    sequence: event.sequence,
+    status: actionStatus(event.kind, action),
+  };
+}
+
+function planEntry(
+  event: AgentTaskEventPayload,
+  hostNames: HostNames,
+): AiAuditEntry | undefined {
+  const plan = event.task.plan;
+  if (event.kind !== "plan_completed" || !plan) return undefined;
+  const failed = plan.status === "partial";
+  return {
+    action: "diagnostic_plan",
+    category: "diagnostic",
+    conversationId: event.task.conversationId,
+    durationMs: plan.steps.reduce(
+      (total, step) => total + (step.durationMs ?? 0),
+      0,
+    ),
+    hostId: event.task.hostId,
+    hostName: hostNames.get(event.task.hostId) ?? event.task.hostId,
+    id: `${event.task.id}:${event.sequence}`,
+    label: safeLabel(plan.description ?? "只读诊断计划", "只读诊断计划"),
+    occurredAt: eventTime(event.task.updatedAt),
+    planId: plan.id,
+    sequence: event.sequence,
+    status:
+      plan.status === "cancelled"
+        ? "cancelled"
+        : failed
+          ? "failed"
+          : "success",
+  };
 }
 
 export function buildAiAuditEntries(
-  conversations: AiConversationRecord[],
+  events: AgentTaskEventPayload[],
   query: AiAuditQuery = {},
+  hostNames: HostNames = new Map(),
 ) {
-  const entries: AiAuditEntry[] = [];
-  for (const conversation of conversations) {
-    const fallbackTime = validDate(
-      conversation.updatedAt,
-      new Date(0).toISOString(),
-    );
-    for (const message of conversation.messages) {
-      for (const run of message.toolRuns ?? []) {
-        const startedAt =
-          Number.isFinite(run.startedAt) && run.startedAt > 0
-            ? run.startedAt
-            : Date.parse(fallbackTime);
-        entries.push({
-          action: run.name,
-          category: "diagnostic",
-          conversationId: conversation.id,
-          durationMs: run.durationMs,
-          hostId: conversation.hostId,
-          hostName: conversation.hostName,
-          id: `${conversation.id}:${message.id}:tool:${run.callId}`,
-          label: safeLabel(run.label, "只读诊断"),
-          occurredAt: timestampDate(
-            startedAt + Math.max(0, run.durationMs ?? 0),
-            fallbackTime,
-          ),
-          planId: run.planId,
-          status: toolStatus(run.status),
-        });
-      }
-      for (const record of message.commandRecords ?? []) {
-        entries.push({
-          action: "terminal_command",
-          category: "command",
-          conversationId: conversation.id,
-          hostId: conversation.hostId,
-          hostName: conversation.hostName,
-          id: `${conversation.id}:${message.id}:command:${record.id}`,
-          label: safeLabel(record.purpose, "终端命令提案"),
-          occurredAt: validDate(record.occurredAt, fallbackTime),
-          status: commandStatus(record.status),
-        });
-      }
-      for (const change of message.fileChanges ?? []) {
-        entries.push({
-          action: `file_${change.operation}`,
-          category: "file",
-          conversationId: conversation.id,
-          hostId: conversation.hostId,
-          hostName: conversation.hostName,
-          id: `${conversation.id}:${message.id}:file:${change.id}`,
-          label: fileActionLabel(
-            change.operation,
-            change.fileName,
-            change.targetFileName,
-          ),
-          occurredAt: validDate(
-            change.rolledBackAt ?? change.appliedAt,
-            fallbackTime,
-          ),
-          status: fileStatus(change.status),
-        });
-      }
-    }
-  }
   const limit = Math.min(1_000, Math.max(1, query.limit ?? 500));
-  return entries
+  return events
+    .map((event) => actionEntry(event, hostNames) ?? planEntry(event, hostNames))
+    .filter((entry): entry is AiAuditEntry => Boolean(entry))
     .filter(
       (entry) =>
         (!query.hostId || entry.hostId === query.hostId) &&
         (!query.category || entry.category === query.category),
     )
-    .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+    .sort(
+      (left, right) =>
+        right.occurredAt.localeCompare(left.occurredAt) ||
+        right.sequence - left.sequence,
+    )
     .slice(0, limit);
 }
 
+async function loadHostNames() {
+  try {
+    return new Map(
+      (await loadAllAiConversations()).map((conversation) => [
+        conversation.hostId,
+        conversation.hostName,
+      ]),
+    );
+  } catch {
+    return new Map<string, string>();
+  }
+}
+
 export async function loadAiAuditEntries(query: AiAuditQuery = {}) {
-  return buildAiAuditEntries(await loadAllAiConversations(), query);
+  const limit = Math.min(1_000, Math.max(1, query.limit ?? 500));
+  const [events, hostNames] = await Promise.all([
+    invokeProtocolCommand<AgentTaskEventPayload[]>("ai_task_audit_events", {
+      limit,
+    }),
+    loadHostNames(),
+  ]);
+  return buildAiAuditEntries(events, query, hostNames);
 }

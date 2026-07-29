@@ -58,6 +58,14 @@ function actionLabel(action: AgentActionState) {
   return "受控动作";
 }
 
+function taskDuration(durationMs: number) {
+  if (durationMs < 1_000) return `${durationMs} ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(1)} 秒`;
+  return `${Math.floor(durationMs / 60_000)} 分 ${Math.round(
+    (durationMs % 60_000) / 1_000,
+  )} 秒`;
+}
+
 function recoveryLabel(action: AgentActionState) {
   const recovery = action.recoveryState;
   if (!recovery) return null;
@@ -197,6 +205,12 @@ function AiTaskTimeline({ task }: AiTaskTimelineProps) {
               已修复 {task.repairAttempts} / {task.repairLimit} 次
             </Typography.Text>
           )}
+          <Typography.Text className="ai-task-diagnostics" type="secondary">
+            {task.diagnostics.modelTurnCount} 轮
+            {` · ${task.diagnostics.actionCount} 个动作`}
+            {` · ${task.diagnostics.verificationEvidenceCount} 条验证`}
+            {` · ${taskDuration(task.diagnostics.durationMs)}`}
+          </Typography.Text>
         </div>
       )}
     </section>

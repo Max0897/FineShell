@@ -26,11 +26,7 @@ import type {
   AiActionTransitionHandler,
 } from "../ai-action-lifecycle";
 import { buildAiConversationRequestMessages } from "../ai-summaries";
-import {
-  aiToolRequiresConfirmation,
-  aiToolTarget,
-  type AiToolRun,
-} from "../ai-tools";
+import type { AiToolRun } from "../ai-tools";
 import {
   aiConversationExportFilename,
   serializeAiConversationMarkdown,
@@ -53,7 +49,6 @@ import {
   type AgentApprovalMode,
   type AgentActionExecutionResult,
   type AgentCommandObservationRequest,
-  type AiToolCall,
 } from "../tauri-protocol";
 import type { TerminalCommandSubmission } from "../terminal-utils";
 import { aiCommandResultContextSource } from "../ai-command-proposals";
@@ -113,36 +108,6 @@ const AI_APPROVAL_MODE_OPTIONS = [
   { label: "替我审批", value: "auto_safe" },
   { label: "完全访问", value: "full_access" },
 ] satisfies { label: string; value: AgentApprovalMode }[];
-
-function confirmAiToolExecution(call: AiToolCall) {
-  if (!aiToolRequiresConfirmation(call.name)) return Promise.resolve(true);
-  const target = aiToolTarget(call);
-  return new Promise<boolean>((resolve) => {
-    let settled = false;
-    const finish = (allowed: boolean) => {
-      if (settled) return;
-      settled = true;
-      resolve(allowed);
-    };
-    Modal.confirm({
-      cancelText: "拒绝",
-      content: (
-        <div className="ai-tool-confirmation">
-          <Typography.Paragraph>
-            AI
-            请求从当前服务器执行主动网络探测。该操作只读取结果，不会修改服务器配置。
-          </Typography.Paragraph>
-          <Typography.Text code>{target}</Typography.Text>
-        </div>
-      ),
-      okText: "允许执行",
-      onCancel: () => finish(false),
-      onOk: () => finish(true),
-      title:
-        call.name === "ping_target" ? "允许执行 Ping？" : "允许执行路由追踪？",
-    });
-  });
-}
 
 function contextSourceDisplayLabel(source: AiContextSource) {
   return isAiRemoteFileContextSourceId(source.id)
@@ -492,14 +457,12 @@ function AiAssistantPanel({
     cancelDiagnosticPlan,
     cancelRequest,
     confirmDiagnosticPlan,
-    rerunTool: rerunRequestTool,
     sendMessage,
     sending,
     stopDiagnosticPlan,
     summarizingConversationIds,
   } = useAiRequestOrchestrator({
     approvalMode,
-    confirmToolExecution: confirmAiToolExecution,
     onCancelError: (error) => Message.error(commandErrorMessage(error)),
     onMissingModel: () => Message.warning("请先在设置中配置 AI 模型"),
     onSummaryError: (error) =>
@@ -643,18 +606,6 @@ function AiAssistantPanel({
     } catch (error) {
       Message.error(commandErrorMessage(error));
     }
-  };
-
-  const rerunTool = async (messageId: string, run: AiToolRun) => {
-    if (!hostId || !sessionId || !activeConversation || sending) return;
-    await rerunRequestTool({
-      conversationId: activeConversation.id,
-      currentDirectory: currentRemoteDirectory,
-      hostId,
-      messageId,
-      run,
-      sessionId,
-    });
   };
 
   useEffect(() => {
@@ -870,7 +821,6 @@ function AiAssistantPanel({
           onRejectCommand={rejectCommandProposal}
           onRejectFileEdit={rejectFileEditProposal}
           onRejectFileOperation={rejectFileOperationProposal}
-          onRerunTool={rerunTool}
           onRetryFileEdit={retryFileEditProposal}
           onRetryFileOperation={retryFileOperationProposal}
           onRetryMessage={retry}

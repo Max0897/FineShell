@@ -64,6 +64,15 @@ function task(): AgentTask {
     repairAttempts: 1,
     repairLimit: 2,
     repairStopReason: "verification_failed",
+    diagnostics: {
+      actionCount: 1,
+      durationMs: 1_250,
+      modelTurnCount: 2,
+      planStepCount: 1,
+      repairAttemptCount: 1,
+      stopReason: "verification_failed",
+      verificationEvidenceCount: 1,
+    },
     lastEventSequence: 4,
     result: null,
     error: null,
@@ -82,6 +91,7 @@ describe("AiTaskTimeline", () => {
     expect(screen.getByText("验证失败")).not.toBeNull();
     expect(screen.getByText(/服务未运行/)).not.toBeNull();
     expect(screen.getByText("已修复 1 / 2 次")).not.toBeNull();
+    expect(screen.getByText("2 轮 · 1 个动作 · 1 条验证 · 1.3 秒")).not.toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "收起任务时间线" }));
     expect(screen.queryByText("检查 Nginx")).toBeNull();

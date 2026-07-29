@@ -32,6 +32,7 @@ const MAX_OBSERVED_COMMAND_DURATION_MS: u64 = 24 * 60 * 60 * 1_000;
 const APPROVAL_CREDENTIAL_TTL_MS: u64 = 10 * 60 * 1_000;
 const MAX_AGENT_REPAIR_ATTEMPTS: u8 = 2;
 const MAX_AGENT_EVENTS_PER_TASK: usize = 128;
+const MAX_AGENT_AUDIT_EVENTS: usize = 1_000;
 const AGENT_RUNTIME_STATE_VERSION: u8 = 1;
 const AGENT_RUNTIME_STATE_FILE: &str = "ai-agent-runtime.json";
 
@@ -378,6 +379,18 @@ pub(crate) struct AgentTaskResult {
     stop_reason: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentTaskDiagnostics {
+    duration_ms: u64,
+    model_turn_count: u32,
+    plan_step_count: usize,
+    action_count: usize,
+    verification_evidence_count: usize,
+    repair_attempt_count: u8,
+    stop_reason: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentTaskContext {
@@ -417,6 +430,8 @@ pub(crate) struct AgentTask {
     repair_attempts: u8,
     repair_limit: u8,
     repair_stop_reason: Option<AgentRepairStopReason>,
+    #[serde(default)]
+    diagnostics: AgentTaskDiagnostics,
     last_event_sequence: u64,
     result: Option<AgentTaskResult>,
     error: Option<String>,
@@ -674,6 +689,23 @@ impl AgentTaskManager {
             .cloned()
             .collect())
     }
+
+    fn recent_events(&self, limit: usize) -> Result<Vec<AgentTaskEvent>, String> {
+        let events = self
+            .events
+            .lock()
+            .map_err(|_| "AI 事件状态不可用".to_string())?;
+        let mut recent = events
+            .values()
+            .flat_map(|queue| queue.iter().cloned())
+            .collect::<Vec<_>>();
+        recent.sort_by_key(|event| (event.task.updated_at, event.sequence));
+        let keep = limit.clamp(1, MAX_AGENT_AUDIT_EVENTS);
+        if recent.len() > keep {
+            recent.drain(..recent.len() - keep);
+        }
+        Ok(recent)
+    }
 }
 
 pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
@@ -916,6 +948,7 @@ impl AgentTask {
             repair_attempts: 0,
             repair_limit: MAX_AGENT_REPAIR_ATTEMPTS,
             repair_stop_reason: None,
+            diagnostics: AgentTaskDiagnostics::default(),
             last_event_sequence: 0,
             result: None,
             error: None,
@@ -987,6 +1020,7 @@ impl AgentTask {
     ) -> AgentTaskEvent {
         self.last_event_sequence = self.last_event_sequence.saturating_add(1);
         self.updated_at = timestamp_ms();
+        self.refresh_diagnostics();
         AgentTaskEvent {
             protocol_version: PROTOCOL_VERSION,
             sequence: self.last_event_sequence,
@@ -994,6 +1028,29 @@ impl AgentTask {
             action_id,
             task: self.clone(),
         }
+    }
+
+    fn refresh_diagnostics(&mut self) {
+        self.diagnostics = AgentTaskDiagnostics {
+            duration_ms: self.updated_at.saturating_sub(self.created_at),
+            model_turn_count: self.iteration,
+            plan_step_count: self.plan.as_ref().map_or(0, |plan| plan.steps.len()),
+            action_count: self.actions.len(),
+            verification_evidence_count: self
+                .actions
+                .iter()
+                .map(|action| action.verification_evidence.len())
+                .sum(),
+            repair_attempt_count: self.repair_attempts,
+            stop_reason: self
+                .repair_stop_reason
+                .map(|reason| match reason {
+                    AgentRepairStopReason::VerificationFailed => "verification_failed",
+                    AgentRepairStopReason::ActionFailed => "action_failed",
+                    AgentRepairStopReason::RepairBudgetExhausted => "repair_budget_exhausted",
+                })
+                .map(str::to_string),
+        };
     }
 
     fn has_unresolved_actions(&self) -> bool {
@@ -2659,6 +2716,16 @@ pub(crate) fn ai_task_events_since(
 }
 
 #[tauri::command]
+pub(crate) fn ai_task_audit_events(
+    manager: State<'_, AgentTaskManager>,
+    limit: Option<usize>,
+) -> CommandResult<Vec<AgentTaskEvent>> {
+    manager
+        .recent_events(limit.unwrap_or(MAX_AGENT_AUDIT_EVENTS))
+        .map_err(|error| CommandError::from_message("ai_task_audit_events", error))
+}
+
+#[tauri::command]
 pub(crate) fn ai_task_get(
     manager: State<'_, AgentTaskManager>,
     task_id: String,
@@ -2921,6 +2988,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2, 3]
         );
+        let recent = restored.recent_events(1).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].sequence, 3);
         assert_eq!(
             restored.begin_model_turn(&task_context).unwrap_err(),
             "应用重启前的 AI 任务仅供查看，请发起新任务"
@@ -3131,6 +3201,12 @@ mod tests {
         );
         assert_eq!(completed[2].kind, AgentTaskEventKind::TaskCompleted);
         assert!(completed[2].task.result.as_ref().unwrap().verified);
+        assert_eq!(completed[2].task.diagnostics.model_turn_count, 1);
+        assert_eq!(completed[2].task.diagnostics.action_count, 1);
+        assert_eq!(completed[2].task.diagnostics.plan_step_count, 0);
+        assert_eq!(completed[2].task.diagnostics.verification_evidence_count, 1);
+        assert_eq!(completed[2].task.diagnostics.repair_attempt_count, 0);
+        assert_eq!(completed[2].task.diagnostics.stop_reason, None);
         assert_eq!(
             completed[2]
                 .task

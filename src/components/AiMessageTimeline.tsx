@@ -85,7 +85,6 @@ interface AiMessageTimelineProps {
   onRejectCommand: (messageId: string, proposalId: string) => void;
   onRejectFileEdit: (messageId: string, proposalId: string) => void;
   onRejectFileOperation: (messageId: string, proposalId: string) => void;
-  onRerunTool: (messageId: string, run: AiToolRun) => void | Promise<void>;
   onRetryFileEdit: (messageId: string, proposalId: string) => void;
   onRetryFileOperation: (messageId: string, proposalId: string) => void;
   onRetryMessage: (messageIndex: number) => void;
@@ -230,7 +229,6 @@ function AiMessageTimeline({
   onRejectCommand,
   onRejectFileEdit,
   onRejectFileOperation,
-  onRerunTool,
   onRetryFileEdit,
   onRetryFileOperation,
   onRetryMessage,
@@ -276,13 +274,11 @@ function AiMessageTimeline({
                   onCancel={onCancelDiagnosticPlan}
                   onConfirm={onConfirmDiagnosticPlan}
                   onCopy={onCopyToolRun}
-                  onRerun={onRerunTool}
                   onStop={onStopDiagnosticPlan}
                   onToggleRun={onToggleToolRun}
                   plans={message.diagnosticPlans ?? []}
                   runs={message.toolRuns ?? []}
                   sending={sending}
-                  sessionAvailable={Boolean(sessionId)}
                 />
               )}
             {message.role === "assistant" &&
@@ -292,11 +288,9 @@ function AiMessageTimeline({
                 messageId={message.id}
                 onAddToDraft={onAddToolRunToDraft}
                 onCopy={onCopyToolRun}
-                onRerun={onRerunTool}
                 onToggle={onToggleToolRun}
                 runs={message.toolRuns?.filter((run) => !run.planId) ?? []}
                 sending={sending}
-                sessionAvailable={Boolean(sessionId)}
               />
             )}
             {message.role === "assistant" && (

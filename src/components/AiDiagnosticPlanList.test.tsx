@@ -53,13 +53,11 @@ function renderPlans(
         onCancel={onCancel}
         onConfirm={onConfirm}
         onCopy={() => undefined}
-        onRerun={() => undefined}
         onStop={onStop}
         onToggleRun={() => undefined}
         plans={[currentPlan]}
         runs={runs}
         sending
-        sessionAvailable
       />,
     ),
   };

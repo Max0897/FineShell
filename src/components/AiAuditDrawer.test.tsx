@@ -17,6 +17,7 @@ describe("AiAuditDrawer", () => {
         id: "audit-1",
         label: "读取服务器状态",
         occurredAt: "2026-07-28T09:00:00.000Z",
+        sequence: 1,
         status: "success" as const,
       },
     ]);

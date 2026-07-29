@@ -1314,6 +1314,14 @@ body.ai-sidebar-resizing::after {
   font-size: 11px;
 }
 
+.ai-task-diagnostics {
+  display: block;
+  margin: 0;
+  padding: 6px 10px;
+  border-top: 1px solid #f2f3f5;
+  font-size: 11px;
+}
+
 .ai-assistant-empty {
   justify-items: center;
   gap: 12px;

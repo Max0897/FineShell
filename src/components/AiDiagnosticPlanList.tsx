@@ -21,13 +21,11 @@ interface AiDiagnosticPlanListProps {
   onCancel: (planId: string) => void;
   onConfirm: (planId: string, selectedCallIds: string[]) => void;
   onCopy: (run: AiToolRun) => void | Promise<void>;
-  onRerun: (messageId: string, run: AiToolRun) => void | Promise<void>;
   onStop: (planId: string) => void;
   onToggleRun: (key: string) => void;
   plans: AiDiagnosticPlan[];
   runs: AiToolRun[];
   sending: boolean;
-  sessionAvailable: boolean;
 }
 
 function planStatus(plan: AiDiagnosticPlan) {
@@ -50,13 +48,11 @@ function AiDiagnosticPlanList({
   onCancel,
   onConfirm,
   onCopy,
-  onRerun,
   onStop,
   onToggleRun,
   plans,
   runs,
   sending,
-  sessionAvailable,
 }: AiDiagnosticPlanListProps) {
   const [excludedSteps, setExcludedSteps] = useState<Set<string>>(
     () => new Set(),
@@ -162,11 +158,9 @@ function AiDiagnosticPlanList({
                   messageId={messageId}
                   onAddToDraft={onAddToDraft}
                   onCopy={onCopy}
-                  onRerun={onRerun}
                   onToggle={onToggleRun}
                   runs={steps}
                   sending={sending}
-                  sessionAvailable={sessionAvailable}
                 />
                 {plan.status === "running" && (
                   <div className="ai-diagnostic-plan-actions">

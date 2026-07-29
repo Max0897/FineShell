@@ -211,30 +211,8 @@ export function aiToolTarget(call: AiToolCall): string | undefined {
   return target.trim();
 }
 
-export function aiToolRequiresConfirmation(name: string) {
-  return isAiReadOnlyToolName(name) && TARGET_TOOLS.has(name);
-}
-
 export function aiToolLabel(name: string) {
   return isAiReadOnlyToolName(name) ? TOOL_LABELS[name] : "未知只读工具";
-}
-
-export function createAiToolRun(
-  call: AiToolCall,
-  startedAt = Date.now(),
-  status: "pending" | "running" = "running",
-): AiToolRun {
-  if (!isAiReadOnlyToolName(call.name)) {
-    throw new Error(`AI 请求了不支持的工具：${call.name}`);
-  }
-  return {
-    callId: call.id,
-    detail: aiToolTarget(call),
-    label: aiToolLabel(call.name),
-    name: call.name,
-    startedAt,
-    status,
-  };
 }
 
 export function finishAiToolRun(
@@ -254,25 +232,6 @@ export function finishAiToolRun(
     error,
     summary,
     status: completion.status ?? (error ? "failed" : "success"),
-  };
-}
-
-export function restartAiToolRun(run: AiToolRun, startedAt = Date.now()) {
-  return {
-    ...run,
-    durationMs: undefined,
-    error: undefined,
-    summary: undefined,
-    startedAt,
-    status: "running" as const,
-  };
-}
-
-export function aiToolCallFromRun(run: AiToolRun): AiToolCall {
-  return {
-    id: run.callId,
-    name: run.name,
-    arguments: run.detail ? JSON.stringify({ target: run.detail }) : "{}",
   };
 }
 
