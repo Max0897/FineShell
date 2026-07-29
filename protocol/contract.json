@@ -1,5 +1,5 @@
 {
-  "version": 16,
+  "version": 17,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -25,6 +25,7 @@
     "ai_task_get": true,
     "ai_task_plan_decide": true,
     "ai_task_action_transition": true,
+    "ai_task_action_execute": true,
     "managed_ssh_key_import": true,
     "managed_ssh_key_delete": true,
     "diagnostic_set_level": true,

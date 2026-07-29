@@ -306,6 +306,13 @@ impl SshSessionManager {
         ))
     }
 
+    pub(crate) fn write(&self, session_id: &str, data: Vec<u8>) -> Result<(), String> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        self.send(session_id, SessionCommand::Write(data))
+    }
+
     fn begin_connect(&self, session_id: &str) -> Result<Arc<AtomicBool>, String> {
         let mut sessions = self
             .sessions
@@ -2150,10 +2157,7 @@ pub(crate) fn ssh_write(
     session_id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
-    if data.is_empty() {
-        return Ok(());
-    }
-    manager.send(&session_id, SessionCommand::Write(data))
+    manager.write(&session_id, data)
 }
 
 #[tauri::command]

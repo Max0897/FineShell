@@ -161,6 +161,19 @@ export interface AgentActionTransitionRequest {
   error?: string;
 }
 
+export interface AgentActionExecutionResult {
+  actionId: string;
+  actionType: "file_edit" | "file_operation" | "terminal_command";
+  file: {
+    path: string;
+    content: string;
+    size: number;
+    modifiedAt: number | null;
+    permissions: number | null;
+  } | null;
+  affectedPaths: string[];
+}
+
 export interface AgentTaskResult {
   summary: string;
   verified: boolean;
@@ -173,6 +186,12 @@ export interface AgentTaskContext {
   hostId: string;
   terminalSessionId?: string;
   currentDirectory?: string;
+  fileOperationDirectory?: string;
+  writableFiles: Array<{
+    path: string;
+    content: string;
+    size: number;
+  }>;
   objective: string;
   approvalMode: AgentApprovalMode;
 }

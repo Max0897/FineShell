@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import type { AiActionTransitionHandler } from "../ai-action-lifecycle";
 import {
   markAiCommandProposalInserted,
   markAiCommandProposalVerified,
@@ -30,8 +29,10 @@ interface UseAiCommandActionsOptions {
   hostId: string | null;
   onConfirm: (confirmation: AiCommandConfirmation) => void;
   onCopyText: (value: string) => Promise<void>;
-  onInsertCommand: (command: string) => Promise<void>;
-  onActionTransition: AiActionTransitionHandler;
+  onPrepareCommand: (
+    messageId: string,
+    proposal: AiCommandProposal,
+  ) => Promise<void>;
   onNotice: (type: AiCommandNotice, content: string) => void;
   sessionId: string | null;
   setDraft: (conversationId: string, value: string) => void;
@@ -55,8 +56,7 @@ export function useAiCommandActions({
   hostId,
   onConfirm,
   onCopyText,
-  onInsertCommand,
-  onActionTransition,
+  onPrepareCommand,
   onNotice,
   sessionId,
   setDraft,
@@ -90,23 +90,13 @@ export function useAiCommandActions({
   ) => {
     if (proposal.status !== "pending") return;
     try {
-      await onActionTransition(messageId, proposal.id, "approve", {
-        summary: "用户批准将命令填入终端",
-      });
-      await onInsertCommand(proposal.command);
+      await onPrepareCommand(messageId, proposal);
       updateCommandProposal(
         messageId,
         proposal.id,
         markAiCommandProposalInserted,
       );
     } catch (error) {
-      try {
-        await onActionTransition(messageId, proposal.id, "fail", {
-          error: commandErrorMessage(error),
-        });
-      } catch {
-        // The original insertion error is more useful to the user.
-      }
       onNotice("error", commandErrorMessage(error));
     }
   };

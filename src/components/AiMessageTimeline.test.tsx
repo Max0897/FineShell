@@ -32,7 +32,6 @@ function renderTimeline(
         onCopyToolRun={() => undefined}
         onCancelDiagnosticPlan={() => undefined}
         onConfirmDiagnosticPlan={() => undefined}
-        onInsertCommand={async () => undefined}
         onInsertCommandProposal={() => undefined}
         onOpenFileEditReview={() => undefined}
         onOpenFileOperationReview={() => undefined}
@@ -91,5 +90,19 @@ describe("AiMessageTimeline", () => {
     expect(screen.getByText("检查服务器负载")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     expect(view.onRetryMessage).toHaveBeenCalledWith(1);
+  });
+
+  test("keeps unregistered markdown commands copy-only", () => {
+    renderTimeline([
+      {
+        content: "```bash\nsystemctl restart nginx\n```",
+        id: "assistant-1",
+        role: "assistant",
+      },
+    ]);
+
+    expect(screen.getByRole("button", { name: "复制代码" })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "填入终端" })).toBeNull();
+    expect(screen.getByText("仅供查看")).not.toBeNull();
   });
 });

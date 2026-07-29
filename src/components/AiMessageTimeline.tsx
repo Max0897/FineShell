@@ -7,7 +7,6 @@ import {
 import {
   Button,
   Message,
-  Modal,
   Space,
   Spin,
   Tag,
@@ -34,7 +33,6 @@ import {
   type AiPromptPresetId,
 } from "../ai-presets";
 import type { AiToolRun } from "../ai-tools";
-import { assessAiTerminalCommand } from "../ai-utils";
 import type { AiMessage } from "../hooks/useAiConversations";
 import { commandErrorMessage } from "../tauri-protocol";
 import AiCommandProposalList from "./AiCommandProposalList";
@@ -70,7 +68,6 @@ interface AiMessageTimelineProps {
     planId: string,
     selectedCallIds: string[],
   ) => void;
-  onInsertCommand: (command: string) => Promise<void>;
   onInsertCommandProposal: (
     messageId: string,
     proposal: AiCommandProposal,
@@ -154,14 +151,10 @@ function promptPresetIcon(id: AiPromptPresetId) {
 
 function AiMarkdown({
   children,
-  canInsertCommand,
   onCopyCode,
-  onInsertCommand,
 }: {
   children: string;
-  canInsertCommand: boolean;
   onCopyCode: (value: string) => Promise<void>;
-  onInsertCommand: (command: string) => Promise<void>;
 }) {
   return (
     <ReactMarkdown
@@ -170,50 +163,13 @@ function AiMarkdown({
           const command = textContent(codeNode).trim();
           const language = codeLanguage(codeNode);
           const isCommand = isShellLanguage(language);
-          const assessment = isCommand
-            ? assessAiTerminalCommand(command)
-            : {
-                canInsert: false,
-                label: language || "代码",
-                risk: "safe" as const,
-              };
-          const riskColor =
-            assessment.risk === "danger"
-              ? "red"
-              : assessment.risk === "caution"
-                ? "orange"
-                : "green";
-          const insert = () =>
-            onInsertCommand(command).catch((error) =>
-              Message.error(commandErrorMessage(error)),
-            );
-          const confirmInsert = () => {
-            if (assessment.risk === "safe") {
-              void insert();
-              return;
-            }
-            Modal.confirm({
-              content:
-                assessment.reason ?? "请确认命令内容及其影响后再填入终端。",
-              okButtonProps:
-                assessment.risk === "danger"
-                  ? { status: "danger" }
-                  : undefined,
-              okText: "确认填入",
-              onOk: insert,
-              title:
-                assessment.risk === "danger"
-                  ? "确认填入高风险命令"
-                  : "确认填入命令",
-            });
-          };
           return (
             <div className="ai-code-block">
               <div className="ai-code-block-header">
                 <span className="ai-code-block-label">
                   {isCommand ? "命令建议" : "代码"}
-                  <Tag color={riskColor} size="small">
-                    {assessment.label}
+                  <Tag size="small">
+                    {isCommand ? "仅供查看" : language || "代码"}
                   </Tag>
                 </span>
                 <Space size="mini">
@@ -232,20 +188,6 @@ function AiMarkdown({
                       type="text"
                     />
                   </Tooltip>
-                  {isCommand && (
-                    <Tooltip content={assessment.reason || "只填入，不会执行"}>
-                      <Button
-                        disabled={
-                          !canInsertCommand || !command || !assessment.canInsert
-                        }
-                        onClick={confirmInsert}
-                        size="mini"
-                        type="text"
-                      >
-                        填入终端
-                      </Button>
-                    </Tooltip>
-                  )}
                 </Space>
               </div>
               <pre>{codeNode}</pre>
@@ -279,7 +221,6 @@ function AiMessageTimeline({
   onCopyToolRun,
   onCancelDiagnosticPlan,
   onConfirmDiagnosticPlan,
-  onInsertCommand,
   onInsertCommandProposal,
   onOpenFileEditReview,
   onOpenFileOperationReview,
@@ -423,9 +364,7 @@ function AiMessageTimeline({
                 <>
                   {message.content ? (
                     <AiMarkdown
-                      canInsertCommand={canInsertCommand}
                       onCopyCode={onCopyCode}
-                      onInsertCommand={onInsertCommand}
                     >
                       {message.content}
                     </AiMarkdown>

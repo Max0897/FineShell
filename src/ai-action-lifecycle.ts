@@ -1,4 +1,7 @@
-import type { AgentActionTransition } from "./tauri-protocol";
+import type {
+  AgentActionExecutionResult,
+  AgentActionTransition,
+} from "./tauri-protocol";
 
 export interface AiActionTransitionDetail {
   error?: string;
@@ -11,3 +14,10 @@ export type AiActionTransitionHandler = (
   transition: AgentActionTransition,
   detail?: AiActionTransitionDetail,
 ) => Promise<void>;
+
+export type AiActionExecutionHandler = (
+  messageId: string,
+  actionId: string,
+  rollback?: boolean,
+  contentOverride?: string,
+) => Promise<AgentActionExecutionResult>;

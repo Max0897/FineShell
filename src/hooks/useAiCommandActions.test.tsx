@@ -1,7 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { AiCommandProposal } from "../ai-command-proposals";
-import type { AiActionTransitionHandler } from "../ai-action-lifecycle";
 import type { AiContextSource } from "../ai-utils";
 import {
   useAiCommandActions,
@@ -30,16 +29,15 @@ function proposal(
 function renderActions(options?: {
   contextSources?: AiContextSource[];
   onConfirm?: (confirmation: AiCommandConfirmation) => void;
-  onInsertCommand?: (command: string) => Promise<void>;
-  onActionTransition?: AiActionTransitionHandler;
+  onPrepareCommand?: (
+    messageId: string,
+    proposal: AiCommandProposal,
+  ) => Promise<void>;
 }) {
-  const onInsertCommand = mock(
-    options?.onInsertCommand ?? (async () => undefined),
+  const onPrepareCommand = mock(
+    options?.onPrepareCommand ?? (async () => undefined),
   );
   const onNotice = mock(() => undefined);
-  const onActionTransition = mock(
-    options?.onActionTransition ?? (async () => undefined),
-  );
   const setDraft = mock((_conversationId: string, _value: string) => undefined);
   const updateCommandProposal = mock(
     (
@@ -64,8 +62,7 @@ function renderActions(options?: {
       hostId: "host-1",
       onConfirm: options?.onConfirm ?? (() => undefined),
       onCopyText: async () => undefined,
-      onInsertCommand,
-      onActionTransition,
+      onPrepareCommand,
       onNotice,
       sessionId: "session-1",
       setDraft,
@@ -75,8 +72,7 @@ function renderActions(options?: {
   );
   return {
     ...hook,
-    onInsertCommand,
-    onActionTransition,
+    onPrepareCommand,
     onNotice,
     setDraft,
     updateCommandProposal,
@@ -92,15 +88,9 @@ describe("useAiCommandActions", () => {
     act(() => {
       view.result.current.confirmInsertCommandProposal("assistant-1", value);
     });
-    await waitFor(() => expect(view.onInsertCommand).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(view.onPrepareCommand).toHaveBeenCalledTimes(1));
 
-    expect(view.onInsertCommand).toHaveBeenCalledWith(value.command);
-    expect(view.onActionTransition).toHaveBeenCalledWith(
-      "assistant-1",
-      value.id,
-      "approve",
-      { summary: "用户批准将命令填入终端" },
-    );
+    expect(view.onPrepareCommand).toHaveBeenCalledWith("assistant-1", value);
     expect(view.updateCommandProposal).toHaveBeenCalledWith(
       "assistant-1",
       value.id,
@@ -120,7 +110,7 @@ describe("useAiCommandActions", () => {
     act(() => {
       view.result.current.confirmInsertCommandProposal("assistant-1", value);
     });
-    expect(view.onInsertCommand).not.toHaveBeenCalled();
+    expect(view.onPrepareCommand).not.toHaveBeenCalled();
     expect(confirmation).toEqual(
       expect.objectContaining({ danger: true, title: "确认填入高风险命令" }),
     );
@@ -128,7 +118,7 @@ describe("useAiCommandActions", () => {
     await act(async () => {
       await confirmation?.onConfirm();
     });
-    expect(view.onInsertCommand).toHaveBeenCalledWith(value.command);
+    expect(view.onPrepareCommand).toHaveBeenCalledWith("assistant-1", value);
   });
 
   test("prepares and completes verification for the matching conversation", async () => {

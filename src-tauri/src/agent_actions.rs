@@ -215,7 +215,7 @@ pub(crate) fn proposal_action_intent(
                 tool,
                 json!({ "command": command, "purpose": purpose }),
                 purpose,
-                "在当前终端会话中填入并执行命令",
+                "在当前终端会话中填入命令，等待用户手动提交",
                 AgentActionRisk::Elevated,
             )
         }

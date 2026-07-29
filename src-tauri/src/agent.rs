@@ -8,9 +8,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::watch;
 
+use crate::agent_actions::normalize_remote_action_path;
 use crate::agent_approvals::{
     action_fingerprint, ApprovalCredential, ApprovalCredentialStore, ApprovalScope,
 };
+use crate::agent_policy::{registered_action_policy, PolicyDecision};
 use crate::protocol::{CommandError, CommandResult, AGENT_TASK_EVENT, PROTOCOL_VERSION};
 
 const MAX_AGENT_TASKS: usize = 100;
@@ -18,6 +20,9 @@ const MAX_AGENT_ID_CHARS: usize = 160;
 const MAX_AGENT_OBJECTIVE_CHARS: usize = 24_000;
 const MAX_AGENT_ACTIONS: usize = 24;
 const MAX_AGENT_ACTION_MESSAGE_CHARS: usize = 500;
+const MAX_AGENT_WRITABLE_FILES: usize = 8;
+const MAX_AGENT_WRITABLE_FILE_BYTES: usize = 256 * 1024;
+const MAX_AGENT_WRITABLE_FILES_BYTES: usize = 512 * 1024;
 const APPROVAL_CREDENTIAL_TTL_MS: u64 = 10 * 60 * 1_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -121,6 +126,14 @@ pub(crate) struct AgentActionIntent {
     pub(crate) risk: AgentActionRisk,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct AgentWritableFile {
+    path: String,
+    content: String,
+    size: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentActionStatus {
@@ -200,6 +213,10 @@ pub(crate) struct AgentTaskContext {
     host_id: String,
     terminal_session_id: Option<String>,
     current_directory: Option<String>,
+    #[serde(default)]
+    file_operation_directory: Option<String>,
+    #[serde(default)]
+    writable_files: Vec<AgentWritableFile>,
     objective: String,
     approval_mode: AgentApprovalMode,
 }
@@ -212,6 +229,10 @@ pub(crate) struct AgentTask {
     host_id: String,
     terminal_session_id: Option<String>,
     current_directory: Option<String>,
+    #[serde(skip_serializing)]
+    file_operation_directory: Option<String>,
+    #[serde(skip_serializing)]
+    writable_files: Vec<AgentWritableFile>,
     approval_mode: AgentApprovalMode,
     status: AgentTaskStatus,
     objective: String,
@@ -350,11 +371,22 @@ pub(crate) enum AgentActionTransition {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentActionTransitionRequest {
-    task_id: String,
-    action_id: String,
-    transition: AgentActionTransition,
-    summary: Option<String>,
-    error: Option<String>,
+    pub(crate) task_id: String,
+    pub(crate) action_id: String,
+    pub(crate) transition: AgentActionTransition,
+    pub(crate) summary: Option<String>,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AuthorizedAgentAction {
+    pub(crate) task_id: String,
+    pub(crate) action_id: String,
+    pub(crate) tool: String,
+    pub(crate) arguments: serde_json::Value,
+    pub(crate) session_id: String,
+    pub(crate) rollback: bool,
+    pub(crate) prepares_command: bool,
 }
 
 pub(crate) fn timestamp_ms() -> u64 {
@@ -368,6 +400,13 @@ pub(crate) fn timestamp_ms() -> u64 {
 
 fn valid_identifier(value: &str) -> bool {
     !value.trim().is_empty() && value.chars().count() <= MAX_AGENT_ID_CHARS
+}
+
+fn remote_parent_path(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(0) | None => "/",
+        Some(index) => &path[..index],
+    }
 }
 
 fn bounded_action_message(value: Option<String>) -> Result<Option<String>, String> {
@@ -419,8 +458,35 @@ impl AgentTaskContext {
                     || value.chars().count() > 1_024
                     || value.chars().any(char::is_control)
             })
+            || self
+                .file_operation_directory
+                .as_deref()
+                .is_some_and(|value| {
+                    normalize_remote_action_path(value).as_deref() != Ok(value)
+                        || self.current_directory.as_deref() != Some(value)
+                })
         {
             return Err("AI 任务作用域无效".to_string());
+        }
+        if self.writable_files.len() > MAX_AGENT_WRITABLE_FILES {
+            return Err("AI 任务可写文件数量超过限制".to_string());
+        }
+        let mut paths = std::collections::HashSet::new();
+        let mut total_bytes = 0_usize;
+        for file in &self.writable_files {
+            let content_bytes = file.content.len();
+            if normalize_remote_action_path(&file.path).as_deref() != Ok(file.path.as_str())
+                || !paths.insert(file.path.as_str())
+                || content_bytes > MAX_AGENT_WRITABLE_FILE_BYTES
+                || file.content.contains('\0')
+                || u64::try_from(content_bytes).ok() != Some(file.size)
+            {
+                return Err("AI 任务可写文件快照无效".to_string());
+            }
+            total_bytes = total_bytes.saturating_add(content_bytes);
+        }
+        if total_bytes > MAX_AGENT_WRITABLE_FILES_BYTES {
+            return Err("AI 任务可写文件总大小超过限制".to_string());
         }
         let objective = self.objective.trim();
         if objective.is_empty() || objective.chars().count() > MAX_AGENT_OBJECTIVE_CHARS {
@@ -435,6 +501,8 @@ impl AgentTaskContext {
             && self.host_id == task.host_id
             && self.terminal_session_id == task.terminal_session_id
             && self.current_directory == task.current_directory
+            && self.file_operation_directory == task.file_operation_directory
+            && self.writable_files == task.writable_files
             && self.approval_mode == task.approval_mode
             && self.objective.trim() == task.objective
     }
@@ -449,6 +517,8 @@ impl AgentTask {
             host_id: context.host_id.clone(),
             terminal_session_id: context.terminal_session_id.clone(),
             current_directory: context.current_directory.clone(),
+            file_operation_directory: context.file_operation_directory.clone(),
+            writable_files: context.writable_files.clone(),
             approval_mode: context.approval_mode,
             status: AgentTaskStatus::Understanding,
             objective: context.objective.trim().to_string(),
@@ -528,6 +598,91 @@ impl AgentTask {
             verified: !has_failure && !self.actions.is_empty(),
             stop_reason: None,
         });
+    }
+
+    fn trusted_execution_arguments(
+        &self,
+        intent: &AgentActionIntent,
+    ) -> Result<serde_json::Value, String> {
+        let arguments = intent
+            .arguments
+            .as_object()
+            .ok_or_else(|| "AI 动作参数无效".to_string())?;
+        match intent.tool.as_str() {
+            "propose_file_edit" => {
+                let path = arguments
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "AI 文件修改路径无效".to_string())?;
+                let content = arguments
+                    .get("content")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "AI 文件修改内容无效".to_string())?;
+                let original = self
+                    .writable_files
+                    .iter()
+                    .find(|file| file.path == path)
+                    .ok_or_else(|| "AI 文件修改不在本次可写边界中".to_string())?;
+                if original.content == content {
+                    return Err("AI 文件修改没有产生变化".to_string());
+                }
+                Ok(serde_json::json!({
+                    "content": content,
+                    "originalContent": original.content,
+                    "path": path,
+                }))
+            }
+            "propose_file_operation" => {
+                let operation = arguments
+                    .get("operation")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "AI 文件操作类型无效".to_string())?;
+                let path = arguments
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "AI 文件操作路径无效".to_string())?;
+                match operation {
+                    "create" => {
+                        if self.file_operation_directory.as_deref()
+                            != Some(remote_parent_path(path))
+                        {
+                            return Err("AI 新建文件不在本次可写目录中".to_string());
+                        }
+                        Ok(intent.arguments.clone())
+                    }
+                    "rename" | "delete" => {
+                        let original = self
+                            .writable_files
+                            .iter()
+                            .find(|file| file.path == path)
+                            .ok_or_else(|| "AI 文件操作不在本次可写边界中".to_string())?;
+                        if operation == "rename" {
+                            let target_path = arguments
+                                .get("targetPath")
+                                .and_then(serde_json::Value::as_str)
+                                .ok_or_else(|| "AI 重命名目标路径无效".to_string())?;
+                            if remote_parent_path(target_path) != remote_parent_path(path) {
+                                return Err("AI 重命名目标必须与源文件位于同一目录".to_string());
+                            }
+                        }
+                        let mut trusted = arguments.clone();
+                        trusted.insert(
+                            "expectedContent".to_string(),
+                            serde_json::Value::String(original.content.clone()),
+                        );
+                        Ok(serde_json::Value::Object(trusted))
+                    }
+                    _ => Err("AI 文件操作类型无效".to_string()),
+                }
+            }
+            "propose_terminal_command" => {
+                if self.terminal_session_id.is_none() {
+                    return Err("AI 终端命令缺少绑定会话".to_string());
+                }
+                Ok(intent.arguments.clone())
+            }
+            _ => Err("AI 动作不在可信执行注册表中".to_string()),
+        }
     }
 }
 
@@ -652,7 +807,10 @@ impl AgentTaskManager {
         let mut events = Vec::with_capacity(intents.len());
         for intent in intents {
             let action_id = intent.id.clone();
-            task.actions.push(AgentActionState::from_intent(intent));
+            let arguments = task.trusted_execution_arguments(&intent)?;
+            let mut action = AgentActionState::from_intent(intent);
+            action.arguments = arguments;
+            task.actions.push(action);
             task.refresh_action_status();
             events.push(task.action_event(AgentTaskEventKind::ActionProposed, &action_id));
         }
@@ -870,6 +1028,166 @@ impl AgentTaskManager {
             self.revoke_task_approvals(&task_id)?;
         }
         Ok(events)
+    }
+
+    pub(crate) fn authorize_action_execution(
+        &self,
+        task_id: &str,
+        action_id: &str,
+        rollback: bool,
+        user_confirmed: bool,
+        content_override: Option<String>,
+    ) -> Result<(AuthorizedAgentAction, Vec<AgentTaskEvent>), String> {
+        if !valid_identifier(task_id) || !valid_identifier(action_id) {
+            return Err("AI 动作作用域无效".to_string());
+        }
+        let (mut execution, approval_mode, risk, host_id, current_directory) = {
+            let tasks = self
+                .tasks
+                .lock()
+                .map_err(|_| "AI 任务状态不可用".to_string())?;
+            let task = tasks
+                .get(task_id)
+                .ok_or_else(|| "AI 任务不存在".to_string())?;
+            if matches!(
+                task.status,
+                AgentTaskStatus::Failed | AgentTaskStatus::Cancelled
+            ) {
+                return Err("AI 任务已经结束".to_string());
+            }
+            let action = task
+                .actions
+                .iter()
+                .find(|action| action.id == action_id)
+                .ok_or_else(|| "AI 动作不存在".to_string())?;
+            let prepares_command = action.tool == "propose_terminal_command";
+            if rollback && prepares_command {
+                return Err("终端命令不能通过文件回滚流程撤销".to_string());
+            }
+            if rollback {
+                if action.status != AgentActionStatus::Succeeded {
+                    return Err("AI 动作当前不能回滚".to_string());
+                }
+            } else if prepares_command {
+                if action.status != AgentActionStatus::Pending {
+                    return Err("AI 命令当前不能再次填入".to_string());
+                }
+            } else if !matches!(
+                action.status,
+                AgentActionStatus::Pending | AgentActionStatus::Approved
+            ) {
+                return Err("AI 动作当前不能执行".to_string());
+            }
+            let session_id = task
+                .terminal_session_id
+                .clone()
+                .ok_or_else(|| "AI 动作缺少绑定会话".to_string())?;
+            (
+                AuthorizedAgentAction {
+                    task_id: task_id.to_string(),
+                    action_id: action_id.to_string(),
+                    tool: action.tool.clone(),
+                    arguments: action.arguments.clone(),
+                    session_id,
+                    rollback,
+                    prepares_command,
+                },
+                task.approval_mode,
+                action.risk,
+                task.host_id.clone(),
+                task.current_directory.clone(),
+            )
+        };
+        let has_content_override = if let Some(content) = content_override {
+            if rollback || execution.tool != "propose_file_edit" {
+                return Err("只有待应用的文件修改可以调整最终内容".to_string());
+            }
+            if content.len() > MAX_AGENT_WRITABLE_FILE_BYTES || content.contains('\0') {
+                return Err("AI 文件修改的最终内容无效".to_string());
+            }
+            let original = execution
+                .arguments
+                .get("originalContent")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "AI 文件修改缺少可信原始快照".to_string())?;
+            if content == original {
+                return Err("AI 文件修改没有产生变化".to_string());
+            }
+            execution.arguments["content"] = serde_json::Value::String(content);
+            true
+        } else {
+            false
+        };
+        let policy = registered_action_policy(approval_mode, &execution.tool, risk);
+        match policy.decision {
+            PolicyDecision::Deny => return Err(policy.reason),
+            PolicyDecision::Prompt if !user_confirmed => {
+                return Err("该 AI 动作需要本次用户审批".to_string());
+            }
+            PolicyDecision::Allow | PolicyDecision::Prompt => {}
+        }
+        if policy.decision == PolicyDecision::Prompt {
+            let direction = if rollback { "rollback" } else { "apply" };
+            let fingerprint_arguments = serde_json::json!({
+                "arguments": execution.arguments,
+                "direction": direction,
+            });
+            let scope = ApprovalScope {
+                task_id: task_id.to_string(),
+                plan_id: format!("action:{action_id}:{direction}"),
+                call_id: action_id.to_string(),
+                host_id,
+                session_id: Some(execution.session_id.clone()),
+                current_directory,
+                action_fingerprint: action_fingerprint(&execution.tool, &fingerprint_arguments)?,
+            };
+            let mut credentials = self
+                .approval_credentials
+                .lock()
+                .map_err(|_| "AI 审批凭证状态不可用".to_string())?;
+            let credential =
+                credentials.issue(scope.clone(), timestamp_ms(), APPROVAL_CREDENTIAL_TTL_MS)?;
+            credentials.consume(&credential, &scope, timestamp_ms())?;
+        }
+        if has_content_override {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .map_err(|_| "AI 任务状态不可用".to_string())?;
+            let action = tasks
+                .get_mut(task_id)
+                .and_then(|task| {
+                    task.actions
+                        .iter_mut()
+                        .find(|action| action.id == action_id)
+                })
+                .ok_or_else(|| "AI 动作不存在".to_string())?;
+            action.arguments = execution.arguments.clone();
+        }
+        let transition = if rollback {
+            AgentActionTransition::RollbackStart
+        } else if execution.prepares_command {
+            AgentActionTransition::Approve
+        } else {
+            AgentActionTransition::Start
+        };
+        let summary = if rollback {
+            "用户确认回滚该动作"
+        } else if execution.prepares_command {
+            "用户批准将命令填入终端"
+        } else if policy.decision == PolicyDecision::Allow {
+            "审批策略允许执行该动作"
+        } else {
+            "用户批准执行该动作"
+        };
+        let events = self.transition_action(AgentActionTransitionRequest {
+            task_id: task_id.to_string(),
+            action_id: action_id.to_string(),
+            transition,
+            summary: Some(summary.to_string()),
+            error: None,
+        })?;
+        Ok((execution, events))
     }
 
     pub(crate) fn set_plan(
@@ -1332,7 +1650,7 @@ mod tests {
         AgentActionTransitionRequest, AgentApprovalMode, AgentPlan, AgentPlanDecision,
         AgentPlanDecisionKind, AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep,
         AgentPlanStepStatus, AgentTaskContext, AgentTaskEventKind, AgentTaskManager,
-        AgentTaskStatus,
+        AgentTaskStatus, AgentWritableFile,
     };
     use crate::agent_approvals::ApprovalScope;
 
@@ -1343,6 +1661,12 @@ mod tests {
             host_id: "host-1".to_string(),
             terminal_session_id: Some("session-1".to_string()),
             current_directory: Some("/srv/app".to_string()),
+            file_operation_directory: Some("/srv/app".to_string()),
+            writable_files: vec![AgentWritableFile {
+                path: "/etc/nginx.conf".to_string(),
+                content: "server { listen 80; }".to_string(),
+                size: 21,
+            }],
             objective: "检查服务器状态".to_string(),
             approval_mode: AgentApprovalMode::OnRequest,
         }
@@ -1400,6 +1724,35 @@ mod tests {
             }),
             reason: "修改 Nginx 配置".to_string(),
             expected_effect: "替换远程配置文件".to_string(),
+            risk: AgentActionRisk::ReversibleWrite,
+        }
+    }
+
+    fn terminal_command_intent() -> AgentActionIntent {
+        AgentActionIntent {
+            id: "command-1".to_string(),
+            tool: "propose_terminal_command".to_string(),
+            arguments: serde_json::json!({
+                "command": "systemctl status nginx",
+                "purpose": "检查 Nginx 状态",
+            }),
+            reason: "需要检查服务状态".to_string(),
+            expected_effect: "将命令填入绑定的终端".to_string(),
+            risk: AgentActionRisk::Elevated,
+        }
+    }
+
+    fn rename_intent(target_path: &str) -> AgentActionIntent {
+        AgentActionIntent {
+            id: "rename-1".to_string(),
+            tool: "propose_file_operation".to_string(),
+            arguments: serde_json::json!({
+                "operation": "rename",
+                "path": "/etc/nginx.conf",
+                "targetPath": target_path,
+            }),
+            reason: "重命名 Nginx 配置".to_string(),
+            expected_effect: "重命名远程配置文件".to_string(),
             risk: AgentActionRisk::ReversibleWrite,
         }
     }
@@ -1469,6 +1822,8 @@ mod tests {
         );
         let serialized = serde_json::to_value(&proposed[0].task).unwrap();
         assert!(serialized["actions"][0].get("arguments").is_none());
+        assert!(serialized.get("writableFiles").is_none());
+        assert!(serialized.get("fileOperationDirectory").is_none());
 
         let model_completed = manager.finish_model_turn("task-1", false).unwrap();
         assert_eq!(
@@ -1537,6 +1892,92 @@ mod tests {
         assert_eq!(
             rolled_back[1].task.actions[0].status,
             AgentActionStatus::RolledBack
+        );
+    }
+
+    #[test]
+    fn trusted_file_execution_requires_confirmation_and_uses_private_snapshot() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        manager
+            .register_actions("task-1", vec![file_edit_intent()])
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .authorize_action_execution("task-1", "edit-1", false, false, None)
+                .unwrap_err(),
+            "该 AI 动作需要本次用户审批"
+        );
+
+        let (action, events) = manager
+            .authorize_action_execution(
+                "task-1",
+                "edit-1",
+                false,
+                true,
+                Some("server { listen 443; }".to_string()),
+            )
+            .unwrap();
+        assert_eq!(action.arguments["path"], "/etc/nginx.conf");
+        assert_eq!(action.arguments["content"], "server { listen 443; }");
+        assert_eq!(action.arguments["originalContent"], "server { listen 80; }");
+        assert_eq!(events[0].kind, AgentTaskEventKind::ActionApproved);
+        assert_eq!(events[1].kind, AgentTaskEventKind::ActionStarted);
+        assert_eq!(events[1].task.actions[0].status, AgentActionStatus::Running);
+        assert!(manager
+            .authorize_action_execution("task-1", "edit-1", false, true, None)
+            .is_err());
+
+        manager
+            .transition_action(transition(AgentActionTransition::Succeed))
+            .unwrap();
+        let (rollback, _) = manager
+            .authorize_action_execution("task-1", "edit-1", true, true, None)
+            .unwrap();
+        assert_eq!(rollback.arguments["content"], "server { listen 443; }");
+    }
+
+    #[test]
+    fn trusted_file_scope_rejects_cross_directory_rename() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        assert_eq!(
+            manager
+                .register_actions("task-1", vec![rename_intent("/tmp/nginx.conf")])
+                .unwrap_err(),
+            "AI 重命名目标必须与源文件位于同一目录"
+        );
+        assert!(manager
+            .register_actions("task-1", vec![rename_intent("/etc/nginx.backup")])
+            .is_ok());
+    }
+
+    #[test]
+    fn terminal_commands_still_require_confirmation_in_full_access_mode() {
+        let manager = AgentTaskManager::default();
+        let mut full_access = context();
+        full_access.approval_mode = AgentApprovalMode::FullAccess;
+        manager.begin_model_turn(&full_access).unwrap();
+        manager
+            .register_actions("task-1", vec![terminal_command_intent()])
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .authorize_action_execution("task-1", "command-1", false, false, None)
+                .unwrap_err(),
+            "该 AI 动作需要本次用户审批"
+        );
+        let (action, events) = manager
+            .authorize_action_execution("task-1", "command-1", false, true, None)
+            .unwrap();
+        assert!(action.prepares_command);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, AgentTaskEventKind::ActionApproved);
+        assert_eq!(
+            events[0].task.actions[0].status,
+            AgentActionStatus::Approved
         );
     }
 

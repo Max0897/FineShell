@@ -2,13 +2,9 @@ import { useState } from "react";
 import { describe, expect, mock, test } from "bun:test";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { AiFileEditProposal } from "../ai-file-edits";
-import type { AiActionTransitionHandler } from "../ai-action-lifecycle";
-import type {
-  AiFileOperationExecutionRequest,
-  AiFileOperationProposal,
-  AiFileOperationResult,
-} from "../ai-file-operations";
+import type { AiFileOperationProposal } from "../ai-file-operations";
 import type { AiRemoteFileContext } from "../ai-utils";
+import type { AgentActionExecutionResult } from "../tauri-protocol";
 import type { AiMessage } from "./useAiConversations";
 import {
   useAiFileChangeWorkflow,
@@ -69,33 +65,20 @@ function assistantMessage(
 
 interface HarnessOptions {
   initialMessages: AiMessage[];
-  onApplyRemoteFileEdit: (
-    sessionId: string,
-    file: AiRemoteFileContext,
-    content: string,
-  ) => Promise<AiRemoteFileContext>;
-  onApplyRemoteFileOperation: (
-    sessionId: string,
-    request: {
-      content?: string;
-      expectedContent?: string;
-      operation: "create" | "rename" | "delete";
-      path: string;
-      targetPath?: string;
-    },
-  ) => Promise<AiFileOperationResult>;
+  onExecuteAction: (
+    messageId: string,
+    actionId: string,
+    rollback?: boolean,
+  ) => Promise<AgentActionExecutionResult>;
   onConfirm: (confirmation: AiFileChangeConfirmation) => void;
   onNotice: (type: "error" | "success" | "warning", content: string) => void;
-  onActionTransition?: AiActionTransitionHandler;
 }
 
 function useWorkflowHarness(options: HarnessOptions) {
   const [messages, setMessages] = useState(options.initialMessages);
   const workflow = useAiFileChangeWorkflow({
     messages,
-    onApplyRemoteFileEdit: options.onApplyRemoteFileEdit,
-    onApplyRemoteFileOperation: options.onApplyRemoteFileOperation,
-    onActionTransition: options.onActionTransition ?? (async () => undefined),
+    onExecuteAction: options.onExecuteAction,
     onConfirm: options.onConfirm,
     onNotice: options.onNotice,
     sessionId: "session-1",
@@ -130,32 +113,43 @@ function useWorkflowHarness(options: HarnessOptions) {
   return { messages, workflow };
 }
 
-function unusedOperation() {
-  return Promise.resolve({ file: null });
+function executionResult(
+  actionId: string,
+  actionType: AgentActionExecutionResult["actionType"],
+  file: AiRemoteFileContext | null,
+): AgentActionExecutionResult {
+  return {
+    actionId,
+    actionType,
+    affectedPaths: file ? [file.path] : [],
+    file: file ? { ...file, modifiedAt: null, permissions: null } : null,
+  };
 }
 
 describe("useAiFileChangeWorkflow", () => {
   test("applies a reviewed file edit and records the returned snapshot", async () => {
     const proposal = fileEditProposal();
-    const applyEdit = mock(
-      async (_sessionId: string, file: AiRemoteFileContext, content: string) =>
-        remoteFile(file.path, content),
+    const executeAction = mock(
+      async (
+        _messageId: string,
+        actionId: string,
+        _rollback?: boolean,
+        contentOverride?: string,
+      ) =>
+        executionResult(
+          actionId,
+          "file_edit",
+          remoteFile(
+            proposal.originalFile.path,
+            contentOverride ?? proposal.content,
+          ),
+        ),
     );
     const onNotice = mock(() => undefined);
-    const actionTransitions: string[] = [];
-    const onActionTransition: AiActionTransitionHandler = async (
-      _messageId,
-      _actionId,
-      transition,
-    ) => {
-      actionTransitions.push(transition);
-    };
     const { result } = renderHook(() =>
       useWorkflowHarness({
         initialMessages: [assistantMessage([proposal])],
-        onApplyRemoteFileEdit: applyEdit,
-        onApplyRemoteFileOperation: unusedOperation,
-        onActionTransition,
+        onExecuteAction: executeAction,
         onConfirm: () => undefined,
         onNotice,
       }),
@@ -163,6 +157,7 @@ describe("useAiFileChangeWorkflow", () => {
 
     act(() => {
       result.current.workflow.openFileEditReview("assistant-1", proposal);
+      result.current.workflow.setFileEditReviewContent("reviewed update\n");
     });
     await waitFor(() =>
       expect(result.current.workflow.reviewedFileEditProposal?.reviewed).toBe(
@@ -173,15 +168,15 @@ describe("useAiFileChangeWorkflow", () => {
       await result.current.workflow.applyReviewedFileEdit();
     });
 
-    expect(applyEdit).toHaveBeenCalledWith(
-      "session-1",
-      proposal.originalFile,
-      proposal.content,
+    expect(executeAction).toHaveBeenCalledWith(
+      "assistant-1",
+      proposal.id,
+      false,
+      "reviewed update\n",
     );
-    expect(actionTransitions).toEqual(["start", "succeed"]);
     expect(result.current.messages[0]?.fileEditProposals?.[0]).toEqual(
       expect.objectContaining({
-        appliedFile: expect.objectContaining({ content: proposal.content }),
+        appliedFile: expect.objectContaining({ content: "reviewed update\n" }),
         status: "applied",
       }),
     );
@@ -191,15 +186,14 @@ describe("useAiFileChangeWorkflow", () => {
 
   test("marks a stale remote file as conflicted without claiming success", async () => {
     const proposal = fileEditProposal();
-    const applyEdit = mock(async () => {
+    const executeAction = mock(async () => {
       throw new Error("远程文件已被其他程序修改");
     });
     const onNotice = mock(() => undefined);
     const { result } = renderHook(() =>
       useWorkflowHarness({
         initialMessages: [assistantMessage([proposal])],
-        onApplyRemoteFileEdit: applyEdit,
-        onApplyRemoteFileOperation: unusedOperation,
+        onExecuteAction: executeAction,
         onConfirm: () => undefined,
         onNotice,
       }),
@@ -231,9 +225,8 @@ describe("useAiFileChangeWorkflow", () => {
     const { result } = renderHook(() =>
       useWorkflowHarness({
         initialMessages: [assistantMessage([first, second])],
-        onApplyRemoteFileEdit: async (_sessionId, file, content) =>
-          remoteFile(file.path, content),
-        onApplyRemoteFileOperation: unusedOperation,
+        onExecuteAction: async (_messageId, actionId) =>
+          executionResult(actionId, "file_edit", remoteFile("/srv/one.conf", "updated\n")),
         onConfirm: () => undefined,
         onNotice: () => undefined,
       }),
@@ -271,9 +264,12 @@ describe("useAiFileChangeWorkflow", () => {
     const { result } = renderHook(() =>
       useWorkflowHarness({
         initialMessages: [assistantMessage([first, second])],
-        onApplyRemoteFileEdit: async (_sessionId, file, content) =>
-          remoteFile(file.path, content),
-        onApplyRemoteFileOperation: unusedOperation,
+        onExecuteAction: async (_messageId, actionId) =>
+          executionResult(
+            actionId,
+            "file_edit",
+            remoteFile(actionId === "edit-1" ? "/srv/one.conf" : "/srv/two.conf", "updated\n"),
+          ),
         onConfirm: () => undefined,
         onNotice: () => undefined,
       }),
@@ -298,18 +294,15 @@ describe("useAiFileChangeWorkflow", () => {
     const first = appliedCreateOperation("operation-1", "/srv/one.conf");
     const second = appliedCreateOperation("operation-2", "/srv/two.conf");
     let confirmation: AiFileChangeConfirmation | undefined;
-    const applyOperation = mock(
-      async (
-        _sessionId: string,
-        _request: AiFileOperationExecutionRequest,
-      ) => ({ file: null }),
+    const executeAction = mock(
+      async (_messageId: string, actionId: string, _rollback?: boolean) =>
+        executionResult(actionId, "file_operation", null),
     );
     const onNotice = mock(() => undefined);
     const { result } = renderHook(() =>
       useWorkflowHarness({
         initialMessages: [assistantMessage([], [first, second])],
-        onApplyRemoteFileEdit: async (_sessionId, file) => file,
-        onApplyRemoteFileOperation: applyOperation,
+        onExecuteAction: executeAction,
         onConfirm: (value) => {
           confirmation = value;
         },
@@ -328,9 +321,9 @@ describe("useAiFileChangeWorkflow", () => {
       await confirmation?.onConfirm();
     });
 
-    expect(applyOperation.mock.calls.map((call) => call[1]?.path)).toEqual([
-      "/srv/two.conf",
-      "/srv/one.conf",
+    expect(executeAction.mock.calls.map((call) => [call[1], call[2]])).toEqual([
+      ["operation-2", true],
+      ["operation-1", true],
     ]);
     expect(
       result.current.messages[0]?.fileOperationProposals?.map(

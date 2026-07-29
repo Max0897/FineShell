@@ -745,6 +745,12 @@ export function useAiRequestOrchestrator({
                 hostId: targetHostId,
                 terminalSessionId: targetSessionId,
                 currentDirectory: toolCurrentDirectory ?? undefined,
+                fileOperationDirectory: currentOperationDirectory ?? undefined,
+                writableFiles: editableFiles.map(({ content, path, size }) => ({
+                  content,
+                  path,
+                  size,
+                })),
                 objective: userMessage.content,
                 approvalMode,
               },

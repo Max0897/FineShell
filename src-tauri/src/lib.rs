@@ -1,6 +1,7 @@
 mod agent;
 mod agent_actions;
 mod agent_approvals;
+mod agent_executor;
 mod agent_policy;
 mod ai;
 mod config_files;
@@ -95,6 +96,7 @@ pub fn run() {
             agent::ai_task_get,
             agent::ai_task_plan_decide,
             agent::ai_task_action_transition,
+            agent_executor::ai_task_action_execute,
             managed_keys::managed_ssh_key_import,
             managed_keys::managed_ssh_key_delete,
             diagnostics::diagnostic_set_level,

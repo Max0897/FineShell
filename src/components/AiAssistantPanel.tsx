@@ -21,7 +21,10 @@ import { isTauri } from "@tauri-apps/api/core";
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import type { AppSettings } from "../app-settings";
-import type { AiActionTransitionHandler } from "../ai-action-lifecycle";
+import type {
+  AiActionExecutionHandler,
+  AiActionTransitionHandler,
+} from "../ai-action-lifecycle";
 import { buildAiConversationRequestMessages } from "../ai-summaries";
 import {
   aiToolRequiresConfirmation,
@@ -33,10 +36,6 @@ import {
   serializeAiConversationMarkdown,
 } from "../ai-conversations";
 import { aiFileEditEligibilityError } from "../ai-file-edits";
-import {
-  type AiFileOperationExecutionRequest,
-  type AiFileOperationResult,
-} from "../ai-file-operations";
 import {
   aiContextMentionIds,
   aiRemoteFileContextSource,
@@ -52,6 +51,7 @@ import { diagnosticInvoke as invoke, recordDiagnostic } from "../diagnostics";
 import {
   commandErrorMessage,
   type AgentApprovalMode,
+  type AgentActionExecutionResult,
   type AiToolCall,
 } from "../tauri-protocol";
 import type { TerminalCommandSubmission } from "../terminal-utils";
@@ -95,16 +95,11 @@ interface AiAssistantPanelProps {
   initialPrompt: string;
   initialPromptRequest: number;
   onClose: () => void;
-  onInsertCommand: (command: string) => Promise<void>;
-  onApplyRemoteFileEdit: (
+  onAgentActionExecuted: (
     sessionId: string,
-    file: AiRemoteFileContext,
-    content: string,
-  ) => Promise<AiRemoteFileContext>;
-  onApplyRemoteFileOperation: (
-    sessionId: string,
-    request: AiFileOperationExecutionRequest,
-  ) => Promise<AiFileOperationResult>;
+    result: AgentActionExecutionResult,
+  ) => void;
+  onCommandPrepared: (sessionId: string, command: string) => void;
   onRemoveRemoteFile: (sessionId: string, path: string) => void;
   remoteFiles: AiRemoteFileContext[];
   sessionId: string | null;
@@ -276,9 +271,8 @@ function AiAssistantPanel({
   initialPrompt,
   initialPromptRequest,
   onClose,
-  onApplyRemoteFileEdit,
-  onApplyRemoteFileOperation,
-  onInsertCommand,
+  onAgentActionExecuted,
+  onCommandPrepared,
   onRemoveRemoteFile,
   remoteFiles,
   sessionId,
@@ -334,12 +328,17 @@ function AiAssistantPanel({
       ),
     [messages],
   );
-  const transitionAgentAction = useCallback<AiActionTransitionHandler>(
-    async (messageId, actionId, transition, detail) => {
-      const taskId = Object.values(conversationsByHost)
+  const taskIdForMessage = useCallback(
+    (messageId: string) =>
+      Object.values(conversationsByHost)
         .flat()
         .flatMap((conversation) => conversation.messages)
-        .find((message) => message.id === messageId)?.taskId;
+        .find((message) => message.id === messageId)?.taskId,
+    [conversationsByHost],
+  );
+  const transitionAgentAction = useCallback<AiActionTransitionHandler>(
+    async (messageId, actionId, transition, detail) => {
+      const taskId = taskIdForMessage(messageId);
       if (!taskId) throw new Error("AI 动作缺少对应的任务");
       await invoke("ai_task_action_transition", {
         request: {
@@ -350,7 +349,29 @@ function AiAssistantPanel({
         },
       });
     },
-    [conversationsByHost],
+    [taskIdForMessage],
+  );
+  const executeAgentAction = useCallback<AiActionExecutionHandler>(
+    async (messageId, actionId, rollback = false, contentOverride) => {
+      const taskId = taskIdForMessage(messageId);
+      if (!taskId) throw new Error("AI 动作缺少对应的任务");
+      if (!sessionId) throw new Error("当前终端会话不可用");
+      const result = await invoke<AgentActionExecutionResult>(
+        "ai_task_action_execute",
+        {
+          request: {
+            taskId,
+            actionId,
+            rollback,
+            userConfirmed: true,
+            contentOverride,
+          },
+        },
+      );
+      onAgentActionExecuted(sessionId, result);
+      return result;
+    },
+    [onAgentActionExecuted, sessionId, taskIdForMessage],
   );
   const availableContextSources = useMemo(() => {
     const sources = new Map(
@@ -398,8 +419,14 @@ function AiAssistantPanel({
     hostId,
     onConfirm: confirmAiCommand,
     onCopyText: copyCode,
-    onInsertCommand,
-    onActionTransition: transitionAgentAction,
+    onPrepareCommand: async (messageId, proposal) => {
+      const result = await executeAgentAction(messageId, proposal.id);
+      if (result.actionType !== "terminal_command") {
+        throw new Error("AI 命令准备返回了无效结果");
+      }
+      if (!sessionId) throw new Error("当前终端会话不可用");
+      onCommandPrepared(sessionId, proposal.command);
+    },
     onNotice: showAiCommandNotice,
     sessionId,
     setDraft: setConversationDraft,
@@ -427,9 +454,7 @@ function AiAssistantPanel({
     setFileEditReviewContent,
   } = useAiFileChangeWorkflow({
     messages,
-    onApplyRemoteFileEdit,
-    onApplyRemoteFileOperation,
-    onActionTransition: transitionAgentAction,
+    onExecuteAction: executeAgentAction,
     onConfirm: confirmAiFileChange,
     onNotice: showAiFileChangeNotice,
     sessionId,
@@ -812,7 +837,6 @@ function AiAssistantPanel({
           onCopyToolRun={copyToolRun}
           onCancelDiagnosticPlan={cancelDiagnosticPlan}
           onConfirmDiagnosticPlan={confirmDiagnosticPlan}
-          onInsertCommand={onInsertCommand}
           onInsertCommandProposal={confirmInsertCommandProposal}
           onOpenFileEditReview={openFileEditReview}
           onOpenFileOperationReview={openFileOperationReview}

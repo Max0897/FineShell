@@ -57,16 +57,11 @@ import {
   aiRemoteFileContextSource,
   mergeAiRemoteFileContexts,
   formatAiServerContext,
-  normalizeAiTerminalCommand,
 } from "./ai-utils";
 import {
   createSftpSelectionAiHandoff,
   type AiHandoffRequest,
 } from "./ai-handoff";
-import type {
-  AiFileOperationExecutionRequest,
-  AiFileOperationResult,
-} from "./ai-file-operations";
 import {
   AI_SIDEBAR_DEFAULT_WIDTH,
   aiWindowTargetWidth,
@@ -95,6 +90,7 @@ import {
   emitProtocolEventTo,
   FineShellCommandError,
   listenProtocolEvent,
+  type AgentActionExecutionResult,
   type SshConnectResult,
   verifyProtocolVersion,
 } from "./tauri-protocol";
@@ -968,82 +964,25 @@ function App() {
     Message.success(execute ? "命令已发送" : "命令已填入终端");
   }
 
-  async function insertAiCommand(command: string) {
-    if (!activeSession || activeSession.status !== "connected") {
-      throw new Error("当前终端未连接");
-    }
-    const value = normalizeAiTerminalCommand(command);
-    await invoke("ssh_write", {
-      sessionId: activeSession.id,
-      data: Array.from(new TextEncoder().encode(value)),
-    });
+  function handleAiCommandPrepared(sessionId: string, command: string) {
     if (settings.aiCommandTrackingEnabled) {
       setTerminalInjectedInputs((current) => ({
         ...current,
-        [activeSession.id]: {
+        [sessionId]: {
           id: createId("terminal-input"),
-          value,
+          value: command,
         },
       }));
     }
     Message.success("命令已填入终端");
   }
 
-  async function applyAiRemoteFileEdit(
+  function handleAiAgentActionExecuted(
     sessionId: string,
-    file: AiRemoteFileContext,
-    content: string,
+    result: AgentActionExecutionResult,
   ) {
-    const targetSession = sessionsRef.current.find(
-      (session) => session.id === sessionId,
-    );
-    if (!targetSession || targetSession.status !== "connected") {
-      throw new Error("目标会话已断开，无法应用文件修改");
-    }
-    const result = await invoke<{
-      content: string;
-      path: string;
-      size: number;
-    }>("sftp_write_text_file", {
-      sessionId,
-      path: file.path,
-      content,
-      originalContent: file.content,
-      overwrite: false,
-    });
-    const updatedFile: AiRemoteFileContext = {
-      content: result.content,
-      name: file.name,
-      path: result.path,
-      size: result.size,
-    };
-    setAiRemoteFileContexts((current) => ({
-      ...current,
-      [sessionId]: (current[sessionId] ?? []).map((candidate) =>
-        candidate.path === updatedFile.path ? updatedFile : candidate,
-      ),
-    }));
-    setSftpRefreshRequests((current) => ({
-      ...current,
-      [sessionId]: (current[sessionId] ?? 0) + 1,
-    }));
-    return updatedFile;
-  }
-
-  async function applyAiRemoteFileOperation(
-    sessionId: string,
-    request: AiFileOperationExecutionRequest,
-  ): Promise<AiFileOperationResult> {
-    const targetSession = sessionsRef.current.find(
-      (session) => session.id === sessionId,
-    );
-    if (!targetSession || targetSession.status !== "connected") {
-      throw new Error("目标会话已断开，无法应用文件操作");
-    }
-    const result = await invoke<{
-      file: { content: string; path: string; size: number } | null;
-    }>("sftp_apply_ai_file_operation", { sessionId, request });
-    const updatedFile = result.file
+    if (result.actionType === "terminal_command") return;
+    const updatedFile: AiRemoteFileContext | null = result.file
       ? {
           content: result.file.content,
           name: result.file.path.split("/").pop() || result.file.path,
@@ -1053,8 +992,7 @@ function App() {
       : null;
     setAiRemoteFileContexts((current) => {
       const remaining = (current[sessionId] ?? []).filter(
-        (file) =>
-          file.path !== request.path && file.path !== request.targetPath,
+        (file) => !result.affectedPaths.includes(file.path),
       );
       if (!updatedFile) {
         return { ...current, [sessionId]: remaining };
@@ -1075,7 +1013,6 @@ function App() {
       ...current,
       [sessionId]: (current[sessionId] ?? 0) + 1,
     }));
-    return { file: updatedFile };
   }
 
   async function openAiAssistant(
@@ -1547,9 +1484,8 @@ function App() {
             initialContextIds={aiInitialContextIds}
             initialPromptRequest={aiInitialPromptRequest}
             onClose={closeAiAssistant}
-            onApplyRemoteFileEdit={applyAiRemoteFileEdit}
-            onApplyRemoteFileOperation={applyAiRemoteFileOperation}
-            onInsertCommand={insertAiCommand}
+            onAgentActionExecuted={handleAiAgentActionExecuted}
+            onCommandPrepared={handleAiCommandPrepared}
             onRemoveRemoteFile={(sessionId, path) =>
               setAiRemoteFileContexts((current) => {
                 const remaining = (current[sessionId] ?? []).filter(

@@ -86,6 +86,38 @@ fn policy_decision(
     }
 }
 
+pub(crate) fn registered_action_policy(
+    mode: AgentApprovalMode,
+    tool: &str,
+    risk: AgentActionRisk,
+) -> PolicyEvaluation {
+    let descriptor = match (tool, risk) {
+        ("propose_file_edit", AgentActionRisk::ReversibleWrite) => Some((true, true)),
+        ("propose_file_operation", AgentActionRisk::ReversibleWrite) => Some((true, true)),
+        ("propose_file_operation", AgentActionRisk::Elevated) => Some((true, true)),
+        ("propose_terminal_command", AgentActionRisk::Elevated) => Some((false, false)),
+        _ => None,
+    };
+    let Some((reversible, bounded)) = descriptor else {
+        return PolicyEvaluation {
+            decision: PolicyDecision::Deny,
+            risk: AgentActionRisk::Critical,
+            reason: "动作工具或风险等级不在后端注册表中".to_string(),
+        };
+    };
+    let decision = policy_decision(mode, risk, reversible, bounded);
+    let reason = match decision {
+        PolicyDecision::Allow => "当前审批模式允许执行该动作",
+        PolicyDecision::Prompt => "该动作需要本次用户审批",
+        PolicyDecision::Deny => "当前策略拒绝该动作",
+    };
+    PolicyEvaluation {
+        decision,
+        risk,
+        reason: reason.to_string(),
+    }
+}
+
 pub(crate) struct ExecutionBoundary {
     task_id: String,
     host_id: String,
@@ -182,7 +214,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{policy_decision, ExecutionBoundary, PolicyDecision};
+    use super::{policy_decision, registered_action_policy, ExecutionBoundary, PolicyDecision};
     use crate::agent::{AgentActionRisk, AgentApprovalMode};
 
     #[test]
@@ -293,6 +325,46 @@ mod tests {
                 )
                 .decision,
             PolicyDecision::Allow
+        );
+    }
+
+    #[test]
+    fn file_and_terminal_actions_keep_distinct_approval_rules() {
+        assert_eq!(
+            registered_action_policy(
+                AgentApprovalMode::AutoSafe,
+                "propose_file_edit",
+                AgentActionRisk::ReversibleWrite,
+            )
+            .decision,
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            registered_action_policy(
+                AgentApprovalMode::FullAccess,
+                "propose_file_operation",
+                AgentActionRisk::Elevated,
+            )
+            .decision,
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            registered_action_policy(
+                AgentApprovalMode::FullAccess,
+                "propose_terminal_command",
+                AgentActionRisk::Elevated,
+            )
+            .decision,
+            PolicyDecision::Prompt
+        );
+        assert_eq!(
+            registered_action_policy(
+                AgentApprovalMode::FullAccess,
+                "propose_file_edit",
+                AgentActionRisk::Elevated,
+            )
+            .decision,
+            PolicyDecision::Deny
         );
     }
 }

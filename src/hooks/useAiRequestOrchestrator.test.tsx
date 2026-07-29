@@ -296,10 +296,12 @@ describe("useAiRequestOrchestrator", () => {
         approvalMode: string;
         conversationId: string;
         currentDirectory: string;
+        fileOperationDirectory?: string;
         hostId: string;
         id: string;
         objective: string;
         terminalSessionId: string;
+        writableFiles: Array<{ content: string; path: string; size: number }>;
       };
     };
     expect(request.enabledTools).toEqual(aiSettings.aiReadOnlyTools);
@@ -309,10 +311,12 @@ describe("useAiRequestOrchestrator", () => {
       approvalMode: "auto_safe",
       conversationId: "conversation-1",
       currentDirectory: "/root",
+      fileOperationDirectory: undefined,
       hostId: "host-1",
       id: request.requestId,
       objective: "检查系统状态",
       terminalSessionId: "session-1",
+      writableFiles: [],
     });
     expect(callbacks.current().messages[1]?.taskId).toBe(request.requestId);
 
