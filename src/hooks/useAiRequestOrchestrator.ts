@@ -64,6 +64,8 @@ import {
   commandErrorMessage,
   FineShellCommandError,
   listenProtocolEvent,
+  type AgentTask,
+  type AgentTaskEventPayload,
   type AiChatResult,
   type AiFinalizeReason,
   type AiToolCall,
@@ -80,6 +82,10 @@ export type AiRequestInvoke = <T>(
 
 export type AiStreamListener = (
   callback: (payload: { delta: string; requestId: string }) => void,
+) => Promise<() => void>;
+
+export type AiTaskListener = (
+  callback: (payload: AgentTaskEventPayload) => void,
 ) => Promise<() => void>;
 
 interface SendAiMessageOptions {
@@ -111,10 +117,12 @@ interface UseAiRequestOrchestratorOptions {
   confirmToolExecution: (call: AiToolCall) => Promise<boolean>;
   invoke?: AiRequestInvoke;
   listenToStream?: AiStreamListener;
+  listenToTaskEvents?: AiTaskListener;
   onCancelError?: (error: unknown) => void;
   onMissingModel?: () => void;
   onSummaryError?: (error: unknown) => void;
   persistConversation: (conversation?: AiConversation) => Promise<void>;
+  restoreTaskId?: string;
   sessionId: string | null;
   settings: Pick<
     AppSettings,
@@ -160,6 +168,13 @@ const defaultInvoke: AiRequestInvoke = (command, args) =>
 
 const defaultStreamListener: AiStreamListener = (callback) =>
   listenProtocolEvent("ai-stream", ({ payload }) => callback(payload));
+
+const defaultTaskListener: AiTaskListener = (callback) =>
+  listenProtocolEvent("ai-task", ({ payload }) => callback(payload));
+
+function agentTaskIsTerminal(task: AgentTask) {
+  return ["completed", "failed", "cancelled"].includes(task.status);
+}
 
 function createId(prefix: string) {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -228,10 +243,12 @@ export function useAiRequestOrchestrator({
   confirmToolExecution,
   invoke = defaultInvoke,
   listenToStream = defaultStreamListener,
+  listenToTaskEvents = defaultTaskListener,
   onCancelError,
   onMissingModel,
   onSummaryError,
   persistConversation,
+  restoreTaskId,
   sessionId,
   settings,
   setDraft,
@@ -239,10 +256,12 @@ export function useAiRequestOrchestrator({
   updateMessages,
 }: UseAiRequestOrchestratorOptions) {
   const [sending, setSending] = useState(false);
+  const [activeTask, setActiveTask] = useState<AgentTask>();
   const [summarizingConversationIds, setSummarizingConversationIds] = useState<
     Set<string>
   >(() => new Set());
   const activeRequestRef = useRef<ActiveAiRequest>();
+  const trackedTaskIdRef = useRef<string>();
   const cancelledRequestsRef = useRef(new Set<string>());
   const diagnosticPlanWaitersRef = useRef(
     new Map<string, (decision: AiDiagnosticPlanDecision) => void>(),
@@ -334,12 +353,14 @@ export function useAiRequestOrchestrator({
       }).catch(() => undefined);
     }
     activeRequestRef.current = undefined;
+    trackedTaskIdRef.current = undefined;
     for (const resolve of diagnosticPlanWaitersRef.current.values()) {
       resolve({ selectedCallIds: [], type: "abort" });
     }
     diagnosticPlanWaitersRef.current.clear();
     activeDiagnosticPlansRef.current.clear();
     stoppedDiagnosticPlansRef.current.clear();
+    setActiveTask(undefined);
     setSending(false);
   }, [invoke, sessionId]);
 
@@ -368,6 +389,61 @@ export function useAiRequestOrchestrator({
       stopStream?.();
     };
   }, [listenToStream]);
+
+  useEffect(() => {
+    let disposed = false;
+    let stopTaskEvents: (() => void) | undefined;
+    void listenToTaskEvents((payload) => {
+      const activeRequest = activeRequestRef.current;
+      const trackedTaskId = activeRequest?.requestId ?? trackedTaskIdRef.current;
+      if (!trackedTaskId || payload.task.id !== trackedTaskId) return;
+      setActiveTask((current) => {
+        if (
+          current?.id === payload.task.id &&
+          current.lastEventSequence >= payload.sequence
+        ) {
+          return current;
+        }
+        return payload.task;
+      });
+      if (agentTaskIsTerminal(payload.task)) setSending(false);
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else stopTaskEvents = unlisten;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      stopTaskEvents?.();
+    };
+  }, [listenToTaskEvents]);
+
+  useEffect(() => {
+    if (!restoreTaskId) {
+      if (!activeRequestRef.current) {
+        trackedTaskIdRef.current = undefined;
+        setActiveTask(undefined);
+      }
+      return;
+    }
+    trackedTaskIdRef.current = restoreTaskId;
+    let disposed = false;
+    void invoke<AgentTask | null>("ai_task_get", { taskId: restoreTaskId })
+      .then((task) => {
+        if (disposed || !task || trackedTaskIdRef.current !== task.id) return;
+        setActiveTask((current) =>
+          current?.id === task.id &&
+          current.lastEventSequence > task.lastEventSequence
+            ? current
+            : task,
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, [invoke, restoreTaskId]);
 
   const queueConversationSummary = useCallback(
     (conversation?: AiConversation) => {
@@ -474,6 +550,7 @@ export function useAiRequestOrchestrator({
         id: createId("ai-assistant"),
         role: "assistant",
         content: "",
+        taskId: requestId,
       };
       activeRequestRef.current = {
         assistantId: assistantMessage.id,
@@ -481,6 +558,7 @@ export function useAiRequestOrchestrator({
         hostId: targetHostId,
         requestId,
       };
+      trackedTaskIdRef.current = requestId;
       updateConversation(targetHostId, targetConversationId, (current) => ({
         ...current,
         title:
@@ -491,6 +569,7 @@ export function useAiRequestOrchestrator({
         messages: [...history, userMessage, assistantMessage],
       }));
       setDraft(targetConversationId, "");
+      setActiveTask(undefined);
       setSending(true);
       cancelledRequestsRef.current.delete(requestId);
 
@@ -527,6 +606,14 @@ export function useAiRequestOrchestrator({
               commandProposalEnabled: terminalProposalEnabled,
               finalizeReason,
               toolRounds,
+              task: {
+                id: requestId,
+                conversationId: targetConversationId,
+                hostId: targetHostId,
+                terminalSessionId: targetSessionId,
+                objective: userMessage.content,
+                approvalMode: "on_request",
+              },
             },
           });
           const diagnosticCalls = result.toolCalls.filter(
@@ -1052,6 +1139,7 @@ export function useAiRequestOrchestrator({
   );
 
   return {
+    activeTask,
     cancelDiagnosticPlan,
     cancelRequest,
     confirmDiagnosticPlan,

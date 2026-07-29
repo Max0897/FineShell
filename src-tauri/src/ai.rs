@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::watch;
 
 use crate::{
+    agent::{self, AgentTaskContext, AgentTaskManager},
     credentials,
     protocol::{CommandError, CommandResult, AI_COMPLETE_EVENT, AI_STREAM_EVENT},
 };
@@ -82,6 +83,8 @@ pub(crate) struct AiChatRequest {
     finalize_reason: Option<AiFinalizeReason>,
     #[serde(default)]
     tool_rounds: Vec<AiToolRound>,
+    #[serde(default)]
+    task: Option<AgentTaskContext>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -1457,11 +1460,20 @@ pub(crate) async fn ai_probe_capabilities(
 pub(crate) async fn ai_chat_start(
     app: AppHandle,
     manager: State<'_, AiRequestManager>,
+    task_manager: State<'_, AgentTaskManager>,
     request: AiChatRequest,
 ) -> CommandResult<AiChatResult> {
     let operation = "ai_chat_start";
     if request.request_id.trim().is_empty() || request.request_id.len() > 160 {
         return Err(structured(operation, "AI 请求标识无效"));
+    }
+    let request_id = request.request_id.clone();
+    let task_context = request.task.clone();
+    if task_context
+        .as_ref()
+        .is_some_and(|task| task.id() != request_id)
+    {
+        return Err(structured(operation, "AI 任务标识与请求标识不一致"));
     }
     let endpoint = service_endpoint(&request.base_url, "chat/completions")
         .map_err(|e| structured(operation, e))?;
@@ -1510,10 +1522,21 @@ pub(crate) async fn ai_chat_start(
             .cancellations
             .lock()
             .map_err(|_| structured(operation, "AI 请求状态不可用"))?;
-        if requests.contains_key(&request.request_id) {
+        if requests.contains_key(&request_id) {
             return Err(structured(operation, "AI 请求已经存在"));
         }
-        requests.insert(request.request_id.clone(), cancel);
+        requests.insert(request_id.clone(), cancel);
+    }
+    if let Some(context) = task_context.as_ref() {
+        match task_manager.begin_model_turn(context) {
+            Ok(events) => agent::emit_task_events(&app, events),
+            Err(error) => {
+                if let Ok(mut requests) = manager.cancellations.lock() {
+                    requests.remove(&request_id);
+                }
+                return Err(structured(operation, error));
+            }
+        }
     }
 
     let result = async {
@@ -1615,7 +1638,7 @@ pub(crate) async fn ai_chat_start(
                         "main",
                         AI_STREAM_EVENT,
                         AiStreamPayload {
-                            request_id: request.request_id.clone(),
+                            request_id: request_id.clone(),
                             delta,
                         },
                     );
@@ -1647,7 +1670,7 @@ pub(crate) async fn ai_chat_start(
             "main",
             AI_COMPLETE_EVENT,
             AiCompletePayload {
-                request_id: request.request_id.clone(),
+                request_id: request_id.clone(),
             },
         );
         Ok(AiChatResult {
@@ -1658,24 +1681,43 @@ pub(crate) async fn ai_chat_start(
     .await;
 
     if let Ok(mut requests) = manager.cancellations.lock() {
-        requests.remove(&request.request_id);
+        requests.remove(&request_id);
+    }
+    if task_context.is_some() {
+        let task_events = match &result {
+            Ok(response) => {
+                task_manager.finish_model_turn(&request_id, !response.tool_calls.is_empty())
+            }
+            Err(_) => task_manager.fail_task(&request_id, "AI 模型请求失败"),
+        };
+        if let Ok(events) = task_events {
+            agent::emit_task_events(&app, events);
+        }
     }
     result
 }
 
 #[tauri::command]
 pub(crate) fn ai_chat_cancel(
+    app: AppHandle,
     manager: State<'_, AiRequestManager>,
+    task_manager: State<'_, AgentTaskManager>,
     request_id: String,
 ) -> CommandResult<()> {
     let operation = "ai_chat_cancel";
-    let requests = manager
-        .cancellations
-        .lock()
-        .map_err(|_| structured(operation, "AI 请求状态不可用"))?;
-    if let Some(cancellation) = requests.get(&request_id) {
-        let _ = cancellation.send(true);
+    {
+        let requests = manager
+            .cancellations
+            .lock()
+            .map_err(|_| structured(operation, "AI 请求状态不可用"))?;
+        if let Some(cancellation) = requests.get(&request_id) {
+            let _ = cancellation.send(true);
+        }
     }
+    let events = task_manager
+        .cancel_task(&request_id)
+        .map_err(|error| structured(operation, error))?;
+    agent::emit_task_events(&app, events);
     Ok(())
 }
 

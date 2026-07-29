@@ -33,6 +33,7 @@ export interface AiConversationMessageRecord {
   fileChanges?: AiFileChangeRecord[];
   id: string;
   role: "user" | "assistant";
+  taskId?: string;
   toolRuns?: AiToolRun[];
 }
 
@@ -305,7 +306,13 @@ function sanitizeMessage(
     content,
     contextLabels: sanitizeContextLabels(value.contextLabels),
     ...(role === "assistant"
-      ? { toolRuns, diagnosticPlans, fileChanges, commandRecords }
+      ? {
+          taskId: boundedText(value.taskId, 160),
+          toolRuns,
+          diagnosticPlans,
+          fileChanges,
+          commandRecords,
+        }
       : {}),
   };
 }

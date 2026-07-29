@@ -1,12 +1,18 @@
 import { describe, expect, mock, test } from "bun:test";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { AppSettings } from "../app-settings";
-import type { AiChatResult, AiToolCall } from "../tauri-protocol";
+import {
+  PROTOCOL_VERSION,
+  type AgentTask,
+  type AiChatResult,
+  type AiToolCall,
+} from "../tauri-protocol";
 import {
   executeAiReadOnlyTool,
   useAiRequestOrchestrator,
   type AiRequestInvoke,
   type AiStreamListener,
+  type AiTaskListener,
 } from "./useAiRequestOrchestrator";
 import type { AiConversation, AiMessage } from "./useAiConversations";
 
@@ -97,6 +103,31 @@ const aiSettings: Pick<
   aiFileProposalsEnabled: true,
   aiCommandProposalsEnabled: true,
 };
+
+function agentTask(
+  id: string,
+  status: AgentTask["status"] = "running",
+  sequence = 2,
+): AgentTask {
+  return {
+    activeStepId: null,
+    approvalMode: "on_request",
+    conversationId: "conversation-1",
+    createdAt: 1,
+    error: null,
+    hostId: "host-1",
+    id,
+    iteration: 1,
+    lastEventSequence: sequence,
+    objective: "检查系统状态",
+    pendingAction: null,
+    plan: null,
+    result: null,
+    status,
+    terminalSessionId: "session-1",
+    updatedAt: 2,
+  };
+}
 
 describe("executeAiReadOnlyTool", () => {
   test("uses the captured SFTP directory without invoking a remote command", async () => {
@@ -211,6 +242,11 @@ describe("useAiRequestOrchestrator", () => {
       onStream = callback;
       return () => undefined;
     }) as AiStreamListener;
+    let onTask: Parameters<AiTaskListener>[0] = () => undefined;
+    const listenToTaskEvents = mock(async (callback: typeof onTask) => {
+      onTask = callback;
+      return () => undefined;
+    }) as AiTaskListener;
     const callbacks = createConversationCallbacks();
     const persistConversation = mock(async () => undefined);
     const setDraft = mock(() => undefined);
@@ -219,6 +255,7 @@ describe("useAiRequestOrchestrator", () => {
         confirmToolExecution: async () => true,
         invoke,
         listenToStream,
+        listenToTaskEvents,
         persistConversation,
         sessionId: "session-1",
         settings: aiSettings,
@@ -239,10 +276,44 @@ describe("useAiRequestOrchestrator", () => {
       enabledTools: string[];
       fileEditEnabled: boolean;
       requestId: string;
+      task: {
+        approvalMode: string;
+        conversationId: string;
+        hostId: string;
+        id: string;
+        objective: string;
+        terminalSessionId: string;
+      };
     };
     expect(request.enabledTools).toEqual(aiSettings.aiReadOnlyTools);
     expect(request.fileEditEnabled).toBe(false);
     expect(request.commandProposalEnabled).toBe(true);
+    expect(request.task).toEqual({
+      approvalMode: "on_request",
+      conversationId: "conversation-1",
+      hostId: "host-1",
+      id: request.requestId,
+      objective: "检查系统状态",
+      terminalSessionId: "session-1",
+    });
+    expect(callbacks.current().messages[1]?.taskId).toBe(request.requestId);
+
+    const runningTask = agentTask(request.requestId);
+    act(() => {
+      onTask({
+        kind: "model_turn_started",
+        protocolVersion: PROTOCOL_VERSION,
+        sequence: 2,
+        task: runningTask,
+      });
+      onTask({
+        kind: "model_turn_started",
+        protocolVersion: PROTOCOL_VERSION,
+        sequence: 99,
+        task: { ...runningTask, id: "obsolete-request" },
+      });
+    });
+    expect(result.current.activeTask).toEqual(runningTask);
 
     act(() => {
       onStream({ delta: "正在分析", requestId: request.requestId });
@@ -260,6 +331,45 @@ describe("useAiRequestOrchestrator", () => {
       expect.objectContaining({ id: "conversation-1" }),
     );
     expect(result.current.sending).toBe(false);
+  });
+
+  test("restores a task snapshot and ignores older events", async () => {
+    const restoredTask = agentTask("task-restored", "completed", 5);
+    const invoke = mock(async (command: string) => {
+      if (command === "ai_task_get") return restoredTask;
+      throw new Error(`unexpected command: ${command}`);
+    }) as unknown as AiRequestInvoke;
+    let onTask: Parameters<AiTaskListener>[0] = () => undefined;
+    const callbacks = createConversationCallbacks();
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        confirmToolExecution: async () => true,
+        invoke,
+        listenToStream: async () => () => undefined,
+        listenToTaskEvents: async (callback) => {
+          onTask = callback;
+          return () => undefined;
+        },
+        persistConversation: async () => undefined,
+        restoreTaskId: "task-restored",
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    await waitFor(() => expect(result.current.activeTask).toEqual(restoredTask));
+    act(() => {
+      onTask({
+        kind: "model_turn_started",
+        protocolVersion: PROTOCOL_VERSION,
+        sequence: 4,
+        task: agentTask("task-restored", "running", 4),
+      });
+    });
+    expect(result.current.activeTask).toEqual(restoredTask);
   });
 
   test("blocks a duplicate send while the first request is active", async () => {

@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 12,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -22,6 +22,7 @@
     "ai_probe_capabilities": true,
     "ai_chat_start": true,
     "ai_chat_cancel": true,
+    "ai_task_get": true,
     "managed_ssh_key_import": true,
     "managed_ssh_key_delete": true,
     "diagnostic_set_level": true,
@@ -81,9 +82,50 @@
     "sftp-external-edit": true,
     "ai-stream": true,
     "ai-complete": true,
+    "ai-task": true,
     "configuration:changed": true,
     "settings:changed": true,
     "menu-select-all": true
+  },
+  "agentTaskStatuses": {
+    "understanding": true,
+    "gathering_context": true,
+    "planning": true,
+    "running": true,
+    "awaiting_approval": true,
+    "awaiting_user_input": true,
+    "verifying": true,
+    "paused": true,
+    "paused_disconnected": true,
+    "completed": true,
+    "failed": true,
+    "cancelled": true
+  },
+  "agentTaskEventKinds": {
+    "task_created": true,
+    "model_turn_started": true,
+    "model_turn_completed": true,
+    "task_completed": true,
+    "task_failed": true,
+    "task_cancelled": true
+  },
+  "agentPlanStepStatuses": {
+    "pending": true,
+    "in_progress": true,
+    "completed": true,
+    "skipped": true,
+    "failed": true
+  },
+  "agentApprovalModes": {
+    "on_request": true,
+    "auto_safe": true,
+    "full_access": true
+  },
+  "agentActionRisks": {
+    "read_only": true,
+    "reversible_write": true,
+    "elevated": true,
+    "critical": true
   },
   "errorCodes": {
     "invalid_request": true,

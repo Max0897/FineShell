@@ -413,6 +413,9 @@ function AiAssistantPanel({
         error: commandErrorMessage(error),
       }),
     persistConversation,
+    restoreTaskId: [...messages]
+      .reverse()
+      .find((message) => message.taskId)?.taskId,
     sessionId,
     settings,
     setDraft: setConversationDraft,

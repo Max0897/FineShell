@@ -1,3 +1,4 @@
+mod agent;
 mod ai;
 mod config_files;
 mod credentials;
@@ -35,6 +36,7 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .manage(ai::AiRequestManager::default())
+        .manage(agent::AgentTaskManager::default())
         .manage(sftp::SftpSessionManager::default())
         .manage(diagnostics::DiagnosticLogState::default())
         .manage(external_edit::ExternalEditManager::default())
@@ -87,6 +89,7 @@ pub fn run() {
             ai::ai_probe_capabilities,
             ai::ai_chat_start,
             ai::ai_chat_cancel,
+            agent::ai_task_get,
             managed_keys::managed_ssh_key_import,
             managed_keys::managed_ssh_key_delete,
             diagnostics::diagnostic_set_level,

@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-pub(crate) const PROTOCOL_VERSION: u16 = 11;
+pub(crate) const PROTOCOL_VERSION: u16 = 12;
 
 pub(crate) const SSH_OUTPUT_EVENT: &str = "ssh-output";
 pub(crate) const SSH_STATUS_EVENT: &str = "ssh-status";
@@ -9,6 +9,7 @@ pub(crate) const SFTP_TRANSFER_EVENT: &str = "sftp-transfer";
 pub(crate) const EXTERNAL_EDIT_EVENT: &str = "sftp-external-edit";
 pub(crate) const AI_STREAM_EVENT: &str = "ai-stream";
 pub(crate) const AI_COMPLETE_EVENT: &str = "ai-complete";
+pub(crate) const AGENT_TASK_EVENT: &str = "ai-task";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) const MENU_SELECT_ALL_EVENT: &str = "menu-select-all";
 
@@ -125,9 +126,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        protocol_version, CommandError, CommandErrorCode, AI_COMPLETE_EVENT, AI_STREAM_EVENT,
-        EXTERNAL_EDIT_EVENT, MENU_SELECT_ALL_EVENT, PORT_FORWARD_STATUS_EVENT, PROTOCOL_VERSION,
-        SFTP_TRANSFER_EVENT, SSH_OUTPUT_EVENT, SSH_STATUS_EVENT,
+        protocol_version, CommandError, CommandErrorCode, AGENT_TASK_EVENT, AI_COMPLETE_EVENT,
+        AI_STREAM_EVENT, EXTERNAL_EDIT_EVENT, MENU_SELECT_ALL_EVENT, PORT_FORWARD_STATUS_EVENT,
+        PROTOCOL_VERSION, SFTP_TRANSFER_EVENT, SSH_OUTPUT_EVENT, SSH_STATUS_EVENT,
     };
 
     #[test]
@@ -165,6 +166,7 @@ mod tests {
             EXTERNAL_EDIT_EVENT,
             AI_STREAM_EVENT,
             AI_COMPLETE_EVENT,
+            AGENT_TASK_EVENT,
             "configuration:changed",
             "settings:changed",
             MENU_SELECT_ALL_EVENT,

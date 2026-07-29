@@ -15,6 +15,11 @@ export const PROTOCOL_VERSION = contract.version;
 export type TauriCommand = keyof typeof contract.commands;
 export type TauriEvent = keyof typeof contract.events;
 export type CommandErrorCode = keyof typeof contract.errorCodes;
+export type AgentTaskStatus = keyof typeof contract.agentTaskStatuses;
+export type AgentTaskEventKind = keyof typeof contract.agentTaskEventKinds;
+export type AgentPlanStepStatus = keyof typeof contract.agentPlanStepStatuses;
+export type AgentApprovalMode = keyof typeof contract.agentApprovalModes;
+export type AgentActionRisk = keyof typeof contract.agentActionRisks;
 
 export interface CommandErrorPayload {
   code: CommandErrorCode;
@@ -99,6 +104,66 @@ export interface AiCompletePayload {
   requestId: string;
 }
 
+export interface AgentPlanStep {
+  id: string;
+  title: string;
+  status: AgentPlanStepStatus;
+}
+
+export interface AgentPlan {
+  steps: AgentPlanStep[];
+}
+
+export interface AgentActionIntent {
+  id: string;
+  tool: string;
+  arguments: unknown;
+  reason: string;
+  expectedEffect: string;
+  risk: AgentActionRisk;
+}
+
+export interface AgentTaskResult {
+  summary: string;
+  verified: boolean;
+  stopReason: string | null;
+}
+
+export interface AgentTaskContext {
+  id: string;
+  conversationId: string;
+  hostId: string;
+  terminalSessionId?: string;
+  objective: string;
+  approvalMode: AgentApprovalMode;
+}
+
+export interface AgentTask {
+  id: string;
+  conversationId: string;
+  hostId: string;
+  terminalSessionId: string | null;
+  approvalMode: AgentApprovalMode;
+  status: AgentTaskStatus;
+  objective: string;
+  plan: AgentPlan | null;
+  activeStepId: string | null;
+  pendingAction: AgentActionIntent | null;
+  iteration: number;
+  lastEventSequence: number;
+  result: AgentTaskResult | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AgentTaskEventPayload {
+  protocolVersion: number;
+  sequence: number;
+  kind: AgentTaskEventKind;
+  task: AgentTask;
+}
+
 export interface AiChatResult {
   content: string;
   toolCalls: AiToolCall[];
@@ -154,6 +219,7 @@ interface EventPayloadMap {
   "sftp-external-edit": ExternalEditPayload;
   "ai-stream": AiStreamPayload;
   "ai-complete": AiCompletePayload;
+  "ai-task": AgentTaskEventPayload;
   "configuration:changed": undefined;
   "settings:changed": AppSettings;
   "menu-select-all": MenuSelectAllPayload;
