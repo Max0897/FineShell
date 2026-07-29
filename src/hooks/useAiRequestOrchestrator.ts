@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppSettings } from "../app-settings";
+import { validateAiActionIntents } from "../ai-action-intents";
 import {
   completeAiDiagnosticPlan,
   createAiDiagnosticPlan,
@@ -760,6 +761,10 @@ export function useAiRequestOrchestrator({
             );
           }
           toolRounds.push(...(result.diagnosticToolRounds ?? []));
+          validateAiActionIntents(
+            result.toolCalls,
+            result.actionIntents ?? [],
+          );
           const diagnosticCalls = result.toolCalls.filter(
             (call) =>
               !isAiFileEditToolCall(call) &&

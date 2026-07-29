@@ -186,13 +186,25 @@ describe("useAiRequestOrchestrator", () => {
           };
         }
         const index = request.toolRounds.length;
+        const proposedCommand = `echo round-${index}`;
+        const purpose = `记录第 ${index + 1} 轮建议`;
         return {
+          actionIntents: [
+            {
+              arguments: { command: proposedCommand, purpose },
+              expectedEffect: "在当前终端会话中填入并执行命令",
+              id: `call-command-${index}`,
+              reason: purpose,
+              risk: "elevated",
+              tool: "propose_terminal_command",
+            },
+          ],
           content: "",
           toolCalls: [
             {
               arguments: JSON.stringify({
-                command: `echo round-${index}`,
-                purpose: `记录第 ${index + 1} 轮建议`,
+                command: proposedCommand,
+                purpose,
               }),
               id: `call-command-${index}`,
               name: "propose_terminal_command",

@@ -106,15 +106,15 @@ pub(crate) enum AgentActionRisk {
     Critical,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentActionIntent {
-    id: String,
-    tool: String,
-    arguments: serde_json::Value,
-    reason: String,
-    expected_effect: String,
-    risk: AgentActionRisk,
+    pub(crate) id: String,
+    pub(crate) tool: String,
+    pub(crate) arguments: serde_json::Value,
+    pub(crate) reason: String,
+    pub(crate) expected_effect: String,
+    pub(crate) risk: AgentActionRisk,
 }
 
 #[derive(Clone, Debug, Serialize)]

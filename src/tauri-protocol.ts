@@ -183,6 +183,7 @@ export interface AgentTaskEventPayload {
 export interface AiChatResult {
   content: string;
   toolCalls: AiToolCall[];
+  actionIntents?: AgentActionIntent[];
   diagnosticPlans?: AgentPlan[];
   diagnosticToolRounds?: AiToolRound[];
 }
