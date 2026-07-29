@@ -95,7 +95,7 @@ pub(crate) fn registered_action_policy(
         ("propose_file_edit", AgentActionRisk::ReversibleWrite) => Some((true, true)),
         ("propose_file_operation", AgentActionRisk::ReversibleWrite) => Some((true, true)),
         ("propose_file_operation", AgentActionRisk::Elevated) => Some((true, true)),
-        ("propose_terminal_command", AgentActionRisk::Elevated) => Some((false, false)),
+        ("insert_terminal_command", AgentActionRisk::Elevated) => Some((false, false)),
         _ => None,
     };
     let Some((reversible, bounded)) = descriptor else {
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(
             registered_action_policy(
                 AgentApprovalMode::FullAccess,
-                "propose_terminal_command",
+                "insert_terminal_command",
                 AgentActionRisk::Elevated,
             )
             .decision,
@@ -360,7 +360,34 @@ mod tests {
         assert_eq!(
             registered_action_policy(
                 AgentApprovalMode::FullAccess,
-                "propose_file_edit",
+                "propose_terminal_command",
+                AgentActionRisk::Elevated,
+            )
+            .decision,
+            PolicyDecision::Deny
+        );
+    }
+
+    #[test]
+    fn arbitrary_shell_cannot_enter_the_controlled_execution_registry() {
+        let tools = HashSet::from(["get_server_status".to_string(), "execute_shell".to_string()]);
+        let boundary = ExecutionBoundary::new(
+            "task-1",
+            "host-1",
+            Some("session-1"),
+            Some("/srv/app"),
+            &tools,
+        );
+        assert_eq!(
+            boundary
+                .evaluate(AgentApprovalMode::FullAccess, "execute_shell", &json!({}))
+                .decision,
+            PolicyDecision::Deny
+        );
+        assert_eq!(
+            registered_action_policy(
+                AgentApprovalMode::FullAccess,
+                "propose_terminal_command",
                 AgentActionRisk::Elevated,
             )
             .decision,

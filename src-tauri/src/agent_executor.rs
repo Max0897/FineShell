@@ -3,8 +3,9 @@ use tauri::{AppHandle, State};
 
 use crate::{
     agent::{
-        emit_task_events, AgentActionTransition, AgentActionTransitionRequest, AgentTaskManager,
-        AgentTrustedVerification, AuthorizedAgentAction,
+        emit_task_events, AgentActionExecutionKind, AgentActionTransition,
+        AgentActionTransitionRequest, AgentTaskManager, AgentTrustedVerification,
+        AuthorizedAgentAction,
     },
     protocol::{CommandError, CommandResult},
     sftp::{
@@ -161,7 +162,7 @@ async fn execute_action(
                 verification: Some(verification),
             })
         }
-        "propose_terminal_command" => {
+        "insert_terminal_command" => {
             let arguments: TerminalCommandArguments = parse_arguments(action)?;
             let _ = arguments.purpose;
             ssh_manager.write(&action.session_id, arguments.command.into_bytes())?;
@@ -208,7 +209,7 @@ pub(crate) async fn ai_task_action_execute(
     .await
     {
         Ok(result) => {
-            if !action.prepares_command {
+            if action.execution_kind == AgentActionExecutionKind::TrustedExecutor {
                 let verification = result.verification.ok_or_else(|| {
                     CommandError::from_message(operation, "AI 动作缺少可信验证结果")
                 })?;

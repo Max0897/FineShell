@@ -581,7 +581,13 @@ pub(crate) struct AuthorizedAgentAction {
     pub(crate) arguments: serde_json::Value,
     pub(crate) session_id: String,
     pub(crate) rollback: bool,
-    pub(crate) prepares_command: bool,
+    pub(crate) execution_kind: AgentActionExecutionKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum AgentActionExecutionKind {
+    TrustedExecutor,
+    TerminalInsert,
 }
 
 #[derive(Clone, Debug)]
@@ -945,7 +951,7 @@ impl AgentTask {
                     _ => Err("AI 文件操作类型无效".to_string()),
                 }
             }
-            "propose_terminal_command" => {
+            "insert_terminal_command" => {
                 if self.terminal_session_id.is_none() {
                     return Err("AI 终端命令缺少绑定会话".to_string());
                 }
@@ -1435,7 +1441,7 @@ impl AgentTaskManager {
                 .iter()
                 .position(|action| action.id == request.action_id)
                 .ok_or_else(|| "AI 动作不存在".to_string())?;
-            if task.actions[index].tool != "propose_terminal_command" {
+            if task.actions[index].tool != "insert_terminal_command" {
                 return Err("AI 动作不是终端命令提案".to_string());
             }
             let trusted_command = task.actions[index]
@@ -1856,15 +1862,19 @@ impl AgentTaskManager {
                 .iter()
                 .find(|action| action.id == action_id)
                 .ok_or_else(|| "AI 动作不存在".to_string())?;
-            let prepares_command = action.tool == "propose_terminal_command";
-            if rollback && prepares_command {
+            let execution_kind = if action.tool == "insert_terminal_command" {
+                AgentActionExecutionKind::TerminalInsert
+            } else {
+                AgentActionExecutionKind::TrustedExecutor
+            };
+            if rollback && execution_kind == AgentActionExecutionKind::TerminalInsert {
                 return Err("终端命令不能通过文件回滚流程撤销".to_string());
             }
             if rollback {
                 if action.status != AgentActionStatus::Succeeded {
                     return Err("AI 动作当前不能回滚".to_string());
                 }
-            } else if prepares_command {
+            } else if execution_kind == AgentActionExecutionKind::TerminalInsert {
                 if action.status != AgentActionStatus::Pending {
                     return Err("AI 命令当前不能再次填入".to_string());
                 }
@@ -1886,7 +1896,7 @@ impl AgentTaskManager {
                     arguments: action.arguments.clone(),
                     session_id,
                     rollback,
-                    prepares_command,
+                    execution_kind,
                 },
                 task.approval_mode,
                 action.risk,
@@ -1962,14 +1972,14 @@ impl AgentTaskManager {
         }
         let transition = if rollback {
             AgentActionTransition::RollbackStart
-        } else if execution.prepares_command {
+        } else if execution.execution_kind == AgentActionExecutionKind::TerminalInsert {
             AgentActionTransition::Approve
         } else {
             AgentActionTransition::Start
         };
         let summary = if rollback {
             "用户确认回滚该动作"
-        } else if execution.prepares_command {
+        } else if execution.execution_kind == AgentActionExecutionKind::TerminalInsert {
             "用户批准将命令填入终端"
         } else if policy.decision == PolicyDecision::Allow {
             "审批策略允许执行该动作"
@@ -2472,8 +2482,8 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use super::{
-        AgentActionIntent, AgentActionRisk, AgentActionState, AgentActionStatus,
-        AgentActionTransition, AgentActionTransitionRequest, AgentApprovalMode,
+        AgentActionExecutionKind, AgentActionIntent, AgentActionRisk, AgentActionState,
+        AgentActionStatus, AgentActionTransition, AgentActionTransitionRequest, AgentApprovalMode,
         AgentCommandObservationPhase, AgentCommandObservationRequest, AgentPlan, AgentPlanDecision,
         AgentPlanDecisionKind, AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep,
         AgentPlanStepStatus, AgentRecoveryRecommendation, AgentRecoveryStatus,
@@ -2561,7 +2571,7 @@ mod tests {
     fn terminal_command_intent() -> AgentActionIntent {
         AgentActionIntent {
             id: "command-1".to_string(),
-            tool: "propose_terminal_command".to_string(),
+            tool: "insert_terminal_command".to_string(),
             arguments: serde_json::json!({
                 "command": "systemctl status nginx",
                 "purpose": "检查 Nginx 状态",
@@ -2877,7 +2887,10 @@ mod tests {
         let (action, events) = manager
             .authorize_action_execution("task-1", "command-1", false, true, None)
             .unwrap();
-        assert!(action.prepares_command);
+        assert_eq!(
+            action.execution_kind,
+            AgentActionExecutionKind::TerminalInsert
+        );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, AgentTaskEventKind::ActionApproved);
         assert_eq!(

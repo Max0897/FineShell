@@ -16,7 +16,7 @@ function commandCall(): AiToolCall {
 function commandIntent(): AgentActionIntent {
   return {
     id: "command-1",
-    tool: "propose_terminal_command",
+    tool: "insert_terminal_command",
     arguments: {
       command: "systemctl status nginx",
       purpose: "检查 nginx 状态",
@@ -73,6 +73,12 @@ describe("AI action intents", () => {
         [{ ...commandIntent(), risk: "reversible_write" }],
       )
     ).toThrow("可信校验");
+    expect(() =>
+      validateAiActionIntents(
+        [commandCall()],
+        [{ ...commandIntent(), tool: "propose_terminal_command" }],
+      )
+    ).toThrow("不匹配");
   });
 
   test("accepts diagnostics without action intents", () => {

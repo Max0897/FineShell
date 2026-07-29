@@ -6,6 +6,7 @@ use crate::agent_verification::AgentBusinessVerification;
 pub(crate) const MAX_FILE_EDIT_CHARS: usize = 60_000;
 pub(crate) const MAX_TERMINAL_COMMAND_CHARS: usize = 4_096;
 pub(crate) const MAX_COMMAND_PURPOSE_CHARS: usize = 240;
+pub(crate) const TERMINAL_INSERT_ACTION_TOOL: &str = "insert_terminal_command";
 
 fn parse_arguments(arguments: &str) -> Result<Map<String, Value>, String> {
     let Value::Object(arguments) =
@@ -224,7 +225,7 @@ pub(crate) fn proposal_action_intent(
             }
             intent(
                 id,
-                tool,
+                TERMINAL_INSERT_ACTION_TOOL,
                 normalized,
                 purpose,
                 "在当前终端会话中填入命令，等待用户手动提交",
@@ -239,7 +240,7 @@ pub(crate) fn proposal_action_intent(
 mod tests {
     use serde_json::json;
 
-    use super::proposal_action_intent;
+    use super::{proposal_action_intent, TERMINAL_INSERT_ACTION_TOOL};
     use crate::agent::AgentActionRisk;
 
     #[test]
@@ -279,6 +280,7 @@ mod tests {
             })
         );
         assert_eq!(command.risk, AgentActionRisk::Elevated);
+        assert_eq!(command.tool, TERMINAL_INSERT_ACTION_TOOL);
 
         let verified_command = proposal_action_intent(
             "command-2",

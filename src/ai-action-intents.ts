@@ -13,6 +13,14 @@ const PROPOSAL_TOOLS = new Set([
   "propose_terminal_command",
 ]);
 
+export const AI_TERMINAL_INSERT_ACTION_TOOL_NAME = "insert_terminal_command";
+
+function actionToolForProposal(tool: string) {
+  return tool === "propose_terminal_command"
+    ? AI_TERMINAL_INSERT_ACTION_TOOL_NAME
+    : tool;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -144,7 +152,7 @@ export function validateAiActionIntents(
     if (seen.has(intent.id)) throw new Error("AI 动作意图包含重复标识");
     seen.add(intent.id);
     const call = callsById.get(intent.id);
-    if (!call || call.name !== intent.tool) {
+    if (!call || actionToolForProposal(call.name) !== intent.tool) {
       throw new Error("AI 动作意图与提案不匹配");
     }
     const normalized = normalizedCallArguments(call);

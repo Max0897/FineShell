@@ -200,7 +200,7 @@ describe("useAiRequestOrchestrator", () => {
               id: `call-command-${index}`,
               reason: purpose,
               risk: "elevated",
-              tool: "propose_terminal_command",
+              tool: "insert_terminal_command",
             },
           ],
           content: "",
