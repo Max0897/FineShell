@@ -365,6 +365,98 @@ impl SshSessionManager {
             sessions.remove(session_id);
         }
     }
+
+    pub(crate) async fn monitor_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<ServerMonitorSnapshot, String> {
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        self.send(session_id, SessionCommand::Monitor(response_sender))?;
+        tauri::async_runtime::spawn_blocking(move || {
+            response_receiver
+                .recv_timeout(Duration::from_secs(15))
+                .map_err(|error| format!("等待服务器监控数据失败：{error}"))?
+        })
+        .await
+        .map_err(|error| format!("服务器监控任务异常结束：{error}"))?
+    }
+
+    pub(crate) async fn ping(
+        &self,
+        session_id: &str,
+        target: String,
+    ) -> Result<NetworkPingResult, String> {
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        self.send(
+            session_id,
+            SessionCommand::Ping {
+                target,
+                response: response_sender,
+            },
+        )?;
+        tauri::async_runtime::spawn_blocking(move || {
+            response_receiver
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|error| format!("等待 Ping 结果失败：{error}"))?
+        })
+        .await
+        .map_err(|error| format!("Ping 任务异常结束：{error}"))?
+    }
+
+    pub(crate) async fn network_connections(
+        &self,
+        session_id: &str,
+    ) -> Result<NetworkConnectionsResult, String> {
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        self.send(
+            session_id,
+            SessionCommand::NetworkConnections(response_sender),
+        )?;
+        tauri::async_runtime::spawn_blocking(move || {
+            response_receiver
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|error| format!("等待网络连接数据失败：{error}"))?
+        })
+        .await
+        .map_err(|error| format!("网络连接采集任务异常结束：{error}"))?
+    }
+
+    pub(crate) async fn trace_route(
+        &self,
+        session_id: &str,
+        target: String,
+    ) -> Result<NetworkTraceResult, String> {
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        self.send(
+            session_id,
+            SessionCommand::TraceRoute {
+                target,
+                response: response_sender,
+            },
+        )?;
+        tauri::async_runtime::spawn_blocking(move || {
+            response_receiver
+                .recv_timeout(Duration::from_secs(20))
+                .map_err(|error| format!("等待路由追踪结果失败：{error}"))?
+        })
+        .await
+        .map_err(|error| format!("路由追踪任务异常结束：{error}"))?
+    }
+
+    pub(crate) async fn processes(
+        &self,
+        session_id: &str,
+    ) -> Result<ServerProcessListResult, String> {
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        self.send(session_id, SessionCommand::Processes(response_sender))?;
+        tauri::async_runtime::spawn_blocking(move || {
+            response_receiver
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|error| format!("等待进程列表失败：{error}"))?
+        })
+        .await
+        .map_err(|error| format!("进程采集任务异常结束：{error}"))?
+    }
 }
 
 fn host_fingerprint(session: &Session) -> Result<String, String> {
@@ -2073,15 +2165,7 @@ pub(crate) async fn ssh_monitor_snapshot(
     manager: State<'_, SshSessionManager>,
     session_id: String,
 ) -> Result<ServerMonitorSnapshot, String> {
-    let (response_sender, response_receiver) = mpsc::sync_channel(1);
-    manager.send(&session_id, SessionCommand::Monitor(response_sender))?;
-    tauri::async_runtime::spawn_blocking(move || {
-        response_receiver
-            .recv_timeout(Duration::from_secs(15))
-            .map_err(|error| format!("等待服务器监控数据失败：{error}"))?
-    })
-    .await
-    .map_err(|error| format!("服务器监控任务异常结束：{error}"))?
+    manager.monitor_snapshot(&session_id).await
 }
 
 #[tauri::command]
@@ -2090,21 +2174,7 @@ pub(crate) async fn ssh_ping(
     session_id: String,
     target: String,
 ) -> Result<NetworkPingResult, String> {
-    let (response_sender, response_receiver) = mpsc::sync_channel(1);
-    manager.send(
-        &session_id,
-        SessionCommand::Ping {
-            target,
-            response: response_sender,
-        },
-    )?;
-    tauri::async_runtime::spawn_blocking(move || {
-        response_receiver
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|error| format!("等待 Ping 结果失败：{error}"))?
-    })
-    .await
-    .map_err(|error| format!("Ping 任务异常结束：{error}"))?
+    manager.ping(&session_id, target).await
 }
 
 #[tauri::command]
@@ -2112,18 +2182,7 @@ pub(crate) async fn ssh_network_connections(
     manager: State<'_, SshSessionManager>,
     session_id: String,
 ) -> Result<NetworkConnectionsResult, String> {
-    let (response_sender, response_receiver) = mpsc::sync_channel(1);
-    manager.send(
-        &session_id,
-        SessionCommand::NetworkConnections(response_sender),
-    )?;
-    tauri::async_runtime::spawn_blocking(move || {
-        response_receiver
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|error| format!("等待网络连接数据失败：{error}"))?
-    })
-    .await
-    .map_err(|error| format!("网络连接采集任务异常结束：{error}"))?
+    manager.network_connections(&session_id).await
 }
 
 #[tauri::command]
@@ -2132,21 +2191,7 @@ pub(crate) async fn ssh_trace_route(
     session_id: String,
     target: String,
 ) -> Result<NetworkTraceResult, String> {
-    let (response_sender, response_receiver) = mpsc::sync_channel(1);
-    manager.send(
-        &session_id,
-        SessionCommand::TraceRoute {
-            target,
-            response: response_sender,
-        },
-    )?;
-    tauri::async_runtime::spawn_blocking(move || {
-        response_receiver
-            .recv_timeout(Duration::from_secs(20))
-            .map_err(|error| format!("等待路由追踪结果失败：{error}"))?
-    })
-    .await
-    .map_err(|error| format!("路由追踪任务异常结束：{error}"))?
+    manager.trace_route(&session_id, target).await
 }
 
 #[tauri::command]
@@ -2154,15 +2199,7 @@ pub(crate) async fn ssh_processes(
     manager: State<'_, SshSessionManager>,
     session_id: String,
 ) -> Result<ServerProcessListResult, String> {
-    let (response_sender, response_receiver) = mpsc::sync_channel(1);
-    manager.send(&session_id, SessionCommand::Processes(response_sender))?;
-    tauri::async_runtime::spawn_blocking(move || {
-        response_receiver
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|error| format!("等待进程列表失败：{error}"))?
-    })
-    .await
-    .map_err(|error| format!("进程采集任务异常结束：{error}"))?
+    manager.processes(&session_id).await
 }
 
 #[tauri::command]

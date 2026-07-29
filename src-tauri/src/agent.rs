@@ -6,6 +6,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
+use tokio::sync::watch;
 
 use crate::protocol::{CommandError, CommandResult, AGENT_TASK_EVENT, PROTOCOL_VERSION};
 
@@ -56,18 +57,41 @@ pub(crate) enum AgentPlanStepStatus {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentPlanStatus {
+    Pending,
+    Running,
+    Completed,
+    Partial,
+    Cancelled,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentPlanStep {
-    id: String,
-    title: String,
-    status: AgentPlanStepStatus,
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) tool: String,
+    pub(crate) status: AgentPlanStepStatus,
+    pub(crate) detail: Option<String>,
+    pub(crate) reason: String,
+    pub(crate) optional: bool,
+    pub(crate) depends_on: Vec<String>,
+    pub(crate) summary: Option<String>,
+    pub(crate) error: Option<String>,
+    pub(crate) started_at: Option<u64>,
+    pub(crate) duration_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentPlan {
-    steps: Vec<AgentPlanStep>,
+    pub(crate) id: String,
+    pub(crate) description: Option<String>,
+    pub(crate) status: AgentPlanStatus,
+    pub(crate) created_at: u64,
+    pub(crate) steps: Vec<AgentPlanStep>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -106,6 +130,7 @@ pub(crate) struct AgentTaskContext {
     conversation_id: String,
     host_id: String,
     terminal_session_id: Option<String>,
+    current_directory: Option<String>,
     objective: String,
     approval_mode: AgentApprovalMode,
 }
@@ -117,6 +142,7 @@ pub(crate) struct AgentTask {
     conversation_id: String,
     host_id: String,
     terminal_session_id: Option<String>,
+    current_directory: Option<String>,
     approval_mode: AgentApprovalMode,
     status: AgentTaskStatus,
     objective: String,
@@ -137,6 +163,10 @@ pub(crate) enum AgentTaskEventKind {
     TaskCreated,
     ModelTurnStarted,
     ModelTurnCompleted,
+    PlanCreated,
+    PlanStarted,
+    PlanUpdated,
+    PlanCompleted,
     TaskCompleted,
     TaskFailed,
     TaskCancelled,
@@ -154,9 +184,41 @@ pub(crate) struct AgentTaskEvent {
 #[derive(Default)]
 pub(crate) struct AgentTaskManager {
     tasks: Mutex<HashMap<String, AgentTask>>,
+    plan_controls: Mutex<HashMap<String, AgentPlanControl>>,
 }
 
-fn timestamp_ms() -> u64 {
+struct AgentPlanControl {
+    plan_id: String,
+    sender: watch::Sender<AgentPlanDecision>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum AgentPlanDecision {
+    Pending,
+    Approve(Vec<String>),
+    Reject,
+    Stop,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AgentPlanDecisionKind {
+    Approve,
+    Reject,
+    Stop,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentPlanDecisionRequest {
+    task_id: String,
+    plan_id: String,
+    decision: AgentPlanDecisionKind,
+    #[serde(default)]
+    selected_call_ids: Vec<String>,
+}
+
+pub(crate) fn timestamp_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -174,6 +236,14 @@ impl AgentTaskContext {
         &self.id
     }
 
+    pub(crate) fn terminal_session_id(&self) -> Option<&str> {
+        self.terminal_session_id.as_deref()
+    }
+
+    pub(crate) fn current_directory(&self) -> Option<&str> {
+        self.current_directory.as_deref()
+    }
+
     fn validate(&self) -> Result<(), String> {
         if !valid_identifier(&self.id)
             || !valid_identifier(&self.conversation_id)
@@ -182,6 +252,12 @@ impl AgentTaskContext {
                 .terminal_session_id
                 .as_deref()
                 .is_some_and(|value| !valid_identifier(value))
+            || self.current_directory.as_deref().is_some_and(|value| {
+                value.trim().is_empty()
+                    || !value.starts_with('/')
+                    || value.chars().count() > 1_024
+                    || value.chars().any(char::is_control)
+            })
         {
             return Err("AI 任务作用域无效".to_string());
         }
@@ -197,6 +273,7 @@ impl AgentTaskContext {
             && self.conversation_id == task.conversation_id
             && self.host_id == task.host_id
             && self.terminal_session_id == task.terminal_session_id
+            && self.current_directory == task.current_directory
             && self.approval_mode == task.approval_mode
             && self.objective.trim() == task.objective
     }
@@ -210,6 +287,7 @@ impl AgentTask {
             conversation_id: context.conversation_id.clone(),
             host_id: context.host_id.clone(),
             terminal_session_id: context.terminal_session_id.clone(),
+            current_directory: context.current_directory.clone(),
             approval_mode: context.approval_mode,
             status: AgentTaskStatus::Understanding,
             objective: context.objective.trim().to_string(),
@@ -311,6 +389,169 @@ impl AgentTaskManager {
         }
     }
 
+    pub(crate) fn set_plan(
+        &self,
+        task_id: &str,
+        mut plan: AgentPlan,
+        awaiting_approval: bool,
+    ) -> Result<(watch::Receiver<AgentPlanDecision>, Vec<AgentTaskEvent>), String> {
+        let initial_decision = if awaiting_approval {
+            AgentPlanDecision::Pending
+        } else {
+            AgentPlanDecision::Approve(plan.steps.iter().map(|step| step.id.clone()).collect())
+        };
+        plan.status = AgentPlanStatus::Pending;
+        let (sender, receiver) = watch::channel(initial_decision);
+        let mut tasks = self
+            .tasks
+            .lock()
+            .map_err(|_| "AI 任务状态不可用".to_string())?;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| "AI 任务不存在".to_string())?;
+        if task.status.is_terminal() {
+            return Err("AI 任务已经结束".to_string());
+        }
+        task.status = if awaiting_approval {
+            AgentTaskStatus::AwaitingApproval
+        } else {
+            AgentTaskStatus::Running
+        };
+        task.plan = Some(plan.clone());
+        self.plan_controls
+            .lock()
+            .map_err(|_| "AI 计划控制状态不可用".to_string())?
+            .insert(
+                task_id.to_string(),
+                AgentPlanControl {
+                    plan_id: plan.id.clone(),
+                    sender,
+                },
+            );
+        Ok((receiver, vec![task.event(AgentTaskEventKind::PlanCreated)]))
+    }
+
+    pub(crate) fn update_plan(
+        &self,
+        task_id: &str,
+        plan: AgentPlan,
+        completed: bool,
+    ) -> Result<Vec<AgentTaskEvent>, String> {
+        let mut tasks = self
+            .tasks
+            .lock()
+            .map_err(|_| "AI 任务状态不可用".to_string())?;
+        let Some(task) = tasks.get_mut(task_id) else {
+            return Ok(Vec::new());
+        };
+        if task.status.is_terminal() {
+            return Ok(Vec::new());
+        }
+        task.status = AgentTaskStatus::Running;
+        task.active_step_id = if completed {
+            None
+        } else {
+            plan.steps
+                .iter()
+                .find(|step| step.status == AgentPlanStepStatus::InProgress)
+                .map(|step| step.id.clone())
+        };
+        task.plan = Some(plan);
+        Ok(vec![task.event(if completed {
+            AgentTaskEventKind::PlanCompleted
+        } else {
+            AgentTaskEventKind::PlanUpdated
+        })])
+    }
+
+    pub(crate) fn start_plan(
+        &self,
+        task_id: &str,
+        mut plan: AgentPlan,
+    ) -> Result<Vec<AgentTaskEvent>, String> {
+        let mut tasks = self
+            .tasks
+            .lock()
+            .map_err(|_| "AI 任务状态不可用".to_string())?;
+        let Some(task) = tasks.get_mut(task_id) else {
+            return Ok(Vec::new());
+        };
+        if task.status.is_terminal() {
+            return Ok(Vec::new());
+        }
+        plan.status = AgentPlanStatus::Running;
+        task.status = AgentTaskStatus::Running;
+        task.active_step_id = None;
+        task.plan = Some(plan);
+        Ok(vec![task.event(AgentTaskEventKind::PlanStarted)])
+    }
+
+    pub(crate) fn clear_plan_control(&self, task_id: &str) {
+        if let Ok(mut controls) = self.plan_controls.lock() {
+            controls.remove(task_id);
+        }
+    }
+
+    fn decide_plan(&self, request: AgentPlanDecisionRequest) -> Result<(), String> {
+        if !valid_identifier(&request.task_id) || !valid_identifier(&request.plan_id) {
+            return Err("AI 计划标识无效".to_string());
+        }
+        let selected_call_ids = request
+            .selected_call_ids
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .collect::<Vec<_>>();
+        if selected_call_ids.len() > 6
+            || selected_call_ids
+                .iter()
+                .any(|value| !valid_identifier(value))
+            || selected_call_ids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != selected_call_ids.len()
+        {
+            return Err("AI 计划选择无效".to_string());
+        }
+        {
+            let tasks = self
+                .tasks
+                .lock()
+                .map_err(|_| "AI 任务状态不可用".to_string())?;
+            let task = tasks
+                .get(&request.task_id)
+                .ok_or_else(|| "AI 任务不存在".to_string())?;
+            let plan = task
+                .plan
+                .as_ref()
+                .filter(|plan| plan.id == request.plan_id)
+                .ok_or_else(|| "AI 计划不存在".to_string())?;
+            if selected_call_ids
+                .iter()
+                .any(|call_id| !plan.steps.iter().any(|step| step.id == *call_id))
+            {
+                return Err("AI 计划选择不属于当前计划".to_string());
+            }
+        }
+        let controls = self
+            .plan_controls
+            .lock()
+            .map_err(|_| "AI 计划控制状态不可用".to_string())?;
+        let control = controls
+            .get(&request.task_id)
+            .filter(|control| control.plan_id == request.plan_id)
+            .ok_or_else(|| "AI 计划已经结束".to_string())?;
+        let decision = match request.decision {
+            AgentPlanDecisionKind::Approve => AgentPlanDecision::Approve(selected_call_ids),
+            AgentPlanDecisionKind::Reject => AgentPlanDecision::Reject,
+            AgentPlanDecisionKind::Stop => AgentPlanDecision::Stop,
+        };
+        control
+            .sender
+            .send(decision)
+            .map_err(|_| "AI 计划已经结束".to_string())
+    }
+
     pub(crate) fn fail_task(
         &self,
         task_id: &str,
@@ -327,28 +568,38 @@ impl AgentTaskManager {
             return Ok(Vec::new());
         }
         task.status = AgentTaskStatus::Failed;
+        task.active_step_id = None;
         task.error = Some(message.chars().take(500).collect());
         Ok(vec![task.event(AgentTaskEventKind::TaskFailed)])
     }
 
     pub(crate) fn cancel_task(&self, task_id: &str) -> Result<Vec<AgentTaskEvent>, String> {
-        let mut tasks = self
-            .tasks
-            .lock()
-            .map_err(|_| "AI 任务状态不可用".to_string())?;
-        let Some(task) = tasks.get_mut(task_id) else {
-            return Ok(Vec::new());
+        let events = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .map_err(|_| "AI 任务状态不可用".to_string())?;
+            let Some(task) = tasks.get_mut(task_id) else {
+                return Ok(Vec::new());
+            };
+            if task.status.is_terminal() {
+                return Ok(Vec::new());
+            }
+            task.status = AgentTaskStatus::Cancelled;
+            task.active_step_id = None;
+            task.result = Some(AgentTaskResult {
+                summary: "AI 任务已取消".to_string(),
+                verified: false,
+                stop_reason: Some("user_cancelled".to_string()),
+            });
+            vec![task.event(AgentTaskEventKind::TaskCancelled)]
         };
-        if task.status.is_terminal() {
-            return Ok(Vec::new());
+        if let Ok(controls) = self.plan_controls.lock() {
+            if let Some(control) = controls.get(task_id) {
+                let _ = control.sender.send(AgentPlanDecision::Stop);
+            }
         }
-        task.status = AgentTaskStatus::Cancelled;
-        task.result = Some(AgentTaskResult {
-            summary: "AI 任务已取消".to_string(),
-            verified: false,
-            stop_reason: Some("user_cancelled".to_string()),
-        });
-        Ok(vec![task.event(AgentTaskEventKind::TaskCancelled)])
+        Ok(events)
     }
 
     fn get_task(&self, task_id: &str) -> Result<Option<AgentTask>, String> {
@@ -380,13 +631,24 @@ pub(crate) fn ai_task_get(
         .map_err(|error| CommandError::from_message(operation, error))
 }
 
+#[tauri::command]
+pub(crate) fn ai_task_plan_decide(
+    manager: State<'_, AgentTaskManager>,
+    request: AgentPlanDecisionRequest,
+) -> CommandResult<()> {
+    manager
+        .decide_plan(request)
+        .map_err(|error| CommandError::from_message("ai_task_plan_decide", error))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        AgentActionRisk, AgentApprovalMode, AgentPlanStepStatus, AgentTaskContext,
-        AgentTaskEventKind, AgentTaskManager, AgentTaskStatus,
+        AgentActionRisk, AgentApprovalMode, AgentPlan, AgentPlanDecision, AgentPlanDecisionKind,
+        AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep, AgentPlanStepStatus,
+        AgentTaskContext, AgentTaskEventKind, AgentTaskManager, AgentTaskStatus,
     };
 
     fn context() -> AgentTaskContext {
@@ -395,6 +657,7 @@ mod tests {
             conversation_id: "conversation-1".to_string(),
             host_id: "host-1".to_string(),
             terminal_session_id: Some("session-1".to_string()),
+            current_directory: Some("/srv/app".to_string()),
             objective: "检查服务器状态".to_string(),
             approval_mode: AgentApprovalMode::OnRequest,
         }
@@ -464,6 +727,57 @@ mod tests {
     }
 
     #[test]
+    fn plan_decisions_are_scoped_to_the_active_task_and_plan() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        let plan = AgentPlan {
+            id: "plan-1".to_string(),
+            description: Some("检查网络".to_string()),
+            status: AgentPlanStatus::Pending,
+            created_at: 1,
+            steps: vec![AgentPlanStep {
+                id: "call-1".to_string(),
+                title: "Ping".to_string(),
+                tool: "ping_target".to_string(),
+                status: AgentPlanStepStatus::Pending,
+                detail: Some("example.com".to_string()),
+                reason: "检查连通性".to_string(),
+                optional: false,
+                depends_on: Vec::new(),
+                summary: None,
+                error: None,
+                started_at: None,
+                duration_ms: None,
+            }],
+        };
+        let (receiver, events) = manager.set_plan("task-1", plan, true).unwrap();
+        assert_eq!(events[0].kind, AgentTaskEventKind::PlanCreated);
+        manager
+            .decide_plan(AgentPlanDecisionRequest {
+                task_id: "task-1".to_string(),
+                plan_id: "plan-1".to_string(),
+                decision: AgentPlanDecisionKind::Approve,
+                selected_call_ids: vec!["call-1".to_string()],
+            })
+            .unwrap();
+        assert_eq!(
+            *receiver.borrow(),
+            AgentPlanDecision::Approve(vec!["call-1".to_string()])
+        );
+        assert_eq!(
+            manager
+                .decide_plan(AgentPlanDecisionRequest {
+                    task_id: "task-1".to_string(),
+                    plan_id: "other-plan".to_string(),
+                    decision: AgentPlanDecisionKind::Reject,
+                    selected_call_ids: Vec::new(),
+                })
+                .unwrap_err(),
+            "AI 计划不存在"
+        );
+    }
+
+    #[test]
     fn serialized_enums_match_the_shared_contract() {
         let contract: serde_json::Value =
             serde_json::from_str(include_str!("../../protocol/contract.json")).unwrap();
@@ -497,6 +811,10 @@ mod tests {
                 AgentTaskEventKind::TaskCreated,
                 AgentTaskEventKind::ModelTurnStarted,
                 AgentTaskEventKind::ModelTurnCompleted,
+                AgentTaskEventKind::PlanCreated,
+                AgentTaskEventKind::PlanStarted,
+                AgentTaskEventKind::PlanUpdated,
+                AgentTaskEventKind::PlanCompleted,
                 AgentTaskEventKind::TaskCompleted,
                 AgentTaskEventKind::TaskFailed,
                 AgentTaskEventKind::TaskCancelled,
@@ -512,6 +830,16 @@ mod tests {
                 AgentPlanStepStatus::Failed,
             ]),
             contract_keys("agentPlanStepStatuses")
+        );
+        assert_eq!(
+            serialized_values(&[
+                AgentPlanStatus::Pending,
+                AgentPlanStatus::Running,
+                AgentPlanStatus::Completed,
+                AgentPlanStatus::Partial,
+                AgentPlanStatus::Cancelled,
+            ]),
+            contract_keys("agentPlanStatuses")
         );
         assert_eq!(
             serialized_values(&[

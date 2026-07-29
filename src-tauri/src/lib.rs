@@ -90,6 +90,7 @@ pub fn run() {
             ai::ai_chat_start,
             ai::ai_chat_cancel,
             agent::ai_task_get,
+            agent::ai_task_plan_decide,
             managed_keys::managed_ssh_key_import,
             managed_keys::managed_ssh_key_delete,
             diagnostics::diagnostic_set_level,

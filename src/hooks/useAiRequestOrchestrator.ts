@@ -64,6 +64,7 @@ import {
   commandErrorMessage,
   FineShellCommandError,
   listenProtocolEvent,
+  type AgentPlan,
   type AgentTask,
   type AgentTaskEventPayload,
   type AiChatResult,
@@ -176,6 +177,71 @@ function agentTaskIsTerminal(task: AgentTask) {
   return ["completed", "failed", "cancelled"].includes(task.status);
 }
 
+function agentPlanPresentation(plan: AgentPlan): {
+  plan: AiDiagnosticPlan;
+  runs: AiToolRun[];
+} {
+  const runs = plan.steps
+    .filter((step) => isAiReadOnlyToolName(step.tool))
+    .map((step): AiToolRun => {
+      const status: AiToolRun["status"] =
+        step.status === "in_progress"
+          ? "running"
+          : step.status === "completed"
+            ? "success"
+            : step.status === "failed"
+              ? "failed"
+              : step.status === "skipped"
+                ? "skipped"
+                : "pending";
+      return {
+        callId: step.id,
+        dependsOn: step.dependsOn.length ? step.dependsOn : undefined,
+        detail: step.detail ?? undefined,
+        durationMs: step.durationMs ?? undefined,
+        error: step.error ?? undefined,
+        label: step.title,
+        name: step.tool as AiToolRun["name"],
+        optional: step.optional || undefined,
+        planId: plan.id,
+        reason: step.reason,
+        startedAt: step.startedAt ?? plan.createdAt,
+        status,
+        summary: step.summary ?? undefined,
+      };
+    });
+  return {
+    plan: {
+      createdAt: new Date(plan.createdAt).toISOString(),
+      description: plan.description ?? undefined,
+      id: plan.id,
+      status: plan.status,
+      stepCallIds: plan.steps.map((step) => step.id),
+    },
+    runs,
+  };
+}
+
+function mergeAgentPlanIntoMessage(message: AiMessage, plan: AgentPlan): AiMessage {
+  const presentation = agentPlanPresentation(plan);
+  const diagnosticPlans = message.diagnosticPlans ?? [];
+  const toolRuns = message.toolRuns ?? [];
+  const planExists = diagnosticPlans.some((item) => item.id === plan.id);
+  const nextPlanCallIds = new Set(presentation.runs.map((run) => run.callId));
+  return {
+    ...message,
+    diagnosticPlans: planExists
+      ? diagnosticPlans.map((item) =>
+          item.id === plan.id ? presentation.plan : item,
+        )
+      : [...diagnosticPlans, presentation.plan],
+    toolRuns: [
+      ...toolRuns.filter((run) => !nextPlanCallIds.has(run.callId)),
+      ...presentation.runs,
+    ],
+  };
+}
+
 function createId(prefix: string) {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -269,6 +335,7 @@ export function useAiRequestOrchestrator({
   const activeDiagnosticPlansRef = useRef(
     new Map<string, ActiveDiagnosticPlanLocation>(),
   );
+  const backendDiagnosticPlanTasksRef = useRef(new Map<string, string>());
   const stoppedDiagnosticPlansRef = useRef(new Set<string>());
   const summaryRequestsRef = useRef(new Set<string>());
   const settingsRef = useRef(settings);
@@ -303,24 +370,62 @@ export function useAiRequestOrchestrator({
 
   const confirmDiagnosticPlan = useCallback(
     (planId: string, selectedCallIds: string[]) => {
+      const taskId = backendDiagnosticPlanTasksRef.current.get(planId);
+      if (taskId) {
+        void invoke("ai_task_plan_decide", {
+          request: {
+            taskId,
+            planId,
+            decision: "approve",
+            selectedCallIds,
+          },
+        }).catch((error) => callbacksRef.current.onCancelError?.(error));
+        return;
+      }
       const resolve = diagnosticPlanWaitersRef.current.get(planId);
       if (!resolve) return;
       diagnosticPlanWaitersRef.current.delete(planId);
       resolve({ selectedCallIds, type: "confirm" });
     },
-    [],
+    [invoke],
   );
 
-  const cancelDiagnosticPlan = useCallback((planId: string) => {
-    const resolve = diagnosticPlanWaitersRef.current.get(planId);
-    if (!resolve) return;
-    diagnosticPlanWaitersRef.current.delete(planId);
-    resolve({ selectedCallIds: [], type: "cancel" });
-  }, []);
+  const cancelDiagnosticPlan = useCallback(
+    (planId: string) => {
+      const taskId = backendDiagnosticPlanTasksRef.current.get(planId);
+      if (taskId) {
+        void invoke("ai_task_plan_decide", {
+          request: {
+            taskId,
+            planId,
+            decision: "reject",
+            selectedCallIds: [],
+          },
+        }).catch((error) => callbacksRef.current.onCancelError?.(error));
+        return;
+      }
+      const resolve = diagnosticPlanWaitersRef.current.get(planId);
+      if (!resolve) return;
+      diagnosticPlanWaitersRef.current.delete(planId);
+      resolve({ selectedCallIds: [], type: "cancel" });
+    },
+    [invoke],
+  );
 
   const stopDiagnosticPlan = useCallback(
     (planId: string) => {
       stoppedDiagnosticPlansRef.current.add(planId);
+      const taskId = backendDiagnosticPlanTasksRef.current.get(planId);
+      if (taskId) {
+        void invoke("ai_task_plan_decide", {
+          request: {
+            taskId,
+            planId,
+            decision: "stop",
+            selectedCallIds: [],
+          },
+        }).catch((error) => callbacksRef.current.onCancelError?.(error));
+      }
       const location = activeDiagnosticPlansRef.current.get(planId);
       if (!location) return;
       updateMessages(
@@ -341,7 +446,7 @@ export function useAiRequestOrchestrator({
           ),
       );
     },
-    [updateMessages],
+    [invoke, updateMessages],
   );
 
   useEffect(() => {
@@ -359,6 +464,7 @@ export function useAiRequestOrchestrator({
     }
     diagnosticPlanWaitersRef.current.clear();
     activeDiagnosticPlansRef.current.clear();
+    backendDiagnosticPlanTasksRef.current.clear();
     stoppedDiagnosticPlansRef.current.clear();
     setActiveTask(undefined);
     setSending(false);
@@ -406,6 +512,29 @@ export function useAiRequestOrchestrator({
         }
         return payload.task;
       });
+      const plan = payload.task.plan;
+      if (plan && activeRequest) {
+        backendDiagnosticPlanTasksRef.current.set(plan.id, payload.task.id);
+        activeDiagnosticPlansRef.current.set(plan.id, {
+          conversationId: activeRequest.conversationId,
+          hostId: activeRequest.hostId,
+          messageId: activeRequest.assistantId,
+        });
+        callbacksRef.current.updateMessages(
+          activeRequest.hostId,
+          activeRequest.conversationId,
+          (messages) =>
+            messages.map((message) =>
+              message.id === activeRequest.assistantId
+                ? mergeAgentPlanIntoMessage(message, plan)
+                : message,
+            ),
+        );
+        if (["completed", "partial", "cancelled"].includes(plan.status)) {
+          activeDiagnosticPlansRef.current.delete(plan.id);
+          stoppedDiagnosticPlansRef.current.delete(plan.id);
+        }
+      }
       if (agentTaskIsTerminal(payload.task)) setSending(false);
     })
       .then((unlisten) => {
@@ -611,11 +740,23 @@ export function useAiRequestOrchestrator({
                 conversationId: targetConversationId,
                 hostId: targetHostId,
                 terminalSessionId: targetSessionId,
+                currentDirectory: toolCurrentDirectory ?? undefined,
                 objective: userMessage.content,
                 approvalMode: "on_request",
               },
             },
           });
+          for (const plan of result.diagnosticPlans ?? []) {
+            backendDiagnosticPlanTasksRef.current.set(plan.id, requestId);
+            updateMessages(targetHostId, targetConversationId, (current) =>
+              current.map((message) =>
+                message.id === assistantMessage.id
+                  ? mergeAgentPlanIntoMessage(message, plan)
+                  : message,
+              ),
+            );
+          }
+          toolRounds.push(...(result.diagnosticToolRounds ?? []));
           const diagnosticCalls = result.toolCalls.filter(
             (call) =>
               !isAiFileEditToolCall(call) &&
@@ -1027,6 +1168,7 @@ export function useAiRequestOrchestrator({
         for (const [planId, location] of activeDiagnosticPlansRef.current) {
           if (location.messageId === assistantMessage.id) {
             activeDiagnosticPlansRef.current.delete(planId);
+            backendDiagnosticPlanTasksRef.current.delete(planId);
             stoppedDiagnosticPlansRef.current.delete(planId);
             diagnosticPlanWaitersRef.current.delete(planId);
           }

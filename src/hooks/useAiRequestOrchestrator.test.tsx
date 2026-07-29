@@ -3,6 +3,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { AppSettings } from "../app-settings";
 import {
   PROTOCOL_VERSION,
+  type AgentPlan,
   type AgentTask,
   type AiChatResult,
   type AiToolCall,
@@ -113,6 +114,7 @@ function agentTask(
     activeStepId: null,
     approvalMode: "on_request",
     conversationId: "conversation-1",
+    currentDirectory: null,
     createdAt: 1,
     error: null,
     hostId: "host-1",
@@ -279,6 +281,7 @@ describe("useAiRequestOrchestrator", () => {
       task: {
         approvalMode: string;
         conversationId: string;
+        currentDirectory: string;
         hostId: string;
         id: string;
         objective: string;
@@ -291,6 +294,7 @@ describe("useAiRequestOrchestrator", () => {
     expect(request.task).toEqual({
       approvalMode: "on_request",
       conversationId: "conversation-1",
+      currentDirectory: "/root",
       hostId: "host-1",
       id: request.requestId,
       objective: "检查系统状态",
@@ -370,6 +374,120 @@ describe("useAiRequestOrchestrator", () => {
       });
     });
     expect(result.current.activeTask).toEqual(restoredTask);
+  });
+
+  test("renders backend diagnostic plans and sends approval decisions to Rust", async () => {
+    const response = deferred<AiChatResult>();
+    const invokeMock = mock(
+      async (command: string, _args?: Record<string, unknown>) =>
+        command === "ai_chat_start" ? response.promise : undefined,
+    );
+    const invoke = invokeMock as unknown as AiRequestInvoke;
+    let onTask: Parameters<AiTaskListener>[0] = () => undefined;
+    const callbacks = createConversationCallbacks();
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        confirmToolExecution: async () => true,
+        invoke,
+        listenToStream: async () => () => undefined,
+        listenToTaskEvents: async (callback) => {
+          onTask = callback;
+          return () => undefined;
+        },
+        persistConversation: async () => undefined,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+    let send!: Promise<AiConversation | undefined>;
+    act(() => {
+      send = result.current.sendMessage(baseSendOptions);
+    });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
+    const request = invokeMock.mock.calls[0]?.[1]?.request as {
+      requestId: string;
+    };
+    const plan: AgentPlan = {
+      createdAt: Date.now(),
+      description: "检查网络",
+      id: "plan-backend-1",
+      status: "pending",
+      steps: [
+        {
+          dependsOn: [],
+          detail: "example.com",
+          durationMs: null,
+          error: null,
+          id: "call-ping",
+          optional: false,
+          reason: "检查连通性",
+          startedAt: null,
+          status: "pending",
+          summary: "确认计划即授权执行此主动网络探测",
+          title: "Ping",
+          tool: "ping_target",
+        },
+      ],
+    };
+    act(() => {
+      onTask({
+        kind: "plan_created",
+        protocolVersion: PROTOCOL_VERSION,
+        sequence: 3,
+        task: {
+          ...agentTask(request.requestId, "awaiting_approval", 3),
+          plan,
+        },
+      });
+    });
+    expect(callbacks.current().messages[1]?.diagnosticPlans?.[0]).toMatchObject({
+      id: plan.id,
+      status: "pending",
+    });
+    expect(callbacks.current().messages[1]?.toolRuns?.[0]).toMatchObject({
+      callId: "call-ping",
+      status: "pending",
+    });
+
+    act(() => {
+      result.current.confirmDiagnosticPlan(plan.id, ["call-ping"]);
+    });
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ai_task_plan_decide", {
+        request: {
+          decision: "approve",
+          planId: plan.id,
+          selectedCallIds: ["call-ping"],
+          taskId: request.requestId,
+        },
+      }),
+    );
+    await act(async () => {
+      response.resolve({
+        content: "网络正常",
+        diagnosticPlans: [
+          {
+            ...plan,
+            status: "completed",
+            steps: plan.steps.map((step) => ({
+              ...step,
+              durationMs: 20,
+              status: "completed",
+              summary: "Ping example.com：可达",
+            })),
+          },
+        ],
+        diagnosticToolRounds: [],
+        toolCalls: [],
+      });
+      await send;
+    });
+    expect(callbacks.current().messages[1]?.diagnosticPlans?.[0]?.status).toBe(
+      "completed",
+    );
   });
 
   test("blocks a duplicate send while the first request is active", async () => {

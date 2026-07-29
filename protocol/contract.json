@@ -1,5 +1,5 @@
 {
-  "version": 12,
+  "version": 13,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -23,6 +23,7 @@
     "ai_chat_start": true,
     "ai_chat_cancel": true,
     "ai_task_get": true,
+    "ai_task_plan_decide": true,
     "managed_ssh_key_import": true,
     "managed_ssh_key_delete": true,
     "diagnostic_set_level": true,
@@ -105,6 +106,10 @@
     "task_created": true,
     "model_turn_started": true,
     "model_turn_completed": true,
+    "plan_created": true,
+    "plan_started": true,
+    "plan_updated": true,
+    "plan_completed": true,
     "task_completed": true,
     "task_failed": true,
     "task_cancelled": true
@@ -115,6 +120,13 @@
     "completed": true,
     "skipped": true,
     "failed": true
+  },
+  "agentPlanStatuses": {
+    "pending": true,
+    "running": true,
+    "completed": true,
+    "partial": true,
+    "cancelled": true
   },
   "agentApprovalModes": {
     "on_request": true,

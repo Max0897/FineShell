@@ -7,6 +7,7 @@ import {
   type AgentActionRisk,
   type AgentApprovalMode,
   type AgentPlanStepStatus,
+  type AgentPlanStatus,
   type AgentTaskEventKind,
   type AgentTaskStatus,
   type TauriCommand,
@@ -21,7 +22,7 @@ describe("Tauri shared protocol", () => {
     expect(PROTOCOL_VERSION).toBe(contract.version);
     expect(contract.commands[command]).toBe(true);
     expect(contract.events[event]).toBe(true);
-    expect(Object.keys(contract.commands)).toHaveLength(72);
+    expect(Object.keys(contract.commands)).toHaveLength(73);
     expect(Object.keys(contract.events)).toHaveLength(11);
   });
 
@@ -29,12 +30,14 @@ describe("Tauri shared protocol", () => {
     const status: AgentTaskStatus = "awaiting_approval";
     const event: AgentTaskEventKind = "model_turn_completed";
     const step: AgentPlanStepStatus = "in_progress";
+    const plan: AgentPlanStatus = "partial";
     const approval: AgentApprovalMode = "on_request";
     const risk: AgentActionRisk = "reversible_write";
 
     expect(contract.agentTaskStatuses[status]).toBe(true);
     expect(contract.agentTaskEventKinds[event]).toBe(true);
     expect(contract.agentPlanStepStatuses[step]).toBe(true);
+    expect(contract.agentPlanStatuses[plan]).toBe(true);
     expect(contract.agentApprovalModes[approval]).toBe(true);
     expect(contract.agentActionRisks[risk]).toBe(true);
   });

@@ -18,6 +18,7 @@ export type CommandErrorCode = keyof typeof contract.errorCodes;
 export type AgentTaskStatus = keyof typeof contract.agentTaskStatuses;
 export type AgentTaskEventKind = keyof typeof contract.agentTaskEventKinds;
 export type AgentPlanStepStatus = keyof typeof contract.agentPlanStepStatuses;
+export type AgentPlanStatus = keyof typeof contract.agentPlanStatuses;
 export type AgentApprovalMode = keyof typeof contract.agentApprovalModes;
 export type AgentActionRisk = keyof typeof contract.agentActionRisks;
 
@@ -107,10 +108,23 @@ export interface AiCompletePayload {
 export interface AgentPlanStep {
   id: string;
   title: string;
+  tool: string;
   status: AgentPlanStepStatus;
+  detail: string | null;
+  reason: string;
+  optional: boolean;
+  dependsOn: string[];
+  summary: string | null;
+  error: string | null;
+  startedAt: number | null;
+  durationMs: number | null;
 }
 
 export interface AgentPlan {
+  id: string;
+  description: string | null;
+  status: AgentPlanStatus;
+  createdAt: number;
   steps: AgentPlanStep[];
 }
 
@@ -134,6 +148,7 @@ export interface AgentTaskContext {
   conversationId: string;
   hostId: string;
   terminalSessionId?: string;
+  currentDirectory?: string;
   objective: string;
   approvalMode: AgentApprovalMode;
 }
@@ -143,6 +158,7 @@ export interface AgentTask {
   conversationId: string;
   hostId: string;
   terminalSessionId: string | null;
+  currentDirectory: string | null;
   approvalMode: AgentApprovalMode;
   status: AgentTaskStatus;
   objective: string;
@@ -167,6 +183,8 @@ export interface AgentTaskEventPayload {
 export interface AiChatResult {
   content: string;
   toolCalls: AiToolCall[];
+  diagnosticPlans?: AgentPlan[];
+  diagnosticToolRounds?: AiToolRound[];
 }
 
 export type AiFinalizeReason =
