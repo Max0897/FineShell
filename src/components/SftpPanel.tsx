@@ -103,6 +103,7 @@ import {
   resolveNativeDropPoint,
   selectAllSftpEntryKeys,
   setRemotePathBookmark,
+  summarizeSftpTransferBatch,
 } from "../sftp-utils";
 import type { PermissionFlag, RemoteArchiveFormat } from "../sftp-utils";
 import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
@@ -246,6 +247,10 @@ function createTransferId() {
   return `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function createUploadBatchId() {
+  return `upload-batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function isTransferCancellation(message: string) {
   return /传输已取消|连接已取消|cancel(?:led|ed)/i.test(message);
 }
@@ -344,6 +349,7 @@ function SftpPanel({
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
   const startingTransfersRef = useRef(new Set<string>());
+  const finalizedUploadBatchesRef = useRef(new Set<string>());
   const handledRefreshRequestsRef = useRef<Record<string, number>>({});
   const handledTerminalDirectoryRevisionsRef = useRef(
     new Map<string, number>(),
@@ -1049,12 +1055,14 @@ function SftpPanel({
             },
           );
         }
-        Message.success(
-          `${transfer.direction === "upload" ? "上传" : "下载"}完成：${transfer.fileName}`,
-        );
-        const currentBrowser = browsersRef.current[transfer.sessionId];
-        if (transfer.direction === "upload" && currentBrowser) {
-          await loadDirectory(transfer.sessionId, currentBrowser.path);
+        if (!transfer.batchId) {
+          Message.success(
+            `${transfer.direction === "upload" ? "上传" : "下载"}完成：${transfer.fileName}`,
+          );
+          const currentBrowser = browsersRef.current[transfer.sessionId];
+          if (transfer.direction === "upload" && currentBrowser) {
+            await loadDirectory(transfer.sessionId, currentBrowser.path);
+          }
         }
       } catch (error) {
         const message = commandErrorMessage(error);
@@ -1081,7 +1089,7 @@ function SftpPanel({
               error: message,
             });
           }
-          Message.error(message);
+          if (!transfer.batchId) Message.error(message);
         }
       } finally {
         startingTransfersRef.current.delete(transfer.transferId);
@@ -1089,6 +1097,45 @@ function SftpPanel({
     },
     [loadDirectory, updateBrowser],
   );
+
+  useEffect(() => {
+    const batches = new Map<string, TransferRecord[]>();
+    for (const transfer of Object.values(transfers)) {
+      if (transfer.direction !== "upload" || !transfer.batchId) continue;
+      const batch = batches.get(transfer.batchId) ?? [];
+      batch.push(transfer);
+      batches.set(transfer.batchId, batch);
+    }
+
+    for (const batchId of finalizedUploadBatchesRef.current) {
+      if (!batches.has(batchId)) finalizedUploadBatchesRef.current.delete(batchId);
+    }
+
+    for (const [batchId, batch] of batches) {
+      if (finalizedUploadBatchesRef.current.has(batchId)) continue;
+      const summary = summarizeSftpTransferBatch(
+        batch.map((transfer) => transfer.status),
+      );
+      if (!summary.finished) continue;
+
+      finalizedUploadBatchesRef.current.add(batchId);
+      if (summary.failed === 0 && summary.cancelled === 0) {
+        Message.success(`上传完成：共 ${summary.completed} 个文件`);
+      } else {
+        const details = [`成功 ${summary.completed} 个`];
+        if (summary.failed > 0) details.push(`失败 ${summary.failed} 个`);
+        if (summary.cancelled > 0) details.push(`取消 ${summary.cancelled} 个`);
+        const message = `批量上传结束：${details.join("，")}`;
+        if (summary.failed === summary.total) Message.error(message);
+        else Message.warning(message);
+      }
+
+      const currentBrowser = browsersRef.current[batch[0].sessionId];
+      if (currentBrowser?.status === "ready") {
+        void loadDirectory(batch[0].sessionId, currentBrowser.path);
+      }
+    }
+  }, [loadDirectory, transfers]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -1131,6 +1178,7 @@ function SftpPanel({
     overwrite: boolean,
     transferId = createTransferId(),
     totalBytes = 0,
+    batchId?: string,
   ) {
     if (!session) return;
     const fileName =
@@ -1151,6 +1199,7 @@ function SftpPanel({
       sampledAt: Date.now(),
       sampledBytes: 0,
       bytesPerSecond: 0,
+      batchId,
     };
     setTransfers((current) => ({ ...current, [transferId]: record }));
   }
@@ -1283,6 +1332,8 @@ function SftpPanel({
       return;
     }
 
+    const batchId =
+      inspection.files.length > 1 ? createUploadBatchId() : undefined;
     for (const file of inspection.files) {
       const rootName = file.relativePath.split("/")[0];
       runTransfer(
@@ -1292,9 +1343,14 @@ function SftpPanel({
         conflictingRoots.has(rootName),
         undefined,
         file.size,
+        batchId,
       );
     }
-    if (destination === browser.path && inspection.directories.length > 0) {
+    if (
+      destination === browser.path &&
+      inspection.directories.length > 0 &&
+      inspection.files.length === 0
+    ) {
       await loadDirectory(session.id, browser.path);
     }
     if (inspection.files.length > 0) {

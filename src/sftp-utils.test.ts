@@ -23,6 +23,7 @@ import {
   selectAllSftpEntryKeys,
   invertSftpEntryKeys,
   setRemotePathBookmark,
+  summarizeSftpTransferBatch,
 } from "./sftp-utils";
 
 describe("SFTP path helpers", () => {
@@ -121,6 +122,43 @@ describe("SFTP selection helpers", () => {
       "a",
       "c",
     ]);
+  });
+});
+
+describe("SFTP transfer batches", () => {
+  test("keeps a batch active while any transfer is queued or running", () => {
+    expect(
+      summarizeSftpTransferBatch(["completed", "running", "queued"]),
+    ).toEqual({
+      total: 3,
+      completed: 1,
+      failed: 0,
+      cancelled: 0,
+      active: 2,
+      finished: false,
+    });
+  });
+
+  test("summarizes all terminal results when a batch finishes", () => {
+    expect(
+      summarizeSftpTransferBatch([
+        "completed",
+        "completed",
+        "failed",
+        "cancelled",
+      ]),
+    ).toEqual({
+      total: 4,
+      completed: 2,
+      failed: 1,
+      cancelled: 1,
+      active: 0,
+      finished: true,
+    });
+  });
+
+  test("does not treat an empty collection as a finished batch", () => {
+    expect(summarizeSftpTransferBatch([]).finished).toBe(false);
   });
 });
 

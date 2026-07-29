@@ -176,6 +176,40 @@ export function isActiveSftpTransfer(status: SftpTransferStatus) {
   return status === "queued" || status === "running" || status === "paused";
 }
 
+export interface SftpTransferBatchSummary {
+  total: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  active: number;
+  finished: boolean;
+}
+
+export function summarizeSftpTransferBatch(
+  statuses: readonly SftpTransferStatus[],
+): SftpTransferBatchSummary {
+  const summary = statuses.reduce<SftpTransferBatchSummary>(
+    (current, status) => {
+      current.total += 1;
+      if (status === "completed") current.completed += 1;
+      else if (status === "failed") current.failed += 1;
+      else if (status === "cancelled") current.cancelled += 1;
+      else current.active += 1;
+      return current;
+    },
+    {
+      total: 0,
+      completed: 0,
+      failed: 0,
+      cancelled: 0,
+      active: 0,
+      finished: false,
+    },
+  );
+  summary.finished = summary.total > 0 && summary.active === 0;
+  return summary;
+}
+
 export function isValidRemoteName(name: string) {
   const trimmed = name.trim();
   return (

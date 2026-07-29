@@ -37,6 +37,7 @@ export interface TransferActivityRecord
   sampledAt: number;
   sampledBytes: number;
   bytesPerSecond: number;
+  batchId?: string;
   archiveFormat?: RemoteArchiveFormat;
   archiveSourcePaths?: string[];
 }
