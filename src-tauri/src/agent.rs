@@ -8,11 +8,13 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::watch;
 
+use crate::agent_approvals::{ApprovalCredential, ApprovalCredentialStore, ApprovalScope};
 use crate::protocol::{CommandError, CommandResult, AGENT_TASK_EVENT, PROTOCOL_VERSION};
 
 const MAX_AGENT_TASKS: usize = 100;
 const MAX_AGENT_ID_CHARS: usize = 160;
 const MAX_AGENT_OBJECTIVE_CHARS: usize = 24_000;
+const APPROVAL_CREDENTIAL_TTL_MS: u64 = 10 * 60 * 1_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -183,23 +185,52 @@ pub(crate) struct AgentTaskEvent {
     task: AgentTask,
 }
 
-#[derive(Default)]
 pub(crate) struct AgentTaskManager {
     tasks: Mutex<HashMap<String, AgentTask>>,
     plan_controls: Mutex<HashMap<String, AgentPlanControl>>,
+    approval_credentials: Mutex<ApprovalCredentialStore>,
 }
 
 struct AgentPlanControl {
     plan_id: String,
+    approval_requirements: HashMap<String, String>,
     sender: watch::Sender<AgentPlanDecision>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AgentPlanApproval {
+    selected_call_ids: Vec<String>,
+    credentials: Vec<ApprovalCredential>,
+}
+
+impl AgentPlanApproval {
+    pub(crate) fn selected_call_ids(&self) -> &[String] {
+        &self.selected_call_ids
+    }
+
+    pub(crate) fn credential_for(&self, call_id: &str) -> Option<&ApprovalCredential> {
+        self.credentials
+            .iter()
+            .find(|credential| credential.call_id() == call_id)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum AgentPlanDecision {
     Pending,
-    Approve(Vec<String>),
+    Approve(AgentPlanApproval),
     Reject,
     Stop,
+}
+
+impl Default for AgentTaskManager {
+    fn default() -> Self {
+        Self {
+            tasks: Mutex::new(HashMap::new()),
+            plan_controls: Mutex::new(HashMap::new()),
+            approval_credentials: Mutex::new(ApprovalCredentialStore::default()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -375,43 +406,64 @@ impl AgentTaskManager {
         task_id: &str,
         has_tool_calls: bool,
     ) -> Result<Vec<AgentTaskEvent>, String> {
-        let mut tasks = self
-            .tasks
-            .lock()
-            .map_err(|_| "AI 任务状态不可用".to_string())?;
-        let Some(task) = tasks.get_mut(task_id) else {
-            return Ok(Vec::new());
+        let events = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .map_err(|_| "AI 任务状态不可用".to_string())?;
+            let Some(task) = tasks.get_mut(task_id) else {
+                return Ok(Vec::new());
+            };
+            if task.status.is_terminal() {
+                return Ok(Vec::new());
+            }
+            if has_tool_calls {
+                task.status = AgentTaskStatus::Running;
+                vec![task.event(AgentTaskEventKind::ModelTurnCompleted)]
+            } else {
+                task.status = AgentTaskStatus::Completed;
+                task.result = Some(AgentTaskResult {
+                    summary: "AI 任务已完成".to_string(),
+                    verified: false,
+                    stop_reason: None,
+                });
+                vec![task.event(AgentTaskEventKind::TaskCompleted)]
+            }
         };
-        if task.status.is_terminal() {
-            return Ok(Vec::new());
+        if !has_tool_calls {
+            self.revoke_task_approvals(task_id)?;
         }
-        if has_tool_calls {
-            task.status = AgentTaskStatus::Running;
-            Ok(vec![task.event(AgentTaskEventKind::ModelTurnCompleted)])
-        } else {
-            task.status = AgentTaskStatus::Completed;
-            task.result = Some(AgentTaskResult {
-                summary: "AI 任务已完成".to_string(),
-                verified: false,
-                stop_reason: None,
-            });
-            Ok(vec![task.event(AgentTaskEventKind::TaskCompleted)])
-        }
+        Ok(events)
     }
 
     pub(crate) fn set_plan(
         &self,
         task_id: &str,
         mut plan: AgentPlan,
-        awaiting_approval: bool,
+        approval_requirements: HashMap<String, String>,
     ) -> Result<(watch::Receiver<AgentPlanDecision>, Vec<AgentTaskEvent>), String> {
+        if approval_requirements.len() > plan.steps.len()
+            || approval_requirements
+                .keys()
+                .any(|call_id| !plan.steps.iter().any(|step| step.id == *call_id))
+            || approval_requirements
+                .values()
+                .any(|fingerprint| fingerprint.is_empty())
+        {
+            return Err("AI 计划审批范围无效".to_string());
+        }
+        let awaiting_approval = !approval_requirements.is_empty();
         let initial_decision = if awaiting_approval {
             AgentPlanDecision::Pending
         } else {
-            AgentPlanDecision::Approve(plan.steps.iter().map(|step| step.id.clone()).collect())
+            AgentPlanDecision::Approve(AgentPlanApproval {
+                selected_call_ids: plan.steps.iter().map(|step| step.id.clone()).collect(),
+                credentials: Vec::new(),
+            })
         };
         plan.status = AgentPlanStatus::Pending;
         let (sender, receiver) = watch::channel(initial_decision);
+        self.revoke_task_approvals(task_id)?;
         let mut tasks = self
             .tasks
             .lock()
@@ -435,6 +487,7 @@ impl AgentTaskManager {
                 task_id.to_string(),
                 AgentPlanControl {
                     plan_id: plan.id.clone(),
+                    approval_requirements,
                     sender,
                 },
             );
@@ -497,9 +550,35 @@ impl AgentTaskManager {
     }
 
     pub(crate) fn clear_plan_control(&self, task_id: &str) {
-        if let Ok(mut controls) = self.plan_controls.lock() {
-            controls.remove(task_id);
+        let plan_id = self
+            .plan_controls
+            .lock()
+            .ok()
+            .and_then(|mut controls| controls.remove(task_id).map(|control| control.plan_id));
+        if let Some(plan_id) = plan_id {
+            if let Ok(mut credentials) = self.approval_credentials.lock() {
+                credentials.revoke_plan(task_id, &plan_id);
+            }
         }
+    }
+
+    pub(crate) fn consume_approval(
+        &self,
+        credential: &ApprovalCredential,
+        expected_scope: ApprovalScope,
+    ) -> Result<(), String> {
+        self.approval_credentials
+            .lock()
+            .map_err(|_| "AI 审批凭证状态不可用".to_string())?
+            .consume(credential, &expected_scope, timestamp_ms())
+    }
+
+    fn revoke_task_approvals(&self, task_id: &str) -> Result<(), String> {
+        self.approval_credentials
+            .lock()
+            .map_err(|_| "AI 审批凭证状态不可用".to_string())?
+            .revoke_task(task_id);
+        Ok(())
     }
 
     fn decide_plan(&self, request: AgentPlanDecisionRequest) -> Result<(), String> {
@@ -523,7 +602,7 @@ impl AgentTaskManager {
         {
             return Err("AI 计划选择无效".to_string());
         }
-        {
+        let (host_id, session_id, current_directory) = {
             let tasks = self
                 .tasks
                 .lock()
@@ -542,7 +621,12 @@ impl AgentTaskManager {
             {
                 return Err("AI 计划选择不属于当前计划".to_string());
             }
-        }
+            (
+                task.host_id.clone(),
+                task.terminal_session_id.clone(),
+                task.current_directory.clone(),
+            )
+        };
         let controls = self
             .plan_controls
             .lock()
@@ -552,14 +636,80 @@ impl AgentTaskManager {
             .filter(|control| control.plan_id == request.plan_id)
             .ok_or_else(|| "AI 计划已经结束".to_string())?;
         let decision = match request.decision {
-            AgentPlanDecisionKind::Approve => AgentPlanDecision::Approve(selected_call_ids),
-            AgentPlanDecisionKind::Reject => AgentPlanDecision::Reject,
-            AgentPlanDecisionKind::Stop => AgentPlanDecision::Stop,
+            AgentPlanDecisionKind::Approve => {
+                if *control.sender.borrow() != AgentPlanDecision::Pending {
+                    return Err("AI 计划已经作出决定".to_string());
+                }
+                let mut credentials = self
+                    .approval_credentials
+                    .lock()
+                    .map_err(|_| "AI 审批凭证状态不可用".to_string())?;
+                credentials.revoke_plan(&request.task_id, &request.plan_id);
+                let issued = selected_call_ids
+                    .iter()
+                    .filter_map(|call_id| {
+                        control
+                            .approval_requirements
+                            .get(call_id)
+                            .map(|fingerprint| (call_id, fingerprint))
+                    })
+                    .map(|(call_id, action_fingerprint)| {
+                        credentials.issue(
+                            ApprovalScope {
+                                task_id: request.task_id.clone(),
+                                plan_id: request.plan_id.clone(),
+                                call_id: call_id.clone(),
+                                host_id: host_id.clone(),
+                                session_id: session_id.clone(),
+                                current_directory: current_directory.clone(),
+                                action_fingerprint: action_fingerprint.clone(),
+                            },
+                            timestamp_ms(),
+                            APPROVAL_CREDENTIAL_TTL_MS,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+                let issued = match issued {
+                    Ok(issued) => issued,
+                    Err(error) => {
+                        credentials.revoke_plan(&request.task_id, &request.plan_id);
+                        return Err(error);
+                    }
+                };
+                AgentPlanDecision::Approve(AgentPlanApproval {
+                    selected_call_ids,
+                    credentials: issued,
+                })
+            }
+            AgentPlanDecisionKind::Reject => {
+                if *control.sender.borrow() != AgentPlanDecision::Pending {
+                    return Err("AI 计划已经作出决定".to_string());
+                }
+                self.approval_credentials
+                    .lock()
+                    .map_err(|_| "AI 审批凭证状态不可用".to_string())?
+                    .revoke_plan(&request.task_id, &request.plan_id);
+                AgentPlanDecision::Reject
+            }
+            AgentPlanDecisionKind::Stop => {
+                self.approval_credentials
+                    .lock()
+                    .map_err(|_| "AI 审批凭证状态不可用".to_string())?
+                    .revoke_plan(&request.task_id, &request.plan_id);
+                AgentPlanDecision::Stop
+            }
         };
-        control
+        let result = control
             .sender
             .send(decision)
-            .map_err(|_| "AI 计划已经结束".to_string())
+            .map_err(|_| "AI 计划已经结束".to_string());
+        if result.is_err() {
+            self.approval_credentials
+                .lock()
+                .map_err(|_| "AI 审批凭证状态不可用".to_string())?
+                .revoke_plan(&request.task_id, &request.plan_id);
+        }
+        result
     }
 
     pub(crate) fn fail_task(
@@ -567,20 +717,24 @@ impl AgentTaskManager {
         task_id: &str,
         message: &str,
     ) -> Result<Vec<AgentTaskEvent>, String> {
-        let mut tasks = self
-            .tasks
-            .lock()
-            .map_err(|_| "AI 任务状态不可用".to_string())?;
-        let Some(task) = tasks.get_mut(task_id) else {
-            return Ok(Vec::new());
+        let events = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .map_err(|_| "AI 任务状态不可用".to_string())?;
+            let Some(task) = tasks.get_mut(task_id) else {
+                return Ok(Vec::new());
+            };
+            if task.status.is_terminal() {
+                return Ok(Vec::new());
+            }
+            task.status = AgentTaskStatus::Failed;
+            task.active_step_id = None;
+            task.error = Some(message.chars().take(500).collect());
+            vec![task.event(AgentTaskEventKind::TaskFailed)]
         };
-        if task.status.is_terminal() {
-            return Ok(Vec::new());
-        }
-        task.status = AgentTaskStatus::Failed;
-        task.active_step_id = None;
-        task.error = Some(message.chars().take(500).collect());
-        Ok(vec![task.event(AgentTaskEventKind::TaskFailed)])
+        self.revoke_task_approvals(task_id)?;
+        Ok(events)
     }
 
     pub(crate) fn pause_disconnected(
@@ -588,19 +742,23 @@ impl AgentTaskManager {
         task_id: &str,
         message: &str,
     ) -> Result<Vec<AgentTaskEvent>, String> {
-        let mut tasks = self
-            .tasks
-            .lock()
-            .map_err(|_| "AI 任务状态不可用".to_string())?;
-        let Some(task) = tasks.get_mut(task_id) else {
-            return Ok(Vec::new());
+        let events = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .map_err(|_| "AI 任务状态不可用".to_string())?;
+            let Some(task) = tasks.get_mut(task_id) else {
+                return Ok(Vec::new());
+            };
+            if task.status.is_terminal() || task.status == AgentTaskStatus::PausedDisconnected {
+                return Ok(Vec::new());
+            }
+            task.status = AgentTaskStatus::PausedDisconnected;
+            task.error = Some(message.chars().take(500).collect());
+            vec![task.event(AgentTaskEventKind::TaskPaused)]
         };
-        if task.status.is_terminal() || task.status == AgentTaskStatus::PausedDisconnected {
-            return Ok(Vec::new());
-        }
-        task.status = AgentTaskStatus::PausedDisconnected;
-        task.error = Some(message.chars().take(500).collect());
-        Ok(vec![task.event(AgentTaskEventKind::TaskPaused)])
+        self.revoke_task_approvals(task_id)?;
+        Ok(events)
     }
 
     pub(crate) fn resume_disconnected(&self, task_id: &str) -> Result<Vec<AgentTaskEvent>, String> {
@@ -658,6 +816,7 @@ impl AgentTaskManager {
                 let _ = control.sender.send(AgentPlanDecision::Stop);
             }
         }
+        self.revoke_task_approvals(task_id)?;
         Ok(events)
     }
 
@@ -702,13 +861,14 @@ pub(crate) fn ai_task_plan_decide(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap};
 
     use super::{
         AgentActionRisk, AgentApprovalMode, AgentPlan, AgentPlanDecision, AgentPlanDecisionKind,
         AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep, AgentPlanStepStatus,
         AgentTaskContext, AgentTaskEventKind, AgentTaskManager, AgentTaskStatus,
     };
+    use crate::agent_approvals::ApprovalScope;
 
     fn context() -> AgentTaskContext {
         AgentTaskContext {
@@ -719,6 +879,48 @@ mod tests {
             current_directory: Some("/srv/app".to_string()),
             objective: "检查服务器状态".to_string(),
             approval_mode: AgentApprovalMode::OnRequest,
+        }
+    }
+
+    fn network_plan() -> AgentPlan {
+        AgentPlan {
+            id: "plan-1".to_string(),
+            description: Some("检查网络".to_string()),
+            status: AgentPlanStatus::Pending,
+            created_at: 1,
+            steps: vec![AgentPlanStep {
+                id: "call-1".to_string(),
+                title: "Ping".to_string(),
+                tool: "ping_target".to_string(),
+                status: AgentPlanStepStatus::Pending,
+                detail: Some("example.com".to_string()),
+                reason: "检查连通性".to_string(),
+                optional: false,
+                depends_on: Vec::new(),
+                summary: None,
+                error: None,
+                started_at: None,
+                duration_ms: None,
+            }],
+        }
+    }
+
+    fn network_approval_requirements() -> HashMap<String, String> {
+        HashMap::from([(
+            "call-1".to_string(),
+            "ping_target\0{\"target\":\"example.com\"}".to_string(),
+        )])
+    }
+
+    fn network_approval_scope() -> ApprovalScope {
+        ApprovalScope {
+            task_id: "task-1".to_string(),
+            plan_id: "plan-1".to_string(),
+            call_id: "call-1".to_string(),
+            host_id: "host-1".to_string(),
+            session_id: Some("session-1".to_string()),
+            current_directory: Some("/srv/app".to_string()),
+            action_fingerprint: "ping_target\0{\"target\":\"example.com\"}".to_string(),
         }
     }
 
@@ -854,27 +1056,9 @@ mod tests {
     fn plan_decisions_are_scoped_to_the_active_task_and_plan() {
         let manager = AgentTaskManager::default();
         manager.begin_model_turn(&context()).unwrap();
-        let plan = AgentPlan {
-            id: "plan-1".to_string(),
-            description: Some("检查网络".to_string()),
-            status: AgentPlanStatus::Pending,
-            created_at: 1,
-            steps: vec![AgentPlanStep {
-                id: "call-1".to_string(),
-                title: "Ping".to_string(),
-                tool: "ping_target".to_string(),
-                status: AgentPlanStepStatus::Pending,
-                detail: Some("example.com".to_string()),
-                reason: "检查连通性".to_string(),
-                optional: false,
-                depends_on: Vec::new(),
-                summary: None,
-                error: None,
-                started_at: None,
-                duration_ms: None,
-            }],
-        };
-        let (receiver, events) = manager.set_plan("task-1", plan, true).unwrap();
+        let (receiver, events) = manager
+            .set_plan("task-1", network_plan(), network_approval_requirements())
+            .unwrap();
         assert_eq!(events[0].kind, AgentTaskEventKind::PlanCreated);
         manager
             .decide_plan(AgentPlanDecisionRequest {
@@ -884,9 +1068,31 @@ mod tests {
                 selected_call_ids: vec!["call-1".to_string()],
             })
             .unwrap();
+        let decision = receiver.borrow().clone();
+        let AgentPlanDecision::Approve(approval) = decision else {
+            panic!("expected an approved plan");
+        };
+        assert_eq!(approval.selected_call_ids(), &["call-1".to_string()]);
+        let credential = approval.credential_for("call-1").unwrap();
+        manager
+            .consume_approval(credential, network_approval_scope())
+            .unwrap();
         assert_eq!(
-            *receiver.borrow(),
-            AgentPlanDecision::Approve(vec!["call-1".to_string()])
+            manager
+                .consume_approval(credential, network_approval_scope())
+                .unwrap_err(),
+            "AI 审批凭证不存在或已被消费"
+        );
+        assert_eq!(
+            manager
+                .decide_plan(AgentPlanDecisionRequest {
+                    task_id: "task-1".to_string(),
+                    plan_id: "plan-1".to_string(),
+                    decision: AgentPlanDecisionKind::Approve,
+                    selected_call_ids: vec!["call-1".to_string()],
+                })
+                .unwrap_err(),
+            "AI 计划已经作出决定"
         );
         assert_eq!(
             manager
@@ -898,6 +1104,38 @@ mod tests {
                 })
                 .unwrap_err(),
             "AI 计划不存在"
+        );
+    }
+
+    #[test]
+    fn disconnect_revokes_unconsumed_plan_approvals() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        let (receiver, _) = manager
+            .set_plan("task-1", network_plan(), network_approval_requirements())
+            .unwrap();
+        manager
+            .decide_plan(AgentPlanDecisionRequest {
+                task_id: "task-1".to_string(),
+                plan_id: "plan-1".to_string(),
+                decision: AgentPlanDecisionKind::Approve,
+                selected_call_ids: vec!["call-1".to_string()],
+            })
+            .unwrap();
+        let AgentPlanDecision::Approve(approval) = receiver.borrow().clone() else {
+            panic!("expected an approved plan");
+        };
+        manager
+            .pause_disconnected("task-1", "SSH 连接已断开")
+            .unwrap();
+        assert_eq!(
+            manager
+                .consume_approval(
+                    approval.credential_for("call-1").unwrap(),
+                    network_approval_scope(),
+                )
+                .unwrap_err(),
+            "AI 审批凭证不存在或已被消费"
         );
     }
 

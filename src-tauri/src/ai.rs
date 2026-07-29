@@ -17,6 +17,7 @@ use crate::{
         self, timestamp_ms, AgentPlan, AgentPlanDecision, AgentPlanStatus, AgentPlanStep,
         AgentPlanStepStatus, AgentTaskContext, AgentTaskManager,
     },
+    agent_approvals::{action_fingerprint, ApprovalScope},
     agent_policy::{ExecutionBoundary, PolicyDecision, PolicyEvaluation},
     credentials,
     protocol::{CommandError, CommandResult, AI_COMPLETE_EVENT, AI_STREAM_EVENT},
@@ -1888,10 +1889,18 @@ async fn execute_diagnostic_plan(
         plan_control,
         cancellation,
     } = execution;
-    let selected = match &decision {
-        AgentPlanDecision::Approve(selected) => selected.iter().cloned().collect::<HashSet<_>>(),
-        AgentPlanDecision::Reject | AgentPlanDecision::Stop => HashSet::new(),
+    let approval = match &decision {
+        AgentPlanDecision::Approve(approval) => Some(approval),
+        AgentPlanDecision::Reject | AgentPlanDecision::Stop => None,
         AgentPlanDecision::Pending => return Err("AI 计划尚未获得决定".to_string()),
+    };
+    let selected = match approval {
+        Some(approval) => approval
+            .selected_call_ids()
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>(),
+        None => HashSet::new(),
     };
     plan.status = AgentPlanStatus::Running;
     agent::emit_task_events(app, task_manager.start_plan(context.id(), plan.clone())?);
@@ -1906,47 +1915,69 @@ async fn execute_diagnostic_plan(
                 .find(|step| step.id == *dependency)
                 .is_none_or(|step| step.status != AgentPlanStepStatus::Completed)
         });
-        let approved_by_policy = match policy.decision {
-            PolicyDecision::Allow => true,
-            PolicyDecision::Prompt => selected.contains(&call.id),
-            PolicyDecision::Deny => false,
-        };
         let should_execute = !matches!(
             decision,
             AgentPlanDecision::Reject | AgentPlanDecision::Stop
-        ) && approved_by_policy
+        ) && policy.decision != PolicyDecision::Deny
             && (!plan.steps[index].optional || selected.contains(&call.id));
         let stop_requested = matches!(&*plan_control.borrow(), AgentPlanDecision::Stop);
-        let skip_reason = if matches!(decision, AgentPlanDecision::Reject) {
-            Some("用户取消了诊断计划")
+        let mut skip_reason = if matches!(decision, AgentPlanDecision::Reject) {
+            Some(("用户取消了诊断计划".to_string(), false))
         } else if matches!(decision, AgentPlanDecision::Stop)
             || stop_requested
             || *cancellation.borrow()
         {
-            Some("用户停止了剩余诊断步骤")
+            Some(("用户停止了剩余诊断步骤".to_string(), false))
         } else if policy.decision == PolicyDecision::Deny {
-            Some(policy.reason.as_str())
+            Some((policy.reason.clone(), true))
         } else if policy.decision == PolicyDecision::Prompt && !selected.contains(&call.id) {
-            Some("该诊断动作未获得本次审批")
+            Some(("该诊断动作未获得本次审批".to_string(), false))
         } else if !should_execute {
-            Some("用户取消了可选诊断步骤")
+            Some(("用户取消了可选诊断步骤".to_string(), false))
         } else if dependency_failed {
-            Some("依赖的诊断步骤未成功，已跳过")
+            Some(("依赖的诊断步骤未成功，已跳过".to_string(), false))
         } else {
             None
         };
-        if let Some(reason) = skip_reason {
+        if skip_reason.is_none() && policy.decision == PolicyDecision::Prompt {
+            let result = approval
+                .and_then(|approval| approval.credential_for(&call.id))
+                .ok_or_else(|| "该诊断动作缺少一次性审批凭证".to_string())
+                .and_then(|credential| {
+                    action_fingerprint(&call.name, &Value::Object(diagnostic_arguments(call)))
+                        .and_then(|fingerprint| {
+                            task_manager.consume_approval(
+                                credential,
+                                ApprovalScope {
+                                    task_id: context.id().to_string(),
+                                    plan_id: plan.id.clone(),
+                                    call_id: call.id.clone(),
+                                    host_id: context.host_id().to_string(),
+                                    session_id: context.terminal_session_id().map(str::to_string),
+                                    current_directory: context
+                                        .current_directory()
+                                        .map(str::to_string),
+                                    action_fingerprint: fingerprint,
+                                },
+                            )
+                        })
+                });
+            if let Err(error) = result {
+                skip_reason = Some((error, true));
+            }
+        }
+        if let Some((reason, failed)) = skip_reason {
             let step = &mut plan.steps[index];
-            step.status = if policy.decision == PolicyDecision::Deny {
+            step.status = if failed {
                 AgentPlanStepStatus::Failed
             } else {
                 AgentPlanStepStatus::Skipped
             };
-            step.error = Some(reason.to_string());
-            step.summary = Some(reason.to_string());
+            step.error = Some(reason.clone());
+            step.summary = Some(reason.clone());
             step.started_at = Some(timestamp_ms());
             step.duration_ms = Some(0);
-            results.push(tool_error_result(call, reason));
+            results.push(tool_error_result(call, &reason));
             agent::emit_task_events(
                 app,
                 task_manager.update_plan(context.id(), plan.clone(), false)?,
@@ -2533,11 +2564,25 @@ pub(crate) async fn ai_chat_start(
                         &response.tool_calls,
                     );
                     apply_policy_to_plan(&mut plan, &policy_evaluations);
-                    let awaiting_approval = policy_evaluations
-                        .values()
-                        .any(|evaluation| evaluation.decision == PolicyDecision::Prompt);
+                    let approval_requirements = response
+                        .tool_calls
+                        .iter()
+                        .filter(|call| {
+                            policy_evaluations.get(&call.id).is_some_and(|evaluation| {
+                                evaluation.decision == PolicyDecision::Prompt
+                            })
+                        })
+                        .map(|call| {
+                            action_fingerprint(
+                                &call.name,
+                                &Value::Object(diagnostic_arguments(call)),
+                            )
+                            .map(|fingerprint| (call.id.clone(), fingerprint))
+                        })
+                        .collect::<Result<HashMap<_, _>, _>>()
+                        .map_err(|error| structured(operation, error))?;
                     let (mut decision_receiver, events) = task_manager
-                        .set_plan(&request_id, plan.clone(), awaiting_approval)
+                        .set_plan(&request_id, plan.clone(), approval_requirements)
                         .map_err(|error| structured(operation, error))?;
                     agent::emit_task_events(&app, events);
                     let decision =
