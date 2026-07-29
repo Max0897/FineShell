@@ -27,6 +27,9 @@ export type AgentVerificationStatus = keyof typeof contract.agentVerificationSta
 export type AgentVerificationEvidenceKind =
   keyof typeof contract.agentVerificationEvidenceKinds;
 export type AgentRepairStopReason = keyof typeof contract.agentRepairStopReasons;
+export type AgentRecoveryRecommendation =
+  keyof typeof contract.agentRecoveryRecommendations;
+export type AgentRecoveryStatus = keyof typeof contract.agentRecoveryStatuses;
 
 export interface CommandErrorPayload {
   code: CommandErrorCode;
@@ -157,6 +160,14 @@ export interface AgentActionState {
   durationMs: number | null;
   verificationStatus: AgentVerificationStatus;
   verificationEvidence: AgentVerificationEvidence[];
+  recoveryState: AgentRecoveryState | null;
+}
+
+export interface AgentRecoveryState {
+  recommendation: AgentRecoveryRecommendation;
+  status: AgentRecoveryStatus;
+  summary: string;
+  updatedAt: number;
 }
 
 export interface AgentVerificationEvidence {

@@ -11,6 +11,8 @@ import {
   type AgentPlanStepStatus,
   type AgentPlanStatus,
   type AgentRepairStopReason,
+  type AgentRecoveryRecommendation,
+  type AgentRecoveryStatus,
   type AgentTaskEventKind,
   type AgentTaskStatus,
   type AgentVerificationEvidenceKind,
@@ -45,6 +47,8 @@ describe("Tauri shared protocol", () => {
     const verification: AgentVerificationStatus = "unverified";
     const evidence: AgentVerificationEvidenceKind = "service_status";
     const repairStop: AgentRepairStopReason = "repair_budget_exhausted";
+    const recovery: AgentRecoveryRecommendation = "rollback";
+    const recoveryStatus: AgentRecoveryStatus = "verified";
 
     expect(contract.agentTaskStatuses[status]).toBe(true);
     expect(contract.agentTaskStatuses[disconnectedStatus]).toBe(true);
@@ -59,6 +63,8 @@ describe("Tauri shared protocol", () => {
     expect(contract.agentVerificationStatuses[verification]).toBe(true);
     expect(contract.agentVerificationEvidenceKinds[evidence]).toBe(true);
     expect(contract.agentRepairStopReasons[repairStop]).toBe(true);
+    expect(contract.agentRecoveryRecommendations[recovery]).toBe(true);
+    expect(contract.agentRecoveryStatuses[recoveryStatus]).toBe(true);
   });
 
   test("preserves structured backend errors", () => {

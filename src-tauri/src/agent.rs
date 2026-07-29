@@ -177,6 +177,33 @@ pub(crate) enum AgentRepairStopReason {
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub(crate) enum AgentRecoveryRecommendation {
+    Rollback,
+    Retry,
+    ManualReview,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentRecoveryStatus {
+    Suggested,
+    Running,
+    Verified,
+    Unverified,
+    Failed,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentRecoveryState {
+    recommendation: AgentRecoveryRecommendation,
+    status: AgentRecoveryStatus,
+    summary: String,
+    updated_at: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum AgentVerificationEvidenceKind {
     RemoteContentMatch,
     RemotePathState,
@@ -227,6 +254,7 @@ pub(crate) struct AgentActionState {
     duration_ms: Option<u64>,
     verification_status: AgentVerificationStatus,
     verification_evidence: Vec<AgentVerificationEvidence>,
+    recovery_state: Option<AgentRecoveryState>,
     #[serde(skip_serializing)]
     arguments: serde_json::Value,
     #[serde(skip_serializing)]
@@ -250,6 +278,7 @@ impl AgentActionState {
             duration_ms: None,
             verification_status: AgentVerificationStatus::Pending,
             verification_evidence: Vec::new(),
+            recovery_state: None,
             command_submission_id: None,
         }
     }
@@ -267,6 +296,71 @@ impl AgentActionState {
             summary: summary.into(),
             observed_at,
         });
+    }
+
+    fn update_recovery(
+        &mut self,
+        recommendation: AgentRecoveryRecommendation,
+        status: AgentRecoveryStatus,
+        summary: impl Into<String>,
+        updated_at: u64,
+    ) {
+        self.recovery_state = Some(AgentRecoveryState {
+            recommendation,
+            status,
+            summary: summary.into(),
+            updated_at,
+        });
+    }
+
+    fn suggest_repair(&mut self, retry_available: bool, updated_at: u64) {
+        let can_rollback = self.status == AgentActionStatus::Succeeded
+            && matches!(
+                self.tool.as_str(),
+                "propose_file_edit" | "propose_file_operation"
+            );
+        let (recommendation, summary) = if can_rollback {
+            (
+                AgentRecoveryRecommendation::Rollback,
+                "业务验证未通过，建议回滚到动作执行前的远端状态",
+            )
+        } else if retry_available {
+            (
+                AgentRecoveryRecommendation::Retry,
+                "建议修正动作参数后重试，并重新执行目标验证",
+            )
+        } else {
+            (
+                AgentRecoveryRecommendation::ManualReview,
+                "修复预算已耗尽，建议人工检查远端状态",
+            )
+        };
+        self.update_recovery(
+            recommendation,
+            AgentRecoveryStatus::Suggested,
+            summary,
+            updated_at,
+        );
+    }
+
+    fn finish_repair_verification(&mut self, verified: bool, updated_at: u64) {
+        let Some(recovery) = self.recovery_state.as_mut() else {
+            return;
+        };
+        if recovery.status != AgentRecoveryStatus::Running {
+            return;
+        }
+        recovery.status = if verified {
+            AgentRecoveryStatus::Verified
+        } else {
+            AgentRecoveryStatus::Unverified
+        };
+        recovery.summary = if verified {
+            "修复后的目标状态已经验证".to_string()
+        } else {
+            "修复动作已结束，但缺少可信的目标状态验证".to_string()
+        };
+        recovery.updated_at = updated_at;
     }
 }
 
@@ -1120,6 +1214,17 @@ impl AgentTaskManager {
                         .started_at
                         .map(|started_at| now.saturating_sub(started_at));
                     task.actions[index].verification_status = AgentVerificationStatus::Failed;
+                    if status == AgentActionStatus::RollbackConflict {
+                        task.actions[index].update_recovery(
+                            AgentRecoveryRecommendation::Rollback,
+                            AgentRecoveryStatus::Failed,
+                            "回滚时远端状态发生冲突，需要人工检查",
+                            now,
+                        );
+                    } else {
+                        let retry_available = task.repair_attempts < task.repair_limit;
+                        task.actions[index].suggest_repair(retry_available, now);
+                    }
                     task.refresh_action_status();
                     events.push(task.action_event(kind, &action_id));
                 }
@@ -1141,6 +1246,17 @@ impl AgentTaskManager {
                         .started_at
                         .map(|started_at| now.saturating_sub(started_at));
                     task.actions[index].verification_status = AgentVerificationStatus::Failed;
+                    if status == AgentActionStatus::RollbackFailed {
+                        task.actions[index].update_recovery(
+                            AgentRecoveryRecommendation::Rollback,
+                            AgentRecoveryStatus::Failed,
+                            "回滚执行失败，需要人工检查远端状态",
+                            now,
+                        );
+                    } else {
+                        let retry_available = task.repair_attempts < task.repair_limit;
+                        task.actions[index].suggest_repair(retry_available, now);
+                    }
                     task.refresh_action_status();
                     events.push(task.action_event(kind, &action_id));
                 }
@@ -1155,6 +1271,12 @@ impl AgentTaskManager {
                     task.actions[index].completed_at = None;
                     task.actions[index].duration_ms = None;
                     task.actions[index].verification_status = AgentVerificationStatus::Pending;
+                    task.actions[index].update_recovery(
+                        AgentRecoveryRecommendation::Rollback,
+                        AgentRecoveryStatus::Running,
+                        "正在回滚并等待恢复状态验证",
+                        now,
+                    );
                     task.result = None;
                     task.refresh_action_status();
                     events.push(
@@ -1174,6 +1296,12 @@ impl AgentTaskManager {
                         .started_at
                         .map(|started_at| now.saturating_sub(started_at));
                     task.actions[index].verification_status = AgentVerificationStatus::Unverified;
+                    task.actions[index].update_recovery(
+                        AgentRecoveryRecommendation::Rollback,
+                        AgentRecoveryStatus::Unverified,
+                        "回滚动作已结束，但未取得可信的恢复状态证据",
+                        now,
+                    );
                     task.refresh_action_status();
                     events
                         .push(task.action_event(AgentTaskEventKind::ActionRolledBack, &action_id));
@@ -1205,6 +1333,15 @@ impl AgentTaskManager {
                     }
                     task.repair_attempts = task.repair_attempts.saturating_add(1);
                     task.repair_stop_reason = None;
+                    task.actions[index].update_recovery(
+                        AgentRecoveryRecommendation::Retry,
+                        AgentRecoveryStatus::Running,
+                        format!(
+                            "正在执行第 {} 次修复，完成后将重新验证目标状态",
+                            task.repair_attempts
+                        ),
+                        now,
+                    );
                     task.actions[index].status = AgentActionStatus::Pending;
                     task.actions[index].summary = None;
                     task.actions[index].error = None;
@@ -1389,6 +1526,7 @@ impl AgentTaskManager {
                         if business_verification.is_some() {
                             task.status = AgentTaskStatus::Verifying;
                         } else {
+                            task.actions[index].finish_repair_verification(false, now);
                             task.refresh_action_status();
                         }
                         events.push(
@@ -1404,6 +1542,8 @@ impl AgentTaskManager {
                             format!("命令以退出码 {exit_code} 结束"),
                             now,
                         );
+                        let retry_available = task.repair_attempts < task.repair_limit;
+                        task.actions[index].suggest_repair(retry_available, now);
                         task.refresh_action_status();
                         events
                             .push(task.action_event(AgentTaskEventKind::ActionFailed, &action_id));
@@ -1427,6 +1567,8 @@ impl AgentTaskManager {
                         "无法确认终端命令的结束状态",
                         now,
                     );
+                    let retry_available = task.repair_attempts < task.repair_limit;
+                    task.actions[index].suggest_repair(retry_available, now);
                     task.refresh_action_status();
                     events.push(task.action_event(AgentTaskEventKind::ActionFailed, &action_id));
                     events.push(
@@ -1540,6 +1682,12 @@ impl AgentTaskManager {
                 ),
             };
             task.actions[index].record_verification(status, kind, summary, now);
+            if status == AgentVerificationStatus::Verified {
+                task.actions[index].finish_repair_verification(true, now);
+            } else {
+                let retry_available = task.repair_attempts < task.repair_limit;
+                task.actions[index].suggest_repair(retry_available, now);
+            }
             task.refresh_action_status();
             let action_id = pending.action_id.clone();
             let mut events =
@@ -1648,6 +1796,16 @@ impl AgentTaskManager {
                 evidence_summary,
                 now,
             );
+            if rollback {
+                task.actions[index].update_recovery(
+                    AgentRecoveryRecommendation::Rollback,
+                    AgentRecoveryStatus::Verified,
+                    "远端恢复状态与回滚目标一致",
+                    now,
+                );
+            } else {
+                task.actions[index].finish_repair_verification(true, now);
+            }
             task.refresh_action_status();
             let mut events = vec![
                 task.action_event(event_kind, action_id),
@@ -2314,10 +2472,11 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use super::{
-        AgentActionIntent, AgentActionRisk, AgentActionStatus, AgentActionTransition,
-        AgentActionTransitionRequest, AgentApprovalMode, AgentCommandObservationPhase,
-        AgentCommandObservationRequest, AgentPlan, AgentPlanDecision, AgentPlanDecisionKind,
-        AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep, AgentPlanStepStatus,
+        AgentActionIntent, AgentActionRisk, AgentActionState, AgentActionStatus,
+        AgentActionTransition, AgentActionTransitionRequest, AgentApprovalMode,
+        AgentCommandObservationPhase, AgentCommandObservationRequest, AgentPlan, AgentPlanDecision,
+        AgentPlanDecisionKind, AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep,
+        AgentPlanStepStatus, AgentRecoveryRecommendation, AgentRecoveryStatus,
         AgentRepairStopReason, AgentTaskContext, AgentTaskEventKind, AgentTaskManager,
         AgentTaskStatus, AgentTrustedVerification, AgentVerificationEvidenceKind,
         AgentVerificationStatus, AgentWritableFile,
@@ -2879,6 +3038,14 @@ mod tests {
                     task.repair_stop_reason,
                     Some(AgentRepairStopReason::VerificationFailed)
                 );
+                assert_eq!(
+                    task.actions[0]
+                        .recovery_state
+                        .as_ref()
+                        .unwrap()
+                        .recommendation,
+                    AgentRecoveryRecommendation::Retry
+                );
                 let retried = manager
                     .transition_action(AgentActionTransitionRequest {
                         task_id: "task-1".to_string(),
@@ -2889,6 +3056,14 @@ mod tests {
                     })
                     .unwrap();
                 assert_eq!(retried[0].task.repair_attempts, attempt + 1);
+                assert_eq!(
+                    retried[0].task.actions[0]
+                        .recovery_state
+                        .as_ref()
+                        .unwrap()
+                        .status,
+                    AgentRecoveryStatus::Running
+                );
             } else {
                 assert_eq!(task.repair_attempts, 2);
                 assert_eq!(
@@ -2899,6 +3074,12 @@ mod tests {
                     task.result.as_ref().unwrap().stop_reason.as_deref(),
                     Some("repair_budget_exhausted")
                 );
+                let recovery = task.actions[0].recovery_state.as_ref().unwrap();
+                assert_eq!(
+                    recovery.recommendation,
+                    AgentRecoveryRecommendation::ManualReview
+                );
+                assert_eq!(recovery.status, AgentRecoveryStatus::Suggested);
             }
         }
 
@@ -2914,6 +3095,68 @@ mod tests {
                 .unwrap_err(),
             "AI 任务修复次数已达到上限"
         );
+    }
+
+    #[test]
+    fn trusted_rollback_records_verified_recovery_state() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        manager
+            .register_actions("task-1", vec![file_edit_intent()])
+            .unwrap();
+        manager.finish_model_turn("task-1", false).unwrap();
+        manager
+            .authorize_action_execution("task-1", "edit-1", false, true, None)
+            .unwrap();
+        manager
+            .complete_trusted_action_execution(
+                "task-1",
+                "edit-1",
+                false,
+                AgentTrustedVerification::RemoteContentMatch,
+            )
+            .unwrap();
+        manager
+            .authorize_action_execution("task-1", "edit-1", true, true, None)
+            .unwrap();
+        let events = manager
+            .complete_trusted_action_execution(
+                "task-1",
+                "edit-1",
+                true,
+                AgentTrustedVerification::RemoteContentMatch,
+            )
+            .unwrap();
+        let recovery = events[1].task.actions[0].recovery_state.as_ref().unwrap();
+        assert_eq!(
+            recovery.recommendation,
+            AgentRecoveryRecommendation::Rollback
+        );
+        assert_eq!(recovery.status, AgentRecoveryStatus::Verified);
+        assert_eq!(
+            events[1].task.actions[0]
+                .verification_evidence
+                .last()
+                .unwrap()
+                .kind,
+            AgentVerificationEvidenceKind::RecoveryStateMatch
+        );
+    }
+
+    #[test]
+    fn failed_file_verification_recommends_rollback() {
+        let mut action = AgentActionState::from_intent(file_edit_intent());
+        action.status = AgentActionStatus::Succeeded;
+        action.verification_status = AgentVerificationStatus::Failed;
+        action.suggest_repair(true, 42);
+
+        let recovery = action.recovery_state.as_ref().unwrap();
+        assert_eq!(
+            recovery.recommendation,
+            AgentRecoveryRecommendation::Rollback
+        );
+        assert_eq!(recovery.status, AgentRecoveryStatus::Suggested);
+        assert_eq!(recovery.updated_at, 42);
     }
 
     #[test]
@@ -3324,6 +3567,24 @@ mod tests {
                 AgentRepairStopReason::RepairBudgetExhausted,
             ]),
             contract_keys("agentRepairStopReasons")
+        );
+        assert_eq!(
+            serialized_values(&[
+                AgentRecoveryRecommendation::Rollback,
+                AgentRecoveryRecommendation::Retry,
+                AgentRecoveryRecommendation::ManualReview,
+            ]),
+            contract_keys("agentRecoveryRecommendations")
+        );
+        assert_eq!(
+            serialized_values(&[
+                AgentRecoveryStatus::Suggested,
+                AgentRecoveryStatus::Running,
+                AgentRecoveryStatus::Verified,
+                AgentRecoveryStatus::Unverified,
+                AgentRecoveryStatus::Failed,
+            ]),
+            contract_keys("agentRecoveryStatuses")
         );
         assert_eq!(
             serialized_values(&[
