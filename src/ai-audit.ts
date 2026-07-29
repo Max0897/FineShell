@@ -109,7 +109,7 @@ function actionStatus(
 }
 
 function actionFallback(action: AgentActionState) {
-  if (action.tool === "insert_terminal_command") return "终端命令填入";
+  if (action.tool === "insert_terminal_command") return "终端命令";
   if (action.tool === "propose_file_edit") return "远程文件修改";
   if (action.tool === "propose_file_operation") return "远程文件操作";
   return "受控动作";

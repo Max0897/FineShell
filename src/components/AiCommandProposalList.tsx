@@ -1,11 +1,20 @@
+import { useRef, useState } from "react";
 import {
   Button,
+  Dropdown,
+  Input,
+  Menu,
   Space,
   Tag,
   Tooltip,
   Typography,
 } from "@arco-design/web-react";
-import { IconCommand, IconCopy, IconRobot } from "@arco-design/web-react/icon";
+import {
+  IconCommand,
+  IconCopy,
+  IconDown,
+  IconRobot,
+} from "@arco-design/web-react/icon";
 import {
   aiCommandRiskColor,
   type AiCommandProposal,
@@ -19,8 +28,15 @@ interface AiCommandProposalListProps {
   onAnalyze: (proposal: AiCommandProposal) => void;
   onCopy: (command: string) => void | Promise<void>;
   onCopyAll: (proposals: AiCommandProposal[]) => void | Promise<void>;
-  onInsert: (proposal: AiCommandProposal) => void;
-  onReject: (proposalId: string) => void;
+  onApprove: (
+    proposal: AiCommandProposal,
+    executionMode: "insert_only" | "submit",
+  ) => void | Promise<void>;
+  onReject: (proposalId: string) => unknown | Promise<unknown>;
+  onRevise: (
+    proposal: AiCommandProposal,
+    feedback: string,
+  ) => void | Promise<void>;
   proposals?: AiCommandProposal[];
   records?: AiCommandRecord[];
   sending: boolean;
@@ -55,6 +71,18 @@ function riskLabel(risk: AiCommandRecord["risk"]) {
   return "低风险";
 }
 
+function verificationLabel(proposal: AiCommandProposal) {
+  const verification = proposal.verification;
+  if (!verification) return null;
+  if (verification.kind === "service_active") {
+    return `执行后验证服务 ${verification.service} 是否处于运行状态`;
+  }
+  if (verification.kind === "port_listening") {
+    return `执行后验证 ${verification.port}/${verification.protocol.toUpperCase()} 端口是否监听`;
+  }
+  return `执行后验证 ${verification.validator} 配置语法`;
+}
+
 function AiCommandProposalList({
   canInsertCommand,
   hasRecentTerminalOutput,
@@ -62,13 +90,42 @@ function AiCommandProposalList({
   onAnalyze,
   onCopy,
   onCopyAll,
-  onInsert,
+  onApprove,
   onReject,
+  onRevise,
   proposals = [],
   records = [],
   sending,
   sessionId,
 }: AiCommandProposalListProps) {
+  const [revisionProposalId, setRevisionProposalId] = useState<string | null>(
+    null,
+  );
+  const [revisionFeedback, setRevisionFeedback] = useState("");
+  const [processingProposalId, setProcessingProposalId] = useState<
+    string | null
+  >(null);
+  const processingProposalRef = useRef<string | null>(null);
+
+  const runDecision = async (
+    proposalId: string,
+    decision: () => unknown | Promise<unknown>,
+  ) => {
+    if (processingProposalRef.current) return;
+    processingProposalRef.current = proposalId;
+    setProcessingProposalId(proposalId);
+    try {
+      await decision();
+    } finally {
+      if (processingProposalRef.current === proposalId) {
+        processingProposalRef.current = null;
+      }
+      setProcessingProposalId((current) =>
+        current === proposalId ? null : current,
+      );
+    }
+  };
+
   if (!proposals.length && !records.length) return null;
 
   if (!proposals.length) {
@@ -107,7 +164,7 @@ function AiCommandProposalList({
         <span>
           <Typography.Text bold>命令计划</Typography.Text>
           <Typography.Text type="secondary">
-            {proposals.length} 条 · 仅填入，不执行
+            {proposals.length} 条 · 逐条审批
           </Typography.Text>
         </span>
         {proposals.length > 1 && (
@@ -130,6 +187,9 @@ function AiCommandProposalList({
         const canAnalyze =
           hasCapturedResult ||
           (proposal.status === "executed" && hasRecentTerminalOutput);
+        const verification = verificationLabel(proposal);
+        const revising = revisionProposalId === proposal.id;
+        const processing = processingProposalId === proposal.id;
         return (
           <div className="ai-command-proposal" key={proposal.id}>
             <div className="ai-command-proposal-heading">
@@ -154,20 +214,33 @@ function AiCommandProposalList({
             <pre className="ai-command-proposal-command">
               <code>{proposal.command}</code>
             </pre>
-            <div className="ai-command-proposal-footer">
-              <Typography.Text
-                ellipsis
-                title={
-                  proposal.directory
-                    ? `${hostName} · ${proposal.directory}`
-                    : hostName
-                }
-                type="secondary"
-              >
+            <div className="ai-command-proposal-details">
+              <Typography.Text type="secondary">
+                <span>执行位置</span>
                 {hostName}
                 {proposal.directory ? ` · ${proposal.directory}` : ""}
               </Typography.Text>
-              <Space size={2}>
+              {proposal.assessment.reason && (
+                <Typography.Text
+                  type={
+                    proposal.assessment.risk === "danger"
+                      ? "error"
+                      : "secondary"
+                  }
+                >
+                  <span>风险说明</span>
+                  {proposal.assessment.reason}
+                </Typography.Text>
+              )}
+              {verification && (
+                <Typography.Text type="secondary">
+                  <span>预期验证</span>
+                  {verification}
+                </Typography.Text>
+              )}
+            </div>
+            <div className="ai-command-proposal-footer">
+              <Space size={4}>
                 <Tooltip content="复制命令">
                   <Button
                     aria-label="复制命令提案"
@@ -178,33 +251,87 @@ function AiCommandProposalList({
                   />
                 </Tooltip>
                 {proposal.status === "pending" && (
-                  <Tooltip
-                    content={
-                      !sameSession
-                        ? "该提案属于其他终端会话"
-                        : canInsertCommand
-                          ? "只填入终端输入区，不会执行"
-                          : "当前终端会话未连接"
-                    }
+                  <Button
+                    disabled={sending || processing}
+                    onClick={() => {
+                      setRevisionProposalId((current) =>
+                        current === proposal.id ? null : proposal.id,
+                      );
+                      setRevisionFeedback("");
+                    }}
+                    size="mini"
+                    type="text"
                   >
-                    <Button
-                      disabled={!canInsertCommand || !sameSession}
-                      onClick={() => onInsert(proposal)}
-                      size="mini"
-                      type="text"
-                    >
-                      填入终端
-                    </Button>
-                  </Tooltip>
+                    提出修改
+                  </Button>
                 )}
                 {proposal.status === "pending" && (
                   <Button
-                    onClick={() => onReject(proposal.id)}
+                    disabled={sending || processing}
+                    onClick={() =>
+                      void runDecision(proposal.id, () =>
+                        onReject(proposal.id),
+                      )
+                    }
                     size="mini"
                     type="text"
                   >
                     拒绝
                   </Button>
+                )}
+              </Space>
+              <Space size={4}>
+                {proposal.status === "pending" && (
+                  <Tooltip
+                    content={
+                      !sameSession
+                        ? "该提案属于其他终端会话"
+                        : canInsertCommand
+                          ? "审批后立即提交到当前终端"
+                          : "当前终端会话未连接"
+                    }
+                  >
+                    <Dropdown.Button
+                      buttonProps={{
+                        disabled:
+                          sending ||
+                          processing ||
+                          !canInsertCommand ||
+                          !sameSession,
+                        loading: processing,
+                      }}
+                      disabled={
+                        sending ||
+                        processing ||
+                        !canInsertCommand ||
+                        !sameSession
+                      }
+                      droplist={
+                        <Menu>
+                          <Menu.Item
+                            key="insert-only"
+                            onClick={() =>
+                              void runDecision(proposal.id, () =>
+                                onApprove(proposal, "insert_only"),
+                              )
+                            }
+                          >
+                            仅填入终端
+                          </Menu.Item>
+                        </Menu>
+                      }
+                      icon={<IconDown />}
+                      onClick={() =>
+                        void runDecision(proposal.id, () =>
+                          onApprove(proposal, "submit"),
+                        )
+                      }
+                      size="mini"
+                      type="primary"
+                    >
+                      允许并运行
+                    </Dropdown.Button>
+                  </Tooltip>
                 )}
                 {(proposal.status === "executed" ||
                   proposal.status === "succeeded" ||
@@ -233,6 +360,41 @@ function AiCommandProposalList({
                 )}
               </Space>
             </div>
+            {proposal.status === "pending" && revising && (
+              <div className="ai-command-proposal-revision">
+                <Input.TextArea
+                  autoFocus
+                  maxLength={500}
+                  onChange={setRevisionFeedback}
+                  placeholder="说明希望调整的内容，例如：改为只检查状态，不重启服务"
+                  rows={2}
+                  value={revisionFeedback}
+                />
+                <div className="ai-command-proposal-revision-actions">
+                  <Button
+                    onClick={() => setRevisionProposalId(null)}
+                    size="mini"
+                    type="text"
+                  >
+                    取消
+                  </Button>
+                  <Button
+                    disabled={
+                      sending || processing || !revisionFeedback.trim()
+                    }
+                    onClick={() =>
+                      void runDecision(proposal.id, () =>
+                        onRevise(proposal, revisionFeedback.trim()),
+                      )
+                    }
+                    size="mini"
+                    type="primary"
+                  >
+                    发送修改要求
+                  </Button>
+                </div>
+              </div>
+            )}
             {proposal.status === "inserted" && (
               <Typography.Text
                 className="ai-command-proposal-warning"
@@ -271,16 +433,6 @@ function AiCommandProposalList({
               >
                 {proposal.resultUnavailableReason ??
                   "无法可靠获取命令结束边界或退出码"}
-              </Typography.Text>
-            )}
-            {proposal.assessment.reason && (
-              <Typography.Text
-                className="ai-command-proposal-warning"
-                type={
-                  proposal.assessment.risk === "danger" ? "error" : "secondary"
-                }
-              >
-                {proposal.assessment.reason}
               </Typography.Text>
             )}
           </div>

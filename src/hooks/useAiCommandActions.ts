@@ -7,14 +7,8 @@ import {
 import { appendAiContextMentions, type AiContextSource } from "../ai-utils";
 import { commandErrorMessage } from "../tauri-protocol";
 
-export interface AiCommandConfirmation {
-  content: string;
-  danger: boolean;
-  onConfirm: () => void | Promise<void>;
-  title: string;
-}
-
 export type AiCommandNotice = "error" | "info" | "success" | "warning";
+export type AiCommandExecutionMode = "insert_only" | "submit";
 
 interface CommandVerificationTarget {
   conversationId: string;
@@ -27,11 +21,11 @@ interface UseAiCommandActionsOptions {
   contextSources: AiContextSource[];
   conversationId?: string;
   hostId: string | null;
-  onConfirm: (confirmation: AiCommandConfirmation) => void;
   onCopyText: (value: string) => Promise<void>;
   onPrepareCommand: (
     messageId: string,
     proposal: AiCommandProposal,
+    executionMode: AiCommandExecutionMode,
   ) => Promise<void>;
   onNotice: (type: AiCommandNotice, content: string) => void;
   sessionId: string | null;
@@ -54,7 +48,6 @@ export function useAiCommandActions({
   contextSources,
   conversationId,
   hostId,
-  onConfirm,
   onCopyText,
   onPrepareCommand,
   onNotice,
@@ -84,13 +77,14 @@ export function useAiCommandActions({
     setDraft(targetConversationId, value);
   };
 
-  const insertCommandProposal = async (
+  const approveCommandProposal = async (
     messageId: string,
     proposal: AiCommandProposal,
+    executionMode: AiCommandExecutionMode,
   ) => {
     if (proposal.status !== "pending") return;
     try {
-      await onPrepareCommand(messageId, proposal);
+      await onPrepareCommand(messageId, proposal, executionMode);
       updateCommandProposal(
         messageId,
         proposal.id,
@@ -99,26 +93,6 @@ export function useAiCommandActions({
     } catch (error) {
       onNotice("error", commandErrorMessage(error));
     }
-  };
-
-  const confirmInsertCommandProposal = (
-    messageId: string,
-    proposal: AiCommandProposal,
-  ) => {
-    if (proposal.assessment.risk === "safe") {
-      void insertCommandProposal(messageId, proposal);
-      return;
-    }
-    onConfirm({
-      content:
-        proposal.assessment.reason ?? "请确认命令内容及其影响后再填入终端。",
-      danger: proposal.assessment.risk === "danger",
-      onConfirm: () => insertCommandProposal(messageId, proposal),
-      title:
-        proposal.assessment.risk === "danger"
-          ? "确认填入高风险命令"
-          : "确认填入命令",
-    });
   };
 
   const copyCommandProposal = async (command: string) => {
@@ -216,9 +190,9 @@ export function useAiCommandActions({
   };
 
   return {
+    approveCommandProposal,
     captureVerificationTarget,
     completeVerification,
-    confirmInsertCommandProposal,
     copyAllCommandProposals,
     copyCommandProposal,
     prepareCommandVerification,

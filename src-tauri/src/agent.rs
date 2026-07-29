@@ -981,7 +981,7 @@ impl AgentTask {
             action.reason = match action.tool.as_str() {
                 "propose_file_edit" => "远程文件修改".to_string(),
                 "propose_file_operation" => "远程文件操作".to_string(),
-                "insert_terminal_command" => "终端命令填入".to_string(),
+                "insert_terminal_command" => "终端命令".to_string(),
                 _ => "受控动作".to_string(),
             };
             action.expected_effect = "动作效果已脱敏".to_string();
@@ -2265,7 +2265,7 @@ impl AgentTaskManager {
         let summary = if rollback {
             "用户确认回滚该动作"
         } else if execution.execution_kind == AgentActionExecutionKind::TerminalInsert {
-            "用户批准将命令填入终端"
+            "用户批准终端命令"
         } else if policy.decision == PolicyDecision::Allow {
             "审批策略允许执行该动作"
         } else {

@@ -2,10 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { AiCommandProposal } from "../ai-command-proposals";
 import type { AiContextSource } from "../ai-utils";
-import {
-  useAiCommandActions,
-  type AiCommandConfirmation,
-} from "./useAiCommandActions";
+import { useAiCommandActions } from "./useAiCommandActions";
 
 function proposal(
   risk: AiCommandProposal["assessment"]["risk"] = "safe",
@@ -28,10 +25,10 @@ function proposal(
 
 function renderActions(options?: {
   contextSources?: AiContextSource[];
-  onConfirm?: (confirmation: AiCommandConfirmation) => void;
   onPrepareCommand?: (
     messageId: string,
     proposal: AiCommandProposal,
+    executionMode: "insert_only" | "submit",
   ) => Promise<void>;
 }) {
   const onPrepareCommand = mock(
@@ -60,7 +57,6 @@ function renderActions(options?: {
       contextSources: options?.contextSources ?? [],
       conversationId: "conversation-1",
       hostId: "host-1",
-      onConfirm: options?.onConfirm ?? (() => undefined),
       onCopyText: async () => undefined,
       onPrepareCommand,
       onNotice,
@@ -81,16 +77,24 @@ function renderActions(options?: {
 }
 
 describe("useAiCommandActions", () => {
-  test("inserts a safe proposal without executing it automatically", async () => {
+  test("approves a proposal for immediate submission", async () => {
     const view = renderActions();
     const value = proposal();
 
     act(() => {
-      view.result.current.confirmInsertCommandProposal("assistant-1", value);
+      void view.result.current.approveCommandProposal(
+        "assistant-1",
+        value,
+        "submit",
+      );
     });
     await waitFor(() => expect(view.onPrepareCommand).toHaveBeenCalledTimes(1));
 
-    expect(view.onPrepareCommand).toHaveBeenCalledWith("assistant-1", value);
+    expect(view.onPrepareCommand).toHaveBeenCalledWith(
+      "assistant-1",
+      value,
+      "submit",
+    );
     expect(view.updateCommandProposal).toHaveBeenCalledWith(
       "assistant-1",
       value.id,
@@ -98,27 +102,22 @@ describe("useAiCommandActions", () => {
     );
   });
 
-  test("requires confirmation before inserting a dangerous proposal", async () => {
-    let confirmation: AiCommandConfirmation | undefined;
-    const view = renderActions({
-      onConfirm: (value) => {
-        confirmation = value;
-      },
-    });
+  test("uses the approval card click as confirmation for dangerous proposals", async () => {
+    const view = renderActions();
     const value = proposal("danger");
 
-    act(() => {
-      view.result.current.confirmInsertCommandProposal("assistant-1", value);
-    });
-    expect(view.onPrepareCommand).not.toHaveBeenCalled();
-    expect(confirmation).toEqual(
-      expect.objectContaining({ danger: true, title: "确认填入高风险命令" }),
-    );
-
     await act(async () => {
-      await confirmation?.onConfirm();
+      await view.result.current.approveCommandProposal(
+        "assistant-1",
+        value,
+        "insert_only",
+      );
     });
-    expect(view.onPrepareCommand).toHaveBeenCalledWith("assistant-1", value);
+    expect(view.onPrepareCommand).toHaveBeenCalledWith(
+      "assistant-1",
+      value,
+      "insert_only",
+    );
   });
 
   test("prepares and completes verification for the matching conversation", async () => {

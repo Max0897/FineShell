@@ -9,6 +9,7 @@ import {
   sessionTabName,
   sshCredentialId,
   trackTerminalInput,
+  trackInjectedTerminalInput,
   terminalStatusNoticeKey,
 } from "./terminal-utils";
 
@@ -21,6 +22,29 @@ describe("decodeSshOutput", () => {
 });
 
 describe("terminal input tracking", () => {
+  test("turns an approved injected input into one tracked submission", () => {
+    const tracked = trackInjectedTerminalInput(EMPTY_TERMINAL_INPUT_STATE, {
+      submit: true,
+      value: "systemctl status nginx",
+    });
+
+    expect(tracked.submissions).toEqual(["systemctl status nginx"]);
+    expect(tracked.state).toEqual(EMPTY_TERMINAL_INPUT_STATE);
+  });
+
+  test("keeps insert-only injected input in the editable buffer", () => {
+    const tracked = trackInjectedTerminalInput(EMPTY_TERMINAL_INPUT_STATE, {
+      submit: false,
+      value: "systemctl status nginx",
+    });
+
+    expect(tracked.submissions).toEqual([]);
+    expect(tracked.state).toEqual({
+      reliable: true,
+      value: "systemctl status nginx",
+    });
+  });
+
   test("matches a manually submitted command that was inserted by AI", () => {
     const inserted = appendInjectedTerminalInput(
       EMPTY_TERMINAL_INPUT_STATE,

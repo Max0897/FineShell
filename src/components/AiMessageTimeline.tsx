@@ -70,10 +70,11 @@ interface AiMessageTimelineProps {
     planId: string,
     selectedCallIds: string[],
   ) => void;
-  onInsertCommandProposal: (
+  onApproveCommandProposal: (
     messageId: string,
     proposal: AiCommandProposal,
-  ) => void;
+    executionMode: "insert_only" | "submit",
+  ) => void | Promise<void>;
   onOpenFileEditReview: (
     messageId: string,
     proposal: AiFileEditProposal,
@@ -82,7 +83,15 @@ interface AiMessageTimelineProps {
     messageId: string,
     proposal: AiFileOperationProposal,
   ) => void;
-  onRejectCommand: (messageId: string, proposalId: string) => void;
+  onRejectCommand: (
+    messageId: string,
+    proposalId: string,
+  ) => unknown | Promise<unknown>;
+  onReviseCommand: (
+    messageId: string,
+    proposal: AiCommandProposal,
+    feedback: string,
+  ) => void | Promise<void>;
   onRejectFileEdit: (messageId: string, proposalId: string) => void;
   onRejectFileOperation: (messageId: string, proposalId: string) => void;
   onRetryFileEdit: (messageId: string, proposalId: string) => void;
@@ -223,10 +232,11 @@ function AiMessageTimeline({
   onCopyToolRun,
   onCancelDiagnosticPlan,
   onConfirmDiagnosticPlan,
-  onInsertCommandProposal,
+  onApproveCommandProposal,
   onOpenFileEditReview,
   onOpenFileOperationReview,
   onRejectCommand,
+  onReviseCommand,
   onRejectFileEdit,
   onRejectFileOperation,
   onRetryFileEdit,
@@ -298,14 +308,21 @@ function AiMessageTimeline({
                 canInsertCommand={canInsertCommand}
                 hasRecentTerminalOutput={hasRecentTerminalOutput}
                 hostName={hostName}
+                onApprove={(proposal, executionMode) =>
+                  onApproveCommandProposal(
+                    message.id,
+                    proposal,
+                    executionMode,
+                  )
+                }
                 onAnalyze={(proposal) => onAnalyzeCommand(message.id, proposal)}
                 onCopy={onCopyCommand}
                 onCopyAll={onCopyCommands}
-                onInsert={(proposal) =>
-                  onInsertCommandProposal(message.id, proposal)
-                }
                 onReject={(proposalId) =>
                   onRejectCommand(message.id, proposalId)
+                }
+                onRevise={(proposal, feedback) =>
+                  onReviseCommand(message.id, proposal, feedback)
                 }
                 proposals={message.commandProposals}
                 records={message.commandRecords}

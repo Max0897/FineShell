@@ -23,6 +23,7 @@ function renderTimeline(
         loading={false}
         messages={messages}
         onAddToolRunToDraft={() => undefined}
+        onApproveCommandProposal={() => undefined}
         onAnalyzeCommand={() => undefined}
         onApplyAllFileEdits={() => undefined}
         onApplyAllFileOperations={() => undefined}
@@ -32,10 +33,10 @@ function renderTimeline(
         onCopyToolRun={() => undefined}
         onCancelDiagnosticPlan={() => undefined}
         onConfirmDiagnosticPlan={() => undefined}
-        onInsertCommandProposal={() => undefined}
         onOpenFileEditReview={() => undefined}
         onOpenFileOperationReview={() => undefined}
         onRejectCommand={() => undefined}
+        onReviseCommand={() => undefined}
         onRejectFileEdit={() => undefined}
         onRejectFileOperation={() => undefined}
         onRetryFileEdit={() => undefined}

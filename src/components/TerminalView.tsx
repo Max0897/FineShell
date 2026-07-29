@@ -34,11 +34,11 @@ import "@xterm/xterm/css/xterm.css";
 import type { TerminalSession } from "../models";
 import { TERMINAL_FONT_FAMILIES, type AppSettings } from "../app-settings";
 import {
-  appendInjectedTerminalInput,
   consumeTerminalCommandCandidate,
   decodeSshOutput,
   EMPTY_TERMINAL_INPUT_STATE,
   terminalStatusNoticeKey,
+  trackInjectedTerminalInput,
   type TerminalCommandSubmission,
   trackTerminalInput,
   type TerminalInjectedInput,
@@ -160,6 +160,9 @@ function TerminalView({
   const pendingShellCommandsRef = useRef<PendingShellCommand[]>([]);
   const aiCommandCandidatesRef = useRef<string[]>([]);
   const inputStateRef = useRef({ ...EMPTY_TERMINAL_INPUT_STATE });
+  const trackSubmittedCommandRef = useRef<(command: string) => void>(
+    () => undefined,
+  );
   const lastInjectedInputIdRef = useRef<string>();
   const recentOutputChangeRef = useRef(onRecentOutputChange);
   const selectionChangeRef = useRef(onSelectionChange);
@@ -182,6 +185,46 @@ function TerminalView({
   currentDirectoryChangeRef.current = onCurrentDirectoryChange;
   recentOutputChangeRef.current = onRecentOutputChange;
   selectionChangeRef.current = onSelectionChange;
+
+  trackSubmittedCommandRef.current = (command) => {
+    const candidate = consumeTerminalCommandCandidate(
+      aiCommandCandidatesRef.current,
+      command,
+    );
+    aiCommandCandidatesRef.current = candidate.candidates;
+    if (!candidate.matched) return;
+    const submittedAt = new Date().toISOString();
+    const submission: TerminalCommandSubmission = {
+      command,
+      hostId: session.host.id,
+      id: `terminal-command-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      phase: "submitted",
+      sessionId: session.id,
+      submittedAt,
+    };
+    commandLifecycleRef.current(submission);
+    if (!shellCommandResultsEnabledRef.current) return;
+    const terminal = terminalRef.current;
+    if (shellIntegrationStateRef.current === "ready" && terminal) {
+      const buffer = terminal.buffer.active;
+      pendingShellCommandsRef.current.push({
+        startLine: buffer.baseY + buffer.cursorY + 1,
+        startedAtMs: Date.now(),
+        submission,
+      });
+      return;
+    }
+    commandLifecycleRef.current({
+      ...submission,
+      completedAt: submittedAt,
+      durationMs: 0,
+      phase: "unavailable",
+      reason:
+        shellIntegrationStateRef.current === "unavailable"
+          ? "当前远程 Shell 不支持结果关联"
+          : "Shell Integration 尚未就绪",
+    });
+  };
 
   const clearShellIntegrationTimeout = () => {
     if (!shellIntegrationTimeoutRef.current) return;
@@ -283,24 +326,35 @@ function TerminalView({
 
   useEffect(() => {
     if (
-      !commandTrackingEnabled ||
       !injectedInput ||
       lastInjectedInputIdRef.current === injectedInput.id
     ) {
       return;
     }
     lastInjectedInputIdRef.current = injectedInput.id;
-    aiCommandCandidatesRef.current = [
-      ...aiCommandCandidatesRef.current.filter(
-        (candidate) => candidate !== injectedInput.value,
-      ),
-      injectedInput.value,
-    ].slice(-8);
-    inputStateRef.current = appendInjectedTerminalInput(
-      inputStateRef.current,
-      injectedInput.value,
-    );
-  }, [commandTrackingEnabled, injectedInput]);
+    if (commandTrackingEnabled || injectedInput.submit) {
+      aiCommandCandidatesRef.current = [
+        ...aiCommandCandidatesRef.current.filter(
+          (candidate) => candidate !== injectedInput.value,
+        ),
+        injectedInput.value,
+      ].slice(-8);
+      const tracked = trackInjectedTerminalInput(
+        inputStateRef.current,
+        injectedInput,
+      );
+      inputStateRef.current = tracked.state;
+      tracked.submissions.forEach((command) =>
+        trackSubmittedCommandRef.current(command),
+      );
+    }
+    if (injectedInput.submit) {
+      void invoke("ssh_write", {
+        sessionId: session.id,
+        data: [13],
+      }).catch(() => undefined);
+    }
+  }, [commandTrackingEnabled, injectedInput, session.id]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -360,44 +414,9 @@ function TerminalView({
       if (commandTrackingEnabledRef.current) {
         const tracked = trackTerminalInput(inputStateRef.current, data);
         inputStateRef.current = tracked.state;
-        for (const command of tracked.submissions) {
-          const candidate = consumeTerminalCommandCandidate(
-            aiCommandCandidatesRef.current,
-            command,
-          );
-          aiCommandCandidatesRef.current = candidate.candidates;
-          if (!candidate.matched) continue;
-          const submittedAt = new Date().toISOString();
-          const submission: TerminalCommandSubmission = {
-            command,
-            hostId: session.host.id,
-            id: `terminal-command-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            phase: "submitted",
-            sessionId: session.id,
-            submittedAt,
-          };
-          commandLifecycleRef.current(submission);
-          if (!shellCommandResultsEnabledRef.current) continue;
-          if (shellIntegrationStateRef.current === "ready") {
-            const buffer = terminal.buffer.active;
-            pendingShellCommandsRef.current.push({
-              startLine: buffer.baseY + buffer.cursorY + 1,
-              startedAtMs: Date.now(),
-              submission,
-            });
-          } else {
-            commandLifecycleRef.current({
-              ...submission,
-              completedAt: submittedAt,
-              durationMs: 0,
-              phase: "unavailable",
-              reason:
-                shellIntegrationStateRef.current === "unavailable"
-                  ? "当前远程 Shell 不支持结果关联"
-                  : "Shell Integration 尚未就绪",
-            });
-          }
-        }
+        tracked.submissions.forEach((command) =>
+          trackSubmittedCommandRef.current(command),
+        );
       }
       void invoke("ssh_write", {
         sessionId: session.id,

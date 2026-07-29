@@ -1597,6 +1597,15 @@ body.ai-sidebar-resizing::after {
   gap: 8px;
 }
 
+.ai-command-proposal-footer {
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-command-proposal-footer > .arco-space:last-child {
+  margin-left: auto;
+}
+
 .ai-command-proposals-heading > span {
   min-width: 0;
   gap: 8px;
@@ -1661,6 +1670,41 @@ body.ai-sidebar-resizing::after {
 .ai-command-proposal-footer > .arco-typography {
   min-width: 0;
   font-size: 11px;
+}
+
+.ai-command-proposal-details {
+  display: grid;
+  gap: 4px;
+}
+
+.ai-command-proposal-details > .arco-typography {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 7px;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ai-command-proposal-details > .arco-typography > span {
+  color: #86909c;
+}
+
+.ai-command-proposal-revision {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #f2f3f5;
+}
+
+.ai-command-proposal-revision .arco-textarea {
+  font-size: 12px;
+}
+
+.ai-command-proposal-revision-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 6px;
 }
 
 .ai-command-proposal-warning.arco-typography {

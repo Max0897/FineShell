@@ -51,10 +51,13 @@ import {
   type AgentCommandObservationRequest,
 } from "../tauri-protocol";
 import type { TerminalCommandSubmission } from "../terminal-utils";
-import { aiCommandResultContextSource } from "../ai-command-proposals";
+import {
+  aiCommandResultContextSource,
+  type AiCommandProposal,
+} from "../ai-command-proposals";
 import {
   useAiCommandActions,
-  type AiCommandConfirmation,
+  type AiCommandExecutionMode,
   type AiCommandNotice,
 } from "../hooks/useAiCommandActions";
 import {
@@ -95,7 +98,11 @@ interface AiAssistantPanelProps {
     sessionId: string,
     result: AgentActionExecutionResult,
   ) => void;
-  onCommandPrepared: (sessionId: string, command: string) => void;
+  onCommandPrepared: (
+    sessionId: string,
+    command: string,
+    executionMode: AiCommandExecutionMode,
+  ) => void;
   onRemoveRemoteFile: (sessionId: string, path: string) => void;
   remoteFiles: AiRemoteFileContext[];
   sessionId: string | null;
@@ -133,16 +140,6 @@ function showAiFileChangeNotice(type: AiFileChangeNotice, content: string) {
   if (type === "success") Message.success(content);
   else if (type === "warning") Message.warning(content);
   else Message.error(content);
-}
-
-function confirmAiCommand(confirmation: AiCommandConfirmation) {
-  Modal.confirm({
-    content: confirmation.content,
-    okButtonProps: confirmation.danger ? { status: "danger" } : undefined,
-    okText: "确认填入",
-    onOk: confirmation.onConfirm,
-    title: confirmation.title,
-  });
 }
 
 function showAiCommandNotice(type: AiCommandNotice, content: string) {
@@ -397,9 +394,9 @@ function AiAssistantPanel({
     updateMessages,
   });
   const {
+    approveCommandProposal,
     captureVerificationTarget,
     completeVerification,
-    confirmInsertCommandProposal,
     copyAllCommandProposals,
     copyCommandProposal,
     prepareCommandVerification,
@@ -408,15 +405,14 @@ function AiAssistantPanel({
     contextSources: availableContextSources,
     conversationId: conversationStateKey,
     hostId,
-    onConfirm: confirmAiCommand,
     onCopyText: copyCode,
-    onPrepareCommand: async (messageId, proposal) => {
+    onPrepareCommand: async (messageId, proposal, executionMode) => {
       const result = await executeAgentAction(messageId, proposal.id);
       if (result.actionType !== "terminal_command") {
         throw new Error("AI 命令准备返回了无效结果");
       }
       if (!sessionId) throw new Error("当前终端会话不可用");
-      onCommandPrepared(sessionId, proposal.command);
+      onCommandPrepared(sessionId, proposal.command, executionMode);
     },
     onNotice: showAiCommandNotice,
     sessionId,
@@ -618,27 +614,76 @@ function AiAssistantPanel({
     return () => cancelAnimationFrame(frame);
   }, [messages, visible]);
 
-  const send = () => {
+  const sendConversationMessage = (
+    value: string,
+    history: AiConversation["messages"] = messages,
+    conversationSummary = activeConversation?.summary,
+    verificationTarget: ReturnType<typeof captureVerificationTarget> = null,
+    includeComposerContext = true,
+  ) => {
     if (!hostId || !sessionId || !activeConversation) return;
-    const verificationTarget = captureVerificationTarget(prompt);
-    void sendMessage({
+    return sendMessage({
       commandProposalEnabled:
         canInsertCommand && settings.aiCommandProposalsEnabled,
-      conversationSummary: activeConversation.summary,
-      context,
-      contextLabels: selectedContextSources.map(contextSourceDisplayLabel),
-      currentOperationDirectory: operationDirectory,
-      editableFiles: editableRemoteFiles,
-      history: messages,
+      conversationSummary,
+      context: includeComposerContext ? context : "",
+      contextLabels: includeComposerContext
+        ? selectedContextSources.map(contextSourceDisplayLabel)
+        : [],
+      currentOperationDirectory: includeComposerContext
+        ? operationDirectory
+        : null,
+      editableFiles: includeComposerContext ? editableRemoteFiles : [],
+      history,
       targetConversationId: activeConversation.id,
       targetDirectory: currentRemoteDirectory,
       targetHostId: hostId,
       targetSessionId: sessionId,
       toolCurrentDirectory: currentRemoteDirectory,
-      value: question,
+      value,
     }).then((completed) => {
       completeVerification(Boolean(completed), verificationTarget);
     });
+  };
+
+  const send = () => {
+    const verificationTarget = captureVerificationTarget(prompt);
+    void sendConversationMessage(
+      question,
+      messages,
+      activeConversation?.summary,
+      verificationTarget,
+    );
+  };
+
+  const reviseCommandProposal = async (
+    messageId: string,
+    proposal: AiCommandProposal,
+    feedback: string,
+  ) => {
+    if (sending || !feedback.trim()) return;
+    const rejectedConversation = await rejectCommandProposal(
+      messageId,
+      proposal.id,
+    );
+    if (!rejectedConversation) return;
+    const revisionRequest = [
+      `我拒绝了用于“${proposal.purpose}”的上一条命令提案。`,
+      `修改要求：${feedback.trim()}`,
+      "请根据要求重新生成一条命令提案，不要执行命令。",
+    ].join("\n");
+    const existingDraft = prompt;
+    const request = sendConversationMessage(
+      revisionRequest,
+      rejectedConversation.messages,
+      rejectedConversation.summary,
+      null,
+      false,
+    );
+    if (existingDraft) {
+      setConversationDraft(rejectedConversation.id, existingDraft);
+    }
+    await request;
   };
 
   const retry = (assistantIndex: number) => {
@@ -815,10 +860,11 @@ function AiAssistantPanel({
           onCopyToolRun={copyToolRun}
           onCancelDiagnosticPlan={cancelDiagnosticPlan}
           onConfirmDiagnosticPlan={confirmDiagnosticPlan}
-          onInsertCommandProposal={confirmInsertCommandProposal}
+          onApproveCommandProposal={approveCommandProposal}
           onOpenFileEditReview={openFileEditReview}
           onOpenFileOperationReview={openFileOperationReview}
           onRejectCommand={rejectCommandProposal}
+          onReviseCommand={reviseCommandProposal}
           onRejectFileEdit={rejectFileEditProposal}
           onRejectFileOperation={rejectFileOperationProposal}
           onRetryFileEdit={retryFileEditProposal}

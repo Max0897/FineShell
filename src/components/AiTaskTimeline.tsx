@@ -54,7 +54,7 @@ function verificationStatus(status: AgentVerificationStatus) {
 function actionLabel(action: AgentActionState) {
   if (action.tool === "propose_file_edit") return "文件修改";
   if (action.tool === "propose_file_operation") return "文件操作";
-  if (action.tool === "insert_terminal_command") return "填入终端";
+  if (action.tool === "insert_terminal_command") return "终端命令";
   return "受控动作";
 }
 

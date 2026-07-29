@@ -1,5 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
-import { fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type {
   AiCommandProposal,
   AiCommandRecord,
@@ -27,24 +33,27 @@ function renderList(
   const onAnalyze = mock(() => undefined);
   const onCopy = mock(() => undefined);
   const onCopyAll = mock(() => undefined);
-  const onInsert = mock(() => undefined);
+  const onApprove = mock(() => undefined);
   const onReject = mock(() => undefined);
+  const onRevise = mock(() => undefined);
   return {
+    onApprove,
     onAnalyze,
     onCopy,
     onCopyAll,
-    onInsert,
     onReject,
+    onRevise,
     ...render(
       <AiCommandProposalList
         canInsertCommand
         hasRecentTerminalOutput
         hostName="生产服务器"
+        onApprove={onApprove}
         onAnalyze={onAnalyze}
         onCopy={onCopy}
         onCopyAll={onCopyAll}
-        onInsert={onInsert}
         onReject={onReject}
+        onRevise={onRevise}
         proposals={proposals}
         records={records}
         sending={false}
@@ -55,20 +64,54 @@ function renderList(
 }
 
 describe("AiCommandProposalList", () => {
-  test("routes pending command actions through controlled callbacks", () => {
+  test("routes command approval and rejection through controlled callbacks", async () => {
     const view = renderList();
 
     expect(screen.getByText("命令计划")).not.toBeNull();
     expect(screen.getByText("uname -a")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "复制命令提案" }));
-    fireEvent.click(screen.getByRole("button", { name: "填入终端" }));
-    fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "允许并运行" }));
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "拒绝" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
+      await Promise.resolve();
+    });
 
     expect(view.onCopy).toHaveBeenCalledWith("uname -a");
-    expect(view.onInsert).toHaveBeenCalledWith(
+    expect(view.onApprove).toHaveBeenCalledWith(
       expect.objectContaining({ id: "command-1" }),
+      "submit",
     );
     expect(view.onReject).toHaveBeenCalledWith("command-1");
+  });
+
+  test("collects revision feedback inside the approval card", async () => {
+    const view = renderList();
+
+    fireEvent.click(screen.getByRole("button", { name: "提出修改" }));
+    fireEvent.change(
+      screen.getByPlaceholderText(
+        "说明希望调整的内容，例如：改为只检查状态，不重启服务",
+      ),
+      { target: { value: "只检查状态，不要重启" } },
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "发送修改要求" }));
+      await Promise.resolve();
+    });
+
+    expect(view.onRevise).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "command-1" }),
+      "只检查状态，不要重启",
+    );
   });
 
   test("offers result analysis only after a command was submitted", () => {

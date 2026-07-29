@@ -86,7 +86,7 @@ describe("AiTaskTimeline", () => {
     render(<AiTaskTimeline task={task()} />);
 
     expect(screen.getByText("检查 Nginx")).not.toBeNull();
-    expect(screen.getByText("填入终端 · 重启 Nginx")).not.toBeNull();
+    expect(screen.getByText("终端命令 · 重启 Nginx")).not.toBeNull();
     expect(screen.getByText("等待审阅")).not.toBeNull();
     expect(screen.getByText("验证失败")).not.toBeNull();
     expect(screen.getByText(/服务未运行/)).not.toBeNull();
