@@ -37,6 +37,8 @@ const MAX_RUNTIME_TOOL_RESULT_CHARS: usize = 64_000;
 const MAX_IDENTICAL_TOOL_EXECUTIONS: usize = 2;
 const MAX_CONSECUTIVE_FAILED_ROUNDS: usize = 3;
 const PLAN_APPROVAL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const SSH_RECONNECT_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+const SSH_RECONNECT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_TOOL_ARGUMENT_CHARS: usize = 400_000;
 const MAX_FILE_EDIT_CHARS: usize = 60_000;
 const MAX_TERMINAL_COMMAND_CHARS: usize = 4_096;
@@ -1666,6 +1668,94 @@ async fn execute_diagnostic_tool(
     }
 }
 
+enum DiagnosticExecutionError {
+    Tool(String),
+    Interrupted(String),
+}
+
+fn diagnostic_tool_requires_connection(tool: &str) -> bool {
+    tool != "get_current_directory"
+}
+
+async fn wait_for_reconnected_session(
+    app: &AppHandle,
+    task_manager: &AgentTaskManager,
+    ssh_manager: &SshSessionManager,
+    context: &AgentTaskContext,
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<(), String> {
+    let session_id = context
+        .terminal_session_id()
+        .ok_or_else(|| "当前终端会话不可用".to_string())?;
+    if ssh_manager.is_connected(session_id)? {
+        return Ok(());
+    }
+
+    agent::emit_task_events(
+        app,
+        task_manager.pause_disconnected(context.id(), "SSH 连接已断开，等待同一会话重连")?,
+    );
+    let started = Instant::now();
+    loop {
+        if *cancellation.borrow() {
+            return Err("AI 请求已取消".to_string());
+        }
+        if ssh_manager.is_connected(session_id)? {
+            agent::emit_task_events(app, task_manager.resume_disconnected(context.id())?);
+            return Ok(());
+        }
+        if started.elapsed() >= SSH_RECONNECT_TIMEOUT {
+            return Err("等待 SSH 会话重连超时".to_string());
+        }
+        tokio::select! {
+            changed = cancellation.changed() => {
+                if changed.is_ok() && *cancellation.borrow() {
+                    return Err("AI 请求已取消".to_string());
+                }
+            }
+            _ = tokio::time::sleep(SSH_RECONNECT_POLL_INTERVAL) => {}
+        }
+    }
+}
+
+async fn execute_diagnostic_tool_with_recovery(
+    app: &AppHandle,
+    task_manager: &AgentTaskManager,
+    ssh_manager: &SshSessionManager,
+    context: &AgentTaskContext,
+    call: &AiToolCall,
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<Value, DiagnosticExecutionError> {
+    if !diagnostic_tool_requires_connection(&call.name) {
+        return execute_diagnostic_tool(ssh_manager, context, call)
+            .await
+            .map_err(DiagnosticExecutionError::Tool);
+    }
+    let session_id = context
+        .terminal_session_id()
+        .ok_or_else(|| DiagnosticExecutionError::Tool("当前终端会话不可用".to_string()))?;
+
+    loop {
+        wait_for_reconnected_session(app, task_manager, ssh_manager, context, cancellation)
+            .await
+            .map_err(DiagnosticExecutionError::Interrupted)?;
+        match execute_diagnostic_tool(ssh_manager, context, call).await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                // The SSH worker removes a stopped session immediately. Give it one
+                // scheduling turn to publish that state before classifying a tool error.
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                if ssh_manager
+                    .is_connected(session_id)
+                    .map_err(DiagnosticExecutionError::Interrupted)?
+                {
+                    return Err(DiagnosticExecutionError::Tool(error));
+                }
+            }
+        }
+    }
+}
+
 async fn wait_for_plan_decision(
     decision: &mut watch::Receiver<AgentPlanDecision>,
     cancellation: &mut watch::Receiver<bool>,
@@ -1799,7 +1889,15 @@ async fn execute_diagnostic_plan(
             app,
             task_manager.update_plan(context.id(), plan.clone(), false)?,
         );
-        let execution = execute_diagnostic_tool(ssh_manager, context, call).await;
+        let execution = execute_diagnostic_tool_with_recovery(
+            app,
+            task_manager,
+            ssh_manager,
+            context,
+            call,
+            cancellation,
+        )
+        .await;
         let duration_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
         match execution {
             Ok(value) => {
@@ -1812,7 +1910,7 @@ async fn execute_diagnostic_plan(
                     content: sanitize_context(&value.to_string()),
                 });
             }
-            Err(error) => {
+            Err(DiagnosticExecutionError::Tool(error)) => {
                 let error = sanitize_context(&error)
                     .chars()
                     .take(300)
@@ -1821,6 +1919,21 @@ async fn execute_diagnostic_plan(
                 plan.steps[index].summary = Some(error.clone());
                 plan.steps[index].error = Some(error.clone());
                 results.push(tool_error_result(call, &error));
+            }
+            Err(DiagnosticExecutionError::Interrupted(error)) => {
+                let error = sanitize_context(&error)
+                    .chars()
+                    .take(300)
+                    .collect::<String>();
+                plan.steps[index].status = AgentPlanStepStatus::Failed;
+                plan.steps[index].summary = Some(error.clone());
+                plan.steps[index].error = Some(error.clone());
+                plan.steps[index].duration_ms = Some(duration_ms);
+                agent::emit_task_events(
+                    app,
+                    task_manager.update_plan(context.id(), plan.clone(), false)?,
+                );
+                return Err(error);
             }
         }
         plan.steps[index].duration_ms = Some(duration_ms);
@@ -2442,15 +2555,32 @@ mod tests {
 
     use super::{
         apply_finalization_instruction, apply_tool_call_delta, capability_http_failure,
-        complete_tool_calls, create_diagnostic_plan, enabled_diagnostic_tools,
-        filter_tool_definitions, http_messages, is_local_endpoint, is_tool_unsupported_error,
-        normalize_models, request_messages, sanitize_context, service_endpoint, stream_delta,
-        stream_tool_call_deltas, tool_allowed, tool_definitions, tool_loop_finalize_reason,
-        tool_probe_supported, valid_stream_probe_event, valid_tool_arguments,
-        validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls, validate_service_url,
-        validate_tool_rounds, AiCapabilityKind, AiCapabilityState, AiChatMessage, AiFinalizeReason,
-        AiModelEntry, AiToolCall, AiToolResult, AiToolRound, SseParser,
+        complete_tool_calls, create_diagnostic_plan, diagnostic_tool_requires_connection,
+        enabled_diagnostic_tools, filter_tool_definitions, http_messages, is_local_endpoint,
+        is_tool_unsupported_error, normalize_models, request_messages, sanitize_context,
+        service_endpoint, stream_delta, stream_tool_call_deltas, tool_allowed, tool_definitions,
+        tool_loop_finalize_reason, tool_probe_supported, valid_stream_probe_event,
+        valid_tool_arguments, validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls,
+        validate_service_url, validate_tool_rounds, AiCapabilityKind, AiCapabilityState,
+        AiChatMessage, AiFinalizeReason, AiModelEntry, AiToolCall, AiToolResult, AiToolRound,
+        SseParser,
     };
+
+    #[test]
+    fn only_remote_diagnostic_tools_wait_for_ssh_reconnection() {
+        assert!(!diagnostic_tool_requires_connection(
+            "get_current_directory"
+        ));
+        for tool in [
+            "get_server_status",
+            "list_processes",
+            "get_network_connections",
+            "ping_target",
+            "trace_route",
+        ] {
+            assert!(diagnostic_tool_requires_connection(tool));
+        }
+    }
 
     #[test]
     fn finalization_keeps_evidence_and_disables_further_tool_requests() {

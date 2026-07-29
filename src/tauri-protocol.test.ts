@@ -28,14 +28,18 @@ describe("Tauri shared protocol", () => {
 
   test("exposes canonical agent lifecycle values", () => {
     const status: AgentTaskStatus = "awaiting_approval";
+    const disconnectedStatus: AgentTaskStatus = "paused_disconnected";
     const event: AgentTaskEventKind = "model_turn_completed";
+    const resumedEvent: AgentTaskEventKind = "task_resumed";
     const step: AgentPlanStepStatus = "in_progress";
     const plan: AgentPlanStatus = "partial";
     const approval: AgentApprovalMode = "on_request";
     const risk: AgentActionRisk = "reversible_write";
 
     expect(contract.agentTaskStatuses[status]).toBe(true);
+    expect(contract.agentTaskStatuses[disconnectedStatus]).toBe(true);
     expect(contract.agentTaskEventKinds[event]).toBe(true);
+    expect(contract.agentTaskEventKinds[resumedEvent]).toBe(true);
     expect(contract.agentPlanStepStatuses[step]).toBe(true);
     expect(contract.agentPlanStatuses[plan]).toBe(true);
     expect(contract.agentApprovalModes[approval]).toBe(true);
@@ -59,10 +63,7 @@ describe("Tauri shared protocol", () => {
 
   test("normalizes legacy string errors during incremental migration", () => {
     const timeout = normalizeCommandError("ssh_connect", "SSH 连接超时");
-    const missingSession = normalizeCommandError(
-      "ssh_write",
-      "SSH 会话未连接",
-    );
+    const missingSession = normalizeCommandError("ssh_write", "SSH 会话未连接");
 
     expect(timeout.code).toBe("timeout");
     expect(timeout.retryable).toBe(true);

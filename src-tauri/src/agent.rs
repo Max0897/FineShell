@@ -167,6 +167,8 @@ pub(crate) enum AgentTaskEventKind {
     PlanStarted,
     PlanUpdated,
     PlanCompleted,
+    TaskPaused,
+    TaskResumed,
     TaskCompleted,
     TaskFailed,
     TaskCancelled,
@@ -573,6 +575,42 @@ impl AgentTaskManager {
         Ok(vec![task.event(AgentTaskEventKind::TaskFailed)])
     }
 
+    pub(crate) fn pause_disconnected(
+        &self,
+        task_id: &str,
+        message: &str,
+    ) -> Result<Vec<AgentTaskEvent>, String> {
+        let mut tasks = self
+            .tasks
+            .lock()
+            .map_err(|_| "AI 任务状态不可用".to_string())?;
+        let Some(task) = tasks.get_mut(task_id) else {
+            return Ok(Vec::new());
+        };
+        if task.status.is_terminal() || task.status == AgentTaskStatus::PausedDisconnected {
+            return Ok(Vec::new());
+        }
+        task.status = AgentTaskStatus::PausedDisconnected;
+        task.error = Some(message.chars().take(500).collect());
+        Ok(vec![task.event(AgentTaskEventKind::TaskPaused)])
+    }
+
+    pub(crate) fn resume_disconnected(&self, task_id: &str) -> Result<Vec<AgentTaskEvent>, String> {
+        let mut tasks = self
+            .tasks
+            .lock()
+            .map_err(|_| "AI 任务状态不可用".to_string())?;
+        let Some(task) = tasks.get_mut(task_id) else {
+            return Ok(Vec::new());
+        };
+        if task.status != AgentTaskStatus::PausedDisconnected {
+            return Ok(Vec::new());
+        }
+        task.status = AgentTaskStatus::Running;
+        task.error = None;
+        Ok(vec![task.event(AgentTaskEventKind::TaskResumed)])
+    }
+
     pub(crate) fn cancel_task(&self, task_id: &str) -> Result<Vec<AgentTaskEvent>, String> {
         let events = {
             let mut tasks = self
@@ -587,6 +625,19 @@ impl AgentTaskManager {
             }
             task.status = AgentTaskStatus::Cancelled;
             task.active_step_id = None;
+            if let Some(plan) = task.plan.as_mut() {
+                plan.status = AgentPlanStatus::Cancelled;
+                for step in &mut plan.steps {
+                    if matches!(
+                        step.status,
+                        AgentPlanStepStatus::Pending | AgentPlanStepStatus::InProgress
+                    ) {
+                        step.status = AgentPlanStepStatus::Skipped;
+                        step.summary = Some("用户取消了 AI 任务".to_string());
+                        step.error = Some("用户取消了 AI 任务".to_string());
+                    }
+                }
+            }
             task.result = Some(AgentTaskResult {
                 summary: "AI 任务已取消".to_string(),
                 verified: false,
@@ -727,6 +778,71 @@ mod tests {
     }
 
     #[test]
+    fn disconnected_tasks_pause_and_resume_without_changing_scope() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+
+        let paused = manager
+            .pause_disconnected("task-1", "SSH 连接已断开，等待重连")
+            .unwrap();
+        assert_eq!(paused[0].kind, AgentTaskEventKind::TaskPaused);
+        assert_eq!(paused[0].task.status, AgentTaskStatus::PausedDisconnected);
+        assert_eq!(
+            paused[0].task.terminal_session_id.as_deref(),
+            Some("session-1")
+        );
+        assert!(manager
+            .pause_disconnected("task-1", "重复断线事件")
+            .unwrap()
+            .is_empty());
+
+        let resumed = manager.resume_disconnected("task-1").unwrap();
+        assert_eq!(resumed[0].kind, AgentTaskEventKind::TaskResumed);
+        assert_eq!(resumed[0].task.status, AgentTaskStatus::Running);
+        assert_eq!(
+            resumed[0].task.terminal_session_id.as_deref(),
+            Some("session-1")
+        );
+        assert!(manager.resume_disconnected("task-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancelling_a_paused_task_cancels_its_unfinished_plan() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        let mut plan = AgentPlan {
+            id: "plan-1".to_string(),
+            description: None,
+            status: AgentPlanStatus::Running,
+            created_at: 1,
+            steps: vec![AgentPlanStep {
+                id: "call-1".to_string(),
+                title: "读取状态".to_string(),
+                tool: "get_server_status".to_string(),
+                status: AgentPlanStepStatus::InProgress,
+                detail: None,
+                reason: "检查服务器".to_string(),
+                optional: false,
+                depends_on: Vec::new(),
+                summary: None,
+                error: None,
+                started_at: Some(1),
+                duration_ms: None,
+            }],
+        };
+        manager.start_plan("task-1", plan.clone()).unwrap();
+        manager
+            .pause_disconnected("task-1", "SSH 连接已断开")
+            .unwrap();
+
+        let cancelled = manager.cancel_task("task-1").unwrap();
+        plan = cancelled[0].task.plan.clone().unwrap();
+        assert_eq!(plan.status, AgentPlanStatus::Cancelled);
+        assert_eq!(plan.steps[0].status, AgentPlanStepStatus::Skipped);
+        assert_eq!(cancelled[0].task.status, AgentTaskStatus::Cancelled);
+    }
+
+    #[test]
     fn plan_decisions_are_scoped_to_the_active_task_and_plan() {
         let manager = AgentTaskManager::default();
         manager.begin_model_turn(&context()).unwrap();
@@ -815,6 +931,8 @@ mod tests {
                 AgentTaskEventKind::PlanStarted,
                 AgentTaskEventKind::PlanUpdated,
                 AgentTaskEventKind::PlanCompleted,
+                AgentTaskEventKind::TaskPaused,
+                AgentTaskEventKind::TaskResumed,
                 AgentTaskEventKind::TaskCompleted,
                 AgentTaskEventKind::TaskFailed,
                 AgentTaskEventKind::TaskCancelled,

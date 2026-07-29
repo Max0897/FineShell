@@ -1,5 +1,5 @@
 {
-  "version": 13,
+  "version": 14,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -110,6 +110,8 @@
     "plan_started": true,
     "plan_updated": true,
     "plan_completed": true,
+    "task_paused": true,
+    "task_resumed": true,
     "task_completed": true,
     "task_failed": true,
     "task_cancelled": true

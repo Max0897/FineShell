@@ -396,6 +396,7 @@ function AiAssistantPanel({
     updateFileOperationProposal,
   });
   const {
+    activeTask,
     cancelDiagnosticPlan,
     cancelRequest,
     confirmDiagnosticPlan,
@@ -413,9 +414,8 @@ function AiAssistantPanel({
         error: commandErrorMessage(error),
       }),
     persistConversation,
-    restoreTaskId: [...messages]
-      .reverse()
-      .find((message) => message.taskId)?.taskId,
+    restoreTaskId: [...messages].reverse().find((message) => message.taskId)
+      ?.taskId,
     sessionId,
     settings,
     setDraft: setConversationDraft,
@@ -666,6 +666,13 @@ function AiAssistantPanel({
                 <Tag size="small">已摘要</Tag>
               </Tooltip>
             ) : null)}
+          {activeTask?.status === "paused_disconnected" && (
+            <Tooltip content={activeTask.error ?? "SSH 连接已断开，等待重连"}>
+              <Tag color="orange" size="small">
+                等待重连
+              </Tag>
+            </Tooltip>
+          )}
         </span>
         <Space size="mini">
           <Tooltip content="新建对话">

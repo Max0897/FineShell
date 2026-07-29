@@ -295,6 +295,17 @@ pub(crate) struct SshSessionManager {
 }
 
 impl SshSessionManager {
+    pub(crate) fn is_connected(&self, session_id: &str) -> Result<bool, String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "SSH 会话状态不可用".to_string())?;
+        Ok(matches!(
+            sessions.get(session_id),
+            Some(SessionHandle::Connected(_))
+        ))
+    }
+
     fn begin_connect(&self, session_id: &str) -> Result<Arc<AtomicBool>, String> {
         let mut sessions = self
             .sessions
@@ -335,9 +346,10 @@ impl SshSessionManager {
             .cloned()
             .ok_or_else(|| "SSH 会话不存在或已关闭".to_string())?;
         match handle {
-            SessionHandle::Connected(sender) => sender
-                .send(command)
-                .map_err(|_| "SSH 会话已停止".to_string()),
+            SessionHandle::Connected(sender) => sender.send(command).map_err(|_| {
+                self.remove(session_id);
+                "SSH 会话已停止".to_string()
+            }),
             SessionHandle::Connecting(_) => Err("SSH 会话仍在连接".to_string()),
         }
     }
@@ -3020,6 +3032,27 @@ mod tests {
             receiver.recv().unwrap(),
             SessionCommand::Write(data) if data == vec![1, 2, 3]
         ));
+    }
+
+    #[test]
+    fn reports_connection_state_and_removes_stopped_sessions() {
+        let manager = SshSessionManager::default();
+        assert!(!manager.is_connected("session-1").unwrap());
+
+        manager.begin_connect("session-1").unwrap();
+        assert!(!manager.is_connected("session-1").unwrap());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        manager.activate("session-1", sender).unwrap();
+        assert!(manager.is_connected("session-1").unwrap());
+
+        drop(receiver);
+        assert_eq!(
+            manager
+                .send("session-1", SessionCommand::Write(vec![1]))
+                .unwrap_err(),
+            "SSH 会话已停止"
+        );
+        assert!(!manager.is_connected("session-1").unwrap());
     }
 
     #[test]
