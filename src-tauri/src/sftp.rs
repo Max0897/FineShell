@@ -1538,7 +1538,11 @@ fn delete_ai_remote_text_file(
         };
     }
     sftp.unlink(&temporary_path)
-        .map_err(|error| format!("无法删除已校验的远程文件：{error}"))
+        .map_err(|error| format!("无法删除已校验的远程文件：{error}"))?;
+    if remote_exists(sftp, remote_path) || remote_exists(sftp, &temporary_path) {
+        return Err("远程文件删除后的路径校验失败".to_string());
+    }
+    Ok(())
 }
 
 fn apply_ai_sftp_file_operation(

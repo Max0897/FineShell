@@ -12,6 +12,8 @@ import {
   type AgentPlanStatus,
   type AgentTaskEventKind,
   type AgentTaskStatus,
+  type AgentVerificationEvidenceKind,
+  type AgentVerificationStatus,
   type TauriCommand,
   type TauriEvent,
 } from "./tauri-protocol";
@@ -39,6 +41,8 @@ describe("Tauri shared protocol", () => {
     const risk: AgentActionRisk = "reversible_write";
     const actionStatus: AgentActionStatus = "running";
     const actionTransition: AgentActionTransition = "rollback_start";
+    const verification: AgentVerificationStatus = "unverified";
+    const evidence: AgentVerificationEvidenceKind = "command_exit_status";
 
     expect(contract.agentTaskStatuses[status]).toBe(true);
     expect(contract.agentTaskStatuses[disconnectedStatus]).toBe(true);
@@ -50,6 +54,8 @@ describe("Tauri shared protocol", () => {
     expect(contract.agentActionRisks[risk]).toBe(true);
     expect(contract.agentActionStatuses[actionStatus]).toBe(true);
     expect(contract.agentActionTransitions[actionTransition]).toBe(true);
+    expect(contract.agentVerificationStatuses[verification]).toBe(true);
+    expect(contract.agentVerificationEvidenceKinds[evidence]).toBe(true);
   });
 
   test("preserves structured backend errors", () => {

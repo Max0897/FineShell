@@ -4,7 +4,7 @@ use tauri::{AppHandle, State};
 use crate::{
     agent::{
         emit_task_events, AgentActionTransition, AgentActionTransitionRequest, AgentTaskManager,
-        AuthorizedAgentAction,
+        AgentTrustedVerification, AuthorizedAgentAction,
     },
     protocol::{CommandError, CommandResult},
     sftp::{
@@ -32,6 +32,8 @@ pub(crate) struct AgentActionExecutionResult {
     action_type: &'static str,
     file: Option<SftpTextFile>,
     affected_paths: Vec<String>,
+    #[serde(skip)]
+    verification: Option<AgentTrustedVerification>,
 }
 
 #[derive(Deserialize)]
@@ -133,6 +135,7 @@ async fn execute_action(
                 action_type: "file_edit",
                 file: Some(file),
                 affected_paths: vec![arguments.path],
+                verification: Some(AgentTrustedVerification::RemoteContentMatch),
             })
         }
         "propose_file_operation" => {
@@ -141,6 +144,11 @@ async fn execute_action(
             let result =
                 agent_apply_file_operation(sftp_manager, action.session_id.clone(), request)
                     .await?;
+            let verification = if result.file.is_some() {
+                AgentTrustedVerification::RemoteContentMatch
+            } else {
+                AgentTrustedVerification::RemotePathState
+            };
             let mut affected_paths = vec![arguments.path];
             if let Some(target_path) = arguments.target_path {
                 affected_paths.push(target_path);
@@ -150,6 +158,7 @@ async fn execute_action(
                 action_type: "file_operation",
                 file: result.file,
                 affected_paths,
+                verification: Some(verification),
             })
         }
         "propose_terminal_command" => {
@@ -161,6 +170,7 @@ async fn execute_action(
                 action_type: "terminal_command",
                 file: None,
                 affected_paths: Vec::new(),
+                verification: None,
             })
         }
         _ => Err("AI 动作不在可信执行注册表中".to_string()),
@@ -199,22 +209,16 @@ pub(crate) async fn ai_task_action_execute(
     {
         Ok(result) => {
             if !action.prepares_command {
+                let verification = result.verification.ok_or_else(|| {
+                    CommandError::from_message(operation, "AI 动作缺少可信验证结果")
+                })?;
                 let events = task_manager
-                    .transition_action(AgentActionTransitionRequest {
-                        task_id: action.task_id,
-                        action_id: action.action_id,
-                        transition: if action.rollback {
-                            AgentActionTransition::RolledBack
-                        } else {
-                            AgentActionTransition::Succeed
-                        },
-                        summary: Some(if action.rollback {
-                            "动作已安全回滚".to_string()
-                        } else {
-                            "动作已成功完成".to_string()
-                        }),
-                        error: None,
-                    })
+                    .complete_trusted_action_execution(
+                        &action.task_id,
+                        &action.action_id,
+                        action.rollback,
+                        verification,
+                    )
                     .map_err(|error| CommandError::from_message(operation, error))?;
                 emit_task_events(&app, events);
             }

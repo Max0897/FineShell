@@ -1,5 +1,5 @@
 {
-  "version": 18,
+  "version": 19,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -125,6 +125,7 @@
     "action_rollback_conflicted": true,
     "action_rollback_failed": true,
     "action_retried": true,
+    "action_verification_recorded": true,
     "task_paused": true,
     "task_resumed": true,
     "task_completed": true,
@@ -180,6 +181,21 @@
     "rollback_start": true,
     "rolled_back": true,
     "retry": true
+  },
+  "agentVerificationStatuses": {
+    "pending": true,
+    "verified": true,
+    "partial": true,
+    "unverified": true,
+    "failed": true,
+    "not_applicable": true
+  },
+  "agentVerificationEvidenceKinds": {
+    "remote_content_match": true,
+    "remote_path_state": true,
+    "recovery_state_match": true,
+    "command_exit_status": true,
+    "result_unavailable": true
   },
   "errorCodes": {
     "invalid_request": true,

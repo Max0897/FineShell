@@ -23,6 +23,9 @@ export type AgentApprovalMode = keyof typeof contract.agentApprovalModes;
 export type AgentActionRisk = keyof typeof contract.agentActionRisks;
 export type AgentActionStatus = keyof typeof contract.agentActionStatuses;
 export type AgentActionTransition = keyof typeof contract.agentActionTransitions;
+export type AgentVerificationStatus = keyof typeof contract.agentVerificationStatuses;
+export type AgentVerificationEvidenceKind =
+  keyof typeof contract.agentVerificationEvidenceKinds;
 
 export interface CommandErrorPayload {
   code: CommandErrorCode;
@@ -151,6 +154,14 @@ export interface AgentActionState {
   startedAt: number | null;
   completedAt: number | null;
   durationMs: number | null;
+  verificationStatus: AgentVerificationStatus;
+  verificationEvidence: AgentVerificationEvidence[];
+}
+
+export interface AgentVerificationEvidence {
+  kind: AgentVerificationEvidenceKind;
+  summary: string;
+  observedAt: number;
 }
 
 export interface AgentActionTransitionRequest {
@@ -190,6 +201,7 @@ export interface AgentActionExecutionResult {
 export interface AgentTaskResult {
   summary: string;
   verified: boolean;
+  verificationStatus: AgentVerificationStatus;
   stopReason: string | null;
 }
 

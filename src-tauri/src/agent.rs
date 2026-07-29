@@ -152,6 +152,41 @@ pub(crate) enum AgentActionStatus {
     Cancelled,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentVerificationStatus {
+    Pending,
+    Verified,
+    Partial,
+    Unverified,
+    Failed,
+    NotApplicable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentVerificationEvidenceKind {
+    RemoteContentMatch,
+    RemotePathState,
+    RecoveryStateMatch,
+    CommandExitStatus,
+    ResultUnavailable,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentVerificationEvidence {
+    kind: AgentVerificationEvidenceKind,
+    summary: String,
+    observed_at: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AgentTrustedVerification {
+    RemoteContentMatch,
+    RemotePathState,
+}
+
 impl AgentActionStatus {
     fn is_unresolved(self) -> bool {
         matches!(
@@ -175,6 +210,8 @@ pub(crate) struct AgentActionState {
     started_at: Option<u64>,
     completed_at: Option<u64>,
     duration_ms: Option<u64>,
+    verification_status: AgentVerificationStatus,
+    verification_evidence: Vec<AgentVerificationEvidence>,
     #[serde(skip_serializing)]
     arguments: serde_json::Value,
     #[serde(skip_serializing)]
@@ -196,8 +233,25 @@ impl AgentActionState {
             started_at: None,
             completed_at: None,
             duration_ms: None,
+            verification_status: AgentVerificationStatus::Pending,
+            verification_evidence: Vec::new(),
             command_submission_id: None,
         }
+    }
+
+    fn record_verification(
+        &mut self,
+        status: AgentVerificationStatus,
+        kind: AgentVerificationEvidenceKind,
+        summary: impl Into<String>,
+        observed_at: u64,
+    ) {
+        self.verification_status = status;
+        self.verification_evidence.push(AgentVerificationEvidence {
+            kind,
+            summary: summary.into(),
+            observed_at,
+        });
     }
 }
 
@@ -206,6 +260,7 @@ impl AgentActionState {
 pub(crate) struct AgentTaskResult {
     summary: String,
     verified: bool,
+    verification_status: AgentVerificationStatus,
     stop_reason: Option<String>,
 }
 
@@ -274,6 +329,7 @@ pub(crate) enum AgentTaskEventKind {
     ActionRollbackConflicted,
     ActionRollbackFailed,
     ActionRetried,
+    ActionVerificationRecorded,
     TaskPaused,
     TaskResumed,
     TaskCompleted,
@@ -615,14 +671,46 @@ impl AgentTask {
                     | AgentActionStatus::Cancelled
             )
         });
+        let (applicable_actions, verified_actions) =
+            self.actions
+                .iter()
+                .fold((0_usize, 0_usize), |(applicable, verified), action| {
+                    if action.verification_status == AgentVerificationStatus::NotApplicable {
+                        (applicable, verified)
+                    } else {
+                        (
+                            applicable + 1,
+                            verified
+                                + usize::from(
+                                    action.verification_status == AgentVerificationStatus::Verified,
+                                ),
+                        )
+                    }
+                });
+        let verification_status = if applicable_actions == 0 {
+            AgentVerificationStatus::NotApplicable
+        } else if has_failure && verified_actions == 0 {
+            AgentVerificationStatus::Failed
+        } else if verified_actions == applicable_actions {
+            AgentVerificationStatus::Verified
+        } else if verified_actions > 0 {
+            AgentVerificationStatus::Partial
+        } else {
+            AgentVerificationStatus::Unverified
+        };
         self.status = AgentTaskStatus::Completed;
         self.result = Some(AgentTaskResult {
             summary: if has_failure {
                 "AI 任务已结束，部分动作未成功完成".to_string()
+            } else if verification_status == AgentVerificationStatus::Unverified {
+                "AI 任务已完成，但尚无充分验证证据".to_string()
+            } else if verification_status == AgentVerificationStatus::Partial {
+                "AI 任务已完成，部分结果已经验证".to_string()
             } else {
                 "AI 任务已完成".to_string()
             },
-            verified: !has_failure && !self.actions.is_empty(),
+            verified: verification_status == AgentVerificationStatus::Verified,
+            verification_status,
             stop_reason: None,
         });
     }
@@ -908,6 +996,8 @@ impl AgentTaskManager {
                         summary.or_else(|| Some("用户拒绝了该动作".to_string()));
                     task.actions[index].error = None;
                     task.actions[index].completed_at = Some(now);
+                    task.actions[index].verification_status =
+                        AgentVerificationStatus::NotApplicable;
                     task.refresh_action_status();
                     events.push(task.action_event(AgentTaskEventKind::ActionRejected, &action_id));
                 }
@@ -929,6 +1019,7 @@ impl AgentTaskManager {
                     task.actions[index].started_at = Some(now);
                     task.actions[index].completed_at = None;
                     task.actions[index].duration_ms = None;
+                    task.actions[index].verification_status = AgentVerificationStatus::Pending;
                     task.refresh_action_status();
                     events.push(task.action_event(AgentTaskEventKind::ActionStarted, &action_id));
                 }
@@ -944,6 +1035,7 @@ impl AgentTaskManager {
                     task.actions[index].duration_ms = task.actions[index]
                         .started_at
                         .map(|started_at| now.saturating_sub(started_at));
+                    task.actions[index].verification_status = AgentVerificationStatus::Unverified;
                     task.refresh_action_status();
                     events.push(task.action_event(AgentTaskEventKind::ActionSucceeded, &action_id));
                 }
@@ -966,6 +1058,7 @@ impl AgentTaskManager {
                     task.actions[index].duration_ms = task.actions[index]
                         .started_at
                         .map(|started_at| now.saturating_sub(started_at));
+                    task.actions[index].verification_status = AgentVerificationStatus::Failed;
                     task.refresh_action_status();
                     events.push(task.action_event(kind, &action_id));
                 }
@@ -986,6 +1079,7 @@ impl AgentTaskManager {
                     task.actions[index].duration_ms = task.actions[index]
                         .started_at
                         .map(|started_at| now.saturating_sub(started_at));
+                    task.actions[index].verification_status = AgentVerificationStatus::Failed;
                     task.refresh_action_status();
                     events.push(task.action_event(kind, &action_id));
                 }
@@ -999,6 +1093,7 @@ impl AgentTaskManager {
                     task.actions[index].started_at = Some(now);
                     task.actions[index].completed_at = None;
                     task.actions[index].duration_ms = None;
+                    task.actions[index].verification_status = AgentVerificationStatus::Pending;
                     task.result = None;
                     task.refresh_action_status();
                     events.push(
@@ -1017,6 +1112,7 @@ impl AgentTaskManager {
                     task.actions[index].duration_ms = task.actions[index]
                         .started_at
                         .map(|started_at| now.saturating_sub(started_at));
+                    task.actions[index].verification_status = AgentVerificationStatus::Unverified;
                     task.refresh_action_status();
                     events
                         .push(task.action_event(AgentTaskEventKind::ActionRolledBack, &action_id));
@@ -1037,6 +1133,8 @@ impl AgentTaskManager {
                     task.actions[index].started_at = None;
                     task.actions[index].completed_at = None;
                     task.actions[index].duration_ms = None;
+                    task.actions[index].verification_status = AgentVerificationStatus::Pending;
+                    task.actions[index].verification_evidence.clear();
                     task.actions[index].command_submission_id = None;
                     task.result = None;
                     task.refresh_action_status();
@@ -1190,6 +1288,12 @@ impl AgentTaskManager {
                         task.actions[index].status = AgentActionStatus::Succeeded;
                         task.actions[index].summary = Some("终端命令执行成功".to_string());
                         task.actions[index].error = None;
+                        task.actions[index].record_verification(
+                            AgentVerificationStatus::Unverified,
+                            AgentVerificationEvidenceKind::CommandExitStatus,
+                            "命令退出码为 0，仅确认命令进程正常结束",
+                            now,
+                        );
                         task.refresh_action_status();
                         events.push(
                             task.action_event(AgentTaskEventKind::ActionSucceeded, &action_id),
@@ -1198,10 +1302,22 @@ impl AgentTaskManager {
                         task.actions[index].status = AgentActionStatus::Failed;
                         task.actions[index].summary = None;
                         task.actions[index].error = Some(format!("终端命令退出码 {exit_code}"));
+                        task.actions[index].record_verification(
+                            AgentVerificationStatus::Failed,
+                            AgentVerificationEvidenceKind::CommandExitStatus,
+                            format!("命令以退出码 {exit_code} 结束"),
+                            now,
+                        );
                         task.refresh_action_status();
                         events
                             .push(task.action_event(AgentTaskEventKind::ActionFailed, &action_id));
                     }
+                    events.push(
+                        task.action_event(
+                            AgentTaskEventKind::ActionVerificationRecorded,
+                            &action_id,
+                        ),
+                    );
                 }
                 AgentCommandObservationPhase::Unavailable => {
                     task.actions[index].status = AgentActionStatus::Failed;
@@ -1209,8 +1325,20 @@ impl AgentTaskManager {
                     task.actions[index].error = reason;
                     task.actions[index].completed_at = Some(now);
                     task.actions[index].duration_ms = request.duration_ms;
+                    task.actions[index].record_verification(
+                        AgentVerificationStatus::Failed,
+                        AgentVerificationEvidenceKind::ResultUnavailable,
+                        "无法确认终端命令的结束状态",
+                        now,
+                    );
                     task.refresh_action_status();
                     events.push(task.action_event(AgentTaskEventKind::ActionFailed, &action_id));
+                    events.push(
+                        task.action_event(
+                            AgentTaskEventKind::ActionVerificationRecorded,
+                            &action_id,
+                        ),
+                    );
                 }
             }
             if task.model_completed && !task.has_unresolved_actions() {
@@ -1224,6 +1352,115 @@ impl AgentTaskManager {
             .is_some_and(|event| event.kind == AgentTaskEventKind::TaskCompleted)
         {
             self.revoke_task_approvals(&task_id)?;
+        }
+        Ok(events)
+    }
+
+    pub(crate) fn complete_trusted_action_execution(
+        &self,
+        task_id: &str,
+        action_id: &str,
+        rollback: bool,
+        verification: AgentTrustedVerification,
+    ) -> Result<Vec<AgentTaskEvent>, String> {
+        if !valid_identifier(task_id) || !valid_identifier(action_id) {
+            return Err("AI 动作作用域无效".to_string());
+        }
+        let events = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .map_err(|_| "AI 任务状态不可用".to_string())?;
+            let task = tasks
+                .get_mut(task_id)
+                .ok_or_else(|| "AI 任务不存在".to_string())?;
+            if matches!(
+                task.status,
+                AgentTaskStatus::Failed | AgentTaskStatus::Cancelled
+            ) {
+                return Err("AI 任务已经结束".to_string());
+            }
+            let index = task
+                .actions
+                .iter()
+                .position(|action| action.id == action_id)
+                .ok_or_else(|| "AI 动作不存在".to_string())?;
+            let expected_status = if rollback {
+                AgentActionStatus::RollingBack
+            } else {
+                AgentActionStatus::Running
+            };
+            if task.actions[index].status != expected_status {
+                return Err("AI 动作当前不能记录可信执行结果".to_string());
+            }
+            if !matches!(
+                (task.actions[index].tool.as_str(), verification),
+                (
+                    "propose_file_edit",
+                    AgentTrustedVerification::RemoteContentMatch
+                ) | ("propose_file_operation", _)
+            ) {
+                return Err("AI 动作与可信验证结果不匹配".to_string());
+            }
+            action_fingerprint(&task.actions[index].tool, &task.actions[index].arguments)?;
+
+            let now = timestamp_ms();
+            let (status, event_kind, summary, evidence_kind, evidence_summary) = if rollback {
+                (
+                    AgentActionStatus::RolledBack,
+                    AgentTaskEventKind::ActionRolledBack,
+                    "动作已安全回滚",
+                    AgentVerificationEvidenceKind::RecoveryStateMatch,
+                    "远端恢复状态与回滚目标一致",
+                )
+            } else {
+                let (evidence_kind, evidence_summary) = match verification {
+                    AgentTrustedVerification::RemoteContentMatch => (
+                        AgentVerificationEvidenceKind::RemoteContentMatch,
+                        "远端文件内容与本次写入结果一致",
+                    ),
+                    AgentTrustedVerification::RemotePathState => (
+                        AgentVerificationEvidenceKind::RemotePathState,
+                        "远端路径状态与本次文件操作结果一致",
+                    ),
+                };
+                (
+                    AgentActionStatus::Succeeded,
+                    AgentTaskEventKind::ActionSucceeded,
+                    "动作已成功完成",
+                    evidence_kind,
+                    evidence_summary,
+                )
+            };
+            task.actions[index].status = status;
+            task.actions[index].summary = Some(summary.to_string());
+            task.actions[index].error = None;
+            task.actions[index].completed_at = Some(now);
+            task.actions[index].duration_ms = task.actions[index]
+                .started_at
+                .map(|started_at| now.saturating_sub(started_at));
+            task.actions[index].record_verification(
+                AgentVerificationStatus::Verified,
+                evidence_kind,
+                evidence_summary,
+                now,
+            );
+            task.refresh_action_status();
+            let mut events = vec![
+                task.action_event(event_kind, action_id),
+                task.action_event(AgentTaskEventKind::ActionVerificationRecorded, action_id),
+            ];
+            if task.model_completed && !task.has_unresolved_actions() {
+                task.complete_actions();
+                events.push(task.event(AgentTaskEventKind::TaskCompleted));
+            }
+            events
+        };
+        if events
+            .last()
+            .is_some_and(|event| event.kind == AgentTaskEventKind::TaskCompleted)
+        {
+            self.revoke_task_approvals(task_id)?;
         }
         Ok(events)
     }
@@ -1756,6 +1993,7 @@ impl AgentTaskManager {
                     action.duration_ms = action
                         .started_at
                         .map(|started_at| now.saturating_sub(started_at));
+                    action.verification_status = AgentVerificationStatus::NotApplicable;
                 }
             }
             if let Some(plan) = task.plan.as_mut() {
@@ -1774,6 +2012,7 @@ impl AgentTaskManager {
             task.result = Some(AgentTaskResult {
                 summary: "AI 任务已取消".to_string(),
                 verified: false,
+                verification_status: AgentVerificationStatus::NotApplicable,
                 stop_reason: Some("user_cancelled".to_string()),
             });
             vec![task.event(AgentTaskEventKind::TaskCancelled)]
@@ -1861,7 +2100,9 @@ mod tests {
         AgentActionTransitionRequest, AgentApprovalMode, AgentCommandObservationPhase,
         AgentCommandObservationRequest, AgentPlan, AgentPlanDecision, AgentPlanDecisionKind,
         AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep, AgentPlanStepStatus,
-        AgentTaskContext, AgentTaskEventKind, AgentTaskManager, AgentTaskStatus, AgentWritableFile,
+        AgentTaskContext, AgentTaskEventKind, AgentTaskManager, AgentTaskStatus,
+        AgentTrustedVerification, AgentVerificationEvidenceKind, AgentVerificationStatus,
+        AgentWritableFile,
     };
     use crate::agent_approvals::ApprovalScope;
 
@@ -2103,7 +2344,16 @@ mod tests {
             .unwrap();
         assert_eq!(succeeded[0].kind, AgentTaskEventKind::ActionSucceeded);
         assert_eq!(succeeded[1].kind, AgentTaskEventKind::TaskCompleted);
-        assert!(succeeded[1].task.result.as_ref().unwrap().verified);
+        assert!(!succeeded[1].task.result.as_ref().unwrap().verified);
+        assert_eq!(
+            succeeded[1]
+                .task
+                .result
+                .as_ref()
+                .unwrap()
+                .verification_status,
+            AgentVerificationStatus::Unverified
+        );
 
         let rollback_started = manager
             .transition_action(transition(AgentActionTransition::RollbackStart))
@@ -2131,6 +2381,7 @@ mod tests {
         manager
             .register_actions("task-1", vec![file_edit_intent()])
             .unwrap();
+        manager.finish_model_turn("task-1", false).unwrap();
 
         assert_eq!(
             manager
@@ -2157,10 +2408,47 @@ mod tests {
         assert!(manager
             .authorize_action_execution("task-1", "edit-1", false, true, None)
             .is_err());
+        assert_eq!(
+            manager
+                .complete_trusted_action_execution(
+                    "task-1",
+                    "edit-1",
+                    false,
+                    AgentTrustedVerification::RemotePathState,
+                )
+                .unwrap_err(),
+            "AI 动作与可信验证结果不匹配"
+        );
 
-        manager
-            .transition_action(transition(AgentActionTransition::Succeed))
+        let completed = manager
+            .complete_trusted_action_execution(
+                "task-1",
+                "edit-1",
+                false,
+                AgentTrustedVerification::RemoteContentMatch,
+            )
             .unwrap();
+        assert_eq!(completed.len(), 3);
+        assert_eq!(completed[0].kind, AgentTaskEventKind::ActionSucceeded);
+        assert_eq!(
+            completed[1].kind,
+            AgentTaskEventKind::ActionVerificationRecorded
+        );
+        assert_eq!(
+            completed[1].task.actions[0].verification_status,
+            AgentVerificationStatus::Verified
+        );
+        assert_eq!(completed[2].kind, AgentTaskEventKind::TaskCompleted);
+        assert!(completed[2].task.result.as_ref().unwrap().verified);
+        assert_eq!(
+            completed[2]
+                .task
+                .result
+                .as_ref()
+                .unwrap()
+                .verification_status,
+            AgentVerificationStatus::Verified
+        );
         let (rollback, _) = manager
             .authorize_action_execution("task-1", "edit-1", true, true, None)
             .unwrap();
@@ -2191,6 +2479,7 @@ mod tests {
         manager
             .register_actions("task-1", vec![terminal_command_intent()])
             .unwrap();
+        manager.finish_model_turn("task-1", false).unwrap();
 
         assert_eq!(
             manager
@@ -2217,6 +2506,7 @@ mod tests {
         manager
             .register_actions("task-1", vec![terminal_command_intent()])
             .unwrap();
+        manager.finish_model_turn("task-1", false).unwrap();
         manager
             .authorize_action_execution("task-1", "command-1", false, true, None)
             .unwrap();
@@ -2241,12 +2531,31 @@ mod tests {
         completed.exit_code = Some(0);
         completed.duration_ms = Some(1_250);
         let completed = manager.observe_command_execution(completed).unwrap();
-        assert_eq!(completed.len(), 1);
+        assert_eq!(completed.len(), 3);
         assert_eq!(completed[0].kind, AgentTaskEventKind::ActionSucceeded);
-        assert_eq!(completed[0].task.actions[0].duration_ms, Some(1_250));
         assert_eq!(
-            completed[0].task.actions[0].status,
+            completed[1].kind,
+            AgentTaskEventKind::ActionVerificationRecorded
+        );
+        assert_eq!(completed[1].task.actions[0].duration_ms, Some(1_250));
+        assert_eq!(
+            completed[1].task.actions[0].status,
             AgentActionStatus::Succeeded
+        );
+        assert_eq!(
+            completed[1].task.actions[0].verification_status,
+            AgentVerificationStatus::Unverified
+        );
+        assert_eq!(completed[2].kind, AgentTaskEventKind::TaskCompleted);
+        assert!(!completed[2].task.result.as_ref().unwrap().verified);
+        assert_eq!(
+            completed[2]
+                .task
+                .result
+                .as_ref()
+                .unwrap()
+                .verification_status,
+            AgentVerificationStatus::Unverified
         );
     }
 
@@ -2272,13 +2581,52 @@ mod tests {
         unavailable.duration_ms = Some(0);
         unavailable.reason = Some("Shell Integration 尚未就绪".to_string());
         let events = manager.observe_command_execution(unavailable).unwrap();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
         assert_eq!(events[0].kind, AgentTaskEventKind::ActionStarted);
         assert_eq!(events[1].kind, AgentTaskEventKind::ActionFailed);
         assert_eq!(
-            events[1].task.actions[0].error.as_deref(),
+            events[2].kind,
+            AgentTaskEventKind::ActionVerificationRecorded
+        );
+        assert_eq!(
+            events[2].task.actions[0].error.as_deref(),
             Some("Shell Integration 尚未就绪")
         );
+    }
+
+    #[test]
+    fn task_result_reports_partial_verification_for_mixed_evidence() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        manager
+            .register_actions(
+                "task-1",
+                vec![file_edit_intent(), terminal_command_intent()],
+            )
+            .unwrap();
+        manager.finish_model_turn("task-1", false).unwrap();
+
+        manager
+            .authorize_action_execution("task-1", "edit-1", false, true, None)
+            .unwrap();
+        manager
+            .complete_trusted_action_execution(
+                "task-1",
+                "edit-1",
+                false,
+                AgentTrustedVerification::RemoteContentMatch,
+            )
+            .unwrap();
+        manager
+            .authorize_action_execution("task-1", "command-1", false, true, None)
+            .unwrap();
+        let mut completed = command_observation(AgentCommandObservationPhase::Completed);
+        completed.exit_code = Some(0);
+        completed.duration_ms = Some(250);
+        let events = manager.observe_command_execution(completed).unwrap();
+        let result = events.last().unwrap().task.result.as_ref().unwrap();
+        assert!(!result.verified);
+        assert_eq!(result.verification_status, AgentVerificationStatus::Partial);
     }
 
     #[test]
@@ -2524,6 +2872,7 @@ mod tests {
                 AgentTaskEventKind::ActionRollbackConflicted,
                 AgentTaskEventKind::ActionRollbackFailed,
                 AgentTaskEventKind::ActionRetried,
+                AgentTaskEventKind::ActionVerificationRecorded,
                 AgentTaskEventKind::TaskPaused,
                 AgentTaskEventKind::TaskResumed,
                 AgentTaskEventKind::TaskCompleted,
@@ -2599,6 +2948,27 @@ mod tests {
                 AgentActionTransition::Retry,
             ]),
             contract_keys("agentActionTransitions")
+        );
+        assert_eq!(
+            serialized_values(&[
+                AgentVerificationStatus::Pending,
+                AgentVerificationStatus::Verified,
+                AgentVerificationStatus::Partial,
+                AgentVerificationStatus::Unverified,
+                AgentVerificationStatus::Failed,
+                AgentVerificationStatus::NotApplicable,
+            ]),
+            contract_keys("agentVerificationStatuses")
+        );
+        assert_eq!(
+            serialized_values(&[
+                AgentVerificationEvidenceKind::RemoteContentMatch,
+                AgentVerificationEvidenceKind::RemotePathState,
+                AgentVerificationEvidenceKind::RecoveryStateMatch,
+                AgentVerificationEvidenceKind::CommandExitStatus,
+                AgentVerificationEvidenceKind::ResultUnavailable,
+            ]),
+            contract_keys("agentVerificationEvidenceKinds")
         );
     }
 }
