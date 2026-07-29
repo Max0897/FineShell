@@ -254,6 +254,7 @@ describe("useAiRequestOrchestrator", () => {
     const setDraft = mock(() => undefined);
     const { result } = renderHook(() =>
       useAiRequestOrchestrator({
+        approvalMode: "auto_safe",
         confirmToolExecution: async () => true,
         invoke,
         listenToStream,
@@ -292,7 +293,7 @@ describe("useAiRequestOrchestrator", () => {
     expect(request.fileEditEnabled).toBe(false);
     expect(request.commandProposalEnabled).toBe(true);
     expect(request.task).toEqual({
-      approvalMode: "on_request",
+      approvalMode: "auto_safe",
       conversationId: "conversation-1",
       currentDirectory: "/root",
       hostId: "host-1",

@@ -967,6 +967,24 @@ body.ai-sidebar-resizing::after {
   margin: 0;
 }
 
+.ai-approval-mode {
+  flex: 0 0 auto;
+  width: 88px;
+}
+
+.ai-approval-mode .arco-select-view {
+  border: 0;
+}
+
+.ai-approval-mode-auto_safe .arco-select-view {
+  color: #165dff;
+}
+
+.ai-approval-mode-full_access .arco-select-view {
+  color: #f53f3f;
+  background: #fff2f0;
+}
+
 .ai-conversation-history {
   height: 100%;
 }

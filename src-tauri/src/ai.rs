@@ -17,6 +17,7 @@ use crate::{
         self, timestamp_ms, AgentPlan, AgentPlanDecision, AgentPlanStatus, AgentPlanStep,
         AgentPlanStepStatus, AgentTaskContext, AgentTaskManager,
     },
+    agent_policy::{ExecutionBoundary, PolicyDecision, PolicyEvaluation},
     credentials,
     protocol::{CommandError, CommandResult, AI_COMPLETE_EVENT, AI_STREAM_EVENT},
     ssh::SshSessionManager,
@@ -1441,8 +1442,62 @@ fn create_diagnostic_plan(calls: &[AiToolCall], description: &str, ordinal: usiz
     }
 }
 
-fn active_network_probe(call: &AiToolCall) -> bool {
-    matches!(call.name.as_str(), "ping_target" | "trace_route")
+fn diagnostic_policy_evaluations(
+    context: &AgentTaskContext,
+    enabled_tools: &HashSet<String>,
+    calls: &[AiToolCall],
+) -> HashMap<String, PolicyEvaluation> {
+    let boundary = ExecutionBoundary::new(
+        context.id(),
+        context.host_id(),
+        context.terminal_session_id(),
+        context.current_directory(),
+        enabled_tools,
+    );
+    calls
+        .iter()
+        .map(|call| {
+            (
+                call.id.clone(),
+                boundary.evaluate(
+                    context.approval_mode(),
+                    &call.name,
+                    &Value::Object(diagnostic_arguments(call)),
+                ),
+            )
+        })
+        .collect()
+}
+
+fn policy_risk_label(risk: crate::agent::AgentActionRisk) -> &'static str {
+    match risk {
+        crate::agent::AgentActionRisk::ReadOnly => "只读",
+        crate::agent::AgentActionRisk::ReversibleWrite => "可逆写入",
+        crate::agent::AgentActionRisk::Elevated => "高权限",
+        crate::agent::AgentActionRisk::Critical => "关键操作",
+    }
+}
+
+fn apply_policy_to_plan(plan: &mut AgentPlan, evaluations: &HashMap<String, PolicyEvaluation>) {
+    for step in &mut plan.steps {
+        let Some(evaluation) = evaluations.get(&step.id) else {
+            continue;
+        };
+        match evaluation.decision {
+            PolicyDecision::Allow => {}
+            PolicyDecision::Prompt => {
+                step.summary = Some(format!(
+                    "{} · {}",
+                    policy_risk_label(evaluation.risk),
+                    evaluation.reason
+                ));
+            }
+            PolicyDecision::Deny => {
+                step.error = Some(evaluation.reason.clone());
+                step.summary = Some(evaluation.reason.clone());
+            }
+        }
+    }
 }
 
 fn tool_error_result(call: &AiToolCall, error: &str) -> AiToolResult {
@@ -1813,6 +1868,7 @@ struct DiagnosticPlanExecution<'a> {
     ssh_manager: &'a SshSessionManager,
     context: &'a AgentTaskContext,
     calls: &'a [AiToolCall],
+    policies: &'a HashMap<String, PolicyEvaluation>,
     plan_control: &'a watch::Receiver<AgentPlanDecision>,
     cancellation: &'a mut watch::Receiver<bool>,
 }
@@ -1828,6 +1884,7 @@ async fn execute_diagnostic_plan(
         ssh_manager,
         context,
         calls,
+        policies,
         plan_control,
         cancellation,
     } = execution;
@@ -1840,16 +1897,25 @@ async fn execute_diagnostic_plan(
     agent::emit_task_events(app, task_manager.start_plan(context.id(), plan.clone())?);
     let mut results = Vec::with_capacity(calls.len());
     for (index, call) in calls.iter().enumerate() {
+        let policy = policies
+            .get(&call.id)
+            .ok_or_else(|| "诊断动作缺少后端策略结果".to_string())?;
         let dependency_failed = plan.steps[index].depends_on.iter().any(|dependency| {
             plan.steps
                 .iter()
                 .find(|step| step.id == *dependency)
                 .is_none_or(|step| step.status != AgentPlanStepStatus::Completed)
         });
+        let approved_by_policy = match policy.decision {
+            PolicyDecision::Allow => true,
+            PolicyDecision::Prompt => selected.contains(&call.id),
+            PolicyDecision::Deny => false,
+        };
         let should_execute = !matches!(
             decision,
             AgentPlanDecision::Reject | AgentPlanDecision::Stop
-        ) && (!plan.steps[index].optional || selected.contains(&call.id));
+        ) && approved_by_policy
+            && (!plan.steps[index].optional || selected.contains(&call.id));
         let stop_requested = matches!(&*plan_control.borrow(), AgentPlanDecision::Stop);
         let skip_reason = if matches!(decision, AgentPlanDecision::Reject) {
             Some("用户取消了诊断计划")
@@ -1858,6 +1924,10 @@ async fn execute_diagnostic_plan(
             || *cancellation.borrow()
         {
             Some("用户停止了剩余诊断步骤")
+        } else if policy.decision == PolicyDecision::Deny {
+            Some(policy.reason.as_str())
+        } else if policy.decision == PolicyDecision::Prompt && !selected.contains(&call.id) {
+            Some("该诊断动作未获得本次审批")
         } else if !should_execute {
             Some("用户取消了可选诊断步骤")
         } else if dependency_failed {
@@ -1867,7 +1937,11 @@ async fn execute_diagnostic_plan(
         };
         if let Some(reason) = skip_reason {
             let step = &mut plan.steps[index];
-            step.status = AgentPlanStepStatus::Skipped;
+            step.status = if policy.decision == PolicyDecision::Deny {
+                AgentPlanStepStatus::Failed
+            } else {
+                AgentPlanStepStatus::Skipped
+            };
             step.error = Some(reason.to_string());
             step.summary = Some(reason.to_string());
             step.started_at = Some(timestamp_ms());
@@ -2448,12 +2522,20 @@ pub(crate) async fn ai_chat_start(
                         continue;
                     }
 
-                    let plan = create_diagnostic_plan(
+                    let mut plan = create_diagnostic_plan(
                         &response.tool_calls,
                         &response.content,
                         runtime_plans.len().saturating_add(1),
                     );
-                    let awaiting_approval = response.tool_calls.iter().any(active_network_probe);
+                    let policy_evaluations = diagnostic_policy_evaluations(
+                        context,
+                        &enabled_tools,
+                        &response.tool_calls,
+                    );
+                    apply_policy_to_plan(&mut plan, &policy_evaluations);
+                    let awaiting_approval = policy_evaluations
+                        .values()
+                        .any(|evaluation| evaluation.decision == PolicyDecision::Prompt);
                     let (mut decision_receiver, events) = task_manager
                         .set_plan(&request_id, plan.clone(), awaiting_approval)
                         .map_err(|error| structured(operation, error))?;
@@ -2470,6 +2552,7 @@ pub(crate) async fn ai_chat_start(
                             ssh_manager: &ssh_manager,
                             context,
                             calls: &calls,
+                            policies: &policy_evaluations,
                             plan_control: &decision_receiver,
                             cancellation: &mut cancellation,
                         },
@@ -2550,21 +2633,54 @@ pub(crate) fn ai_chat_cancel(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use reqwest::Url;
-    use serde_json::Value;
+    use serde_json::{json, Value};
+
+    use crate::{agent::AgentTaskContext, agent_policy::PolicyDecision};
 
     use super::{
         apply_finalization_instruction, apply_tool_call_delta, capability_http_failure,
-        complete_tool_calls, create_diagnostic_plan, diagnostic_tool_requires_connection,
-        enabled_diagnostic_tools, filter_tool_definitions, http_messages, is_local_endpoint,
-        is_tool_unsupported_error, normalize_models, request_messages, sanitize_context,
-        service_endpoint, stream_delta, stream_tool_call_deltas, tool_allowed, tool_definitions,
-        tool_loop_finalize_reason, tool_probe_supported, valid_stream_probe_event,
-        valid_tool_arguments, validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls,
-        validate_service_url, validate_tool_rounds, AiCapabilityKind, AiCapabilityState,
-        AiChatMessage, AiFinalizeReason, AiModelEntry, AiToolCall, AiToolResult, AiToolRound,
-        SseParser,
+        complete_tool_calls, create_diagnostic_plan, diagnostic_policy_evaluations,
+        diagnostic_tool_requires_connection, enabled_diagnostic_tools, filter_tool_definitions,
+        http_messages, is_local_endpoint, is_tool_unsupported_error, normalize_models,
+        request_messages, sanitize_context, service_endpoint, stream_delta,
+        stream_tool_call_deltas, tool_allowed, tool_definitions, tool_loop_finalize_reason,
+        tool_probe_supported, valid_stream_probe_event, valid_tool_arguments,
+        validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls, validate_service_url,
+        validate_tool_rounds, AiCapabilityKind, AiCapabilityState, AiChatMessage, AiFinalizeReason,
+        AiModelEntry, AiToolCall, AiToolResult, AiToolRound, SseParser,
     };
+
+    fn policy_context(mode: &str) -> AgentTaskContext {
+        serde_json::from_value(json!({
+            "id": "task-1",
+            "conversationId": "conversation-1",
+            "hostId": "host-1",
+            "terminalSessionId": "session-1",
+            "currentDirectory": "/srv/app",
+            "objective": "检查网络",
+            "approvalMode": mode,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn runtime_diagnostic_policy_uses_the_task_approval_mode() {
+        let calls = vec![AiToolCall {
+            id: "ping-1".to_string(),
+            name: "ping_target".to_string(),
+            arguments: r#"{"target":"example.com"}"#.to_string(),
+        }];
+        let enabled = HashSet::from(["ping_target".to_string()]);
+        let on_request =
+            diagnostic_policy_evaluations(&policy_context("on_request"), &enabled, &calls);
+        let full_access =
+            diagnostic_policy_evaluations(&policy_context("full_access"), &enabled, &calls);
+        assert_eq!(on_request["ping-1"].decision, PolicyDecision::Prompt);
+        assert_eq!(full_access["ping-1"].decision, PolicyDecision::Allow);
+    }
 
     #[test]
     fn only_remote_diagnostic_tools_wait_for_ssh_reconnection() {

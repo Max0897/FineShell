@@ -4,6 +4,7 @@ import {
   Input,
   Message,
   Modal,
+  Select,
   Space,
   Tag,
   Tooltip,
@@ -47,7 +48,11 @@ import {
   type AiRemoteFileContext,
 } from "../ai-utils";
 import { diagnosticInvoke as invoke, recordDiagnostic } from "../diagnostics";
-import { commandErrorMessage, type AiToolCall } from "../tauri-protocol";
+import {
+  commandErrorMessage,
+  type AgentApprovalMode,
+  type AiToolCall,
+} from "../tauri-protocol";
 import type { TerminalCommandSubmission } from "../terminal-utils";
 import { aiCommandResultContextSource } from "../ai-command-proposals";
 import {
@@ -105,6 +110,12 @@ interface AiAssistantPanelProps {
   settings: AppSettings;
   visible: boolean;
 }
+
+const AI_APPROVAL_MODE_OPTIONS = [
+  { label: "请求审批", value: "on_request" },
+  { label: "替我审批", value: "auto_safe" },
+  { label: "完全访问", value: "full_access" },
+] satisfies { label: string; value: AgentApprovalMode }[];
 
 function confirmAiToolExecution(call: AiToolCall) {
   if (!aiToolRequiresConfirmation(call.name)) return Promise.resolve(true);
@@ -277,7 +288,13 @@ function AiAssistantPanel({
     () => new Set(),
   );
   const [auditVisible, setAuditVisible] = useState(false);
+  const [approvalMode, setApprovalMode] =
+    useState<AgentApprovalMode>("on_request");
   const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setApprovalMode("on_request");
+  }, [canInsertCommand, hostId, sessionId]);
 
   const {
     activeConversation,
@@ -406,6 +423,7 @@ function AiAssistantPanel({
     stopDiagnosticPlan,
     summarizingConversationIds,
   } = useAiRequestOrchestrator({
+    approvalMode,
     confirmToolExecution: confirmAiToolExecution,
     onCancelError: (error) => Message.error(commandErrorMessage(error)),
     onMissingModel: () => Message.warning("请先在设置中配置 AI 模型"),
@@ -654,6 +672,29 @@ function AiAssistantPanel({
           <Typography.Text ellipsis title={activeConversation?.title}>
             {activeConversation?.title ?? ""}
           </Typography.Text>
+          <Select
+            aria-label="AI 审批模式"
+            className={`ai-approval-mode ai-approval-mode-${approvalMode}`}
+            disabled={!canInsertCommand || sending}
+            onChange={(value) => {
+              const next = value as AgentApprovalMode;
+              if (next !== "full_access" || approvalMode === "full_access") {
+                setApprovalMode(next);
+                return;
+              }
+              Modal.confirm({
+                cancelText: "取消",
+                content: "完全访问仅在当前主机和当前连接周期内生效。",
+                okButtonProps: { status: "danger" },
+                okText: "启用",
+                onOk: () => setApprovalMode(next),
+                title: "启用完全访问？",
+              });
+            }}
+            options={AI_APPROVAL_MODE_OPTIONS}
+            size="mini"
+            value={approvalMode}
+          />
           {activeConversation &&
             (summarizingConversationIds.has(activeConversation.id) ? (
               <Tooltip content="正在后台压缩较早的对话，不影响当前操作">

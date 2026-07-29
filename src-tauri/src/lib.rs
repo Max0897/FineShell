@@ -1,4 +1,5 @@
 mod agent;
+mod agent_policy;
 mod ai;
 mod config_files;
 mod credentials;

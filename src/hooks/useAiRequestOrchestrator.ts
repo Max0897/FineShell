@@ -64,6 +64,7 @@ import {
   commandErrorMessage,
   FineShellCommandError,
   listenProtocolEvent,
+  type AgentApprovalMode,
   type AgentPlan,
   type AgentTask,
   type AgentTaskEventPayload,
@@ -115,6 +116,7 @@ interface RerunAiToolOptions {
 }
 
 interface UseAiRequestOrchestratorOptions {
+  approvalMode?: AgentApprovalMode;
   confirmToolExecution: (call: AiToolCall) => Promise<boolean>;
   invoke?: AiRequestInvoke;
   listenToStream?: AiStreamListener;
@@ -306,6 +308,7 @@ export async function executeAiReadOnlyTool(
 }
 
 export function useAiRequestOrchestrator({
+  approvalMode = "on_request",
   confirmToolExecution,
   invoke = defaultInvoke,
   listenToStream = defaultStreamListener,
@@ -742,7 +745,7 @@ export function useAiRequestOrchestrator({
                 terminalSessionId: targetSessionId,
                 currentDirectory: toolCurrentDirectory ?? undefined,
                 objective: userMessage.content,
-                approvalMode: "on_request",
+                approvalMode,
               },
             },
           });
@@ -1180,6 +1183,7 @@ export function useAiRequestOrchestrator({
       }
     },
     [
+      approvalMode,
       confirmToolExecution,
       invoke,
       persistConversation,

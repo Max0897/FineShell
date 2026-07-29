@@ -242,6 +242,14 @@ impl AgentTaskContext {
         self.terminal_session_id.as_deref()
     }
 
+    pub(crate) fn host_id(&self) -> &str {
+        &self.host_id
+    }
+
+    pub(crate) fn approval_mode(&self) -> AgentApprovalMode {
+        self.approval_mode
+    }
+
     pub(crate) fn current_directory(&self) -> Option<&str> {
         self.current_directory.as_deref()
     }
