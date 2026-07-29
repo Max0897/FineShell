@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { AiActionTransitionHandler } from "../ai-action-lifecycle";
 import {
   aiFileEditRollbackEligibilityError,
   markAiFileEditApplied,
@@ -61,6 +62,7 @@ interface UseAiFileChangeWorkflowOptions {
     sessionId: string,
     request: AiFileOperationExecutionRequest,
   ) => Promise<AiFileOperationResult>;
+  onActionTransition: AiActionTransitionHandler;
   onConfirm: (confirmation: AiFileChangeConfirmation) => void;
   onNotice: (type: AiFileChangeNotice, content: string) => void;
   sessionId: string | null;
@@ -90,6 +92,7 @@ export function useAiFileChangeWorkflow({
   messages,
   onApplyRemoteFileEdit,
   onApplyRemoteFileOperation,
+  onActionTransition,
   onConfirm,
   onNotice,
   sessionId,
@@ -140,6 +143,22 @@ export function useAiFileChangeWorkflow({
   useEffect(() => {
     setFileChangeReview(null);
   }, [sessionId]);
+
+  const recordActionTransition: AiActionTransitionHandler = async (
+    messageId,
+    actionId,
+    transition,
+    detail,
+  ) => {
+    try {
+      await onActionTransition(messageId, actionId, transition, detail);
+    } catch (error) {
+      onNotice(
+        "warning",
+        `动作时间线更新失败：${commandErrorMessage(error)}`,
+      );
+    }
+  };
 
   const markReviewItemReviewed = (
     messageId: string,
@@ -251,11 +270,27 @@ export function useAiFileChangeWorkflow({
     content: string,
   ): Promise<ApplyResult> => {
     try {
+      await onActionTransition(messageId, proposal.id, "start", {
+        summary: `开始写入 ${proposal.originalFile.path}`,
+      });
+    } catch (error) {
+      const message = commandErrorMessage(error);
+      updateFileEditProposal(messageId, proposal.id, (current) => ({
+        ...current,
+        error: message,
+        status: "failed",
+      }));
+      return "failed";
+    }
+    try {
       const updatedFile = await onApplyRemoteFileEdit(
         proposal.sessionId,
         proposal.originalFile,
         content,
       );
+      await recordActionTransition(messageId, proposal.id, "succeed", {
+        summary: `已更新 ${proposal.originalFile.path}`,
+      });
       updateFileEditProposal(messageId, proposal.id, (current) =>
         markAiFileEditApplied(
           current,
@@ -268,6 +303,12 @@ export function useAiFileChangeWorkflow({
     } catch (error) {
       const message = commandErrorMessage(error);
       const conflict = message.includes("远程文件已被其他程序修改");
+      await recordActionTransition(
+        messageId,
+        proposal.id,
+        conflict ? "conflict" : "fail",
+        { error: message },
+      );
       updateFileEditProposal(messageId, proposal.id, (current) => ({
         ...current,
         error: message,
@@ -285,11 +326,25 @@ export function useAiFileChangeWorkflow({
       return "failed";
     }
     try {
+      await onActionTransition(messageId, proposal.id, "rollback_start", {
+        summary: `开始回滚 ${proposal.originalFile.path}`,
+      });
+    } catch (error) {
+      updateFileEditProposal(messageId, proposal.id, (current) => ({
+        ...current,
+        rollbackError: commandErrorMessage(error),
+      }));
+      return "failed";
+    }
+    try {
       await onApplyRemoteFileEdit(
         proposal.sessionId,
         proposal.appliedFile,
         proposal.originalFile.content,
       );
+      await recordActionTransition(messageId, proposal.id, "rolled_back", {
+        summary: `已回滚 ${proposal.originalFile.path}`,
+      });
       updateFileEditProposal(messageId, proposal.id, (current) =>
         markAiFileEditRolledBack(current, new Date().toISOString()),
       );
@@ -297,6 +352,12 @@ export function useAiFileChangeWorkflow({
     } catch (error) {
       const message = commandErrorMessage(error);
       const conflict = message.includes("远程文件已被其他程序修改");
+      await recordActionTransition(
+        messageId,
+        proposal.id,
+        conflict ? "conflict" : "fail",
+        { error: message },
+      );
       updateFileEditProposal(messageId, proposal.id, (current) => ({
         ...current,
         rollbackError: conflict
@@ -312,10 +373,26 @@ export function useAiFileChangeWorkflow({
     proposal: AiFileOperationProposal,
   ): Promise<ApplyResult> => {
     try {
+      await onActionTransition(messageId, proposal.id, "start", {
+        summary: `开始${aiFileOperationLabel(proposal.operation)} ${proposal.path}`,
+      });
+    } catch (error) {
+      const message = commandErrorMessage(error);
+      updateFileOperationProposal(messageId, proposal.id, (current) => ({
+        ...current,
+        error: message,
+        status: "failed",
+      }));
+      return "failed";
+    }
+    try {
       const result = await onApplyRemoteFileOperation(
         proposal.sessionId,
         aiFileOperationApplyRequest(proposal),
       );
+      await recordActionTransition(messageId, proposal.id, "succeed", {
+        summary: `已${aiFileOperationLabel(proposal.operation)} ${proposal.path}`,
+      });
       updateFileOperationProposal(messageId, proposal.id, (current) =>
         markAiFileOperationApplied(current, result, new Date().toISOString()),
       );
@@ -323,6 +400,12 @@ export function useAiFileChangeWorkflow({
     } catch (error) {
       const message = commandErrorMessage(error);
       const conflict = isFileOperationConflict(message);
+      await recordActionTransition(
+        messageId,
+        proposal.id,
+        conflict ? "conflict" : "fail",
+        { error: message },
+      );
       updateFileOperationProposal(messageId, proposal.id, (current) => ({
         ...current,
         error: message,
@@ -338,10 +421,24 @@ export function useAiFileChangeWorkflow({
   ): Promise<RollbackResult> => {
     if (aiFileOperationRollbackEligibilityError(proposal)) return "failed";
     try {
+      await onActionTransition(messageId, proposal.id, "rollback_start", {
+        summary: `开始回滚${aiFileOperationLabel(proposal.operation)} ${proposal.path}`,
+      });
+    } catch (error) {
+      updateFileOperationProposal(messageId, proposal.id, (current) => ({
+        ...current,
+        rollbackError: commandErrorMessage(error),
+      }));
+      return "failed";
+    }
+    try {
       await onApplyRemoteFileOperation(
         proposal.sessionId,
         aiFileOperationRollbackRequest(proposal),
       );
+      await recordActionTransition(messageId, proposal.id, "rolled_back", {
+        summary: `已回滚${aiFileOperationLabel(proposal.operation)} ${proposal.path}`,
+      });
       updateFileOperationProposal(messageId, proposal.id, (current) =>
         markAiFileOperationRolledBack(current, new Date().toISOString()),
       );
@@ -349,6 +446,12 @@ export function useAiFileChangeWorkflow({
     } catch (error) {
       const message = commandErrorMessage(error);
       const conflict = isFileOperationConflict(message);
+      await recordActionTransition(
+        messageId,
+        proposal.id,
+        conflict ? "conflict" : "fail",
+        { error: message },
+      );
       updateFileOperationProposal(messageId, proposal.id, (current) => ({
         ...current,
         rollbackError: conflict

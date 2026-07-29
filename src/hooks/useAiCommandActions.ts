@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { AiActionTransitionHandler } from "../ai-action-lifecycle";
 import {
   markAiCommandProposalInserted,
   markAiCommandProposalVerified,
@@ -30,6 +31,7 @@ interface UseAiCommandActionsOptions {
   onConfirm: (confirmation: AiCommandConfirmation) => void;
   onCopyText: (value: string) => Promise<void>;
   onInsertCommand: (command: string) => Promise<void>;
+  onActionTransition: AiActionTransitionHandler;
   onNotice: (type: AiCommandNotice, content: string) => void;
   sessionId: string | null;
   setDraft: (conversationId: string, value: string) => void;
@@ -54,6 +56,7 @@ export function useAiCommandActions({
   onConfirm,
   onCopyText,
   onInsertCommand,
+  onActionTransition,
   onNotice,
   sessionId,
   setDraft,
@@ -87,6 +90,9 @@ export function useAiCommandActions({
   ) => {
     if (proposal.status !== "pending") return;
     try {
+      await onActionTransition(messageId, proposal.id, "approve", {
+        summary: "用户批准将命令填入终端",
+      });
       await onInsertCommand(proposal.command);
       updateCommandProposal(
         messageId,
@@ -94,6 +100,13 @@ export function useAiCommandActions({
         markAiCommandProposalInserted,
       );
     } catch (error) {
+      try {
+        await onActionTransition(messageId, proposal.id, "fail", {
+          error: commandErrorMessage(error),
+        });
+      } catch {
+        // The original insertion error is more useful to the user.
+      }
       onNotice("error", commandErrorMessage(error));
     }
   };

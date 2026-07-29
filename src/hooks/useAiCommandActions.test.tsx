@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { AiCommandProposal } from "../ai-command-proposals";
+import type { AiActionTransitionHandler } from "../ai-action-lifecycle";
 import type { AiContextSource } from "../ai-utils";
 import {
   useAiCommandActions,
@@ -30,11 +31,15 @@ function renderActions(options?: {
   contextSources?: AiContextSource[];
   onConfirm?: (confirmation: AiCommandConfirmation) => void;
   onInsertCommand?: (command: string) => Promise<void>;
+  onActionTransition?: AiActionTransitionHandler;
 }) {
   const onInsertCommand = mock(
     options?.onInsertCommand ?? (async () => undefined),
   );
   const onNotice = mock(() => undefined);
+  const onActionTransition = mock(
+    options?.onActionTransition ?? (async () => undefined),
+  );
   const setDraft = mock((_conversationId: string, _value: string) => undefined);
   const updateCommandProposal = mock(
     (
@@ -60,6 +65,7 @@ function renderActions(options?: {
       onConfirm: options?.onConfirm ?? (() => undefined),
       onCopyText: async () => undefined,
       onInsertCommand,
+      onActionTransition,
       onNotice,
       sessionId: "session-1",
       setDraft,
@@ -70,6 +76,7 @@ function renderActions(options?: {
   return {
     ...hook,
     onInsertCommand,
+    onActionTransition,
     onNotice,
     setDraft,
     updateCommandProposal,
@@ -88,6 +95,12 @@ describe("useAiCommandActions", () => {
     await waitFor(() => expect(view.onInsertCommand).toHaveBeenCalledTimes(1));
 
     expect(view.onInsertCommand).toHaveBeenCalledWith(value.command);
+    expect(view.onActionTransition).toHaveBeenCalledWith(
+      "assistant-1",
+      value.id,
+      "approve",
+      { summary: "用户批准将命令填入终端" },
+    );
     expect(view.updateCommandProposal).toHaveBeenCalledWith(
       "assistant-1",
       value.id,

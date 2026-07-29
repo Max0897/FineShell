@@ -4,6 +4,8 @@ import {
   FineShellCommandError,
   PROTOCOL_VERSION,
   normalizeCommandError,
+  type AgentActionStatus,
+  type AgentActionTransition,
   type AgentActionRisk,
   type AgentApprovalMode,
   type AgentPlanStepStatus,
@@ -22,7 +24,7 @@ describe("Tauri shared protocol", () => {
     expect(PROTOCOL_VERSION).toBe(contract.version);
     expect(contract.commands[command]).toBe(true);
     expect(contract.events[event]).toBe(true);
-    expect(Object.keys(contract.commands)).toHaveLength(73);
+    expect(Object.keys(contract.commands)).toHaveLength(74);
     expect(Object.keys(contract.events)).toHaveLength(11);
   });
 
@@ -35,6 +37,8 @@ describe("Tauri shared protocol", () => {
     const plan: AgentPlanStatus = "partial";
     const approval: AgentApprovalMode = "on_request";
     const risk: AgentActionRisk = "reversible_write";
+    const actionStatus: AgentActionStatus = "running";
+    const actionTransition: AgentActionTransition = "rollback_start";
 
     expect(contract.agentTaskStatuses[status]).toBe(true);
     expect(contract.agentTaskStatuses[disconnectedStatus]).toBe(true);
@@ -44,6 +48,8 @@ describe("Tauri shared protocol", () => {
     expect(contract.agentPlanStatuses[plan]).toBe(true);
     expect(contract.agentApprovalModes[approval]).toBe(true);
     expect(contract.agentActionRisks[risk]).toBe(true);
+    expect(contract.agentActionStatuses[actionStatus]).toBe(true);
+    expect(contract.agentActionTransitions[actionTransition]).toBe(true);
   });
 
   test("preserves structured backend errors", () => {

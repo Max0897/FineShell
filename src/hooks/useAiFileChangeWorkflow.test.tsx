@@ -2,6 +2,7 @@ import { useState } from "react";
 import { describe, expect, mock, test } from "bun:test";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { AiFileEditProposal } from "../ai-file-edits";
+import type { AiActionTransitionHandler } from "../ai-action-lifecycle";
 import type {
   AiFileOperationExecutionRequest,
   AiFileOperationProposal,
@@ -85,6 +86,7 @@ interface HarnessOptions {
   ) => Promise<AiFileOperationResult>;
   onConfirm: (confirmation: AiFileChangeConfirmation) => void;
   onNotice: (type: "error" | "success" | "warning", content: string) => void;
+  onActionTransition?: AiActionTransitionHandler;
 }
 
 function useWorkflowHarness(options: HarnessOptions) {
@@ -93,6 +95,7 @@ function useWorkflowHarness(options: HarnessOptions) {
     messages,
     onApplyRemoteFileEdit: options.onApplyRemoteFileEdit,
     onApplyRemoteFileOperation: options.onApplyRemoteFileOperation,
+    onActionTransition: options.onActionTransition ?? (async () => undefined),
     onConfirm: options.onConfirm,
     onNotice: options.onNotice,
     sessionId: "session-1",
@@ -139,11 +142,20 @@ describe("useAiFileChangeWorkflow", () => {
         remoteFile(file.path, content),
     );
     const onNotice = mock(() => undefined);
+    const actionTransitions: string[] = [];
+    const onActionTransition: AiActionTransitionHandler = async (
+      _messageId,
+      _actionId,
+      transition,
+    ) => {
+      actionTransitions.push(transition);
+    };
     const { result } = renderHook(() =>
       useWorkflowHarness({
         initialMessages: [assistantMessage([proposal])],
         onApplyRemoteFileEdit: applyEdit,
         onApplyRemoteFileOperation: unusedOperation,
+        onActionTransition,
         onConfirm: () => undefined,
         onNotice,
       }),
@@ -166,6 +178,7 @@ describe("useAiFileChangeWorkflow", () => {
       proposal.originalFile,
       proposal.content,
     );
+    expect(actionTransitions).toEqual(["start", "succeed"]);
     expect(result.current.messages[0]?.fileEditProposals?.[0]).toEqual(
       expect.objectContaining({
         appliedFile: expect.objectContaining({ content: proposal.content }),

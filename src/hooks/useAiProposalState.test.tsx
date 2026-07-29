@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { AiCommandProposal } from "../ai-command-proposals";
 import type { AiFileEditProposal } from "../ai-file-edits";
 import type { AiFileOperationProposal } from "../ai-file-operations";
@@ -80,7 +80,7 @@ function createHarness(initial: AiConversation) {
 }
 
 describe("useAiProposalState", () => {
-  test("owns retry and rejection transitions for the active conversation", () => {
+  test("owns retry and rejection transitions for the active conversation", async () => {
     const harness = createHarness(
       conversation([
         {
@@ -102,15 +102,19 @@ describe("useAiProposalState", () => {
         getHostConversations: harness.getHostConversations,
         hostId: "host-1",
         isHostLoaded: () => true,
+        onActionTransition: async () => undefined,
+        onActionTransitionError: () => undefined,
         persistConversation,
         updateMessages: harness.updateMessages,
       }),
     );
 
-    act(() => {
-      result.current.rejectCommandProposal("assistant-1", "command-1");
-      result.current.retryFileEditProposal("assistant-1", "edit-1");
-      result.current.retryFileOperationProposal("assistant-1", "operation-1");
+    await act(async () => {
+      await Promise.all([
+        result.current.rejectCommandProposal("assistant-1", "command-1"),
+        result.current.retryFileEditProposal("assistant-1", "edit-1"),
+        result.current.retryFileOperationProposal("assistant-1", "operation-1"),
+      ]);
     });
 
     const message = harness.current().messages[0];
@@ -124,7 +128,7 @@ describe("useAiProposalState", () => {
     expect(persistConversation).toHaveBeenCalledTimes(3);
   });
 
-  test("matches a terminal submission against the newest inserted proposal", () => {
+  test("matches a terminal submission against the newest inserted proposal", async () => {
     const inserted = commandProposal("inserted");
     const harness = createHarness(
       conversation([
@@ -153,21 +157,25 @@ describe("useAiProposalState", () => {
         getHostConversations: harness.getHostConversations,
         hostId: "host-1",
         isHostLoaded: () => true,
+        onActionTransition: async () => undefined,
+        onActionTransitionError: () => undefined,
         persistConversation,
         updateMessages: harness.updateMessages,
       }),
     );
 
-    expect(harness.current().messages[0]?.commandProposals?.[0]).toEqual(
-      expect.objectContaining({
-        executedAt: submission.submittedAt,
-        status: "executed",
-      }),
+    await waitFor(() =>
+      expect(harness.current().messages[0]?.commandProposals?.[0]).toEqual(
+        expect.objectContaining({
+          executedAt: submission.submittedAt,
+          status: "executed",
+        }),
+      ),
     );
     expect(persistConversation).toHaveBeenCalledTimes(1);
   });
 
-  test("can complete an inserted proposal when lifecycle events are batched", () => {
+  test("can complete an inserted proposal when lifecycle events are batched", async () => {
     const harness = createHarness(
       conversation([
         {
@@ -199,18 +207,22 @@ describe("useAiProposalState", () => {
         getHostConversations: harness.getHostConversations,
         hostId: "host-1",
         isHostLoaded: () => true,
+        onActionTransition: async () => undefined,
+        onActionTransitionError: () => undefined,
         persistConversation: async () => undefined,
         updateMessages: harness.updateMessages,
       }),
     );
 
-    expect(harness.current().messages[0]?.commandProposals?.[0]).toEqual(
-      expect.objectContaining({
-        exitCode: 0,
-        resultOutput: "file.txt",
-        status: "succeeded",
-        submissionId: "submission-1",
-      }),
+    await waitFor(() =>
+      expect(harness.current().messages[0]?.commandProposals?.[0]).toEqual(
+        expect.objectContaining({
+          exitCode: 0,
+          resultOutput: "file.txt",
+          status: "succeeded",
+          submissionId: "submission-1",
+        }),
+      ),
     );
   });
 });

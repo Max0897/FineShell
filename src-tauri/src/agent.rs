@@ -8,12 +8,16 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::watch;
 
-use crate::agent_approvals::{ApprovalCredential, ApprovalCredentialStore, ApprovalScope};
+use crate::agent_approvals::{
+    action_fingerprint, ApprovalCredential, ApprovalCredentialStore, ApprovalScope,
+};
 use crate::protocol::{CommandError, CommandResult, AGENT_TASK_EVENT, PROTOCOL_VERSION};
 
 const MAX_AGENT_TASKS: usize = 100;
 const MAX_AGENT_ID_CHARS: usize = 160;
 const MAX_AGENT_OBJECTIVE_CHARS: usize = 24_000;
+const MAX_AGENT_ACTIONS: usize = 24;
+const MAX_AGENT_ACTION_MESSAGE_CHARS: usize = 500;
 const APPROVAL_CREDENTIAL_TTL_MS: u64 = 10 * 60 * 1_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -117,6 +121,69 @@ pub(crate) struct AgentActionIntent {
     pub(crate) risk: AgentActionRisk,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentActionStatus {
+    Pending,
+    Approved,
+    Running,
+    Succeeded,
+    Conflict,
+    Failed,
+    Rejected,
+    RollingBack,
+    RolledBack,
+    RollbackConflict,
+    RollbackFailed,
+    Cancelled,
+}
+
+impl AgentActionStatus {
+    fn is_unresolved(self) -> bool {
+        matches!(
+            self,
+            Self::Pending | Self::Approved | Self::Running | Self::RollingBack
+        )
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentActionState {
+    id: String,
+    tool: String,
+    reason: String,
+    expected_effect: String,
+    risk: AgentActionRisk,
+    status: AgentActionStatus,
+    summary: Option<String>,
+    error: Option<String>,
+    started_at: Option<u64>,
+    completed_at: Option<u64>,
+    duration_ms: Option<u64>,
+    #[serde(skip_serializing)]
+    arguments: serde_json::Value,
+}
+
+impl AgentActionState {
+    fn from_intent(intent: AgentActionIntent) -> Self {
+        Self {
+            id: intent.id,
+            tool: intent.tool,
+            arguments: intent.arguments,
+            reason: intent.reason,
+            expected_effect: intent.expected_effect,
+            risk: intent.risk,
+            status: AgentActionStatus::Pending,
+            summary: None,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentTaskResult {
@@ -150,7 +217,8 @@ pub(crate) struct AgentTask {
     objective: String,
     plan: Option<AgentPlan>,
     active_step_id: Option<String>,
-    pending_action: Option<AgentActionIntent>,
+    actions: Vec<AgentActionState>,
+    model_completed: bool,
     iteration: u32,
     last_event_sequence: u64,
     result: Option<AgentTaskResult>,
@@ -169,6 +237,18 @@ pub(crate) enum AgentTaskEventKind {
     PlanStarted,
     PlanUpdated,
     PlanCompleted,
+    ActionProposed,
+    ActionApproved,
+    ActionRejected,
+    ActionStarted,
+    ActionSucceeded,
+    ActionConflicted,
+    ActionFailed,
+    ActionRollbackStarted,
+    ActionRolledBack,
+    ActionRollbackConflicted,
+    ActionRollbackFailed,
+    ActionRetried,
     TaskPaused,
     TaskResumed,
     TaskCompleted,
@@ -182,6 +262,8 @@ pub(crate) struct AgentTaskEvent {
     protocol_version: u16,
     sequence: u64,
     kind: AgentTaskEventKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action_id: Option<String>,
     task: AgentTask,
 }
 
@@ -251,6 +333,30 @@ pub(crate) struct AgentPlanDecisionRequest {
     selected_call_ids: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentActionTransition {
+    Approve,
+    Reject,
+    Start,
+    Succeed,
+    Conflict,
+    Fail,
+    RollbackStart,
+    RolledBack,
+    Retry,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentActionTransitionRequest {
+    task_id: String,
+    action_id: String,
+    transition: AgentActionTransition,
+    summary: Option<String>,
+    error: Option<String>,
+}
+
 pub(crate) fn timestamp_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -262,6 +368,20 @@ pub(crate) fn timestamp_ms() -> u64 {
 
 fn valid_identifier(value: &str) -> bool {
     !value.trim().is_empty() && value.chars().count() <= MAX_AGENT_ID_CHARS
+}
+
+fn bounded_action_message(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.chars().count() > MAX_AGENT_ACTION_MESSAGE_CHARS {
+        return Err("AI 动作结果说明过长".to_string());
+    }
+    Ok(Some(value))
 }
 
 impl AgentTaskContext {
@@ -334,7 +454,8 @@ impl AgentTask {
             objective: context.objective.trim().to_string(),
             plan: None,
             active_step_id: None,
-            pending_action: None,
+            actions: Vec::new(),
+            model_completed: false,
             iteration: 0,
             last_event_sequence: 0,
             result: None,
@@ -345,14 +466,68 @@ impl AgentTask {
     }
 
     fn event(&mut self, kind: AgentTaskEventKind) -> AgentTaskEvent {
+        self.event_for_action(kind, None)
+    }
+
+    fn action_event(&mut self, kind: AgentTaskEventKind, action_id: &str) -> AgentTaskEvent {
+        self.event_for_action(kind, Some(action_id.to_string()))
+    }
+
+    fn event_for_action(
+        &mut self,
+        kind: AgentTaskEventKind,
+        action_id: Option<String>,
+    ) -> AgentTaskEvent {
         self.last_event_sequence = self.last_event_sequence.saturating_add(1);
         self.updated_at = timestamp_ms();
         AgentTaskEvent {
             protocol_version: PROTOCOL_VERSION,
             sequence: self.last_event_sequence,
             kind,
+            action_id,
             task: self.clone(),
         }
+    }
+
+    fn has_unresolved_actions(&self) -> bool {
+        self.actions
+            .iter()
+            .any(|action| action.status.is_unresolved())
+    }
+
+    fn refresh_action_status(&mut self) {
+        self.status = if self
+            .actions
+            .iter()
+            .any(|action| action.status == AgentActionStatus::Pending)
+        {
+            AgentTaskStatus::AwaitingApproval
+        } else {
+            AgentTaskStatus::Running
+        };
+    }
+
+    fn complete_actions(&mut self) {
+        let has_failure = self.actions.iter().any(|action| {
+            matches!(
+                action.status,
+                AgentActionStatus::Conflict
+                    | AgentActionStatus::Failed
+                    | AgentActionStatus::RollbackConflict
+                    | AgentActionStatus::RollbackFailed
+                    | AgentActionStatus::Cancelled
+            )
+        });
+        self.status = AgentTaskStatus::Completed;
+        self.result = Some(AgentTaskResult {
+            summary: if has_failure {
+                "AI 任务已结束，部分动作未成功完成".to_string()
+            } else {
+                "AI 任务已完成".to_string()
+            },
+            verified: !has_failure && !self.actions.is_empty(),
+            stop_reason: None,
+        });
     }
 }
 
@@ -395,6 +570,7 @@ impl AgentTaskManager {
             return Err("AI 任务已经结束".to_string());
         }
         task.status = AgentTaskStatus::Running;
+        task.model_completed = false;
         task.iteration = task.iteration.saturating_add(1);
         task.error = None;
         events.push(task.event(AgentTaskEventKind::ModelTurnStarted));
@@ -417,21 +593,281 @@ impl AgentTaskManager {
             if task.status.is_terminal() {
                 return Ok(Vec::new());
             }
-            if has_tool_calls {
-                task.status = AgentTaskStatus::Running;
+            if has_tool_calls || task.has_unresolved_actions() {
+                task.model_completed = !has_tool_calls;
+                if task.has_unresolved_actions() {
+                    task.refresh_action_status();
+                } else {
+                    task.status = AgentTaskStatus::Running;
+                }
                 vec![task.event(AgentTaskEventKind::ModelTurnCompleted)]
             } else {
-                task.status = AgentTaskStatus::Completed;
-                task.result = Some(AgentTaskResult {
-                    summary: "AI 任务已完成".to_string(),
-                    verified: false,
-                    stop_reason: None,
-                });
+                task.model_completed = true;
+                task.complete_actions();
+                if task.actions.is_empty() {
+                    task.result.as_mut().unwrap().verified = false;
+                }
                 vec![task.event(AgentTaskEventKind::TaskCompleted)]
             }
         };
         if !has_tool_calls {
             self.revoke_task_approvals(task_id)?;
+        }
+        Ok(events)
+    }
+
+    pub(crate) fn register_actions(
+        &self,
+        task_id: &str,
+        intents: Vec<AgentActionIntent>,
+    ) -> Result<Vec<AgentTaskEvent>, String> {
+        if intents.is_empty() {
+            return Ok(Vec::new());
+        }
+        if intents.len() > MAX_AGENT_ACTIONS {
+            return Err("AI 动作数量超过限制".to_string());
+        }
+        let mut tasks = self
+            .tasks
+            .lock()
+            .map_err(|_| "AI 任务状态不可用".to_string())?;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| "AI 任务不存在".to_string())?;
+        if task.status.is_terminal() {
+            return Err("AI 任务已经结束".to_string());
+        }
+        if task.actions.len().saturating_add(intents.len()) > MAX_AGENT_ACTIONS {
+            return Err("AI 任务动作数量超过限制".to_string());
+        }
+        let mut incoming_ids = std::collections::HashSet::new();
+        if intents.iter().any(|intent| {
+            !valid_identifier(&intent.id)
+                || !incoming_ids.insert(intent.id.clone())
+                || task.actions.iter().any(|action| action.id == intent.id)
+                || action_fingerprint(&intent.tool, &intent.arguments).is_err()
+        }) {
+            return Err("AI 动作标识或参数无效".to_string());
+        }
+        let mut events = Vec::with_capacity(intents.len());
+        for intent in intents {
+            let action_id = intent.id.clone();
+            task.actions.push(AgentActionState::from_intent(intent));
+            task.refresh_action_status();
+            events.push(task.action_event(AgentTaskEventKind::ActionProposed, &action_id));
+        }
+        Ok(events)
+    }
+
+    pub(crate) fn transition_action(
+        &self,
+        request: AgentActionTransitionRequest,
+    ) -> Result<Vec<AgentTaskEvent>, String> {
+        if !valid_identifier(&request.task_id) || !valid_identifier(&request.action_id) {
+            return Err("AI 动作作用域无效".to_string());
+        }
+        let summary = bounded_action_message(request.summary)?;
+        let error = bounded_action_message(request.error)?;
+        let task_id = request.task_id;
+        let events = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .map_err(|_| "AI 任务状态不可用".to_string())?;
+            let task = tasks
+                .get_mut(&task_id)
+                .ok_or_else(|| "AI 任务不存在".to_string())?;
+            if matches!(
+                task.status,
+                AgentTaskStatus::Failed | AgentTaskStatus::Cancelled
+            ) {
+                return Err("AI 任务已经结束".to_string());
+            }
+            let index = task
+                .actions
+                .iter()
+                .position(|action| action.id == request.action_id)
+                .ok_or_else(|| "AI 动作不存在".to_string())?;
+            let action_id = task.actions[index].id.clone();
+            if task.status == AgentTaskStatus::Completed
+                && !matches!(
+                    request.transition,
+                    AgentActionTransition::Retry | AgentActionTransition::RollbackStart
+                )
+            {
+                return Err("AI 动作已经结束".to_string());
+            }
+            action_fingerprint(&task.actions[index].tool, &task.actions[index].arguments)?;
+            let now = timestamp_ms();
+            let mut events = Vec::with_capacity(3);
+            match request.transition {
+                AgentActionTransition::Approve => {
+                    if task.actions[index].status != AgentActionStatus::Pending {
+                        return Err("AI 动作当前不能批准".to_string());
+                    }
+                    task.actions[index].status = AgentActionStatus::Approved;
+                    task.actions[index].summary = summary;
+                    task.actions[index].error = None;
+                    task.refresh_action_status();
+                    events.push(task.action_event(AgentTaskEventKind::ActionApproved, &action_id));
+                }
+                AgentActionTransition::Reject => {
+                    if !matches!(
+                        task.actions[index].status,
+                        AgentActionStatus::Pending | AgentActionStatus::Approved
+                    ) {
+                        return Err("AI 动作当前不能拒绝".to_string());
+                    }
+                    task.actions[index].status = AgentActionStatus::Rejected;
+                    task.actions[index].summary =
+                        summary.or_else(|| Some("用户拒绝了该动作".to_string()));
+                    task.actions[index].error = None;
+                    task.actions[index].completed_at = Some(now);
+                    task.refresh_action_status();
+                    events.push(task.action_event(AgentTaskEventKind::ActionRejected, &action_id));
+                }
+                AgentActionTransition::Start => {
+                    if task.actions[index].status == AgentActionStatus::Pending {
+                        task.actions[index].status = AgentActionStatus::Approved;
+                        task.actions[index].summary = Some("用户批准了该动作".to_string());
+                        task.refresh_action_status();
+                        events.push(
+                            task.action_event(AgentTaskEventKind::ActionApproved, &action_id),
+                        );
+                    }
+                    if task.actions[index].status != AgentActionStatus::Approved {
+                        return Err("AI 动作当前不能开始".to_string());
+                    }
+                    task.actions[index].status = AgentActionStatus::Running;
+                    task.actions[index].summary = summary;
+                    task.actions[index].error = None;
+                    task.actions[index].started_at = Some(now);
+                    task.actions[index].completed_at = None;
+                    task.actions[index].duration_ms = None;
+                    task.refresh_action_status();
+                    events.push(task.action_event(AgentTaskEventKind::ActionStarted, &action_id));
+                }
+                AgentActionTransition::Succeed => {
+                    if task.actions[index].status != AgentActionStatus::Running {
+                        return Err("AI 动作当前不能标记为成功".to_string());
+                    }
+                    task.actions[index].status = AgentActionStatus::Succeeded;
+                    task.actions[index].summary =
+                        summary.or_else(|| Some("动作已成功完成".to_string()));
+                    task.actions[index].error = None;
+                    task.actions[index].completed_at = Some(now);
+                    task.actions[index].duration_ms = task.actions[index]
+                        .started_at
+                        .map(|started_at| now.saturating_sub(started_at));
+                    task.refresh_action_status();
+                    events.push(task.action_event(AgentTaskEventKind::ActionSucceeded, &action_id));
+                }
+                AgentActionTransition::Conflict => {
+                    let (status, kind) = match task.actions[index].status {
+                        AgentActionStatus::Running => (
+                            AgentActionStatus::Conflict,
+                            AgentTaskEventKind::ActionConflicted,
+                        ),
+                        AgentActionStatus::RollingBack => (
+                            AgentActionStatus::RollbackConflict,
+                            AgentTaskEventKind::ActionRollbackConflicted,
+                        ),
+                        _ => return Err("AI 动作当前不能标记为冲突".to_string()),
+                    };
+                    task.actions[index].status = status;
+                    task.actions[index].error =
+                        error.or_else(|| Some("远端状态发生冲突".to_string()));
+                    task.actions[index].completed_at = Some(now);
+                    task.actions[index].duration_ms = task.actions[index]
+                        .started_at
+                        .map(|started_at| now.saturating_sub(started_at));
+                    task.refresh_action_status();
+                    events.push(task.action_event(kind, &action_id));
+                }
+                AgentActionTransition::Fail => {
+                    let (status, kind) = match task.actions[index].status {
+                        AgentActionStatus::Approved | AgentActionStatus::Running => {
+                            (AgentActionStatus::Failed, AgentTaskEventKind::ActionFailed)
+                        }
+                        AgentActionStatus::RollingBack => (
+                            AgentActionStatus::RollbackFailed,
+                            AgentTaskEventKind::ActionRollbackFailed,
+                        ),
+                        _ => return Err("AI 动作当前不能标记为失败".to_string()),
+                    };
+                    task.actions[index].status = status;
+                    task.actions[index].error = error.or_else(|| Some("动作执行失败".to_string()));
+                    task.actions[index].completed_at = Some(now);
+                    task.actions[index].duration_ms = task.actions[index]
+                        .started_at
+                        .map(|started_at| now.saturating_sub(started_at));
+                    task.refresh_action_status();
+                    events.push(task.action_event(kind, &action_id));
+                }
+                AgentActionTransition::RollbackStart => {
+                    if task.actions[index].status != AgentActionStatus::Succeeded {
+                        return Err("AI 动作当前不能回滚".to_string());
+                    }
+                    task.actions[index].status = AgentActionStatus::RollingBack;
+                    task.actions[index].summary = summary;
+                    task.actions[index].error = None;
+                    task.actions[index].started_at = Some(now);
+                    task.actions[index].completed_at = None;
+                    task.actions[index].duration_ms = None;
+                    task.result = None;
+                    task.refresh_action_status();
+                    events.push(
+                        task.action_event(AgentTaskEventKind::ActionRollbackStarted, &action_id),
+                    );
+                }
+                AgentActionTransition::RolledBack => {
+                    if task.actions[index].status != AgentActionStatus::RollingBack {
+                        return Err("AI 动作当前不能标记为已回滚".to_string());
+                    }
+                    task.actions[index].status = AgentActionStatus::RolledBack;
+                    task.actions[index].summary =
+                        summary.or_else(|| Some("动作已安全回滚".to_string()));
+                    task.actions[index].error = None;
+                    task.actions[index].completed_at = Some(now);
+                    task.actions[index].duration_ms = task.actions[index]
+                        .started_at
+                        .map(|started_at| now.saturating_sub(started_at));
+                    task.refresh_action_status();
+                    events
+                        .push(task.action_event(AgentTaskEventKind::ActionRolledBack, &action_id));
+                }
+                AgentActionTransition::Retry => {
+                    if !matches!(
+                        task.actions[index].status,
+                        AgentActionStatus::Conflict
+                            | AgentActionStatus::Failed
+                            | AgentActionStatus::RollbackConflict
+                            | AgentActionStatus::RollbackFailed
+                    ) {
+                        return Err("AI 动作当前不能重试".to_string());
+                    }
+                    task.actions[index].status = AgentActionStatus::Pending;
+                    task.actions[index].summary = None;
+                    task.actions[index].error = None;
+                    task.actions[index].started_at = None;
+                    task.actions[index].completed_at = None;
+                    task.actions[index].duration_ms = None;
+                    task.result = None;
+                    task.refresh_action_status();
+                    events.push(task.action_event(AgentTaskEventKind::ActionRetried, &action_id));
+                }
+            }
+            if task.model_completed && !task.has_unresolved_actions() {
+                task.complete_actions();
+                events.push(task.event(AgentTaskEventKind::TaskCompleted));
+            }
+            events
+        };
+        if events
+            .last()
+            .is_some_and(|event| event.kind == AgentTaskEventKind::TaskCompleted)
+        {
+            self.revoke_task_approvals(&task_id)?;
         }
         Ok(events)
     }
@@ -772,7 +1208,11 @@ impl AgentTaskManager {
         if task.status != AgentTaskStatus::PausedDisconnected {
             return Ok(Vec::new());
         }
-        task.status = AgentTaskStatus::Running;
+        if task.has_unresolved_actions() {
+            task.refresh_action_status();
+        } else {
+            task.status = AgentTaskStatus::Running;
+        }
         task.error = None;
         Ok(vec![task.event(AgentTaskEventKind::TaskResumed)])
     }
@@ -791,6 +1231,17 @@ impl AgentTaskManager {
             }
             task.status = AgentTaskStatus::Cancelled;
             task.active_step_id = None;
+            let now = timestamp_ms();
+            for action in &mut task.actions {
+                if action.status.is_unresolved() {
+                    action.status = AgentActionStatus::Cancelled;
+                    action.error = Some("用户取消了 AI 任务".to_string());
+                    action.completed_at = Some(now);
+                    action.duration_ms = action
+                        .started_at
+                        .map(|started_at| now.saturating_sub(started_at));
+                }
+            }
             if let Some(plan) = task.plan.as_mut() {
                 plan.status = AgentPlanStatus::Cancelled;
                 for step in &mut plan.steps {
@@ -859,14 +1310,29 @@ pub(crate) fn ai_task_plan_decide(
         .map_err(|error| CommandError::from_message("ai_task_plan_decide", error))
 }
 
+#[tauri::command]
+pub(crate) fn ai_task_action_transition(
+    app: AppHandle,
+    manager: State<'_, AgentTaskManager>,
+    request: AgentActionTransitionRequest,
+) -> CommandResult<()> {
+    let events = manager
+        .transition_action(request)
+        .map_err(|error| CommandError::from_message("ai_task_action_transition", error))?;
+    emit_task_events(&app, events);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use super::{
-        AgentActionRisk, AgentApprovalMode, AgentPlan, AgentPlanDecision, AgentPlanDecisionKind,
-        AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep, AgentPlanStepStatus,
-        AgentTaskContext, AgentTaskEventKind, AgentTaskManager, AgentTaskStatus,
+        AgentActionIntent, AgentActionRisk, AgentActionStatus, AgentActionTransition,
+        AgentActionTransitionRequest, AgentApprovalMode, AgentPlan, AgentPlanDecision,
+        AgentPlanDecisionKind, AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep,
+        AgentPlanStepStatus, AgentTaskContext, AgentTaskEventKind, AgentTaskManager,
+        AgentTaskStatus,
     };
     use crate::agent_approvals::ApprovalScope;
 
@@ -924,6 +1390,30 @@ mod tests {
         }
     }
 
+    fn file_edit_intent() -> AgentActionIntent {
+        AgentActionIntent {
+            id: "edit-1".to_string(),
+            tool: "propose_file_edit".to_string(),
+            arguments: serde_json::json!({
+                "content": "server {}",
+                "path": "/etc/nginx.conf",
+            }),
+            reason: "修改 Nginx 配置".to_string(),
+            expected_effect: "替换远程配置文件".to_string(),
+            risk: AgentActionRisk::ReversibleWrite,
+        }
+    }
+
+    fn transition(transition: AgentActionTransition) -> AgentActionTransitionRequest {
+        AgentActionTransitionRequest {
+            task_id: "task-1".to_string(),
+            action_id: "edit-1".to_string(),
+            transition,
+            summary: None,
+            error: None,
+        }
+    }
+
     fn serialized_values<T: SerializeValues>(values: &[T]) -> BTreeSet<String> {
         values.iter().map(SerializeValues::serialized).collect()
     }
@@ -960,6 +1450,110 @@ mod tests {
         let completed = manager.finish_model_turn("task-1", false).unwrap();
         assert_eq!(completed[0].sequence, 5);
         assert_eq!(completed[0].task.status, AgentTaskStatus::Completed);
+    }
+
+    #[test]
+    fn action_lifecycle_supports_conflict_retry_success_and_rollback() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+
+        let proposed = manager
+            .register_actions("task-1", vec![file_edit_intent()])
+            .unwrap();
+        assert_eq!(proposed[0].kind, AgentTaskEventKind::ActionProposed);
+        assert_eq!(proposed[0].action_id.as_deref(), Some("edit-1"));
+        assert_eq!(proposed[0].task.status, AgentTaskStatus::AwaitingApproval);
+        assert_eq!(
+            proposed[0].task.actions[0].status,
+            AgentActionStatus::Pending
+        );
+        let serialized = serde_json::to_value(&proposed[0].task).unwrap();
+        assert!(serialized["actions"][0].get("arguments").is_none());
+
+        let model_completed = manager.finish_model_turn("task-1", false).unwrap();
+        assert_eq!(
+            model_completed[0].kind,
+            AgentTaskEventKind::ModelTurnCompleted
+        );
+        assert!(model_completed[0].task.model_completed);
+        assert_eq!(
+            model_completed[0].task.status,
+            AgentTaskStatus::AwaitingApproval
+        );
+
+        let started = manager
+            .transition_action(transition(AgentActionTransition::Start))
+            .unwrap();
+        assert_eq!(started.len(), 2);
+        assert_eq!(started[0].kind, AgentTaskEventKind::ActionApproved);
+        assert_eq!(started[1].kind, AgentTaskEventKind::ActionStarted);
+
+        let conflicted = manager
+            .transition_action(AgentActionTransitionRequest {
+                error: Some("远程文件已经变化".to_string()),
+                ..transition(AgentActionTransition::Conflict)
+            })
+            .unwrap();
+        assert_eq!(conflicted[0].kind, AgentTaskEventKind::ActionConflicted);
+        assert_eq!(conflicted[1].kind, AgentTaskEventKind::TaskCompleted);
+        assert_eq!(
+            conflicted[1].task.actions[0].status,
+            AgentActionStatus::Conflict
+        );
+
+        let retried = manager
+            .transition_action(transition(AgentActionTransition::Retry))
+            .unwrap();
+        assert_eq!(retried[0].kind, AgentTaskEventKind::ActionRetried);
+        assert_eq!(retried[0].task.status, AgentTaskStatus::AwaitingApproval);
+        assert!(retried[0].task.result.is_none());
+
+        manager
+            .transition_action(transition(AgentActionTransition::Start))
+            .unwrap();
+        let succeeded = manager
+            .transition_action(AgentActionTransitionRequest {
+                summary: Some("配置文件已写入".to_string()),
+                ..transition(AgentActionTransition::Succeed)
+            })
+            .unwrap();
+        assert_eq!(succeeded[0].kind, AgentTaskEventKind::ActionSucceeded);
+        assert_eq!(succeeded[1].kind, AgentTaskEventKind::TaskCompleted);
+        assert!(succeeded[1].task.result.as_ref().unwrap().verified);
+
+        let rollback_started = manager
+            .transition_action(transition(AgentActionTransition::RollbackStart))
+            .unwrap();
+        assert_eq!(
+            rollback_started[0].kind,
+            AgentTaskEventKind::ActionRollbackStarted
+        );
+        assert_eq!(rollback_started[0].task.status, AgentTaskStatus::Running);
+        let rolled_back = manager
+            .transition_action(transition(AgentActionTransition::RolledBack))
+            .unwrap();
+        assert_eq!(rolled_back[0].kind, AgentTaskEventKind::ActionRolledBack);
+        assert_eq!(rolled_back[1].kind, AgentTaskEventKind::TaskCompleted);
+        assert_eq!(
+            rolled_back[1].task.actions[0].status,
+            AgentActionStatus::RolledBack
+        );
+    }
+
+    #[test]
+    fn action_lifecycle_rejects_invalid_transitions() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        manager
+            .register_actions("task-1", vec![file_edit_intent()])
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .transition_action(transition(AgentActionTransition::Succeed))
+                .unwrap_err(),
+            "AI 动作当前不能标记为成功"
+        );
     }
 
     #[test]
@@ -1177,6 +1771,18 @@ mod tests {
                 AgentTaskEventKind::PlanStarted,
                 AgentTaskEventKind::PlanUpdated,
                 AgentTaskEventKind::PlanCompleted,
+                AgentTaskEventKind::ActionProposed,
+                AgentTaskEventKind::ActionApproved,
+                AgentTaskEventKind::ActionRejected,
+                AgentTaskEventKind::ActionStarted,
+                AgentTaskEventKind::ActionSucceeded,
+                AgentTaskEventKind::ActionConflicted,
+                AgentTaskEventKind::ActionFailed,
+                AgentTaskEventKind::ActionRollbackStarted,
+                AgentTaskEventKind::ActionRolledBack,
+                AgentTaskEventKind::ActionRollbackConflicted,
+                AgentTaskEventKind::ActionRollbackFailed,
+                AgentTaskEventKind::ActionRetried,
                 AgentTaskEventKind::TaskPaused,
                 AgentTaskEventKind::TaskResumed,
                 AgentTaskEventKind::TaskCompleted,
@@ -1221,6 +1827,37 @@ mod tests {
                 AgentActionRisk::Critical,
             ]),
             contract_keys("agentActionRisks")
+        );
+        assert_eq!(
+            serialized_values(&[
+                AgentActionStatus::Pending,
+                AgentActionStatus::Approved,
+                AgentActionStatus::Running,
+                AgentActionStatus::Succeeded,
+                AgentActionStatus::Conflict,
+                AgentActionStatus::Failed,
+                AgentActionStatus::Rejected,
+                AgentActionStatus::RollingBack,
+                AgentActionStatus::RolledBack,
+                AgentActionStatus::RollbackConflict,
+                AgentActionStatus::RollbackFailed,
+                AgentActionStatus::Cancelled,
+            ]),
+            contract_keys("agentActionStatuses")
+        );
+        assert_eq!(
+            serialized_values(&[
+                AgentActionTransition::Approve,
+                AgentActionTransition::Reject,
+                AgentActionTransition::Start,
+                AgentActionTransition::Succeed,
+                AgentActionTransition::Conflict,
+                AgentActionTransition::Fail,
+                AgentActionTransition::RollbackStart,
+                AgentActionTransition::RolledBack,
+                AgentActionTransition::Retry,
+            ]),
+            contract_keys("agentActionTransitions")
         );
     }
 }

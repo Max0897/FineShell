@@ -2546,6 +2546,12 @@ pub(crate) async fn ai_chat_start(
                 .into_iter()
                 .flatten()
                 .collect();
+            if let Some(context) = task_context.as_ref() {
+                let events = task_manager
+                    .register_actions(context.id(), response.action_intents.clone())
+                    .map_err(|error| structured(operation, error))?;
+                agent::emit_task_events(&app, events);
+            }
 
             let diagnostic_only = !response.tool_calls.is_empty()
                 && response

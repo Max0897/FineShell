@@ -21,6 +21,8 @@ export type AgentPlanStepStatus = keyof typeof contract.agentPlanStepStatuses;
 export type AgentPlanStatus = keyof typeof contract.agentPlanStatuses;
 export type AgentApprovalMode = keyof typeof contract.agentApprovalModes;
 export type AgentActionRisk = keyof typeof contract.agentActionRisks;
+export type AgentActionStatus = keyof typeof contract.agentActionStatuses;
+export type AgentActionTransition = keyof typeof contract.agentActionTransitions;
 
 export interface CommandErrorPayload {
   code: CommandErrorCode;
@@ -137,6 +139,28 @@ export interface AgentActionIntent {
   risk: AgentActionRisk;
 }
 
+export interface AgentActionState {
+  id: string;
+  tool: string;
+  reason: string;
+  expectedEffect: string;
+  risk: AgentActionRisk;
+  status: AgentActionStatus;
+  summary: string | null;
+  error: string | null;
+  startedAt: number | null;
+  completedAt: number | null;
+  durationMs: number | null;
+}
+
+export interface AgentActionTransitionRequest {
+  taskId: string;
+  actionId: string;
+  transition: AgentActionTransition;
+  summary?: string;
+  error?: string;
+}
+
 export interface AgentTaskResult {
   summary: string;
   verified: boolean;
@@ -164,7 +188,8 @@ export interface AgentTask {
   objective: string;
   plan: AgentPlan | null;
   activeStepId: string | null;
-  pendingAction: AgentActionIntent | null;
+  actions: AgentActionState[];
+  modelCompleted: boolean;
   iteration: number;
   lastEventSequence: number;
   result: AgentTaskResult | null;
@@ -177,6 +202,7 @@ export interface AgentTaskEventPayload {
   protocolVersion: number;
   sequence: number;
   kind: AgentTaskEventKind;
+  actionId?: string;
   task: AgentTask;
 }
 

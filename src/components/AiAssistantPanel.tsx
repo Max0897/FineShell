@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Input,
@@ -21,6 +21,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import type { AppSettings } from "../app-settings";
+import type { AiActionTransitionHandler } from "../ai-action-lifecycle";
 import { buildAiConversationRequestMessages } from "../ai-summaries";
 import {
   aiToolRequiresConfirmation,
@@ -333,6 +334,24 @@ function AiAssistantPanel({
       ),
     [messages],
   );
+  const transitionAgentAction = useCallback<AiActionTransitionHandler>(
+    async (messageId, actionId, transition, detail) => {
+      const taskId = Object.values(conversationsByHost)
+        .flat()
+        .flatMap((conversation) => conversation.messages)
+        .find((message) => message.id === messageId)?.taskId;
+      if (!taskId) throw new Error("AI 动作缺少对应的任务");
+      await invoke("ai_task_action_transition", {
+        request: {
+          taskId,
+          actionId,
+          transition,
+          ...detail,
+        },
+      });
+    },
+    [conversationsByHost],
+  );
   const availableContextSources = useMemo(() => {
     const sources = new Map(
       contextSources.map((source) => [source.id, source]),
@@ -359,6 +378,9 @@ function AiAssistantPanel({
     getHostConversations,
     hostId,
     isHostLoaded,
+    onActionTransition: transitionAgentAction,
+    onActionTransitionError: (error) =>
+      Message.error(`AI 动作状态更新失败：${commandErrorMessage(error)}`),
     persistConversation,
     updateMessages,
   });
@@ -377,6 +399,7 @@ function AiAssistantPanel({
     onConfirm: confirmAiCommand,
     onCopyText: copyCode,
     onInsertCommand,
+    onActionTransition: transitionAgentAction,
     onNotice: showAiCommandNotice,
     sessionId,
     setDraft: setConversationDraft,
@@ -406,6 +429,7 @@ function AiAssistantPanel({
     messages,
     onApplyRemoteFileEdit,
     onApplyRemoteFileOperation,
+    onActionTransition: transitionAgentAction,
     onConfirm: confirmAiFileChange,
     onNotice: showAiFileChangeNotice,
     sessionId,
