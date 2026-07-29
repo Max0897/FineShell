@@ -26,6 +26,7 @@ export type AgentActionTransition = keyof typeof contract.agentActionTransitions
 export type AgentVerificationStatus = keyof typeof contract.agentVerificationStatuses;
 export type AgentVerificationEvidenceKind =
   keyof typeof contract.agentVerificationEvidenceKinds;
+export type AgentRepairStopReason = keyof typeof contract.agentRepairStopReasons;
 
 export interface CommandErrorPayload {
   code: CommandErrorCode;
@@ -235,6 +236,9 @@ export interface AgentTask {
   actions: AgentActionState[];
   modelCompleted: boolean;
   iteration: number;
+  repairAttempts: number;
+  repairLimit: number;
+  repairStopReason: AgentRepairStopReason | null;
   lastEventSequence: number;
   result: AgentTaskResult | null;
   error: string | null;

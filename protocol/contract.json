@@ -1,5 +1,5 @@
 {
-  "version": 20,
+  "version": 21,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -199,6 +199,11 @@
     "port_listening": true,
     "config_syntax": true,
     "result_unavailable": true
+  },
+  "agentRepairStopReasons": {
+    "verification_failed": true,
+    "action_failed": true,
+    "repair_budget_exhausted": true
   },
   "errorCodes": {
     "invalid_request": true,

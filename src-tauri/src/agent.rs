@@ -28,6 +28,7 @@ const MAX_AGENT_WRITABLE_FILE_BYTES: usize = 256 * 1024;
 const MAX_AGENT_WRITABLE_FILES_BYTES: usize = 512 * 1024;
 const MAX_OBSERVED_COMMAND_DURATION_MS: u64 = 24 * 60 * 60 * 1_000;
 const APPROVAL_CREDENTIAL_TTL_MS: u64 = 10 * 60 * 1_000;
+const MAX_AGENT_REPAIR_ATTEMPTS: u8 = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -164,6 +165,14 @@ pub(crate) enum AgentVerificationStatus {
     Unverified,
     Failed,
     NotApplicable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentRepairStopReason {
+    VerificationFailed,
+    ActionFailed,
+    RepairBudgetExhausted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -306,6 +315,9 @@ pub(crate) struct AgentTask {
     actions: Vec<AgentActionState>,
     model_completed: bool,
     iteration: u32,
+    repair_attempts: u8,
+    repair_limit: u8,
+    repair_stop_reason: Option<AgentRepairStopReason>,
     last_event_sequence: u64,
     result: Option<AgentTaskResult>,
     error: Option<String>,
@@ -624,6 +636,9 @@ impl AgentTask {
             actions: Vec::new(),
             model_completed: false,
             iteration: 0,
+            repair_attempts: 0,
+            repair_limit: MAX_AGENT_REPAIR_ATTEMPTS,
+            repair_stop_reason: None,
             last_event_sequence: 0,
             result: None,
             error: None,
@@ -720,6 +735,21 @@ impl AgentTask {
         } else {
             AgentVerificationStatus::Unverified
         };
+        self.repair_stop_reason = if has_verification_failure {
+            Some(if self.repair_attempts >= self.repair_limit {
+                AgentRepairStopReason::RepairBudgetExhausted
+            } else {
+                AgentRepairStopReason::VerificationFailed
+            })
+        } else if has_failure {
+            Some(if self.repair_attempts >= self.repair_limit {
+                AgentRepairStopReason::RepairBudgetExhausted
+            } else {
+                AgentRepairStopReason::ActionFailed
+            })
+        } else {
+            None
+        };
         self.status = AgentTaskStatus::Completed;
         self.result = Some(AgentTaskResult {
             summary: if has_failure {
@@ -735,7 +765,14 @@ impl AgentTask {
             },
             verified: verification_status == AgentVerificationStatus::Verified,
             verification_status,
-            stop_reason: None,
+            stop_reason: self
+                .repair_stop_reason
+                .map(|reason| match reason {
+                    AgentRepairStopReason::VerificationFailed => "verification_failed",
+                    AgentRepairStopReason::ActionFailed => "action_failed",
+                    AgentRepairStopReason::RepairBudgetExhausted => "repair_budget_exhausted",
+                })
+                .map(str::to_string),
         });
     }
 
@@ -1142,15 +1179,32 @@ impl AgentTaskManager {
                         .push(task.action_event(AgentTaskEventKind::ActionRolledBack, &action_id));
                 }
                 AgentActionTransition::Retry => {
-                    if !matches!(
+                    let verification_failed = matches!(
                         task.actions[index].status,
-                        AgentActionStatus::Conflict
-                            | AgentActionStatus::Failed
-                            | AgentActionStatus::RollbackConflict
-                            | AgentActionStatus::RollbackFailed
-                    ) {
+                        AgentActionStatus::Succeeded | AgentActionStatus::RolledBack
+                    ) && task.actions[index].verification_status
+                        == AgentVerificationStatus::Failed;
+                    if !verification_failed
+                        && !matches!(
+                            task.actions[index].status,
+                            AgentActionStatus::Conflict
+                                | AgentActionStatus::Failed
+                                | AgentActionStatus::RollbackConflict
+                                | AgentActionStatus::RollbackFailed
+                        )
+                    {
                         return Err("AI 动作当前不能重试".to_string());
                     }
+                    if task.repair_attempts >= task.repair_limit {
+                        task.repair_stop_reason =
+                            Some(AgentRepairStopReason::RepairBudgetExhausted);
+                        if let Some(result) = task.result.as_mut() {
+                            result.stop_reason = Some("repair_budget_exhausted".to_string());
+                        }
+                        return Err("AI 任务修复次数已达到上限".to_string());
+                    }
+                    task.repair_attempts = task.repair_attempts.saturating_add(1);
+                    task.repair_stop_reason = None;
                     task.actions[index].status = AgentActionStatus::Pending;
                     task.actions[index].summary = None;
                     task.actions[index].error = None;
@@ -2264,9 +2318,9 @@ mod tests {
         AgentActionTransitionRequest, AgentApprovalMode, AgentCommandObservationPhase,
         AgentCommandObservationRequest, AgentPlan, AgentPlanDecision, AgentPlanDecisionKind,
         AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep, AgentPlanStepStatus,
-        AgentTaskContext, AgentTaskEventKind, AgentTaskManager, AgentTaskStatus,
-        AgentTrustedVerification, AgentVerificationEvidenceKind, AgentVerificationStatus,
-        AgentWritableFile,
+        AgentRepairStopReason, AgentTaskContext, AgentTaskEventKind, AgentTaskManager,
+        AgentTaskStatus, AgentTrustedVerification, AgentVerificationEvidenceKind,
+        AgentVerificationStatus, AgentWritableFile,
     };
     use crate::agent_approvals::ApprovalScope;
     use crate::agent_verification::AgentBusinessVerificationResult;
@@ -2786,6 +2840,83 @@ mod tests {
     }
 
     #[test]
+    fn repair_budget_allows_two_retries_and_then_stops() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        manager
+            .register_actions("task-1", vec![verified_terminal_command_intent()])
+            .unwrap();
+        manager.finish_model_turn("task-1", false).unwrap();
+
+        for attempt in 0_u8..=2 {
+            manager
+                .authorize_action_execution("task-1", "command-1", false, true, None)
+                .unwrap();
+            let mut submitted = command_observation(AgentCommandObservationPhase::Submitted);
+            submitted.submission_id = format!("submission-{attempt}");
+            manager.observe_command_execution(submitted).unwrap();
+            let mut completed = command_observation(AgentCommandObservationPhase::Completed);
+            completed.submission_id = format!("submission-{attempt}");
+            completed.exit_code = Some(0);
+            completed.duration_ms = Some(100);
+            manager.observe_command_execution(completed).unwrap();
+            let pending = manager
+                .pending_business_verification("task-1", "command-1")
+                .unwrap()
+                .unwrap();
+            let events = manager
+                .complete_business_verification(
+                    &pending,
+                    Ok(AgentBusinessVerificationResult {
+                        passed: false,
+                        summary: "服务 nginx.service 未处于运行状态".to_string(),
+                    }),
+                )
+                .unwrap();
+            let task = &events.last().unwrap().task;
+            if attempt < 2 {
+                assert_eq!(
+                    task.repair_stop_reason,
+                    Some(AgentRepairStopReason::VerificationFailed)
+                );
+                let retried = manager
+                    .transition_action(AgentActionTransitionRequest {
+                        task_id: "task-1".to_string(),
+                        action_id: "command-1".to_string(),
+                        transition: AgentActionTransition::Retry,
+                        summary: None,
+                        error: None,
+                    })
+                    .unwrap();
+                assert_eq!(retried[0].task.repair_attempts, attempt + 1);
+            } else {
+                assert_eq!(task.repair_attempts, 2);
+                assert_eq!(
+                    task.repair_stop_reason,
+                    Some(AgentRepairStopReason::RepairBudgetExhausted)
+                );
+                assert_eq!(
+                    task.result.as_ref().unwrap().stop_reason.as_deref(),
+                    Some("repair_budget_exhausted")
+                );
+            }
+        }
+
+        assert_eq!(
+            manager
+                .transition_action(AgentActionTransitionRequest {
+                    task_id: "task-1".to_string(),
+                    action_id: "command-1".to_string(),
+                    transition: AgentActionTransition::Retry,
+                    summary: None,
+                    error: None,
+                })
+                .unwrap_err(),
+            "AI 任务修复次数已达到上限"
+        );
+    }
+
+    #[test]
     fn terminal_command_observations_support_batched_failures_and_reject_mismatches() {
         let manager = AgentTaskManager::default();
         manager.begin_model_turn(&context()).unwrap();
@@ -3185,6 +3316,14 @@ mod tests {
                 AgentVerificationStatus::NotApplicable,
             ]),
             contract_keys("agentVerificationStatuses")
+        );
+        assert_eq!(
+            serialized_values(&[
+                AgentRepairStopReason::VerificationFailed,
+                AgentRepairStopReason::ActionFailed,
+                AgentRepairStopReason::RepairBudgetExhausted,
+            ]),
+            contract_keys("agentRepairStopReasons")
         );
         assert_eq!(
             serialized_values(&[
