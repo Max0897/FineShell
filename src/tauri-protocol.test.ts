@@ -16,7 +16,7 @@ describe("Tauri shared protocol", () => {
     expect(PROTOCOL_VERSION).toBe(contract.version);
     expect(contract.commands[command]).toBe(true);
     expect(contract.events[event]).toBe(true);
-    expect(Object.keys(contract.commands)).toHaveLength(70);
+    expect(Object.keys(contract.commands)).toHaveLength(71);
     expect(Object.keys(contract.events)).toHaveLength(10);
   });
 

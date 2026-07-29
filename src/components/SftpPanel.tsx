@@ -22,11 +22,11 @@ import {
 import type { TableColumnProps } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
 import { join } from "@tauri-apps/api/path";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { diagnosticInvoke as invoke, recordDiagnostic } from "../diagnostics";
+import { isApplePlatform } from "../platform-utils";
 import {
   IconApps,
   IconArchive,
@@ -100,6 +100,7 @@ import {
   remoteArchiveFormatFromName,
   remoteJoinPath,
   remoteParentPath,
+  resolveNativeDropPoint,
   selectAllSftpEntryKeys,
   setRemotePathBookmark,
 } from "../sftp-utils";
@@ -174,8 +175,14 @@ type TransferRecord = TransferActivityRecord;
 
 interface LocalUploadFile {
   path: string;
-  name: string;
+  relativePath: string;
   size: number;
+}
+
+interface LocalUploadInspection {
+  files: LocalUploadFile[];
+  directories: string[];
+  skippedPaths: number;
 }
 
 interface RemoteTextFile {
@@ -330,6 +337,7 @@ function SftpPanel({
   const [pasteConflictPolicy, setPasteConflictPolicy] =
     useState<PasteConflictPolicy>("rename");
   const [fileDropActive, setFileDropActive] = useState(false);
+  const [fileDropTargetPath, setFileDropTargetPath] = useState<string>();
   const [sftpLocations, setSftpLocations] = useState<
     Record<string, SftpLocationRecord>
   >({});
@@ -357,9 +365,9 @@ function SftpPanel({
   const sftpLocationsRef = useRef(sftpLocations);
   const locationPersistenceErrorRef = useRef(false);
   const readyRef = useRef(false);
-  const queueUploadPathsRef = useRef<(paths: string[]) => Promise<void>>(
-    async () => undefined,
-  );
+  const queueUploadPathsRef = useRef<
+    (paths: string[], targetDirectory?: string) => Promise<void>
+  >(async () => undefined);
 
   useEffect(() => {
     browsersRef.current = browsers;
@@ -1194,64 +1202,106 @@ function SftpPanel({
     });
   }
 
-  async function queueUploadPaths(paths: string[]) {
+  async function queueUploadPaths(paths: string[], targetDirectory?: string) {
     if (!session || !browser || !ready) return;
-    let inspected: LocalUploadFile[];
+    let inspection: LocalUploadInspection;
     try {
-      inspected = await invoke<LocalUploadFile[]>("sftp_inspect_upload_paths", {
-        paths,
-      });
+      inspection = await invoke<LocalUploadInspection>(
+        "sftp_inspect_upload_paths",
+        { paths },
+      );
     } catch (error) {
       Message.error(commandErrorMessage(error));
       return;
     }
-    if (inspected.length < paths.length) {
-      Message.warning(
-        `已跳过 ${paths.length - inspected.length} 个目录或无效路径`,
-      );
+    if (inspection.skippedPaths > 0) {
+      Message.warning(`已跳过 ${inspection.skippedPaths} 个无效或不支持的项目`);
     }
-    if (inspected.length === 0) {
-      Message.warning("没有可上传的文件");
+    if (inspection.files.length === 0 && inspection.directories.length === 0) {
+      Message.warning("没有可上传的文件或文件夹");
       return;
     }
 
-    const uniqueFiles = new Map<string, LocalUploadFile>();
-    for (const file of inspected) {
-      if (!uniqueFiles.has(file.name)) {
-        uniqueFiles.set(file.name, file);
+    const destination = targetDirectory ?? browser.path;
+    let targetEntries = browser.entries;
+    if (destination !== browser.path) {
+      try {
+        const listing = await invoke<SftpListResult>("sftp_list", {
+          sessionId: session.id,
+          path: destination,
+        });
+        targetEntries = listing.entries;
+      } catch (error) {
+        Message.error(commandErrorMessage(error));
+        return;
       }
     }
-    if (uniqueFiles.size < inspected.length) {
-      Message.warning(
-        `已跳过 ${inspected.length - uniqueFiles.size} 个同名文件`,
+
+    const directoryRoots = new Set(
+      inspection.directories.filter((path) => !path.includes("/")),
+    );
+    const rootNames = new Set([
+      ...directoryRoots,
+      ...inspection.files.map((file) => file.relativePath.split("/")[0]),
+    ]);
+    const existingEntries = new Map(
+      targetEntries.map((entry) => [entry.name, entry]),
+    );
+    const incompatibleRoot = [...rootNames].find((name) => {
+      const existing = existingEntries.get(name);
+      return (
+        existing &&
+        (directoryRoots.has(name) !== (existing.kind === "directory"))
       );
+    });
+    if (incompatibleRoot) {
+      Message.error(`远程目标“${incompatibleRoot}”与本地项目类型不一致`);
+      return;
     }
-    const files = [...uniqueFiles.values()];
-    const existingNames = new Set(browser.entries.map((entry) => entry.name));
-    const conflictCount = files.filter((file) =>
-      existingNames.has(file.name),
-    ).length;
+
+    const conflictingRoots = new Set(
+      [...rootNames].filter((name) => existingEntries.has(name)),
+    );
     if (
-      conflictCount > 0 &&
+      conflictingRoots.size > 0 &&
       !(await confirmBatchOverwrite(
-        "覆盖远程文件？",
-        `有 ${conflictCount} 个同名文件，继续后将统一覆盖。`,
+        "合并或覆盖远程项目？",
+        `有 ${conflictingRoots.size} 个同名项目，目录将合并，同名文件将覆盖。`,
       ))
     ) {
       return;
     }
 
-    for (const file of files) {
+    try {
+      await invoke("sftp_ensure_upload_directories", {
+        sessionId: session.id,
+        basePath: destination,
+        relativePaths: inspection.directories,
+      });
+    } catch (error) {
+      Message.error(commandErrorMessage(error));
+      return;
+    }
+
+    for (const file of inspection.files) {
+      const rootName = file.relativePath.split("/")[0];
       runTransfer(
         "upload",
         file.path,
-        remoteJoinPath(browser.path, file.name),
-        existingNames.has(file.name),
+        remoteJoinPath(destination, file.relativePath),
+        conflictingRoots.has(rootName),
         undefined,
         file.size,
       );
     }
-    Message.info(`已加入 ${files.length} 个上传任务`);
+    if (destination === browser.path && inspection.directories.length > 0) {
+      await loadDirectory(session.id, browser.path);
+    }
+    if (inspection.files.length > 0) {
+      Message.info(`已加入 ${inspection.files.length} 个上传任务`);
+    } else {
+      Message.success(`已创建 ${inspection.directories.length} 个目录`);
+    }
   }
 
   queueUploadPathsRef.current = queueUploadPaths;
@@ -2717,46 +2767,70 @@ function SftpPanel({
     let disposed = false;
     let unlisten: (() => void) | undefined;
     let scaleFactor = 1;
+    const currentWindow = getCurrentWindow();
 
-    void getCurrentWindow()
-      .scaleFactor()
-      .then((value) => {
-        scaleFactor = value;
-      });
-    void getCurrentWebview()
-      .onDragDropEvent(({ payload }) => {
-        if (payload.type === "leave") {
-          setFileDropActive(false);
-          return;
+    const handleDragDrop: Parameters<
+      typeof currentWindow.onDragDropEvent
+    >[0] = ({ payload }) => {
+      if (payload.type === "leave") {
+        setFileDropActive(false);
+        setFileDropTargetPath(undefined);
+        return;
+      }
+      const rect = dropZoneRef.current?.getBoundingClientRect();
+      const point = rect
+        ? resolveNativeDropPoint(
+            payload.position,
+            scaleFactor,
+            rect,
+            isApplePlatform(),
+          )
+        : undefined;
+      const x = point?.x ?? 0;
+      const y = point?.y ?? 0;
+      const inside = Boolean(readyRef.current && point?.inside);
+      const row = inside
+        ? document
+            .elementFromPoint(x, y)
+            ?.closest<HTMLElement>("[data-sftp-entry-id]")
+        : undefined;
+      const targetDirectory =
+        row?.dataset.sftpEntryKind === "directory"
+          ? row.dataset.sftpEntryPath
+          : undefined;
+      if (payload.type === "drop") {
+        setFileDropActive(false);
+        setFileDropTargetPath(undefined);
+        recordDiagnostic("info", "sftp.drag-drop", "收到本地文件拖放事件", {
+          accepted: inside,
+          coordinateMode: point?.coordinateMode ?? "unknown",
+          itemCount: payload.paths.length,
+          ready: readyRef.current,
+        });
+        if (inside) {
+          void queueUploadPathsRef.current(payload.paths, targetDirectory);
         }
-        const rect = dropZoneRef.current?.getBoundingClientRect();
-        const position = payload.position;
-        const x = position.x / scaleFactor;
-        const y = position.y / scaleFactor;
-        const inside = Boolean(
-          readyRef.current &&
-          rect &&
-          x >= rect.left &&
-          x <= rect.right &&
-          y >= rect.top &&
-          y <= rect.bottom,
-        );
-        if (payload.type === "drop") {
-          setFileDropActive(false);
-          if (inside) {
-            void queueUploadPathsRef.current(payload.paths);
-          }
-          return;
-        }
-        setFileDropActive(inside);
-      })
-      .then((stopListening) => {
+        return;
+      }
+      setFileDropActive(inside);
+      setFileDropTargetPath(targetDirectory);
+    };
+
+    void (async () => {
+      try {
+        scaleFactor = await currentWindow.scaleFactor();
+        const stopListening = await currentWindow.onDragDropEvent(handleDragDrop);
         if (disposed) {
           stopListening();
         } else {
           unlisten = stopListening;
         }
-      });
+      } catch (error) {
+        recordDiagnostic("error", "sftp.drag-drop", "注册文件拖放监听失败", {
+          error: commandErrorMessage(error),
+        });
+      }
+    })();
 
     return () => {
       disposed = true;
@@ -3008,7 +3082,12 @@ function SftpPanel({
             {fileDropActive && (
               <div className="sftp-file-drop-overlay">
                 <IconUpload />
-                <span>释放以上传文件</span>
+                <span>
+                  释放以上传文件或文件夹到
+                  {fileDropTargetPath
+                    ? `“${localFileName(fileDropTargetPath)}”`
+                    : `“${browser?.path ?? "/"}”`}
+                </span>
               </div>
             )}
             <Table
@@ -3022,6 +3101,8 @@ function SftpPanel({
               }
               onRow={(entry) => ({
                 "data-sftp-entry-id": entry.id,
+                "data-sftp-entry-kind": entry.kind,
+                "data-sftp-entry-path": entry.path,
                 onDoubleClick: () => {
                   if (entry.kind === "directory") {
                     openDirectory(entry);
@@ -3036,6 +3117,9 @@ function SftpPanel({
                 [
                   cutEntryPaths.has(entry.path) ? "sftp-row-cut" : "",
                   remoteDropTargetPath === entry.path
+                    ? "sftp-row-drop-target"
+                    : "",
+                  fileDropTargetPath === entry.path
                     ? "sftp-row-drop-target"
                     : "",
                 ]

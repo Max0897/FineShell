@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::OsString,
     fs::{self, File as LocalFile, OpenOptions},
     io::{Read, Write},
@@ -109,8 +109,16 @@ pub(crate) struct AiSftpFileOperationResult {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LocalUploadFile {
     path: String,
-    name: String,
+    relative_path: String,
     size: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalUploadInspection {
+    files: Vec<LocalUploadFile>,
+    directories: Vec<String>,
+    skipped_paths: usize,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -141,6 +149,11 @@ enum SftpCommand {
     },
     CreateDirectory {
         path: String,
+        reply: Sender<Result<(), String>>,
+    },
+    EnsureUploadDirectories {
+        base_path: String,
+        relative_paths: Vec<String>,
         reply: Sender<Result<(), String>>,
     },
     CreateFile {
@@ -599,25 +612,155 @@ fn remote_exists(sftp: &Sftp, path: &Path) -> bool {
     sftp.lstat(path).is_ok()
 }
 
-fn inspect_upload_paths(paths: Vec<String>) -> Result<Vec<LocalUploadFile>, String> {
+fn local_upload_relative_path(path: &Path) -> Option<String> {
+    let mut segments = Vec::new();
+    for component in path.components() {
+        let std::path::Component::Normal(segment) = component else {
+            return None;
+        };
+        segments.push(segment.to_str()?.to_string());
+    }
+    (!segments.is_empty()).then(|| segments.join("/"))
+}
+
+fn inspect_upload_directory(
+    directory: &Path,
+    relative_directory: &Path,
+    inspection: &mut LocalUploadInspection,
+) {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(_) => {
+            inspection.skipped_paths += 1;
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                inspection.skipped_paths += 1;
+                continue;
+            }
+        };
+        let metadata = match entry.path().symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                inspection.skipped_paths += 1;
+                continue;
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            inspection.skipped_paths += 1;
+            continue;
+        }
+        let relative_path = relative_directory.join(entry.file_name());
+        let Some(relative_path_text) = local_upload_relative_path(&relative_path) else {
+            inspection.skipped_paths += 1;
+            continue;
+        };
+        if metadata.is_dir() {
+            inspection.directories.push(relative_path_text);
+            inspect_upload_directory(&entry.path(), &relative_path, inspection);
+        } else if metadata.is_file() {
+            inspection.files.push(LocalUploadFile {
+                path: entry.path().to_string_lossy().into_owned(),
+                relative_path: relative_path_text,
+                size: metadata.len(),
+            });
+        } else {
+            inspection.skipped_paths += 1;
+        }
+    }
+}
+
+fn inspect_upload_paths(paths: Vec<String>) -> Result<LocalUploadInspection, String> {
     if paths.is_empty() {
         return Err("没有选择需要上传的文件".to_string());
     }
-    Ok(paths
-        .into_iter()
-        .filter_map(|path| {
-            let local_path = Path::new(&path);
-            let metadata = local_path.metadata().ok()?;
-            if !metadata.is_file() {
-                return None;
+    let mut inspection = LocalUploadInspection {
+        files: Vec::new(),
+        directories: Vec::new(),
+        skipped_paths: 0,
+    };
+    let mut root_names = HashSet::new();
+    for path in paths {
+        let local_path = Path::new(&path);
+        let metadata = match local_path.symlink_metadata() {
+            Ok(metadata) if !metadata.file_type().is_symlink() => metadata,
+            _ => {
+                inspection.skipped_paths += 1;
+                continue;
             }
-            Some(LocalUploadFile {
-                name: local_path.file_name()?.to_string_lossy().into_owned(),
+        };
+        let Some(root_name) = local_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+        else {
+            inspection.skipped_paths += 1;
+            continue;
+        };
+        if !root_names.insert(root_name.clone()) {
+            inspection.skipped_paths += 1;
+            continue;
+        }
+        let root_relative = PathBuf::from(&root_name);
+        if metadata.is_dir() {
+            inspection.directories.push(root_name);
+            inspect_upload_directory(local_path, &root_relative, &mut inspection);
+        } else if metadata.is_file() {
+            inspection.files.push(LocalUploadFile {
                 path,
+                relative_path: root_name,
                 size: metadata.len(),
-            })
-        })
-        .collect())
+            });
+        } else {
+            inspection.skipped_paths += 1;
+        }
+    }
+    inspection.directories.sort_by(|left, right| {
+        left.matches('/')
+            .count()
+            .cmp(&right.matches('/').count())
+            .then_with(|| left.cmp(right))
+    });
+    inspection.files.sort_by(|left, right| {
+        left.relative_path
+            .to_lowercase()
+            .cmp(&right.relative_path.to_lowercase())
+    });
+    Ok(inspection)
+}
+
+fn ensure_upload_directories(
+    sftp: &Sftp,
+    base_path: &str,
+    relative_paths: &[String],
+) -> Result<(), String> {
+    let base_path = normalize_remote_operation_path(base_path)?;
+    let mut ensured = HashSet::new();
+    for relative_path in relative_paths {
+        let mut current = PathBuf::from(&base_path);
+        for segment in relative_path.split('/') {
+            if segment.is_empty() || matches!(segment, "." | "..") || segment.contains('\0') {
+                return Err("本地目录包含无法上传的路径".to_string());
+            }
+            current.push(segment);
+            let current_text = remote_path_text(&current);
+            if !ensured.insert(current_text.clone()) {
+                continue;
+            }
+            match sftp.lstat(&current) {
+                Ok(stat) if stat.is_dir() => {}
+                Ok(_) => return Err(format!("远程目标已存在同名文件：{current_text}")),
+                Err(_) => sftp
+                    .mkdir(&current, 0o755)
+                    .map_err(|error| format!("无法创建远程目录 {current_text}：{error}"))?,
+            }
+        }
+    }
+    Ok(())
 }
 
 fn create_empty_file(sftp: &Sftp, path: &str) -> Result<(), String> {
@@ -2137,6 +2280,17 @@ fn run_session(
                     .map_err(|error| format!("新建远程目录失败：{error}"));
                 let _ = reply.send(result);
             }
+            SftpCommand::EnsureUploadDirectories {
+                base_path,
+                relative_paths,
+                reply,
+            } => {
+                let _ = reply.send(ensure_upload_directories(
+                    &sftp,
+                    &base_path,
+                    &relative_paths,
+                ));
+            }
             SftpCommand::CreateFile { path, reply } => {
                 let _ = reply.send(create_empty_file(&sftp, &path));
             }
@@ -2419,10 +2573,12 @@ pub(crate) async fn sftp_list(
 }
 
 #[tauri::command]
-pub(crate) fn sftp_inspect_upload_paths(
+pub(crate) async fn sftp_inspect_upload_paths(
     paths: Vec<String>,
-) -> Result<Vec<LocalUploadFile>, String> {
-    inspect_upload_paths(paths)
+) -> Result<LocalUploadInspection, String> {
+    tauri::async_runtime::spawn_blocking(move || inspect_upload_paths(paths))
+        .await
+        .map_err(|error| format!("扫描本地上传目录任务异常结束：{error}"))?
 }
 
 #[tauri::command]
@@ -2433,6 +2589,23 @@ pub(crate) async fn sftp_create_directory(
 ) -> Result<(), String> {
     dispatch(manager.inner().clone(), session_id, move |reply| {
         SftpCommand::CreateDirectory { path, reply }
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn sftp_ensure_upload_directories(
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    base_path: String,
+    relative_paths: Vec<String>,
+) -> Result<(), String> {
+    dispatch(manager.inner().clone(), session_id, move |reply| {
+        SftpCommand::EnsureUploadDirectories {
+            base_path,
+            relative_paths,
+            reply,
+        }
     })
     .await
 }
@@ -3080,7 +3253,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_only_regular_files_for_batch_uploads() {
+    fn inspects_files_directories_and_empty_directories_for_batch_uploads() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -3092,18 +3265,55 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         let file = directory.join("report.txt");
         fs::write(&file, b"report").unwrap();
+        let folder = directory.join("assets");
+        let empty_folder = folder.join("empty");
+        fs::create_dir_all(&empty_folder).unwrap();
+        fs::write(folder.join("logo.txt"), b"logo").unwrap();
 
         let inspected = inspect_upload_paths(vec![
             file.to_string_lossy().into_owned(),
-            directory.to_string_lossy().into_owned(),
+            folder.to_string_lossy().into_owned(),
             directory.join("missing.txt").to_string_lossy().into_owned(),
         ])
         .unwrap();
 
-        assert_eq!(inspected.len(), 1);
-        assert_eq!(inspected[0].name, "report.txt");
-        assert_eq!(inspected[0].size, 6);
+        assert_eq!(inspected.skipped_paths, 1);
+        assert_eq!(inspected.directories, vec!["assets", "assets/empty"]);
+        assert_eq!(inspected.files.len(), 2);
+        assert_eq!(inspected.files[0].relative_path, "assets/logo.txt");
+        assert_eq!(inspected.files[0].size, 4);
+        assert_eq!(inspected.files[1].relative_path, "report.txt");
+        assert_eq!(inspected.files[1].size, 6);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn skips_duplicate_upload_roots() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "fineshell-upload-duplicates-{}-{unique}",
+            std::process::id()
+        ));
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("same.txt"), b"first").unwrap();
+        fs::write(second.join("same.txt"), b"second").unwrap();
+
+        let inspected = inspect_upload_paths(vec![
+            first.join("same.txt").to_string_lossy().into_owned(),
+            second.join("same.txt").to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(inspected.files.len(), 1);
+        assert_eq!(inspected.files[0].relative_path, "same.txt");
+        assert_eq!(inspected.skipped_paths, 1);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

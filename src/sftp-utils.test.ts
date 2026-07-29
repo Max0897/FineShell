@@ -19,6 +19,7 @@ import {
   remoteArchiveFormatFromName,
   remoteJoinPath,
   remoteParentPath,
+  resolveNativeDropPoint,
   selectAllSftpEntryKeys,
   invertSftpEntryKeys,
   setRemotePathBookmark,
@@ -120,6 +121,59 @@ describe("SFTP selection helpers", () => {
       "a",
       "c",
     ]);
+  });
+});
+
+describe("SFTP native drop coordinates", () => {
+  const bounds = { left: 500, right: 1_200, top: 400, bottom: 800 };
+
+  test("keeps AppKit logical coordinates on a Retina display", () => {
+    expect(
+      resolveNativeDropPoint({ x: 900, y: 650 }, 2, bounds, true),
+    ).toEqual({
+      x: 900,
+      y: 650,
+      inside: true,
+      coordinateMode: "logical",
+    });
+  });
+
+  test("converts physical coordinates when that is the matching coordinate space", () => {
+    expect(
+      resolveNativeDropPoint(
+        { x: 900, y: 600 },
+        1.5,
+        { left: 500, right: 800, top: 300, bottom: 500 },
+        false,
+      ),
+    ).toEqual({
+      x: 600,
+      y: 400,
+      inside: true,
+      coordinateMode: "physical",
+    });
+  });
+
+  test("falls back to the alternate coordinate space when it is the only match", () => {
+    expect(
+      resolveNativeDropPoint({ x: 900, y: 650 }, 2, bounds, false),
+    ).toEqual({
+      x: 900,
+      y: 650,
+      inside: true,
+      coordinateMode: "logical",
+    });
+  });
+
+  test("reports points outside the panel without producing invalid values", () => {
+    expect(
+      resolveNativeDropPoint({ x: 100, y: 100 }, Number.NaN, bounds, true),
+    ).toEqual({
+      x: 100,
+      y: 100,
+      inside: false,
+      coordinateMode: "logical",
+    });
   });
 });
 
