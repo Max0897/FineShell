@@ -5,6 +5,7 @@ mod agent_executor;
 mod agent_policy;
 mod agent_verification;
 mod ai;
+mod ai_rig;
 mod config_files;
 mod credentials;
 mod diagnostics;
@@ -97,7 +98,6 @@ pub fn run() {
             ai::ai_chat_cancel,
             agent::ai_task_get,
             agent::ai_task_events_since,
-            agent::ai_task_audit_events,
             agent::ai_task_plan_decide,
             agent::ai_task_action_transition,
             agent::ai_task_command_observe,

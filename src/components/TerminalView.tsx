@@ -38,6 +38,7 @@ import {
   decodeSshOutput,
   EMPTY_TERMINAL_INPUT_STATE,
   terminalStatusNoticeKey,
+  terminalInjectedInputData,
   trackInjectedTerminalInput,
   type TerminalCommandSubmission,
   trackTerminalInput,
@@ -348,12 +349,11 @@ function TerminalView({
         trackSubmittedCommandRef.current(command),
       );
     }
-    if (injectedInput.submit) {
-      void invoke("ssh_write", {
-        sessionId: session.id,
-        data: [13],
-      }).catch(() => undefined);
-    }
+    const data = terminalInjectedInputData(injectedInput);
+    void invoke("ssh_write", {
+      sessionId: session.id,
+      data: Array.from(new TextEncoder().encode(data)),
+    }).catch(() => undefined);
   }, [commandTrackingEnabled, injectedInput, session.id]);
 
   useEffect(() => {

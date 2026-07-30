@@ -58,7 +58,6 @@ import {
   mergeAiRemoteFileContexts,
   formatAiServerContext,
 } from "./ai-utils";
-import type { AiCommandExecutionMode } from "./hooks/useAiCommandActions";
 import {
   createSftpSelectionAiHandoff,
   type AiHandoffRequest,
@@ -968,21 +967,16 @@ function App() {
   function handleAiCommandPrepared(
     sessionId: string,
     command: string,
-    executionMode: AiCommandExecutionMode,
   ) {
-    if (settings.aiCommandTrackingEnabled || executionMode === "submit") {
-      setTerminalInjectedInputs((current) => ({
-        ...current,
-        [sessionId]: {
-          id: createId("terminal-input"),
-          submit: executionMode === "submit",
-          value: command,
-        },
-      }));
-    }
-    Message.success(
-      executionMode === "submit" ? "命令已批准并提交" : "命令已填入终端",
-    );
+    setTerminalInjectedInputs((current) => ({
+      ...current,
+      [sessionId]: {
+        id: createId("terminal-input"),
+        submit: true,
+        value: command,
+      },
+    }));
+    Message.success("命令已批准并提交");
   }
 
   function handleAiAgentActionExecuted(

@@ -129,12 +129,12 @@ describe("useAiProposalState", () => {
     expect(persistConversation).toHaveBeenCalledTimes(3);
   });
 
-  test("matches a terminal submission against the newest inserted proposal", async () => {
-    const inserted = commandProposal("inserted");
+  test("matches a terminal submission against the newest approved proposal", async () => {
+    const approved = commandProposal("approved");
     const harness = createHarness(
       conversation([
         {
-          commandProposals: [inserted],
+          commandProposals: [approved],
           content: "",
           id: "assistant-1",
           role: "assistant",
@@ -183,11 +183,11 @@ describe("useAiProposalState", () => {
     expect(persistConversation).toHaveBeenCalledTimes(1);
   });
 
-  test("can complete an inserted proposal when lifecycle events are batched", async () => {
+  test("can complete an approved proposal when lifecycle events are batched", async () => {
     const harness = createHarness(
       conversation([
         {
-          commandProposals: [commandProposal("inserted")],
+          commandProposals: [commandProposal("approved")],
           content: "",
           id: "assistant-1",
           role: "assistant",
@@ -207,6 +207,7 @@ describe("useAiProposalState", () => {
       submittedAt: "2026-07-28T09:00:00.000Z",
     };
     const observeCommandLifecycle = mock(async () => undefined);
+    const onCommandLifecycleProcessed = mock(() => undefined);
 
     renderHook(() =>
       useAiProposalState({
@@ -219,6 +220,7 @@ describe("useAiProposalState", () => {
         onActionTransition: async () => undefined,
         onActionTransitionError: () => undefined,
         onCommandLifecycleObserved: observeCommandLifecycle,
+        onCommandLifecycleProcessed,
         persistConversation: async () => undefined,
         updateMessages: harness.updateMessages,
       }),
@@ -236,6 +238,10 @@ describe("useAiProposalState", () => {
     );
     expect(observeCommandLifecycle).toHaveBeenCalledWith(
       "assistant-1",
+      "command-1",
+      result,
+    );
+    expect(onCommandLifecycleProcessed).toHaveBeenCalledWith(
       "command-1",
       result,
     );

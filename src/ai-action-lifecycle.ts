@@ -20,4 +20,5 @@ export type AiActionExecutionHandler = (
   actionId: string,
   rollback?: boolean,
   contentOverride?: string,
+  userConfirmed?: boolean,
 ) => Promise<AgentActionExecutionResult>;

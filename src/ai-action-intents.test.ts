@@ -9,6 +9,8 @@ function commandCall(): AiToolCall {
     arguments: JSON.stringify({
       command: "  systemctl status nginx  ",
       purpose: "检查  nginx   状态",
+      risk: "safe",
+      risk_reason: "只读取服务状态",
     }),
   };
 }
@@ -16,14 +18,14 @@ function commandCall(): AiToolCall {
 function commandIntent(): AgentActionIntent {
   return {
     id: "command-1",
-    tool: "insert_terminal_command",
+    tool: "execute_terminal_command",
     arguments: {
       command: "systemctl status nginx",
       purpose: "检查 nginx 状态",
     },
     reason: "检查 nginx 状态",
     expectedEffect: "在当前终端会话中填入并执行命令",
-    risk: "elevated",
+    risk: "low_risk",
   };
 }
 
@@ -39,6 +41,8 @@ describe("AI action intents", () => {
     call.arguments = JSON.stringify({
       command: "systemctl status nginx",
       purpose: "检查 nginx 状态",
+      risk: "safe",
+      risk_reason: "只读取服务状态",
       verification: {
         kind: "port_listening",
         port: 443,

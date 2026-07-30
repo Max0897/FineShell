@@ -28,7 +28,7 @@ function renderActions(options?: {
   onPrepareCommand?: (
     messageId: string,
     proposal: AiCommandProposal,
-    executionMode: "insert_only" | "submit",
+    userConfirmed: boolean,
   ) => Promise<void>;
 }) {
   const onPrepareCommand = mock(
@@ -82,18 +82,14 @@ describe("useAiCommandActions", () => {
     const value = proposal();
 
     act(() => {
-      void view.result.current.approveCommandProposal(
-        "assistant-1",
-        value,
-        "submit",
-      );
+      void view.result.current.approveCommandProposal("assistant-1", value);
     });
     await waitFor(() => expect(view.onPrepareCommand).toHaveBeenCalledTimes(1));
 
     expect(view.onPrepareCommand).toHaveBeenCalledWith(
       "assistant-1",
       value,
-      "submit",
+      true,
     );
     expect(view.updateCommandProposal).toHaveBeenCalledWith(
       "assistant-1",
@@ -107,16 +103,31 @@ describe("useAiCommandActions", () => {
     const value = proposal("danger");
 
     await act(async () => {
-      await view.result.current.approveCommandProposal(
-        "assistant-1",
-        value,
-        "insert_only",
-      );
+      await view.result.current.approveCommandProposal("assistant-1", value);
     });
     expect(view.onPrepareCommand).toHaveBeenCalledWith(
       "assistant-1",
       value,
-      "insert_only",
+      true,
+    );
+  });
+
+  test("can execute a policy-approved command without claiming user confirmation", async () => {
+    const view = renderActions();
+    const value = proposal();
+
+    await act(async () => {
+      await view.result.current.approveCommandProposal(
+        "assistant-1",
+        value,
+        false,
+      );
+    });
+
+    expect(view.onPrepareCommand).toHaveBeenCalledWith(
+      "assistant-1",
+      value,
+      false,
     );
   });
 

@@ -70,11 +70,15 @@ fn policy_decision(
 ) -> PolicyDecision {
     match risk {
         AgentActionRisk::ReadOnly => PolicyDecision::Allow,
+        AgentActionRisk::LowRisk => match mode {
+            AgentApprovalMode::OnRequest => PolicyDecision::Prompt,
+            AgentApprovalMode::AutoSafe | AgentApprovalMode::FullAccess => PolicyDecision::Allow,
+        },
         AgentActionRisk::ReversibleWrite => match mode {
             AgentApprovalMode::OnRequest => PolicyDecision::Prompt,
-            AgentApprovalMode::AutoSafe if reversible && bounded => PolicyDecision::Allow,
             AgentApprovalMode::AutoSafe => PolicyDecision::Prompt,
-            AgentApprovalMode::FullAccess => PolicyDecision::Allow,
+            AgentApprovalMode::FullAccess if reversible && bounded => PolicyDecision::Allow,
+            AgentApprovalMode::FullAccess => PolicyDecision::Prompt,
         },
         AgentActionRisk::Elevated => match mode {
             AgentApprovalMode::FullAccess if bounded => PolicyDecision::Allow,
@@ -95,7 +99,8 @@ pub(crate) fn registered_action_policy(
         ("propose_file_edit", AgentActionRisk::ReversibleWrite) => Some((true, true)),
         ("propose_file_operation", AgentActionRisk::ReversibleWrite) => Some((true, true)),
         ("propose_file_operation", AgentActionRisk::Elevated) => Some((true, true)),
-        ("insert_terminal_command", AgentActionRisk::Elevated) => Some((false, false)),
+        ("execute_terminal_command", AgentActionRisk::LowRisk) => Some((false, true)),
+        ("execute_terminal_command", AgentActionRisk::Elevated) => Some((false, true)),
         _ => None,
     };
     let Some((reversible, bounded)) = descriptor else {
@@ -227,9 +232,15 @@ mod tests {
                 PolicyDecision::Allow,
             ),
             (
-                AgentActionRisk::ReversibleWrite,
+                AgentActionRisk::LowRisk,
                 PolicyDecision::Prompt,
                 PolicyDecision::Allow,
+                PolicyDecision::Allow,
+            ),
+            (
+                AgentActionRisk::ReversibleWrite,
+                PolicyDecision::Prompt,
+                PolicyDecision::Prompt,
                 PolicyDecision::Allow,
             ),
             (
@@ -329,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn file_and_terminal_actions_keep_distinct_approval_rules() {
+    fn auto_safe_uses_command_risk_instead_of_file_reversibility() {
         assert_eq!(
             registered_action_policy(
                 AgentApprovalMode::AutoSafe,
@@ -337,7 +348,25 @@ mod tests {
                 AgentActionRisk::ReversibleWrite,
             )
             .decision,
+            PolicyDecision::Prompt
+        );
+        assert_eq!(
+            registered_action_policy(
+                AgentApprovalMode::AutoSafe,
+                "execute_terminal_command",
+                AgentActionRisk::LowRisk,
+            )
+            .decision,
             PolicyDecision::Allow
+        );
+        assert_eq!(
+            registered_action_policy(
+                AgentApprovalMode::AutoSafe,
+                "execute_terminal_command",
+                AgentActionRisk::Elevated,
+            )
+            .decision,
+            PolicyDecision::Prompt
         );
         assert_eq!(
             registered_action_policy(
@@ -351,11 +380,11 @@ mod tests {
         assert_eq!(
             registered_action_policy(
                 AgentApprovalMode::FullAccess,
-                "insert_terminal_command",
+                "execute_terminal_command",
                 AgentActionRisk::Elevated,
             )
             .decision,
-            PolicyDecision::Prompt
+            PolicyDecision::Allow
         );
         assert_eq!(
             registered_action_policy(

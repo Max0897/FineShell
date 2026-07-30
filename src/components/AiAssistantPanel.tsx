@@ -15,12 +15,15 @@ import {
   IconDelete,
   IconHistory,
   IconPlus,
-  IconSafe,
 } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import type { AppSettings } from "../app-settings";
+import {
+  aiApprovalRequiresUserDecision,
+  buildAiApprovalQueue,
+} from "../ai-approval-queue";
 import type {
   AiActionExecutionHandler,
   AiActionTransitionHandler,
@@ -32,6 +35,7 @@ import {
   serializeAiConversationMarkdown,
 } from "../ai-conversations";
 import { aiFileEditEligibilityError } from "../ai-file-edits";
+import type { AiFileApprovalDecision } from "../ai-file-approvals";
 import {
   aiContextMentionIds,
   aiRemoteFileContextSource,
@@ -52,12 +56,13 @@ import {
 } from "../tauri-protocol";
 import type { TerminalCommandSubmission } from "../terminal-utils";
 import {
+  aiCommandApprovalDecisionFromSubmission,
   aiCommandResultContextSource,
+  type AiCommandApprovalDecision,
   type AiCommandProposal,
 } from "../ai-command-proposals";
 import {
   useAiCommandActions,
-  type AiCommandExecutionMode,
   type AiCommandNotice,
 } from "../hooks/useAiCommandActions";
 import {
@@ -79,9 +84,11 @@ import {
 import { useAiProposalState } from "../hooks/useAiProposalState";
 import { useAiRequestOrchestrator } from "../hooks/useAiRequestOrchestrator";
 import AiComposer from "./AiComposer";
-import AiAuditDrawer from "./AiAuditDrawer";
+import AiCommandProposalList from "./AiCommandProposalList";
 import AiConversationHistoryDrawer from "./AiConversationHistoryDrawer";
+import AiDiagnosticPlanList from "./AiDiagnosticPlanList";
 import AiFileChangeReviewModals from "./AiFileChangeReviewModals";
+import AiFileApprovalCard from "./AiFileApprovalCard";
 import AiMessageTimeline from "./AiMessageTimeline";
 
 interface AiAssistantPanelProps {
@@ -101,7 +108,6 @@ interface AiAssistantPanelProps {
   onCommandPrepared: (
     sessionId: string,
     command: string,
-    executionMode: AiCommandExecutionMode,
   ) => void;
   onRemoveRemoteFile: (sessionId: string, path: string) => void;
   remoteFiles: AiRemoteFileContext[];
@@ -245,13 +251,18 @@ function AiAssistantPanel({
   const [expandedToolRuns, setExpandedToolRuns] = useState<Set<string>>(
     () => new Set(),
   );
-  const [auditVisible, setAuditVisible] = useState(false);
   const [approvalMode, setApprovalMode] =
     useState<AgentApprovalMode>("on_request");
+  const [automaticApprovalFailures, setAutomaticApprovalFailures] = useState<
+    Set<string>
+  >(() => new Set());
+  const automaticApprovalAttemptsRef = useRef(new Set<string>());
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setApprovalMode("on_request");
+    setAutomaticApprovalFailures(new Set());
+    automaticApprovalAttemptsRef.current.clear();
   }, [canInsertCommand, hostId, sessionId]);
 
   const {
@@ -291,6 +302,9 @@ function AiAssistantPanel({
       ),
     [messages],
   );
+  const commandDecisionRef = useRef<
+    (proposalId: string, decision: AiCommandApprovalDecision) => boolean
+  >(() => false);
   const taskIdForMessage = useCallback(
     (messageId: string) =>
       Object.values(conversationsByHost)
@@ -315,7 +329,13 @@ function AiAssistantPanel({
     [taskIdForMessage],
   );
   const executeAgentAction = useCallback<AiActionExecutionHandler>(
-    async (messageId, actionId, rollback = false, contentOverride) => {
+    async (
+      messageId,
+      actionId,
+      rollback = false,
+      contentOverride,
+      userConfirmed = true,
+    ) => {
       const taskId = taskIdForMessage(messageId);
       if (!taskId) throw new Error("AI 动作缺少对应的任务");
       if (!sessionId) throw new Error("当前终端会话不可用");
@@ -326,7 +346,7 @@ function AiAssistantPanel({
             taskId,
             actionId,
             rollback,
-            userConfirmed: true,
+            userConfirmed,
             contentOverride,
           },
         },
@@ -390,69 +410,21 @@ function AiAssistantPanel({
     onActionTransitionError: (error) =>
       Message.error(`AI 动作状态更新失败：${commandErrorMessage(error)}`),
     onCommandLifecycleObserved: observeAgentCommandLifecycle,
+    onCommandLifecycleProcessed: (proposalId, submission) => {
+      const decision = aiCommandApprovalDecisionFromSubmission(submission);
+      if (decision) commandDecisionRef.current(proposalId, decision);
+    },
     persistConversation,
     updateMessages,
-  });
-  const {
-    approveCommandProposal,
-    captureVerificationTarget,
-    completeVerification,
-    copyAllCommandProposals,
-    copyCommandProposal,
-    prepareCommandVerification,
-    updateDraft,
-  } = useAiCommandActions({
-    contextSources: availableContextSources,
-    conversationId: conversationStateKey,
-    hostId,
-    onCopyText: copyCode,
-    onPrepareCommand: async (messageId, proposal, executionMode) => {
-      const result = await executeAgentAction(messageId, proposal.id);
-      if (result.actionType !== "terminal_command") {
-        throw new Error("AI 命令准备返回了无效结果");
-      }
-      if (!sessionId) throw new Error("当前终端会话不可用");
-      onCommandPrepared(sessionId, proposal.command, executionMode);
-    },
-    onNotice: showAiCommandNotice,
-    sessionId,
-    setDraft: setConversationDraft,
-    updateCommandProposal,
-    updateCommandProposalInConversation,
-  });
-  const {
-    applying: fileEditApplying,
-    applyReviewedFileEdit,
-    applyReviewedFileOperation,
-    closeFileChangeReview,
-    confirmApplyAllFileEdits,
-    confirmApplyAllFileOperations,
-    confirmRollbackAllFileEdits,
-    confirmRollbackAllFileOperations,
-    confirmRollbackFileEdit: confirmRollbackAppliedFileEdit,
-    confirmRollbackFileOperation,
-    fileChangeReview,
-    fileChangeReviewItems,
-    openFileEditReview,
-    openFileOperationReview,
-    reviewedFileEditError,
-    reviewedFileEditContent,
-    selectFileChangeReview,
-    setFileEditReviewContent,
-  } = useAiFileChangeWorkflow({
-    messages,
-    onExecuteAction: executeAgentAction,
-    onConfirm: confirmAiFileChange,
-    onNotice: showAiFileChangeNotice,
-    sessionId,
-    updateFileEditProposal,
-    updateFileOperationProposal,
   });
   const {
     activeTask,
     cancelDiagnosticPlan,
     cancelRequest,
     confirmDiagnosticPlan,
+    decideCommandProposal,
+    decideFileProposal,
+    reviseDiagnosticPlan,
     sendMessage,
     sending,
     stopDiagnosticPlan,
@@ -474,6 +446,293 @@ function AiAssistantPanel({
     updateConversation,
     updateMessages,
   });
+  const approvalQueue = useMemo(
+    () =>
+      buildAiApprovalQueue(
+        messages,
+        activeTask?.id,
+        sending,
+        activeTask?.status === "awaiting_approval"
+          ? activeTask.plan?.id
+          : undefined,
+      ),
+    [activeTask?.id, activeTask?.plan?.id, activeTask?.status, messages, sending],
+  );
+  const queuedApproval = approvalQueue[0];
+  const queuedApprovalId = queuedApproval
+    ? queuedApproval.kind === "diagnostic"
+      ? queuedApproval.plan.id
+      : queuedApproval.proposal.id
+    : undefined;
+  const automaticApproval =
+    queuedApproval &&
+    queuedApprovalId &&
+    !automaticApprovalFailures.has(queuedApprovalId) &&
+    !aiApprovalRequiresUserDecision(queuedApproval, approvalMode)
+      ? queuedApproval
+      : undefined;
+  const activeApproval = automaticApproval ? undefined : queuedApproval;
+  const dockedCommandProposalIds = useMemo(
+    () =>
+      new Set(
+        approvalQueue
+          .filter((item) => item.kind === "command")
+          .map(({ proposal }) => proposal.id),
+      ),
+    [approvalQueue],
+  );
+  const dockedDiagnosticPlanIds = useMemo(
+    () =>
+      new Set(
+        approvalQueue
+          .filter((item) => item.kind === "diagnostic")
+          .map(({ plan }) => plan.id),
+      ),
+    [approvalQueue],
+  );
+  const dockedFileEditProposalIds = useMemo(
+    () =>
+      new Set(
+        approvalQueue
+          .filter((item) => item.kind === "file-edit")
+          .map(({ proposal }) => proposal.id),
+      ),
+    [approvalQueue],
+  );
+  const dockedFileOperationProposalIds = useMemo(
+    () =>
+      new Set(
+        approvalQueue
+          .filter((item) => item.kind === "file-operation")
+          .map(({ proposal }) => proposal.id),
+      ),
+    [approvalQueue],
+  );
+  commandDecisionRef.current = decideCommandProposal;
+  const {
+    approveCommandProposal,
+    captureVerificationTarget,
+    completeVerification,
+    copyAllCommandProposals,
+    copyCommandProposal,
+    prepareCommandVerification,
+    updateDraft,
+  } = useAiCommandActions({
+    contextSources: availableContextSources,
+    conversationId: conversationStateKey,
+    hostId,
+    onCopyText: copyCode,
+    onPrepareCommand: async (messageId, proposal, userConfirmed) => {
+      if (!sessionId) throw new Error("当前终端会话不可用");
+      const result = await executeAgentAction(
+        messageId,
+        proposal.id,
+        false,
+        undefined,
+        userConfirmed,
+      );
+      if (result.actionType !== "terminal_command") {
+        throw new Error("AI 命令准备返回了无效结果");
+      }
+      onCommandPrepared(sessionId, proposal.command);
+    },
+    onNotice: showAiCommandNotice,
+    sessionId,
+    setDraft: setConversationDraft,
+    updateCommandProposal,
+    updateCommandProposalInConversation,
+  });
+  const approveCommandAndResume = async (
+    messageId: string,
+    proposal: AiCommandProposal,
+  ) => {
+    await approveCommandProposal(messageId, proposal);
+  };
+  const rejectCommandAndResume = async (
+    messageId: string,
+    proposalId: string,
+    decision: AiCommandApprovalDecision = { kind: "rejected" },
+  ) => {
+    const updated = await rejectCommandProposal(messageId, proposalId);
+    if (updated) decideCommandProposal(proposalId, decision);
+    return updated;
+  };
+  const {
+    applying: fileEditApplying,
+    approveFileEditProposal,
+    approveFileOperationProposal,
+    applyReviewedFileEdit,
+    applyReviewedFileOperation,
+    closeFileChangeReview,
+    confirmApplyAllFileEdits,
+    confirmApplyAllFileOperations,
+    confirmRollbackAllFileEdits,
+    confirmRollbackAllFileOperations,
+    confirmRollbackFileEdit: confirmRollbackAppliedFileEdit,
+    confirmRollbackFileOperation,
+    fileChangeReview,
+    fileChangeReviewItems,
+    openFileEditReview,
+    openFileOperationReview,
+    reviewedFileEditError,
+    reviewedFileEditContent,
+    reviewedFileEditProposal,
+    reviewedFileOperationProposal,
+    selectFileChangeReview,
+    setFileEditReviewContent,
+  } = useAiFileChangeWorkflow({
+    messages,
+    onExecuteAction: executeAgentAction,
+    onConfirm: confirmAiFileChange,
+    onNotice: showAiFileChangeNotice,
+    sessionId,
+    updateFileEditProposal,
+    updateFileOperationProposal,
+  });
+  const completeFileApproval = (
+    proposalId: string,
+    decision: AiFileApprovalDecision,
+  ) => decideFileProposal(proposalId, decision);
+  const approveFileEditAndResume = async (
+    messageId: string,
+    proposal: NonNullable<
+      Extract<typeof activeApproval, { kind: "file-edit" }>
+    >["proposal"],
+    userConfirmed = true,
+  ) => {
+    const result = await approveFileEditProposal(
+      messageId,
+      proposal,
+      userConfirmed,
+    );
+    completeFileApproval(
+      proposal.id,
+      result === "applied"
+        ? { kind: "execution_completed", summary: "远程文件已更新" }
+        : {
+            kind: "execution_failed",
+            reason:
+              result === "conflict"
+                ? "远程文件已被其他程序修改"
+                : "远程文件写入失败",
+          },
+    );
+    return result;
+  };
+  const approveFileOperationAndResume = async (
+    messageId: string,
+    proposal: NonNullable<
+      Extract<typeof activeApproval, { kind: "file-operation" }>
+    >["proposal"],
+    userConfirmed = true,
+  ) => {
+    const result = await approveFileOperationProposal(
+      messageId,
+      proposal,
+      userConfirmed,
+    );
+    completeFileApproval(
+      proposal.id,
+      result === "applied"
+        ? { kind: "execution_completed", summary: "远程文件操作已完成" }
+        : {
+            kind: "execution_failed",
+            reason:
+              result === "conflict"
+                ? "远端文件状态已发生变化"
+                : "远程文件操作失败",
+          },
+    );
+    return result;
+  };
+  const rejectFileEditAndResume = async (
+    messageId: string,
+    proposalId: string,
+    decision: AiFileApprovalDecision = { kind: "rejected" },
+  ) => {
+    const updated = await rejectFileEditProposal(messageId, proposalId);
+    if (updated) completeFileApproval(proposalId, decision);
+  };
+  const rejectFileOperationAndResume = async (
+    messageId: string,
+    proposalId: string,
+    decision: AiFileApprovalDecision = { kind: "rejected" },
+  ) => {
+    const updated = await rejectFileOperationProposal(messageId, proposalId);
+    if (updated) completeFileApproval(proposalId, decision);
+  };
+  const applyReviewedFileEditAndResume = async () => {
+    const proposal = reviewedFileEditProposal;
+    const result = await applyReviewedFileEdit();
+    if (!proposal || !result) return;
+    completeFileApproval(
+      proposal.id,
+      result === "applied"
+        ? { kind: "execution_completed", summary: "远程文件已更新" }
+        : {
+            kind: "execution_failed",
+            reason:
+              result === "conflict"
+                ? "远程文件已被其他程序修改"
+                : "远程文件写入失败",
+          },
+    );
+  };
+  const applyReviewedFileOperationAndResume = async () => {
+    const proposal = reviewedFileOperationProposal;
+    const result = await applyReviewedFileOperation();
+    if (!proposal || !result) return;
+    completeFileApproval(
+      proposal.id,
+      result === "applied"
+        ? { kind: "execution_completed", summary: "远程文件操作已完成" }
+        : {
+            kind: "execution_failed",
+            reason:
+              result === "conflict"
+                ? "远端文件状态已发生变化"
+                : "远程文件操作失败",
+          },
+    );
+  };
+
+  useEffect(() => {
+    if (!automaticApproval || !queuedApprovalId || !sending) return;
+    if (automaticApprovalAttemptsRef.current.has(queuedApprovalId)) return;
+    automaticApprovalAttemptsRef.current.add(queuedApprovalId);
+
+    void (async () => {
+      if (automaticApproval.kind === "command") {
+        const approved = await approveCommandProposal(
+          automaticApproval.messageId,
+          automaticApproval.proposal,
+          false,
+        );
+        if (!approved) {
+          setAutomaticApprovalFailures((current) =>
+            new Set(current).add(queuedApprovalId),
+          );
+        }
+        return;
+      }
+      if (automaticApproval.kind === "file-edit") {
+        await approveFileEditAndResume(
+          automaticApproval.messageId,
+          automaticApproval.proposal,
+          false,
+        );
+        return;
+      }
+      if (automaticApproval.kind === "file-operation") {
+        await approveFileOperationAndResume(
+          automaticApproval.messageId,
+          automaticApproval.proposal,
+          false,
+        );
+      }
+    })();
+  }, [automaticApproval, queuedApprovalId, sending]);
+
   const {
     addToolRunToDraft,
     applyPromptPreset,
@@ -661,29 +920,15 @@ function AiAssistantPanel({
     proposal: AiCommandProposal,
     feedback: string,
   ) => {
-    if (sending || !feedback.trim()) return;
-    const rejectedConversation = await rejectCommandProposal(
+    if (!feedback.trim()) return;
+    await rejectCommandAndResume(
       messageId,
       proposal.id,
+      {
+        feedback: feedback.trim(),
+        kind: "revision_requested",
+      },
     );
-    if (!rejectedConversation) return;
-    const revisionRequest = [
-      `我拒绝了用于“${proposal.purpose}”的上一条命令提案。`,
-      `修改要求：${feedback.trim()}`,
-      "请根据要求重新生成一条命令提案，不要执行命令。",
-    ].join("\n");
-    const existingDraft = prompt;
-    const request = sendConversationMessage(
-      revisionRequest,
-      rejectedConversation.messages,
-      rejectedConversation.summary,
-      null,
-      false,
-    );
-    if (existingDraft) {
-      setConversationDraft(rejectedConversation.id, existingDraft);
-    }
-    await request;
   };
 
   const retry = (assistantIndex: number) => {
@@ -730,7 +975,6 @@ function AiAssistantPanel({
 
   const closePanel = () => {
     if (sending) void cancelRequest();
-    setAuditVisible(false);
     closeHistory();
     onClose();
   };
@@ -755,7 +999,8 @@ function AiAssistantPanel({
               }
               Modal.confirm({
                 cancelText: "取消",
-                content: "完全访问仅在当前主机和当前连接周期内生效。",
+                content:
+                  "完全访问会自动执行 AI 提出的终端命令和文件操作，仅在当前主机和当前连接周期内生效。",
                 okButtonProps: { status: "danger" },
                 okText: "启用",
                 onOk: () => setApprovalMode(next),
@@ -801,22 +1046,7 @@ function AiAssistantPanel({
               aria-label="对话历史"
               disabled={!sessionId || sending}
               icon={<IconHistory />}
-              onClick={() => {
-                setAuditVisible(false);
-                openHistory();
-              }}
-              type="text"
-            />
-          </Tooltip>
-          <Tooltip content="操作审计">
-            <Button
-              aria-label="AI 操作审计"
-              disabled={!sessionId}
-              icon={<IconSafe />}
-              onClick={() => {
-                closeHistory();
-                setAuditVisible(true);
-              }}
+              onClick={openHistory}
               type="text"
             />
           </Tooltip>
@@ -841,10 +1071,13 @@ function AiAssistantPanel({
       </div>
       <div className="ai-assistant-layout">
         <AiMessageTimeline
-          activeTask={activeTask}
           activeConversationAvailable={Boolean(activeConversation)}
           applyingFileChanges={fileEditApplying}
           canInsertCommand={canInsertCommand}
+          dockedCommandProposalIds={dockedCommandProposalIds}
+          dockedDiagnosticPlanIds={dockedDiagnosticPlanIds}
+          dockedFileEditProposalIds={dockedFileEditProposalIds}
+          dockedFileOperationProposalIds={dockedFileOperationProposalIds}
           expandedToolRuns={expandedToolRuns}
           hasRecentTerminalOutput={hasRecentTerminalOutput}
           hostName={hostName}
@@ -860,10 +1093,11 @@ function AiAssistantPanel({
           onCopyToolRun={copyToolRun}
           onCancelDiagnosticPlan={cancelDiagnosticPlan}
           onConfirmDiagnosticPlan={confirmDiagnosticPlan}
-          onApproveCommandProposal={approveCommandProposal}
+          onReviseDiagnosticPlan={reviseDiagnosticPlan}
+          onApproveCommandProposal={approveCommandAndResume}
           onOpenFileEditReview={openFileEditReview}
           onOpenFileOperationReview={openFileOperationReview}
-          onRejectCommand={rejectCommandProposal}
+          onRejectCommand={rejectCommandAndResume}
           onReviseCommand={reviseCommandProposal}
           onRejectFileEdit={rejectFileEditProposal}
           onRejectFileOperation={rejectFileOperationProposal}
@@ -881,6 +1115,126 @@ function AiAssistantPanel({
           sending={sending}
           sessionId={sessionId}
         />
+        {activeApproval && (
+          <section
+            aria-label="AI 操作审批"
+            className="ai-approval-dock"
+          >
+            {activeApproval.kind === "command" ? (
+              <AiCommandProposalList
+                canInsertCommand={canInsertCommand}
+                hasRecentTerminalOutput={hasRecentTerminalOutput}
+                hostName={hostName}
+                key={activeApproval.proposal.id}
+                onAnalyze={(proposal) =>
+                  prepareCommandVerification(activeApproval.messageId, proposal)
+                }
+                onApprove={(proposal) =>
+                  approveCommandAndResume(activeApproval.messageId, proposal)
+                }
+                onCopy={copyCommandProposal}
+                onCopyAll={copyAllCommandProposals}
+                onReject={(proposalId) =>
+                  rejectCommandAndResume(activeApproval.messageId, proposalId)
+                }
+                onRevise={(proposal, feedback) =>
+                  reviseCommandProposal(
+                    activeApproval.messageId,
+                    proposal,
+                    feedback,
+                  )
+                }
+                presentation="approval"
+                proposals={[activeApproval.proposal]}
+                queueCount={approvalQueue.length}
+                sending={sending}
+                sessionId={sessionId}
+              />
+            ) : activeApproval.kind === "diagnostic" ? (
+              <AiDiagnosticPlanList
+                expandedRuns={expandedToolRuns}
+                key={activeApproval.plan.id}
+                messageId={activeApproval.messageId}
+                onAddToDraft={addToolRunToDraft}
+                onCancel={cancelDiagnosticPlan}
+                onConfirm={confirmDiagnosticPlan}
+                onCopy={copyToolRun}
+                onRevise={reviseDiagnosticPlan}
+                onStop={stopDiagnosticPlan}
+                onToggleRun={toggleToolRun}
+                plans={[activeApproval.plan]}
+                presentation="approval"
+                queueCount={approvalQueue.length}
+                runs={activeApproval.runs}
+                sending={sending}
+              />
+            ) : activeApproval.kind === "file-edit" ? (
+              <AiFileApprovalCard
+                applying={fileEditApplying}
+                editProposal={activeApproval.proposal}
+                key={activeApproval.proposal.id}
+                onApprove={async () => {
+                  await approveFileEditAndResume(
+                    activeApproval.messageId,
+                    activeApproval.proposal,
+                  );
+                }}
+                onOpenReview={() =>
+                  openFileEditReview(
+                    activeApproval.messageId,
+                    activeApproval.proposal,
+                  )
+                }
+                onReject={() =>
+                  rejectFileEditAndResume(
+                    activeApproval.messageId,
+                    activeApproval.proposal.id,
+                  )
+                }
+                onRevise={(feedback) =>
+                  rejectFileEditAndResume(
+                    activeApproval.messageId,
+                    activeApproval.proposal.id,
+                    { feedback, kind: "revision_requested" },
+                  )
+                }
+                queueCount={approvalQueue.length}
+              />
+            ) : (
+              <AiFileApprovalCard
+                applying={fileEditApplying}
+                key={activeApproval.proposal.id}
+                onApprove={async () => {
+                  await approveFileOperationAndResume(
+                    activeApproval.messageId,
+                    activeApproval.proposal,
+                  );
+                }}
+                onOpenReview={() =>
+                  openFileOperationReview(
+                    activeApproval.messageId,
+                    activeApproval.proposal,
+                  )
+                }
+                onReject={() =>
+                  rejectFileOperationAndResume(
+                    activeApproval.messageId,
+                    activeApproval.proposal.id,
+                  )
+                }
+                onRevise={(feedback) =>
+                  rejectFileOperationAndResume(
+                    activeApproval.messageId,
+                    activeApproval.proposal.id,
+                    { feedback, kind: "revision_requested" },
+                  )
+                }
+                operationProposal={activeApproval.proposal}
+                queueCount={approvalQueue.length}
+              />
+            )}
+          </section>
+        )}
         <AiComposer
           activeConversationAvailable={Boolean(activeConversation)}
           contextSources={availableContextSources}
@@ -906,8 +1260,8 @@ function AiAssistantPanel({
         editContent={reviewedFileEditContent}
         editError={reviewedFileEditError}
         items={fileChangeReviewItems}
-        onApplyEdit={applyReviewedFileEdit}
-        onApplyOperation={applyReviewedFileOperation}
+        onApplyEdit={applyReviewedFileEditAndResume}
+        onApplyOperation={applyReviewedFileOperationAndResume}
         onChangeEditContent={setFileEditReviewContent}
         onClose={closeFileChangeReview}
         onSelect={selectFileChangeReview}
@@ -923,10 +1277,6 @@ function AiAssistantPanel({
         onRename={renameConversation}
         onSelect={selectConversation}
         visible={historyVisible}
-      />
-      <AiAuditDrawer
-        onClose={() => setAuditVisible(false)}
-        visible={auditVisible}
       />
     </aside>
   );

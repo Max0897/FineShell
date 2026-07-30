@@ -4,6 +4,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { AiFileEditProposal } from "../ai-file-edits";
 import type { AiFileOperationProposal } from "../ai-file-operations";
 import type { AiRemoteFileContext } from "../ai-utils";
+import type { AiActionExecutionHandler } from "../ai-action-lifecycle";
 import type { AgentActionExecutionResult } from "../tauri-protocol";
 import type { AiMessage } from "./useAiConversations";
 import {
@@ -65,11 +66,7 @@ function assistantMessage(
 
 interface HarnessOptions {
   initialMessages: AiMessage[];
-  onExecuteAction: (
-    messageId: string,
-    actionId: string,
-    rollback?: boolean,
-  ) => Promise<AgentActionExecutionResult>;
+  onExecuteAction: AiActionExecutionHandler;
   onConfirm: (confirmation: AiFileChangeConfirmation) => void;
   onNotice: (type: "error" | "success" | "warning", content: string) => void;
 }
@@ -127,6 +124,50 @@ function executionResult(
 }
 
 describe("useAiFileChangeWorkflow", () => {
+  test("does not claim user confirmation for an automatically allowed edit", async () => {
+    const proposal = fileEditProposal();
+    const executeAction = mock(
+      async (
+        _messageId: string,
+        actionId: string,
+        _rollback?: boolean,
+        contentOverride?: string,
+      ) =>
+        executionResult(
+          actionId,
+          "file_edit",
+          remoteFile(
+            proposal.originalFile.path,
+            contentOverride ?? proposal.content,
+          ),
+        ),
+    );
+    const { result } = renderHook(() =>
+      useWorkflowHarness({
+        initialMessages: [assistantMessage([proposal])],
+        onExecuteAction: executeAction,
+        onConfirm: () => undefined,
+        onNotice: () => undefined,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.workflow.approveFileEditProposal(
+        "assistant-1",
+        proposal,
+        false,
+      );
+    });
+
+    expect(executeAction).toHaveBeenCalledWith(
+      "assistant-1",
+      proposal.id,
+      false,
+      proposal.content,
+      false,
+    );
+  });
+
   test("applies a reviewed file edit and records the returned snapshot", async () => {
     const proposal = fileEditProposal();
     const executeAction = mock(

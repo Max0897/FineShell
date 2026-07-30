@@ -1,4 +1,6 @@
+use regex::Regex;
 use serde_json::{json, Map, Value};
+use std::sync::OnceLock;
 
 use crate::agent::{AgentActionIntent, AgentActionRisk};
 use crate::agent_verification::AgentBusinessVerification;
@@ -6,7 +8,8 @@ use crate::agent_verification::AgentBusinessVerification;
 pub(crate) const MAX_FILE_EDIT_CHARS: usize = 60_000;
 pub(crate) const MAX_TERMINAL_COMMAND_CHARS: usize = 4_096;
 pub(crate) const MAX_COMMAND_PURPOSE_CHARS: usize = 240;
-pub(crate) const TERMINAL_INSERT_ACTION_TOOL: &str = "insert_terminal_command";
+pub(crate) const MAX_COMMAND_RISK_REASON_CHARS: usize = 240;
+pub(crate) const TERMINAL_EXECUTE_ACTION_TOOL: &str = "execute_terminal_command";
 
 fn parse_arguments(arguments: &str) -> Result<Map<String, Value>, String> {
     let Value::Object(arguments) =
@@ -64,6 +67,48 @@ fn normalize_purpose(purpose: &str) -> Result<String, String> {
         return Err("AI 命令用途无效".to_string());
     }
     Ok(purpose)
+}
+
+fn normalize_risk_reason(reason: &str) -> Result<String, String> {
+    let reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    if reason.is_empty()
+        || reason.chars().count() > MAX_COMMAND_RISK_REASON_CHARS
+        || reason.chars().any(char::is_control)
+    {
+        return Err("AI 命令风险说明无效".to_string());
+    }
+    Ok(reason)
+}
+
+fn command_requires_confirmation(command: &str) -> bool {
+    static DANGEROUS: OnceLock<Regex> = OnceLock::new();
+    static MUTATING: OnceLock<Regex> = OnceLock::new();
+    let dangerous = DANGEROUS.get_or_init(|| {
+        Regex::new(
+            r"(?i)(^|[;&|]\s*)(?:sudo\s+)?(?:rm\b|dd\b|mkfs(?:\.[\w-]+)?\b|wipefs\b|shutdown\b|reboot\b|poweroff\b|halt\b|kill(?:all)?\b|pkill\b)|:\(\)\s*\{\s*:\|:&\s*\};:",
+        )
+        .expect("terminal danger expression must compile")
+    });
+    let mutating = MUTATING.get_or_init(|| {
+        Regex::new(
+            r"(?i)\bsudo\b|\b(?:chmod|chown)\s+-R\b|\bsystemctl\s+(?:start|stop|restart|disable|mask)\b|\b(?:apt|apt-get|dnf|yum|pacman|apk|brew)\s+(?:install|remove|purge|upgrade)\b|(?:curl|wget)[^\r\n|]*\|\s*(?:ba)?sh\b|(?:^|\s)>(?:>|\s*)\s*/(?:etc|usr|var)/",
+        )
+        .expect("terminal mutation expression must compile")
+    });
+    dangerous.is_match(command) || mutating.is_match(command)
+}
+
+fn terminal_action_risk(command: &str, ai_risk: &str) -> Result<AgentActionRisk, String> {
+    if !matches!(ai_risk, "safe" | "caution" | "danger") {
+        return Err("AI 命令风险等级无效".to_string());
+    }
+    Ok(
+        if ai_risk == "safe" && !command_requires_confirmation(command) {
+            AgentActionRisk::LowRisk
+        } else {
+            AgentActionRisk::Elevated
+        },
+    )
 }
 
 fn intent(
@@ -197,8 +242,11 @@ pub(crate) fn proposal_action_intent(
             }
         }
         "propose_terminal_command" => {
-            if !exact_keys(&arguments, &["command", "purpose"])
-                && !exact_keys(&arguments, &["command", "purpose", "verification"])
+            if !exact_keys(&arguments, &["command", "purpose", "risk", "risk_reason"])
+                && !exact_keys(
+                    &arguments,
+                    &["command", "purpose", "risk", "risk_reason", "verification"],
+                )
             {
                 return Err("AI 终端命令动作参数无效".to_string());
             }
@@ -214,6 +262,17 @@ pub(crate) fn proposal_action_intent(
                     .and_then(Value::as_str)
                     .ok_or_else(|| "AI 命令用途无效".to_string())?,
             )?;
+            let ai_risk = arguments
+                .get("risk")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "AI 命令风险等级无效".to_string())?;
+            normalize_risk_reason(
+                arguments
+                    .get("risk_reason")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "AI 命令风险说明无效".to_string())?,
+            )?;
+            let risk = terminal_action_risk(command, ai_risk)?;
             let verification = arguments
                 .get("verification")
                 .cloned()
@@ -225,11 +284,11 @@ pub(crate) fn proposal_action_intent(
             }
             intent(
                 id,
-                TERMINAL_INSERT_ACTION_TOOL,
+                TERMINAL_EXECUTE_ACTION_TOOL,
                 normalized,
                 purpose,
-                "在当前终端会话中填入命令，等待用户手动提交",
-                AgentActionRisk::Elevated,
+                "在当前终端会话中提交命令并等待 Shell Integration 返回结果",
+                risk,
             )
         }
         _ => Ok(None),
@@ -240,7 +299,7 @@ pub(crate) fn proposal_action_intent(
 mod tests {
     use serde_json::json;
 
-    use super::{proposal_action_intent, TERMINAL_INSERT_ACTION_TOOL};
+    use super::{proposal_action_intent, TERMINAL_EXECUTE_ACTION_TOOL};
     use crate::agent::AgentActionRisk;
 
     #[test]
@@ -268,7 +327,7 @@ mod tests {
         let command = proposal_action_intent(
             "command-1",
             "propose_terminal_command",
-            r#"{"command":"  systemctl status nginx  ","purpose":"检查  nginx   状态"}"#,
+            r#"{"command":"  systemctl status nginx  ","purpose":"检查  nginx   状态","risk":"safe","risk_reason":"只读取服务状态"}"#,
         )
         .unwrap()
         .unwrap();
@@ -279,13 +338,13 @@ mod tests {
                 "purpose": "检查 nginx 状态",
             })
         );
-        assert_eq!(command.risk, AgentActionRisk::Elevated);
-        assert_eq!(command.tool, TERMINAL_INSERT_ACTION_TOOL);
+        assert_eq!(command.risk, AgentActionRisk::LowRisk);
+        assert_eq!(command.tool, TERMINAL_EXECUTE_ACTION_TOOL);
 
         let verified_command = proposal_action_intent(
             "command-2",
             "propose_terminal_command",
-            r#"{"command":"systemctl restart nginx","purpose":"重启服务","verification":{"kind":"service_active","service":"nginx.service"}}"#,
+            r#"{"command":"systemctl restart nginx","purpose":"重启服务","risk":"caution","risk_reason":"会重启正在运行的服务","verification":{"kind":"service_active","service":"nginx.service"}}"#,
         )
         .unwrap()
         .unwrap();
@@ -293,6 +352,16 @@ mod tests {
             verified_command.arguments["verification"],
             json!({ "kind": "service_active", "service": "nginx.service" })
         );
+        assert_eq!(verified_command.risk, AgentActionRisk::Elevated);
+
+        let understated = proposal_action_intent(
+            "command-3",
+            "propose_terminal_command",
+            r#"{"command":"sudo rm -rf /tmp/cache","purpose":"清理缓存","risk":"safe","risk_reason":"清理临时文件"}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(understated.risk, AgentActionRisk::Elevated);
     }
 
     #[test]
@@ -326,7 +395,7 @@ mod tests {
         assert!(proposal_action_intent(
             "command-1",
             "propose_terminal_command",
-            r#"{"command":"echo ok\necho unsafe","purpose":"测试"}"#,
+            r#"{"command":"echo ok\necho unsafe","purpose":"测试","risk":"safe","risk_reason":"输出文本"}"#,
         )
         .is_err());
     }

@@ -34,6 +34,10 @@ interface UseAiProposalStateOptions {
   onActionTransition: AiActionTransitionHandler;
   onActionTransitionError: (error: unknown) => void;
   onCommandLifecycleObserved: ObserveCommandLifecycle;
+  onCommandLifecycleProcessed?: (
+    proposalId: string,
+    submission: TerminalCommandSubmission,
+  ) => void;
   persistConversation: (conversation?: AiConversation) => Promise<void>;
   updateMessages: UpdateMessages;
 }
@@ -48,6 +52,7 @@ export function useAiProposalState({
   onActionTransition,
   onActionTransitionError,
   onCommandLifecycleObserved,
+  onCommandLifecycleProcessed,
   persistConversation,
   updateMessages,
 }: UseAiProposalStateOptions) {
@@ -288,12 +293,13 @@ export function useAiProposalState({
                   return markAiCommandProposalExecuted(current, submission);
                 }
                 const executed =
-                  current.status === "inserted"
+                  current.status === "approved"
                     ? markAiCommandProposalExecuted(current, submission)
                     : current;
                 return markAiCommandProposalCompleted(executed, submission);
               },
             );
+            onCommandLifecycleProcessed?.(proposal.id, submission);
           } catch (error) {
             processedCommandSubmissionsRef.current.delete(eventKey);
             onActionTransitionError(error);
@@ -309,6 +315,7 @@ export function useAiProposalState({
     isHostLoaded,
     onActionTransitionError,
     onCommandLifecycleObserved,
+    onCommandLifecycleProcessed,
     updateCommandProposalInConversation,
   ]);
 

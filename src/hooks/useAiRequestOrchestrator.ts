@@ -6,9 +6,11 @@ import {
   type AiDiagnosticPlan,
 } from "../ai-diagnostic-plans";
 import {
+  aiCommandApprovalToolResult,
   aiCommandProposalToolResult,
   createAiCommandProposal,
   isAiCommandProposalToolCall,
+  type AiCommandApprovalDecision,
   type AiCommandProposal,
 } from "../ai-command-proposals";
 import {
@@ -27,6 +29,10 @@ import {
   isAiFileEditToolCall,
   type AiFileEditProposal,
 } from "../ai-file-edits";
+import {
+  aiFileApprovalToolResult,
+  type AiFileApprovalDecision,
+} from "../ai-file-approvals";
 import {
   aiFileOperationToolResult,
   createAiFileOperationProposal,
@@ -129,6 +135,18 @@ interface ActiveDiagnosticPlanLocation {
   conversationId: string;
   hostId: string;
   messageId: string;
+}
+
+interface PendingCommandApproval {
+  reject: (error: Error) => void;
+  requestId: string;
+  resolve: (decision: AiCommandApprovalDecision) => void;
+}
+
+interface PendingFileApproval {
+  reject: (error: Error) => void;
+  requestId: string;
+  resolve: (decision: AiFileApprovalDecision) => void;
 }
 
 const defaultInvoke: AiRequestInvoke = (command, args) =>
@@ -246,6 +264,12 @@ export function useAiRequestOrchestrator({
   const backendDiagnosticPlanTasksRef = useRef(new Map<string, string>());
   const stoppedDiagnosticPlansRef = useRef(new Set<string>());
   const summaryRequestsRef = useRef(new Set<string>());
+  const pendingCommandApprovalsRef = useRef(
+    new Map<string, PendingCommandApproval>(),
+  );
+  const pendingFileApprovalsRef = useRef(
+    new Map<string, PendingFileApproval>(),
+  );
   const callbacksRef = useRef({
     onCancelError,
     onMissingModel,
@@ -259,51 +283,100 @@ export function useAiRequestOrchestrator({
     updateMessages,
   };
 
+  const decideCommandProposal = useCallback(
+    (proposalId: string, decision: AiCommandApprovalDecision) => {
+      const pending = pendingCommandApprovalsRef.current.get(proposalId);
+      if (!pending) return false;
+      pendingCommandApprovalsRef.current.delete(proposalId);
+      pending.resolve(decision);
+      return true;
+    },
+    [],
+  );
+
+  const decideFileProposal = useCallback(
+    (proposalId: string, decision: AiFileApprovalDecision) => {
+      const pending = pendingFileApprovalsRef.current.get(proposalId);
+      if (!pending) return false;
+      pendingFileApprovalsRef.current.delete(proposalId);
+      pending.resolve(decision);
+      return true;
+    },
+    [],
+  );
+
+  const rejectPendingCommandApprovals = useCallback(
+    (requestId: string, message = "AI 请求已取消") => {
+      for (const [proposalId, pending] of pendingCommandApprovalsRef.current) {
+        if (pending.requestId !== requestId) continue;
+        pendingCommandApprovalsRef.current.delete(proposalId);
+        pending.reject(new Error(message));
+      }
+    },
+    [],
+  );
+
+  const rejectPendingFileApprovals = useCallback(
+    (requestId: string, message = "AI 请求已取消") => {
+      for (const [proposalId, pending] of pendingFileApprovalsRef.current) {
+        if (pending.requestId !== requestId) continue;
+        pendingFileApprovalsRef.current.delete(proposalId);
+        pending.reject(new Error(message));
+      }
+    },
+    [],
+  );
+
   const cancelRequest = useCallback(async () => {
     const requestId = activeRequestRef.current?.requestId;
     if (!requestId) return;
     cancelledRequestsRef.current.add(requestId);
+    rejectPendingCommandApprovals(requestId);
+    rejectPendingFileApprovals(requestId);
     try {
       await invoke("ai_chat_cancel", { requestId });
     } catch (error) {
       callbacksRef.current.onCancelError?.(error);
     }
-  }, [invoke]);
+  }, [invoke, rejectPendingCommandApprovals, rejectPendingFileApprovals]);
 
-  const confirmDiagnosticPlan = useCallback(
-    (planId: string, selectedCallIds: string[]) => {
+  const decideDiagnosticPlan = useCallback(
+    (
+      planId: string,
+      decision: "approve" | "reject" | "stop",
+      selectedCallIds: string[],
+      feedback?: string,
+    ) => {
       const taskId = backendDiagnosticPlanTasksRef.current.get(planId);
-      if (taskId) {
-        void invoke("ai_task_plan_decide", {
-          request: {
-            taskId,
-            planId,
-            decision: "approve",
-            selectedCallIds,
-          },
-        }).catch((error) => callbacksRef.current.onCancelError?.(error));
-        return;
-      }
+      if (!taskId) return Promise.resolve();
+      return invoke("ai_task_plan_decide", {
+        request: {
+          taskId,
+          planId,
+          decision,
+          feedback: feedback?.trim() || undefined,
+          selectedCallIds,
+        },
+      }).catch((error) => callbacksRef.current.onCancelError?.(error));
     },
     [invoke],
   );
 
+  const confirmDiagnosticPlan = useCallback(
+    (planId: string, selectedCallIds: string[]) =>
+      decideDiagnosticPlan(planId, "approve", selectedCallIds),
+    [decideDiagnosticPlan],
+  );
+
   const cancelDiagnosticPlan = useCallback(
-    (planId: string) => {
-      const taskId = backendDiagnosticPlanTasksRef.current.get(planId);
-      if (taskId) {
-        void invoke("ai_task_plan_decide", {
-          request: {
-            taskId,
-            planId,
-            decision: "reject",
-            selectedCallIds: [],
-          },
-        }).catch((error) => callbacksRef.current.onCancelError?.(error));
-        return;
-      }
-    },
-    [invoke],
+    (planId: string) => decideDiagnosticPlan(planId, "reject", []),
+    [decideDiagnosticPlan],
+  );
+
+  const reviseDiagnosticPlan = useCallback(
+    (planId: string, feedback: string) =>
+      decideDiagnosticPlan(planId, "reject", [], feedback),
+    [decideDiagnosticPlan],
   );
 
   const stopDiagnosticPlan = useCallback(
@@ -347,6 +420,14 @@ export function useAiRequestOrchestrator({
     const activeRequest = activeRequestRef.current;
     if (activeRequest) {
       cancelledRequestsRef.current.add(activeRequest.requestId);
+      rejectPendingCommandApprovals(
+        activeRequest.requestId,
+        "终端会话已切换，AI 审批已取消",
+      );
+      rejectPendingFileApprovals(
+        activeRequest.requestId,
+        "终端会话已切换，AI 审批已取消",
+      );
       void invoke("ai_chat_cancel", {
         requestId: activeRequest.requestId,
       }).catch(() => undefined);
@@ -358,7 +439,12 @@ export function useAiRequestOrchestrator({
     stoppedDiagnosticPlansRef.current.clear();
     setActiveTask(undefined);
     setSending(false);
-  }, [invoke, sessionId]);
+  }, [
+    invoke,
+    rejectPendingCommandApprovals,
+    rejectPendingFileApprovals,
+    sessionId,
+  ]);
 
   useEffect(() => {
     let disposed = false;
@@ -685,11 +771,10 @@ export function useAiRequestOrchestrator({
               `AI 后端返回了未处理的工具调用：${unsupportedCalls[0]!.name}`,
             );
           }
-          if (result.content.trim()) {
-            responseParts.push(result.content.trim());
-          }
-
           if (!result.toolCalls.length) {
+            if (result.content.trim()) {
+              responseParts.push(result.content.trim());
+            }
             completed = updateMessages(
               targetHostId,
               targetConversationId,
@@ -723,6 +808,14 @@ export function useAiRequestOrchestrator({
           const nextOperationProposals: AiFileOperationProposal[] = [];
           const nextCommandProposals: AiCommandProposal[] = [];
           const proposalResults = new Map<string, AiToolResult>();
+          const commandApprovalDecisions = new Map<
+            string,
+            Promise<AiCommandApprovalDecision>
+          >();
+          const fileApprovalDecisions = new Map<
+            string,
+            Promise<AiFileApprovalDecision>
+          >();
 
           for (const call of result.toolCalls.filter(isAiFileEditToolCall)) {
             let proposalError: string | undefined;
@@ -740,6 +833,16 @@ export function useAiRequestOrchestrator({
               }
               proposedFilePaths.add(proposal.originalFile.path);
               nextProposals.push(proposal);
+              fileApprovalDecisions.set(
+                call.id,
+                new Promise<AiFileApprovalDecision>((resolve, reject) => {
+                  pendingFileApprovalsRef.current.set(call.id, {
+                    reject,
+                    requestId,
+                    resolve,
+                  });
+                }),
+              );
             } catch (error) {
               proposalError = commandErrorMessage(error);
             }
@@ -768,6 +871,16 @@ export function useAiRequestOrchestrator({
               }
               touchedPaths.forEach((path) => proposedFilePaths.add(path));
               nextOperationProposals.push(proposal);
+              fileApprovalDecisions.set(
+                call.id,
+                new Promise<AiFileApprovalDecision>((resolve, reject) => {
+                  pendingFileApprovalsRef.current.set(call.id, {
+                    reject,
+                    requestId,
+                    resolve,
+                  });
+                }),
+              );
             } catch (error) {
               proposalError = commandErrorMessage(error);
             }
@@ -780,7 +893,7 @@ export function useAiRequestOrchestrator({
             let proposalError: string | undefined;
             try {
               if (!terminalProposalEnabled) {
-                throw new Error("当前终端会话不允许填入命令");
+                throw new Error("当前终端会话不允许提交命令");
               }
               const proposal = createAiCommandProposal(
                 call,
@@ -792,36 +905,54 @@ export function useAiRequestOrchestrator({
               }
               proposedCommands.add(proposal.command);
               nextCommandProposals.push(proposal);
+              commandApprovalDecisions.set(
+                call.id,
+                new Promise<AiCommandApprovalDecision>((resolve, reject) => {
+                  pendingCommandApprovalsRef.current.set(call.id, {
+                    reject,
+                    requestId,
+                    resolve,
+                  });
+                }),
+              );
             } catch (error) {
               proposalError = commandErrorMessage(error);
             }
-            proposalResults.set(
-              call.id,
-              aiCommandProposalToolResult(call, proposalError),
-            );
+            if (proposalError) {
+              proposalResults.set(
+                call.id,
+                aiCommandProposalToolResult(call, proposalError),
+              );
+            }
           }
-          updateMessages(targetHostId, targetConversationId, (current) =>
-            current.map((message) =>
-              message.id === assistantMessage.id
-                ? {
-                    ...message,
-                    content: responseParts.join("\n\n"),
-                    fileEditProposals: [
-                      ...(message.fileEditProposals ?? []),
-                      ...nextProposals,
-                    ],
-                    fileOperationProposals: [
-                      ...(message.fileOperationProposals ?? []),
-                      ...nextOperationProposals,
-                    ],
-                    commandProposals: [
-                      ...(message.commandProposals ?? []),
-                      ...nextCommandProposals,
-                    ],
-                  }
-                : message,
-            ),
+          const proposalConversation = updateMessages(
+            targetHostId,
+            targetConversationId,
+            (current) =>
+              current.map((message) =>
+                message.id === assistantMessage.id
+                  ? {
+                      ...message,
+                      content: "",
+                      fileEditProposals: [
+                        ...(message.fileEditProposals ?? []),
+                        ...nextProposals,
+                      ],
+                      fileOperationProposals: [
+                        ...(message.fileOperationProposals ?? []),
+                        ...nextOperationProposals,
+                      ],
+                      commandProposals: [
+                        ...(message.commandProposals ?? []),
+                        ...nextCommandProposals,
+                      ],
+                    }
+                  : message,
+              ),
           );
+          if (commandApprovalDecisions.size || fileApprovalDecisions.size) {
+            await persistConversation(proposalConversation);
+          }
 
           const toolResults: AiToolResult[] = [];
           for (const call of result.toolCalls) {
@@ -829,6 +960,13 @@ export function useAiRequestOrchestrator({
               throw new Error("AI 请求已取消");
             }
             if (isAiFileEditToolCall(call)) {
+              const decision = fileApprovalDecisions.get(call.id);
+              if (decision) {
+                toolResults.push(
+                  aiFileApprovalToolResult(call, await decision),
+                );
+                continue;
+              }
               toolResults.push(
                 proposalResults.get(call.id) ??
                   aiFileEditToolResult(call, "文件修改建议未通过本地校验"),
@@ -836,6 +974,13 @@ export function useAiRequestOrchestrator({
               continue;
             }
             if (isAiFileOperationToolCall(call)) {
+              const decision = fileApprovalDecisions.get(call.id);
+              if (decision) {
+                toolResults.push(
+                  aiFileApprovalToolResult(call, await decision),
+                );
+                continue;
+              }
               toolResults.push(
                 proposalResults.get(call.id) ??
                   aiFileOperationToolResult(
@@ -846,6 +991,13 @@ export function useAiRequestOrchestrator({
               continue;
             }
             if (isAiCommandProposalToolCall(call)) {
+              const decision = commandApprovalDecisions.get(call.id);
+              if (decision) {
+                toolResults.push(
+                  aiCommandApprovalToolResult(call, await decision),
+                );
+                continue;
+              }
               toolResults.push(
                 proposalResults.get(call.id) ??
                   aiCommandProposalToolResult(
@@ -870,43 +1022,69 @@ export function useAiRequestOrchestrator({
         const cancelled =
           cancelledRequestsRef.current.has(requestId) ||
           (error instanceof FineShellCommandError && error.code === "cancelled");
-        updateMessages(targetHostId, targetConversationId, (current) =>
-          current.map((message) =>
-            message.id === assistantMessage.id
-              ? (() => {
-                  const toolRuns = message.toolRuns?.map((run) =>
-                    run.status === "running" || run.status === "pending"
-                      ? finishAiToolRun(
-                          run.status === "pending"
-                            ? { ...run, startedAt: Date.now() }
-                            : run,
-                          {
-                            error: cancelled ? "已停止" : "调用未完成",
-                            status: cancelled ? "cancelled" : "failed",
-                            summary: cancelled
-                              ? "用户已停止生成"
-                              : "调用未完成",
-                          },
-                        )
-                      : run,
-                  );
-                  return {
-                    ...message,
-                    failed: true,
-                    error: cancelled ? "已停止生成" : commandErrorMessage(error),
-                    diagnosticPlans: message.diagnosticPlans?.map((plan) =>
-                      plan.status === "pending" || plan.status === "running"
-                        ? completeAiDiagnosticPlan(plan, toolRuns ?? [])
-                        : plan,
-                    ),
-                    toolRuns,
-                  };
-                })()
-              : message,
-          ),
+        const failedConversation = updateMessages(
+          targetHostId,
+          targetConversationId,
+          (current) =>
+            current.map((message) =>
+              message.id === assistantMessage.id
+                ? (() => {
+                    const toolRuns = message.toolRuns?.map((run) =>
+                      run.status === "running" || run.status === "pending"
+                        ? finishAiToolRun(
+                            run.status === "pending"
+                              ? { ...run, startedAt: Date.now() }
+                              : run,
+                            {
+                              error: cancelled ? "已停止" : "调用未完成",
+                              status: cancelled ? "cancelled" : "failed",
+                              summary: cancelled
+                                ? "用户已停止生成"
+                                : "调用未完成",
+                            },
+                          )
+                        : run,
+                    );
+                    return {
+                      ...message,
+                      commandProposals: message.commandProposals?.map(
+                        (proposal) =>
+                          proposal.status === "pending"
+                            ? { ...proposal, status: "rejected" as const }
+                            : proposal,
+                      ),
+                      fileEditProposals: message.fileEditProposals?.map(
+                        (proposal) =>
+                          proposal.status === "pending"
+                            ? { ...proposal, status: "rejected" as const }
+                            : proposal,
+                      ),
+                      fileOperationProposals:
+                        message.fileOperationProposals?.map((proposal) =>
+                          proposal.status === "pending"
+                            ? { ...proposal, status: "rejected" as const }
+                            : proposal,
+                        ),
+                      failed: true,
+                      error: cancelled
+                        ? "已停止生成"
+                        : commandErrorMessage(error),
+                      diagnosticPlans: message.diagnosticPlans?.map((plan) =>
+                        plan.status === "pending" || plan.status === "running"
+                          ? completeAiDiagnosticPlan(plan, toolRuns ?? [])
+                          : plan,
+                      ),
+                      toolRuns,
+                    };
+                  })()
+                : message,
+            ),
         );
+        await persistConversation(failedConversation);
         return undefined;
       } finally {
+        rejectPendingCommandApprovals(requestId);
+        rejectPendingFileApprovals(requestId);
         cancelledRequestsRef.current.delete(requestId);
         for (const [planId, location] of activeDiagnosticPlansRef.current) {
           if (location.messageId === assistantMessage.id) {
@@ -926,6 +1104,8 @@ export function useAiRequestOrchestrator({
       invoke,
       persistConversation,
       queueConversationSummary,
+      rejectPendingCommandApprovals,
+      rejectPendingFileApprovals,
       setDraft,
       settings.aiBaseUrl,
       settings.aiCommandProposalsEnabled,
@@ -942,6 +1122,9 @@ export function useAiRequestOrchestrator({
     cancelDiagnosticPlan,
     cancelRequest,
     confirmDiagnosticPlan,
+    decideCommandProposal,
+    decideFileProposal,
+    reviseDiagnosticPlan,
     sendMessage,
     sending,
     stopDiagnosticPlan,

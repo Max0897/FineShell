@@ -1,6 +1,10 @@
 import { normalizeAiRemotePath } from "./ai-file-operations";
 import { normalizeAiCommandVerification } from "./ai-command-proposals";
-import { normalizeAiTerminalCommand } from "./ai-utils";
+import {
+  combineAiTerminalCommandAssessment,
+  normalizeAiTerminalCommand,
+  type AiCommandRisk,
+} from "./ai-utils";
 import type {
   AgentActionIntent,
   AgentActionRisk,
@@ -13,11 +17,11 @@ const PROPOSAL_TOOLS = new Set([
   "propose_terminal_command",
 ]);
 
-export const AI_TERMINAL_INSERT_ACTION_TOOL_NAME = "insert_terminal_command";
+export const AI_TERMINAL_EXECUTE_ACTION_TOOL_NAME = "execute_terminal_command";
 
 function actionToolForProposal(tool: string) {
   return tool === "propose_terminal_command"
-    ? AI_TERMINAL_INSERT_ACTION_TOOL_NAME
+    ? AI_TERMINAL_EXECUTE_ACTION_TOOL_NAME
     : tool;
 }
 
@@ -103,14 +107,28 @@ function normalizedCallArguments(call: AiToolCall): {
     throw new Error("AI 文件操作动作参数无效");
   }
   if (call.name === "propose_terminal_command") {
-    if ((!exactKeys(value, ["command", "purpose"]) &&
-      !exactKeys(value, ["command", "purpose", "verification"])) ||
+    if ((!exactKeys(value, ["command", "purpose", "risk", "risk_reason"]) &&
+      !exactKeys(value, [
+        "command",
+        "purpose",
+        "risk",
+        "risk_reason",
+        "verification",
+      ])) ||
       typeof value.command !== "string" ||
-      typeof value.purpose !== "string") {
+      typeof value.purpose !== "string" ||
+      !["safe", "caution", "danger"].includes(String(value.risk)) ||
+      typeof value.risk_reason !== "string") {
       throw new Error("AI 终端命令动作参数无效");
     }
+    const command = normalizeAiTerminalCommand(value.command);
+    const assessment = combineAiTerminalCommandAssessment(
+      command,
+      value.risk as AiCommandRisk,
+      value.risk_reason,
+    );
     const normalizedArguments: Record<string, unknown> = {
-      command: normalizeAiTerminalCommand(value.command),
+      command,
       purpose: value.purpose.trim().replace(/\s+/g, " "),
     };
     if (value.verification !== undefined) {
@@ -120,7 +138,7 @@ function normalizedCallArguments(call: AiToolCall): {
     }
     return {
       arguments: normalizedArguments,
-      risk: "elevated",
+      risk: assessment.risk === "safe" ? "low_risk" : "elevated",
     };
   }
   throw new Error("AI 返回了不支持的动作工具");

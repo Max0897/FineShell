@@ -12,7 +12,6 @@ use crate::{
         agent_apply_file_operation, agent_write_text_file, AiSftpFileOperationKind,
         AiSftpFileOperationRequest, SftpSessionManager, SftpTextFile,
     },
-    ssh::SshSessionManager,
 };
 
 #[derive(Deserialize)]
@@ -113,7 +112,6 @@ fn operation_request(
 async fn execute_action(
     action: &AuthorizedAgentAction,
     sftp_manager: SftpSessionManager,
-    ssh_manager: SshSessionManager,
 ) -> Result<AgentActionExecutionResult, String> {
     match action.tool.as_str() {
         "propose_file_edit" => {
@@ -162,10 +160,9 @@ async fn execute_action(
                 verification: Some(verification),
             })
         }
-        "insert_terminal_command" => {
+        "execute_terminal_command" => {
             let arguments: TerminalCommandArguments = parse_arguments(action)?;
-            let _ = arguments.purpose;
-            ssh_manager.write(&action.session_id, arguments.command.into_bytes())?;
+            let _ = (arguments.command, arguments.purpose);
             Ok(AgentActionExecutionResult {
                 action_id: action.action_id.clone(),
                 action_type: "terminal_command",
@@ -187,7 +184,6 @@ pub(crate) async fn ai_task_action_execute(
     app: AppHandle,
     task_manager: State<'_, AgentTaskManager>,
     sftp_manager: State<'_, SftpSessionManager>,
-    ssh_manager: State<'_, SshSessionManager>,
     request: AgentActionExecutionRequest,
 ) -> CommandResult<AgentActionExecutionResult> {
     let operation = "ai_task_action_execute";
@@ -201,13 +197,7 @@ pub(crate) async fn ai_task_action_execute(
         )
         .map_err(|error| CommandError::from_message(operation, error))?;
     emit_task_events(&app, events);
-    match execute_action(
-        &action,
-        sftp_manager.inner().clone(),
-        ssh_manager.inner().clone(),
-    )
-    .await
-    {
+    match execute_action(&action, sftp_manager.inner().clone()).await {
         Ok(result) => {
             if action.execution_kind == AgentActionExecutionKind::TrustedExecutor {
                 let verification = result.verification.ok_or_else(|| {

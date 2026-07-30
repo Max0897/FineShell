@@ -24,7 +24,6 @@
     "ai_chat_cancel": true,
     "ai_task_get": true,
     "ai_task_events_since": true,
-    "ai_task_audit_events": true,
     "ai_task_plan_decide": true,
     "ai_task_action_transition": true,
     "ai_task_command_observe": true,
@@ -154,6 +153,7 @@
     "full_access": true
   },
   "agentActionRisks": {
+    "low_risk": true,
     "read_only": true,
     "reversible_write": true,
     "elevated": true,

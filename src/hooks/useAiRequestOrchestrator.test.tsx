@@ -165,28 +165,25 @@ describe("useAiRequestOrchestrator", () => {
           };
         }
         const index = request.toolRounds.length;
-        const proposedCommand = `echo round-${index}`;
-        const purpose = `记录第 ${index + 1} 轮建议`;
+        const path = `/tmp/round-${index}.txt`;
+        const content = `round-${index}`;
         return {
           actionIntents: [
             {
-              arguments: { command: proposedCommand, purpose },
-              expectedEffect: "在当前终端会话中填入并执行命令",
-              id: `call-command-${index}`,
-              reason: purpose,
-              risk: "elevated",
-              tool: "insert_terminal_command",
+              arguments: { content, path },
+              expectedEffect: "完整替换指定远程文件的内容",
+              id: `call-edit-${index}`,
+              reason: `修改 ${path}`,
+              risk: "reversible_write",
+              tool: "propose_file_edit",
             },
           ],
           content: "",
           toolCalls: [
             {
-              arguments: JSON.stringify({
-                command: proposedCommand,
-                purpose,
-              }),
-              id: `call-command-${index}`,
-              name: "propose_terminal_command",
+              arguments: JSON.stringify({ content, path }),
+              id: `call-edit-${index}`,
+              name: "propose_file_edit",
             },
           ],
         };
@@ -206,8 +203,40 @@ describe("useAiRequestOrchestrator", () => {
       }),
     );
 
+    let send!: Promise<AiConversation | undefined>;
+    act(() => {
+      send = result.current.sendMessage({
+        ...baseSendOptions,
+        context: Array.from(
+          { length: 8 },
+          (_, index) => `/tmp/round-${index}.txt\nold-${index}`,
+        ).join("\n"),
+        editableFiles: Array.from({ length: 8 }, (_, index) => ({
+          content: `old-${index}`,
+          name: `round-${index}.txt`,
+          path: `/tmp/round-${index}.txt`,
+          size: 5,
+        })),
+      });
+    });
+
+    for (let index = 0; index < 8; index += 1) {
+      await waitFor(() =>
+        expect(
+          callbacks.current().messages[1]?.fileEditProposals,
+        ).toHaveLength(index + 1),
+      );
+      act(() => {
+        expect(
+          result.current.decideFileProposal(`call-edit-${index}`, {
+            kind: "execution_completed",
+            summary: "远程文件已更新",
+          }),
+        ).toBe(true);
+      });
+    }
     await act(async () => {
-      await result.current.sendMessage(baseSendOptions);
+      await send;
     });
 
     expect(requests[requests.length - 1]).toMatchObject({
@@ -217,7 +246,105 @@ describe("useAiRequestOrchestrator", () => {
       content: "已根据现有诊断结果完成总结，未执行更多工具。",
       failed: false,
     });
-    expect(callbacks.current().messages[1]?.commandProposals).toHaveLength(8);
+    expect(callbacks.current().messages[1]?.fileEditProposals).toHaveLength(8);
+  });
+
+  test("pauses a terminal tool call until terminal execution completes", async () => {
+    const requests: Array<{ toolRounds: Array<{ results: Array<{ content: string }> }> }> = [];
+    const invoke = mock(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command !== "ai_chat_start") {
+          throw new Error(`unexpected command: ${command}`);
+        }
+        const request = args?.request as (typeof requests)[number];
+        requests.push(request);
+        if (request.toolRounds.length) {
+          return { content: "命令执行成功，当前内存状态正常。", toolCalls: [] };
+        }
+        return {
+          actionIntents: [
+            {
+              arguments: { command: "systemctl restart nginx", purpose: "重启 Nginx" },
+              expectedEffect: "在当前终端会话中填入命令，等待用户手动提交",
+              id: "command-approval-1",
+              reason: "重启 Nginx",
+              risk: "elevated",
+              tool: "execute_terminal_command",
+            },
+          ],
+          content: "需要执行一项终端操作。",
+          toolCalls: [
+            {
+              arguments: JSON.stringify({
+                command: "systemctl restart nginx",
+                purpose: "重启 Nginx",
+                risk: "caution",
+                risk_reason: "会重启正在运行的服务",
+              }),
+              id: "command-approval-1",
+              name: "propose_terminal_command",
+            },
+          ],
+        };
+      },
+    ) as unknown as AiRequestInvoke;
+    const callbacks = createConversationCallbacks();
+    const persistConversation = mock(async () => undefined);
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        invoke,
+        listenToStream: async () => () => undefined,
+        persistConversation,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    let send!: Promise<AiConversation | undefined>;
+    act(() => {
+      send = result.current.sendMessage(baseSendOptions);
+    });
+    await waitFor(() =>
+      expect(callbacks.current().messages[1]?.commandProposals).toHaveLength(1),
+    );
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(result.current.sending).toBe(true);
+    expect(callbacks.current().messages[1]?.content).toBe("");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      expect(
+        result.current.decideCommandProposal("command-approval-1", {
+          durationMs: 850,
+          exitCode: 0,
+          kind: "execution_completed",
+          output: "Mem: 1.8Gi used, 2.0Gi free",
+        }),
+      ).toBe(true);
+    });
+    await act(async () => {
+      await send;
+    });
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(requests[1]!.toolRounds[0]!.results[0]!.content)).toEqual(
+      expect.objectContaining({
+        decision: "approved_and_completed",
+        exitCode: 0,
+        output: "Mem: 1.8Gi used, 2.0Gi free",
+      }),
+    );
+    expect(callbacks.current().messages[1]?.content).toBe(
+      "命令执行成功，当前内存状态正常。",
+    );
+    expect(result.current.sending).toBe(false);
   });
 
   test("streams only the active request and persists its completed answer", async () => {

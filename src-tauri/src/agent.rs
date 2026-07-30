@@ -32,7 +32,6 @@ const MAX_OBSERVED_COMMAND_DURATION_MS: u64 = 24 * 60 * 60 * 1_000;
 const APPROVAL_CREDENTIAL_TTL_MS: u64 = 10 * 60 * 1_000;
 const MAX_AGENT_REPAIR_ATTEMPTS: u8 = 2;
 const MAX_AGENT_EVENTS_PER_TASK: usize = 128;
-const MAX_AGENT_AUDIT_EVENTS: usize = 1_000;
 const AGENT_RUNTIME_STATE_VERSION: u8 = 1;
 const AGENT_RUNTIME_STATE_FILE: &str = "ai-agent-runtime.json";
 
@@ -121,6 +120,7 @@ pub(crate) struct AgentPlan {
 #[allow(dead_code)]
 pub(crate) enum AgentActionRisk {
     ReadOnly,
+    LowRisk,
     ReversibleWrite,
     Elevated,
     Critical,
@@ -524,7 +524,7 @@ impl AgentPlanApproval {
 pub(crate) enum AgentPlanDecision {
     Pending,
     Approve(AgentPlanApproval),
-    Reject,
+    Reject(Option<String>),
     Stop,
 }
 
@@ -689,23 +689,6 @@ impl AgentTaskManager {
             .cloned()
             .collect())
     }
-
-    fn recent_events(&self, limit: usize) -> Result<Vec<AgentTaskEvent>, String> {
-        let events = self
-            .events
-            .lock()
-            .map_err(|_| "AI 事件状态不可用".to_string())?;
-        let mut recent = events
-            .values()
-            .flat_map(|queue| queue.iter().cloned())
-            .collect::<Vec<_>>();
-        recent.sort_by_key(|event| (event.task.updated_at, event.sequence));
-        let keep = limit.clamp(1, MAX_AGENT_AUDIT_EVENTS);
-        if recent.len() > keep {
-            recent.drain(..recent.len() - keep);
-        }
-        Ok(recent)
-    }
 }
 
 pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
@@ -731,6 +714,8 @@ pub(crate) struct AgentPlanDecisionRequest {
     task_id: String,
     plan_id: String,
     decision: AgentPlanDecisionKind,
+    #[serde(default)]
+    feedback: Option<String>,
     #[serde(default)]
     selected_call_ids: Vec<String>,
 }
@@ -796,7 +781,7 @@ pub(crate) struct AuthorizedAgentAction {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum AgentActionExecutionKind {
     TrustedExecutor,
-    TerminalInsert,
+    TerminalCommand,
 }
 
 #[derive(Clone, Debug)]
@@ -981,7 +966,7 @@ impl AgentTask {
             action.reason = match action.tool.as_str() {
                 "propose_file_edit" => "远程文件修改".to_string(),
                 "propose_file_operation" => "远程文件操作".to_string(),
-                "insert_terminal_command" => "终端命令".to_string(),
+                "execute_terminal_command" => "终端命令".to_string(),
                 _ => "受控动作".to_string(),
             };
             action.expected_effect = "动作效果已脱敏".to_string();
@@ -1233,7 +1218,7 @@ impl AgentTask {
                     _ => Err("AI 文件操作类型无效".to_string()),
                 }
             }
-            "insert_terminal_command" => {
+            "execute_terminal_command" => {
                 if self.terminal_session_id.is_none() {
                     return Err("AI 终端命令缺少绑定会话".to_string());
                 }
@@ -1726,7 +1711,7 @@ impl AgentTaskManager {
                 .iter()
                 .position(|action| action.id == request.action_id)
                 .ok_or_else(|| "AI 动作不存在".to_string())?;
-            if task.actions[index].tool != "insert_terminal_command" {
+            if task.actions[index].tool != "execute_terminal_command" {
                 return Err("AI 动作不是终端命令提案".to_string());
             }
             let trusted_command = task.actions[index]
@@ -2147,21 +2132,21 @@ impl AgentTaskManager {
                 .iter()
                 .find(|action| action.id == action_id)
                 .ok_or_else(|| "AI 动作不存在".to_string())?;
-            let execution_kind = if action.tool == "insert_terminal_command" {
-                AgentActionExecutionKind::TerminalInsert
+            let execution_kind = if action.tool == "execute_terminal_command" {
+                AgentActionExecutionKind::TerminalCommand
             } else {
                 AgentActionExecutionKind::TrustedExecutor
             };
-            if rollback && execution_kind == AgentActionExecutionKind::TerminalInsert {
+            if rollback && execution_kind == AgentActionExecutionKind::TerminalCommand {
                 return Err("终端命令不能通过文件回滚流程撤销".to_string());
             }
             if rollback {
                 if action.status != AgentActionStatus::Succeeded {
                     return Err("AI 动作当前不能回滚".to_string());
                 }
-            } else if execution_kind == AgentActionExecutionKind::TerminalInsert {
+            } else if execution_kind == AgentActionExecutionKind::TerminalCommand {
                 if action.status != AgentActionStatus::Pending {
-                    return Err("AI 命令当前不能再次填入".to_string());
+                    return Err("AI 命令当前不能再次审批".to_string());
                 }
             } else if !matches!(
                 action.status,
@@ -2257,14 +2242,18 @@ impl AgentTaskManager {
         }
         let transition = if rollback {
             AgentActionTransition::RollbackStart
-        } else if execution.execution_kind == AgentActionExecutionKind::TerminalInsert {
+        } else if execution.execution_kind == AgentActionExecutionKind::TerminalCommand {
             AgentActionTransition::Approve
         } else {
             AgentActionTransition::Start
         };
         let summary = if rollback {
             "用户确认回滚该动作"
-        } else if execution.execution_kind == AgentActionExecutionKind::TerminalInsert {
+        } else if execution.execution_kind == AgentActionExecutionKind::TerminalCommand
+            && policy.decision == PolicyDecision::Allow
+        {
+            "审批策略允许执行终端命令"
+        } else if execution.execution_kind == AgentActionExecutionKind::TerminalCommand {
             "用户批准终端命令"
         } else if policy.decision == PolicyDecision::Allow {
             "审批策略允许执行该动作"
@@ -2447,6 +2436,19 @@ impl AgentTaskManager {
         {
             return Err("AI 计划选择无效".to_string());
         }
+        let feedback = request
+            .feedback
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if feedback
+            .as_ref()
+            .is_some_and(|value| value.chars().count() > 1_000)
+        {
+            return Err("AI 审批反馈过长".to_string());
+        }
+        if feedback.is_some() && !matches!(request.decision, AgentPlanDecisionKind::Reject) {
+            return Err("AI 审批反馈只能用于驳回决定".to_string());
+        }
         let (host_id, session_id, current_directory) = {
             let tasks = self
                 .tasks
@@ -2534,7 +2536,7 @@ impl AgentTaskManager {
                     .lock()
                     .map_err(|_| "AI 审批凭证状态不可用".to_string())?
                     .revoke_plan(&request.task_id, &request.plan_id);
-                AgentPlanDecision::Reject
+                AgentPlanDecision::Reject(feedback)
             }
             AgentPlanDecisionKind::Stop => {
                 self.approval_credentials
@@ -2716,16 +2718,6 @@ pub(crate) fn ai_task_events_since(
 }
 
 #[tauri::command]
-pub(crate) fn ai_task_audit_events(
-    manager: State<'_, AgentTaskManager>,
-    limit: Option<usize>,
-) -> CommandResult<Vec<AgentTaskEvent>> {
-    manager
-        .recent_events(limit.unwrap_or(MAX_AGENT_AUDIT_EVENTS))
-        .map_err(|error| CommandError::from_message("ai_task_audit_events", error))
-}
-
-#[tauri::command]
 pub(crate) fn ai_task_get(
     manager: State<'_, AgentTaskManager>,
     task_id: String,
@@ -2884,7 +2876,7 @@ mod tests {
     fn terminal_command_intent() -> AgentActionIntent {
         AgentActionIntent {
             id: "command-1".to_string(),
-            tool: "insert_terminal_command".to_string(),
+            tool: "execute_terminal_command".to_string(),
             arguments: serde_json::json!({
                 "command": "systemctl status nginx",
                 "purpose": "检查 Nginx 状态",
@@ -2893,6 +2885,12 @@ mod tests {
             expected_effect: "将命令填入绑定的终端".to_string(),
             risk: AgentActionRisk::Elevated,
         }
+    }
+
+    fn low_risk_terminal_command_intent() -> AgentActionIntent {
+        let mut intent = terminal_command_intent();
+        intent.risk = AgentActionRisk::LowRisk;
+        intent
     }
 
     fn verified_terminal_command_intent() -> AgentActionIntent {
@@ -2988,9 +2986,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2, 3]
         );
-        let recent = restored.recent_events(1).unwrap();
-        assert_eq!(recent.len(), 1);
-        assert_eq!(recent[0].sequence, 3);
         assert_eq!(
             restored.begin_model_turn(&task_context).unwrap_err(),
             "应用重启前的 AI 任务仅供查看，请发起新任务"
@@ -3238,7 +3233,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_commands_still_require_confirmation_in_full_access_mode() {
+    fn terminal_commands_run_without_confirmation_in_full_access_mode() {
         let manager = AgentTaskManager::default();
         let mut full_access = context();
         full_access.approval_mode = AgentApprovalMode::FullAccess;
@@ -3248,24 +3243,46 @@ mod tests {
             .unwrap();
         manager.finish_model_turn("task-1", false).unwrap();
 
-        assert_eq!(
-            manager
-                .authorize_action_execution("task-1", "command-1", false, false, None)
-                .unwrap_err(),
-            "该 AI 动作需要本次用户审批"
-        );
         let (action, events) = manager
-            .authorize_action_execution("task-1", "command-1", false, true, None)
+            .authorize_action_execution("task-1", "command-1", false, false, None)
             .unwrap();
         assert_eq!(
             action.execution_kind,
-            AgentActionExecutionKind::TerminalInsert
+            AgentActionExecutionKind::TerminalCommand
         );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, AgentTaskEventKind::ActionApproved);
         assert_eq!(
             events[0].task.actions[0].status,
             AgentActionStatus::Approved
+        );
+    }
+
+    #[test]
+    fn auto_safe_approves_only_commands_assessed_as_low_risk() {
+        let manager = AgentTaskManager::default();
+        let mut auto_safe = context();
+        auto_safe.approval_mode = AgentApprovalMode::AutoSafe;
+        manager.begin_model_turn(&auto_safe).unwrap();
+        manager
+            .register_actions("task-1", vec![low_risk_terminal_command_intent()])
+            .unwrap();
+        manager.finish_model_turn("task-1", false).unwrap();
+        assert!(manager
+            .authorize_action_execution("task-1", "command-1", false, false, None)
+            .is_ok());
+
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        manager
+            .register_actions("task-1", vec![low_risk_terminal_command_intent()])
+            .unwrap();
+        manager.finish_model_turn("task-1", false).unwrap();
+        assert_eq!(
+            manager
+                .authorize_action_execution("task-1", "command-1", false, false, None)
+                .unwrap_err(),
+            "该 AI 动作需要本次用户审批"
         );
     }
 
@@ -3731,6 +3748,7 @@ mod tests {
                 task_id: "task-1".to_string(),
                 plan_id: "plan-1".to_string(),
                 decision: AgentPlanDecisionKind::Approve,
+                feedback: None,
                 selected_call_ids: vec!["call-1".to_string()],
             })
             .unwrap();
@@ -3755,6 +3773,7 @@ mod tests {
                     task_id: "task-1".to_string(),
                     plan_id: "plan-1".to_string(),
                     decision: AgentPlanDecisionKind::Approve,
+                    feedback: None,
                     selected_call_ids: vec!["call-1".to_string()],
                 })
                 .unwrap_err(),
@@ -3766,6 +3785,7 @@ mod tests {
                     task_id: "task-1".to_string(),
                     plan_id: "other-plan".to_string(),
                     decision: AgentPlanDecisionKind::Reject,
+                    feedback: None,
                     selected_call_ids: Vec::new(),
                 })
                 .unwrap_err(),
@@ -3785,6 +3805,7 @@ mod tests {
                 task_id: "task-1".to_string(),
                 plan_id: "plan-1".to_string(),
                 decision: AgentPlanDecisionKind::Approve,
+                feedback: None,
                 selected_call_ids: vec!["call-1".to_string()],
             })
             .unwrap();
@@ -3802,6 +3823,30 @@ mod tests {
                 )
                 .unwrap_err(),
             "AI 审批凭证不存在或已被消费"
+        );
+    }
+
+    #[test]
+    fn rejected_plan_preserves_bounded_user_feedback_for_the_agent() {
+        let manager = AgentTaskManager::default();
+        manager.begin_model_turn(&context()).unwrap();
+        let (receiver, _) = manager
+            .set_plan("task-1", network_plan(), network_approval_requirements())
+            .unwrap();
+
+        manager
+            .decide_plan(AgentPlanDecisionRequest {
+                task_id: "task-1".to_string(),
+                plan_id: "plan-1".to_string(),
+                decision: AgentPlanDecisionKind::Reject,
+                feedback: Some("  不要访问公网，只读取本机连接  ".to_string()),
+                selected_call_ids: Vec::new(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            receiver.borrow().clone(),
+            AgentPlanDecision::Reject(Some("不要访问公网，只读取本机连接".to_string()))
         );
     }
 
@@ -3895,6 +3940,7 @@ mod tests {
         assert_eq!(
             serialized_values(&[
                 AgentActionRisk::ReadOnly,
+                AgentActionRisk::LowRisk,
                 AgentActionRisk::ReversibleWrite,
                 AgentActionRisk::Elevated,
                 AgentActionRisk::Critical,

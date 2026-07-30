@@ -34,18 +34,20 @@ import {
 } from "../ai-presets";
 import type { AiToolRun } from "../ai-tools";
 import type { AiMessage } from "../hooks/useAiConversations";
-import { commandErrorMessage, type AgentTask } from "../tauri-protocol";
+import { commandErrorMessage } from "../tauri-protocol";
 import AiCommandProposalList from "./AiCommandProposalList";
 import AiDiagnosticPlanList from "./AiDiagnosticPlanList";
 import AiFileChangePanels from "./AiFileChangePanels";
 import AiToolRunList from "./AiToolRunList";
-import AiTaskTimeline from "./AiTaskTimeline";
 
 interface AiMessageTimelineProps {
-  activeTask?: AgentTask;
   activeConversationAvailable: boolean;
   applyingFileChanges: boolean;
   canInsertCommand: boolean;
+  dockedCommandProposalIds?: ReadonlySet<string>;
+  dockedDiagnosticPlanIds?: ReadonlySet<string>;
+  dockedFileEditProposalIds?: ReadonlySet<string>;
+  dockedFileOperationProposalIds?: ReadonlySet<string>;
   expandedToolRuns: ReadonlySet<string>;
   hasRecentTerminalOutput: boolean;
   hostName: string;
@@ -70,10 +72,10 @@ interface AiMessageTimelineProps {
     planId: string,
     selectedCallIds: string[],
   ) => void;
+  onReviseDiagnosticPlan: (planId: string, feedback: string) => void;
   onApproveCommandProposal: (
     messageId: string,
     proposal: AiCommandProposal,
-    executionMode: "insert_only" | "submit",
   ) => void | Promise<void>;
   onOpenFileEditReview: (
     messageId: string,
@@ -159,6 +161,56 @@ function promptPresetIcon(id: AiPromptPresetId) {
   }
 }
 
+function containsOnlyDockedApproval(
+  message: AiMessage,
+  dockedCommandProposalIds?: ReadonlySet<string>,
+  dockedDiagnosticPlanIds?: ReadonlySet<string>,
+  dockedFileEditProposalIds?: ReadonlySet<string>,
+  dockedFileOperationProposalIds?: ReadonlySet<string>,
+) {
+  if (message.role !== "assistant" || message.content || message.failed) {
+    return false;
+  }
+  const hasDockedCommand = message.commandProposals?.some((proposal) =>
+    dockedCommandProposalIds?.has(proposal.id),
+  );
+  const hasDockedDiagnostic = message.diagnosticPlans?.some((plan) =>
+    dockedDiagnosticPlanIds?.has(plan.id),
+  );
+  const hasDockedFileEdit = message.fileEditProposals?.some((proposal) =>
+    dockedFileEditProposalIds?.has(proposal.id),
+  );
+  const hasDockedFileOperation = message.fileOperationProposals?.some(
+    (proposal) => dockedFileOperationProposalIds?.has(proposal.id),
+  );
+  if (
+    !hasDockedCommand &&
+    !hasDockedDiagnostic &&
+    !hasDockedFileEdit &&
+    !hasDockedFileOperation
+  ) {
+    return false;
+  }
+
+  return !(
+    message.commandProposals?.some(
+      (proposal) => !dockedCommandProposalIds?.has(proposal.id),
+    ) ||
+    message.commandRecords?.length ||
+    message.diagnosticPlans?.some(
+      (plan) => !dockedDiagnosticPlanIds?.has(plan.id),
+    ) ||
+    message.toolRuns?.some((run) => !run.planId) ||
+    message.fileEditProposals?.some(
+      (proposal) => !dockedFileEditProposalIds?.has(proposal.id),
+    ) ||
+    message.fileOperationProposals?.some(
+      (proposal) => !dockedFileOperationProposalIds?.has(proposal.id),
+    ) ||
+    message.fileChanges?.length
+  );
+}
+
 function AiMarkdown({
   children,
   onCopyCode,
@@ -213,10 +265,13 @@ function AiMarkdown({
 }
 
 function AiMessageTimeline({
-  activeTask,
   activeConversationAvailable,
   applyingFileChanges,
   canInsertCommand,
+  dockedCommandProposalIds,
+  dockedDiagnosticPlanIds,
+  dockedFileEditProposalIds,
+  dockedFileOperationProposalIds,
   expandedToolRuns,
   hasRecentTerminalOutput,
   hostName,
@@ -232,6 +287,7 @@ function AiMessageTimeline({
   onCopyToolRun,
   onCancelDiagnosticPlan,
   onConfirmDiagnosticPlan,
+  onReviseDiagnosticPlan,
   onApproveCommandProposal,
   onOpenFileEditReview,
   onOpenFileOperationReview,
@@ -255,11 +311,22 @@ function AiMessageTimeline({
 }: AiMessageTimelineProps) {
   return (
     <div className="ai-assistant-messages" ref={scrollRef}>
-      <AiTaskTimeline task={activeTask} />
       {loading && !activeConversationAvailable ? (
         <Spin />
       ) : messages.length ? (
-        messages.map((message, index) => (
+        messages.map((message, index) => {
+          if (
+            containsOnlyDockedApproval(
+              message,
+              dockedCommandProposalIds,
+              dockedDiagnosticPlanIds,
+              dockedFileEditProposalIds,
+              dockedFileOperationProposalIds,
+            )
+          ) {
+            return null;
+          }
+          return (
           <div
             className={`ai-message ai-message-${message.role}`}
             key={message.id}
@@ -276,7 +343,11 @@ function AiMessageTimeline({
               ))}
             </div>
             {message.role === "assistant" &&
-              Boolean(message.diagnosticPlans?.length) && (
+              Boolean(
+                message.diagnosticPlans?.some(
+                  (plan) => !dockedDiagnosticPlanIds?.has(plan.id),
+                ),
+              ) && (
                 <AiDiagnosticPlanList
                   expandedRuns={expandedToolRuns}
                   messageId={message.id}
@@ -284,9 +355,12 @@ function AiMessageTimeline({
                   onCancel={onCancelDiagnosticPlan}
                   onConfirm={onConfirmDiagnosticPlan}
                   onCopy={onCopyToolRun}
+                  onRevise={onReviseDiagnosticPlan}
                   onStop={onStopDiagnosticPlan}
                   onToggleRun={onToggleToolRun}
-                  plans={message.diagnosticPlans ?? []}
+                  plans={(message.diagnosticPlans ?? []).filter(
+                    (plan) => !dockedDiagnosticPlanIds?.has(plan.id),
+                  )}
                   runs={message.toolRuns ?? []}
                   sending={sending}
                 />
@@ -308,12 +382,8 @@ function AiMessageTimeline({
                 canInsertCommand={canInsertCommand}
                 hasRecentTerminalOutput={hasRecentTerminalOutput}
                 hostName={hostName}
-                onApprove={(proposal, executionMode) =>
-                  onApproveCommandProposal(
-                    message.id,
-                    proposal,
-                    executionMode,
-                  )
+                onApprove={(proposal) =>
+                  onApproveCommandProposal(message.id, proposal)
                 }
                 onAnalyze={(proposal) => onAnalyzeCommand(message.id, proposal)}
                 onCopy={onCopyCommand}
@@ -324,7 +394,9 @@ function AiMessageTimeline({
                 onRevise={(proposal, feedback) =>
                   onReviseCommand(message.id, proposal, feedback)
                 }
-                proposals={message.commandProposals}
+                proposals={message.commandProposals?.filter(
+                  (proposal) => !dockedCommandProposalIds?.has(proposal.id),
+                )}
                 records={message.commandRecords}
                 sending={sending}
                 sessionId={sessionId}
@@ -334,7 +406,9 @@ function AiMessageTimeline({
               <AiFileChangePanels
                 applying={applyingFileChanges}
                 changes={message.fileChanges}
-                editProposals={message.fileEditProposals}
+                editProposals={message.fileEditProposals?.filter(
+                  (proposal) => !dockedFileEditProposalIds?.has(proposal.id),
+                )}
                 onApplyAllEdits={(proposals) =>
                   onApplyAllFileEdits(message.id, proposals)
                 }
@@ -371,7 +445,10 @@ function AiMessageTimeline({
                 onRollbackOperation={(proposal) =>
                   onRollbackFileOperation(message.id, proposal)
                 }
-                operationProposals={message.fileOperationProposals}
+                operationProposals={message.fileOperationProposals?.filter(
+                  (proposal) =>
+                    !dockedFileOperationProposalIds?.has(proposal.id),
+                )}
               />
             )}
             <div className="ai-message-content">
@@ -415,7 +492,8 @@ function AiMessageTimeline({
               )}
             </div>
           </div>
-        ))
+          );
+        })
       ) : (
         <div className="ai-assistant-empty">
           <IconRobot className="ai-assistant-empty-icon" />

@@ -66,6 +66,12 @@ export function trackInjectedTerminalInput(
     : { state: inserted, submissions: [] as string[] };
 }
 
+export function terminalInjectedInputData(
+  input: Pick<TerminalInjectedInput, "submit" | "value">,
+) {
+  return `${input.value}${input.submit ? "\r" : ""}`;
+}
+
 export function consumeTerminalCommandCandidate(
   candidates: string[],
   command: string,

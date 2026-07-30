@@ -1,9 +1,7 @@
 import { useRef, useState } from "react";
 import {
   Button,
-  Dropdown,
   Input,
-  Menu,
   Space,
   Tag,
   Tooltip,
@@ -12,7 +10,6 @@ import {
 import {
   IconCommand,
   IconCopy,
-  IconDown,
   IconRobot,
 } from "@arco-design/web-react/icon";
 import {
@@ -28,16 +25,15 @@ interface AiCommandProposalListProps {
   onAnalyze: (proposal: AiCommandProposal) => void;
   onCopy: (command: string) => void | Promise<void>;
   onCopyAll: (proposals: AiCommandProposal[]) => void | Promise<void>;
-  onApprove: (
-    proposal: AiCommandProposal,
-    executionMode: "insert_only" | "submit",
-  ) => void | Promise<void>;
+  onApprove: (proposal: AiCommandProposal) => void | Promise<void>;
   onReject: (proposalId: string) => unknown | Promise<unknown>;
   onRevise: (
     proposal: AiCommandProposal,
     feedback: string,
   ) => void | Promise<void>;
+  presentation?: "approval" | "timeline";
   proposals?: AiCommandProposal[];
+  queueCount?: number;
   records?: AiCommandRecord[];
   sending: boolean;
   sessionId: string | null;
@@ -49,7 +45,7 @@ function proposalStatus(status: AiCommandProposal["status"]) {
   if (status === "failed") return { color: "red", label: "执行失败" };
   if (status === "unavailable") return { color: "gray", label: "结果不可用" };
   if (status === "executed") return { color: "orange", label: "已提交" };
-  if (status === "inserted") return { color: "blue", label: "已填入" };
+  if (status === "approved") return { color: "blue", label: "已同意" };
   if (status === "rejected") return { color: "gray", label: "已拒绝" };
   return { color: "blue", label: "待确认" };
 }
@@ -60,9 +56,9 @@ function recordStatus(status: AiCommandRecord["status"]) {
   if (status === "failed") return { color: "red", label: "执行失败" };
   if (status === "unavailable") return { color: "gray", label: "结果不可用" };
   if (status === "executed") return { color: "orange", label: "已提交" };
-  if (status === "inserted") return { color: "blue", label: "已填入" };
+  if (status === "approved") return { color: "blue", label: "已同意" };
   if (status === "rejected") return { color: "gray", label: "已拒绝" };
-  return { color: "gray", label: "未填入" };
+  return { color: "gray", label: "未执行" };
 }
 
 function riskLabel(risk: AiCommandRecord["risk"]) {
@@ -93,7 +89,9 @@ function AiCommandProposalList({
   onApprove,
   onReject,
   onRevise,
+  presentation = "timeline",
   proposals = [],
+  queueCount = proposals.length,
   records = [],
   sending,
   sessionId,
@@ -159,15 +157,23 @@ function AiCommandProposalList({
   }
 
   return (
-    <div className="ai-command-proposals">
+    <div
+      className={`ai-command-proposals ai-command-proposals-${presentation}`}
+    >
       <div className="ai-command-proposals-heading">
         <span>
-          <Typography.Text bold>命令计划</Typography.Text>
+          <Typography.Text bold>
+            {presentation === "approval" ? "需要审批" : "终端执行记录"}
+          </Typography.Text>
           <Typography.Text type="secondary">
-            {proposals.length} 条 · 逐条审批
+            {presentation === "approval"
+              ? queueCount > 1
+                ? `当前 1 条 · 后续 ${queueCount - 1} 条`
+                : "终端命令"
+              : `${proposals.length} 条`}
           </Typography.Text>
         </span>
-        {proposals.length > 1 && (
+        {presentation === "timeline" && proposals.length > 1 && (
           <Button
             icon={<IconCopy />}
             onClick={() => void onCopyAll(proposals)}
@@ -194,9 +200,11 @@ function AiCommandProposalList({
           <div className="ai-command-proposal" key={proposal.id}>
             <div className="ai-command-proposal-heading">
               <span className="ai-command-proposal-title">
-                <span className="ai-command-proposal-index">
-                  {proposalIndex + 1}
-                </span>
+                {presentation === "timeline" && (
+                  <span className="ai-command-proposal-index">
+                    {proposalIndex + 1}
+                  </span>
+                )}
                 <Typography.Text bold>{proposal.purpose}</Typography.Text>
               </span>
               <span className="ai-command-proposal-tags">
@@ -239,6 +247,7 @@ function AiCommandProposalList({
                 </Typography.Text>
               )}
             </div>
+            {presentation === "approval" && (
             <div className="ai-command-proposal-footer">
               <Space size={4}>
                 <Tooltip content="复制命令">
@@ -250,9 +259,9 @@ function AiCommandProposalList({
                     type="text"
                   />
                 </Tooltip>
-                {proposal.status === "pending" && (
+                {presentation === "approval" && proposal.status === "pending" && (
                   <Button
-                    disabled={sending || processing}
+                    disabled={processing}
                     onClick={() => {
                       setRevisionProposalId((current) =>
                         current === proposal.id ? null : proposal.id,
@@ -262,12 +271,12 @@ function AiCommandProposalList({
                     size="mini"
                     type="text"
                   >
-                    提出修改
+                    其他
                   </Button>
                 )}
-                {proposal.status === "pending" && (
+                {presentation === "approval" && proposal.status === "pending" && (
                   <Button
-                    disabled={sending || processing}
+                    disabled={processing}
                     onClick={() =>
                       void runDecision(proposal.id, () =>
                         onReject(proposal.id),
@@ -276,12 +285,12 @@ function AiCommandProposalList({
                     size="mini"
                     type="text"
                   >
-                    拒绝
+                    驳回
                   </Button>
                 )}
               </Space>
               <Space size={4}>
-                {proposal.status === "pending" && (
+                {presentation === "approval" && proposal.status === "pending" && (
                   <Tooltip
                     content={
                       !sameSession
@@ -291,46 +300,23 @@ function AiCommandProposalList({
                           : "当前终端会话未连接"
                     }
                   >
-                    <Dropdown.Button
-                      buttonProps={{
-                        disabled:
-                          sending ||
-                          processing ||
-                          !canInsertCommand ||
-                          !sameSession,
-                        loading: processing,
-                      }}
+                    <Button
                       disabled={
-                        sending ||
                         processing ||
                         !canInsertCommand ||
                         !sameSession
                       }
-                      droplist={
-                        <Menu>
-                          <Menu.Item
-                            key="insert-only"
-                            onClick={() =>
-                              void runDecision(proposal.id, () =>
-                                onApprove(proposal, "insert_only"),
-                              )
-                            }
-                          >
-                            仅填入终端
-                          </Menu.Item>
-                        </Menu>
-                      }
-                      icon={<IconDown />}
+                      loading={processing}
                       onClick={() =>
                         void runDecision(proposal.id, () =>
-                          onApprove(proposal, "submit"),
+                          onApprove(proposal),
                         )
                       }
                       size="mini"
                       type="primary"
                     >
-                      允许并运行
-                    </Dropdown.Button>
+                      同意
+                    </Button>
                   </Tooltip>
                 )}
                 {(proposal.status === "executed" ||
@@ -360,13 +346,14 @@ function AiCommandProposalList({
                 )}
               </Space>
             </div>
-            {proposal.status === "pending" && revising && (
+            )}
+            {presentation === "approval" && proposal.status === "pending" && revising && (
               <div className="ai-command-proposal-revision">
                 <Input.TextArea
                   autoFocus
                   maxLength={500}
                   onChange={setRevisionFeedback}
-                  placeholder="说明希望调整的内容，例如：改为只检查状态，不重启服务"
+                  placeholder="输入其他处理要求，例如：改为只检查状态，不重启服务"
                   rows={2}
                   value={revisionFeedback}
                 />
@@ -380,7 +367,7 @@ function AiCommandProposalList({
                   </Button>
                   <Button
                     disabled={
-                      sending || processing || !revisionFeedback.trim()
+                      processing || !revisionFeedback.trim()
                     }
                     onClick={() =>
                       void runDecision(proposal.id, () =>
@@ -390,17 +377,17 @@ function AiCommandProposalList({
                     size="mini"
                     type="primary"
                   >
-                    发送修改要求
+                    提交
                   </Button>
                 </div>
               </div>
             )}
-            {proposal.status === "inserted" && (
+            {proposal.status === "approved" && (
               <Typography.Text
                 className="ai-command-proposal-warning"
                 type="secondary"
               >
-                已填入终端，等待你手动确认并按回车
+                已同意，正在等待终端执行结果
               </Typography.Text>
             )}
             {proposal.status === "executed" && (

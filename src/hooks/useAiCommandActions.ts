@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  markAiCommandProposalInserted,
+  markAiCommandProposalApproved,
   markAiCommandProposalVerified,
   type AiCommandProposal,
 } from "../ai-command-proposals";
@@ -8,7 +8,6 @@ import { appendAiContextMentions, type AiContextSource } from "../ai-utils";
 import { commandErrorMessage } from "../tauri-protocol";
 
 export type AiCommandNotice = "error" | "info" | "success" | "warning";
-export type AiCommandExecutionMode = "insert_only" | "submit";
 
 interface CommandVerificationTarget {
   conversationId: string;
@@ -25,7 +24,7 @@ interface UseAiCommandActionsOptions {
   onPrepareCommand: (
     messageId: string,
     proposal: AiCommandProposal,
-    executionMode: AiCommandExecutionMode,
+    userConfirmed: boolean,
   ) => Promise<void>;
   onNotice: (type: AiCommandNotice, content: string) => void;
   sessionId: string | null;
@@ -80,18 +79,20 @@ export function useAiCommandActions({
   const approveCommandProposal = async (
     messageId: string,
     proposal: AiCommandProposal,
-    executionMode: AiCommandExecutionMode,
+    userConfirmed = true,
   ) => {
-    if (proposal.status !== "pending") return;
+    if (proposal.status !== "pending") return false;
     try {
-      await onPrepareCommand(messageId, proposal, executionMode);
+      await onPrepareCommand(messageId, proposal, userConfirmed);
       updateCommandProposal(
         messageId,
         proposal.id,
-        markAiCommandProposalInserted,
+        markAiCommandProposalApproved,
       );
+      return true;
     } catch (error) {
       onNotice("error", commandErrorMessage(error));
+      return false;
     }
   };
 
