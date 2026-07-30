@@ -80,7 +80,7 @@
 
 ```bash
 sudo apt update
-sudo apt install ./FineShell_0.1.11_linux_arm64.deb
+sudo apt install ./FineShell_0.1.12_linux_arm64.deb
 ```
 
 请根据实际下载的文件名调整命令。不要直接使用 `dpkg -i`，因为 `dpkg` 不会自动下载缺失的依赖。
