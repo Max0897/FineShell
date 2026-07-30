@@ -33,6 +33,7 @@ export interface AiConversationMessageRecord {
   fileChanges?: AiFileChangeRecord[];
   id: string;
   role: "user" | "assistant";
+  taskId?: string;
   toolRuns?: AiToolRun[];
 }
 
@@ -212,7 +213,7 @@ function sanitizeCommandRecords(value: unknown) {
           ? riskValue
           : undefined;
       const status =
-        item.status === "inserted" ||
+        item.status === "approved" ||
         item.status === "executed" ||
         item.status === "succeeded" ||
         item.status === "failed" ||
@@ -220,8 +221,12 @@ function sanitizeCommandRecords(value: unknown) {
         item.status === "verified" ||
         item.status === "rejected"
           ? item.status
-          : item.status === "not-inserted" || item.status === "pending"
-            ? "not-inserted"
+          : item.status === "inserted"
+            ? "approved"
+            : item.status === "not-inserted" ||
+                item.status === "not-executed" ||
+                item.status === "pending"
+              ? "not-executed"
             : undefined;
       if (!id || !purpose || !risk || !status) return undefined;
       return {
@@ -305,7 +310,13 @@ function sanitizeMessage(
     content,
     contextLabels: sanitizeContextLabels(value.contextLabels),
     ...(role === "assistant"
-      ? { toolRuns, diagnosticPlans, fileChanges, commandRecords }
+      ? {
+          taskId: boundedText(value.taskId, 160),
+          toolRuns,
+          diagnosticPlans,
+          fileChanges,
+          commandRecords,
+        }
       : {}),
   };
 }
@@ -474,11 +485,11 @@ export function serializeAiConversationMarkdown(
                   ? "结果不可用"
                   : record.status === "executed"
                     ? "已提交"
-                    : record.status === "inserted"
-                      ? "已填入"
+                    : record.status === "approved"
+                      ? "已同意"
                       : record.status === "rejected"
                         ? "已拒绝"
-                        : "未填入";
+                        : "未执行";
         const risk =
           record.risk === "danger"
             ? "高风险"

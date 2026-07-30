@@ -10,7 +10,6 @@ import {
   IconCopy,
   IconDown,
   IconPlus,
-  IconRefresh,
   IconRight,
   IconStop,
 } from "@arco-design/web-react/icon";
@@ -21,11 +20,9 @@ interface AiToolRunListProps {
   messageId: string;
   onAddToDraft: (run: AiToolRun) => void;
   onCopy: (run: AiToolRun) => void | Promise<void>;
-  onRerun: (messageId: string, run: AiToolRun) => void | Promise<void>;
   onToggle: (key: string) => void;
   runs: AiToolRun[];
   sending: boolean;
-  sessionAvailable: boolean;
 }
 
 export function aiToolRunDuration(durationMs?: number) {
@@ -60,11 +57,9 @@ function AiToolRunList({
   messageId,
   onAddToDraft,
   onCopy,
-  onRerun,
   onToggle,
   runs,
   sending,
-  sessionAvailable,
 }: AiToolRunListProps) {
   if (!runs.length) return null;
 
@@ -120,18 +115,6 @@ function AiToolRunList({
                       disabled={sending}
                       icon={<IconPlus />}
                       onClick={() => onAddToDraft(run)}
-                      size="mini"
-                      type="text"
-                    />
-                  </Tooltip>
-                )}
-                {run.status !== "running" && run.status !== "pending" && (
-                  <Tooltip content="重新执行">
-                    <Button
-                      aria-label="重新执行诊断工具"
-                      disabled={sending || !sessionAvailable}
-                      icon={<IconRefresh />}
-                      onClick={() => void onRerun(messageId, run)}
                       size="mini"
                       type="text"
                     />

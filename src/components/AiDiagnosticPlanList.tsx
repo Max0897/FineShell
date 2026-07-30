@@ -1,13 +1,12 @@
 import { useState } from "react";
 import {
   Button,
-  Checkbox,
+  Input,
+  Space,
   Tag,
   Typography,
 } from "@arco-design/web-react";
 import {
-  IconClose,
-  IconPlayArrow,
   IconStop,
 } from "@arco-design/web-react/icon";
 import type { AiDiagnosticPlan } from "../ai-diagnostic-plans";
@@ -18,16 +17,20 @@ interface AiDiagnosticPlanListProps {
   expandedRuns: ReadonlySet<string>;
   messageId: string;
   onAddToDraft: (run: AiToolRun) => void;
-  onCancel: (planId: string) => void;
-  onConfirm: (planId: string, selectedCallIds: string[]) => void;
+  onCancel: (planId: string) => unknown | Promise<unknown>;
+  onConfirm: (
+    planId: string,
+    selectedCallIds: string[],
+  ) => unknown | Promise<unknown>;
   onCopy: (run: AiToolRun) => void | Promise<void>;
-  onRerun: (messageId: string, run: AiToolRun) => void | Promise<void>;
+  onRevise?: (planId: string, feedback: string) => unknown | Promise<unknown>;
   onStop: (planId: string) => void;
   onToggleRun: (key: string) => void;
   plans: AiDiagnosticPlan[];
+  presentation?: "approval" | "timeline";
+  queueCount?: number;
   runs: AiToolRun[];
   sending: boolean;
-  sessionAvailable: boolean;
 }
 
 function planStatus(plan: AiDiagnosticPlan) {
@@ -50,43 +53,63 @@ function AiDiagnosticPlanList({
   onCancel,
   onConfirm,
   onCopy,
-  onRerun,
+  onRevise,
   onStop,
   onToggleRun,
   plans,
+  presentation = "timeline",
+  queueCount = plans.length,
   runs,
   sending,
-  sessionAvailable,
 }: AiDiagnosticPlanListProps) {
-  const [excludedSteps, setExcludedSteps] = useState<Set<string>>(
-    () => new Set(),
-  );
+  const [processingPlanId, setProcessingPlanId] = useState<string | null>(null);
+  const [revisionPlanId, setRevisionPlanId] = useState<string | null>(null);
+  const [revisionFeedback, setRevisionFeedback] = useState("");
   if (!plans.length) return null;
 
+  const runDecision = async (
+    planId: string,
+    decide: () => unknown | Promise<unknown>,
+  ) => {
+    setProcessingPlanId(planId);
+    try {
+      await decide();
+    } finally {
+      setProcessingPlanId(null);
+    }
+  };
+
   return (
-    <div className="ai-diagnostic-plans">
-      {plans.map((plan, planIndex) => {
+    <div
+      className={`ai-diagnostic-plans ai-diagnostic-plans-${presentation}`}
+    >
+      {plans.map((plan) => {
         const steps = plan.stepCallIds
           .map((callId) => runs.find((run) => run.callId === callId))
           .filter((run): run is AiToolRun => Boolean(run));
         const status = planStatus(plan);
         const selectedCallIds = steps
-          .filter(
-            (run) =>
-              run.status === "pending" &&
-              !excludedSteps.has(`${plan.id}:${run.callId}`),
-          )
+          .filter((run) => run.status === "pending")
           .map((run) => run.callId);
         const executableCount = steps.filter(
           (run) => run.status !== "unavailable",
         ).length;
+        const revising = revisionPlanId === plan.id;
+        const processing = processingPlanId === plan.id;
         return (
           <section className="ai-diagnostic-plan" key={plan.id}>
             <div className="ai-diagnostic-plan-heading">
-              <Typography.Text>只读诊断计划 {planIndex + 1}</Typography.Text>
-              <Tag color={status.color} size="small">
-                {status.label}
-              </Tag>
+              <span>
+                <Typography.Text>
+                  {presentation === "approval" ? "需要审批" : "网络诊断"}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  {presentation === "approval" && queueCount > 1
+                    ? `当前 1 项 · 后续 ${queueCount - 1} 项`
+                    : `${steps.length} 项操作`}
+                </Typography.Text>
+              </span>
+              <Tag color={status.color} size="small">{status.label}</Tag>
             </div>
             {plan.description && (
               <Typography.Paragraph className="ai-diagnostic-plan-description">
@@ -96,7 +119,6 @@ function AiDiagnosticPlanList({
             {plan.status === "pending" ? (
               <div className="ai-diagnostic-plan-preview">
                 {steps.map((run, index) => {
-                  const exclusionKey = `${plan.id}:${run.callId}`;
                   const unavailable = run.status === "unavailable";
                   return (
                     <div className="ai-diagnostic-plan-step" key={run.callId}>
@@ -116,42 +138,84 @@ function AiDiagnosticPlanList({
                           {run.reason}
                         </Typography.Text>
                       </div>
-                      {run.optional && !unavailable && (
-                        <Checkbox
-                          aria-label={`执行可选步骤：${run.label}`}
-                          checked={!excludedSteps.has(exclusionKey)}
-                          onChange={(checked) =>
-                            setExcludedSteps((current) => {
-                              const next = new Set(current);
-                              if (checked) next.delete(exclusionKey);
-                              else next.add(exclusionKey);
-                              return next;
-                            })
-                          }
-                        >
-                          可选
-                        </Checkbox>
-                      )}
                     </div>
                   );
                 })}
+                {revising && (
+                  <div className="ai-approval-feedback">
+                    <Input
+                      autoFocus
+                      maxLength={1_000}
+                      onChange={setRevisionFeedback}
+                      onPressEnter={() => {
+                        const feedback = revisionFeedback.trim();
+                        if (!feedback || !onRevise) return;
+                        void runDecision(plan.id, () =>
+                          onRevise(plan.id, feedback),
+                        );
+                      }}
+                      placeholder="输入其他处理要求，例如：不要探测公网，只读取本机连接"
+                      value={revisionFeedback}
+                    />
+                    <Button
+                      disabled={!revisionFeedback.trim() || processing}
+                      loading={processing}
+                      onClick={() => {
+                        const feedback = revisionFeedback.trim();
+                        if (!feedback || !onRevise) return;
+                        void runDecision(plan.id, () =>
+                          onRevise(plan.id, feedback),
+                        );
+                      }}
+                      size="mini"
+                      type="primary"
+                    >
+                      提交
+                    </Button>
+                  </div>
+                )}
                 <div className="ai-diagnostic-plan-actions">
+                  <Space size={4}>
+                    {onRevise && (
+                      <Button
+                        disabled={processing}
+                        onClick={() => {
+                          setRevisionPlanId((current) =>
+                            current === plan.id ? null : plan.id,
+                          );
+                          setRevisionFeedback("");
+                        }}
+                        size="mini"
+                        type="text"
+                      >
+                        其他
+                      </Button>
+                    )}
+                    <Button
+                      disabled={processing}
+                      onClick={() =>
+                        void runDecision(plan.id, () => onCancel(plan.id))
+                      }
+                      size="mini"
+                      type="text"
+                    >
+                      驳回
+                    </Button>
+                  </Space>
                   <Button
-                    icon={<IconClose />}
-                    onClick={() => onCancel(plan.id)}
-                    size="small"
-                    type="secondary"
-                  >
-                    取消计划
-                  </Button>
-                  <Button
-                    disabled={!executableCount || !selectedCallIds.length}
-                    icon={<IconPlayArrow />}
-                    onClick={() => onConfirm(plan.id, selectedCallIds)}
-                    size="small"
+                    disabled={
+                      processing || !executableCount || !selectedCallIds.length
+                    }
+                    loading={processing}
+                    onClick={() =>
+                      void runDecision(plan.id, () =>
+                        onConfirm(plan.id, selectedCallIds),
+                      )
+                    }
+                    size="mini"
                     type="primary"
                   >
-                    确认并执行
+                    同意
                   </Button>
                 </div>
               </div>
@@ -162,11 +226,9 @@ function AiDiagnosticPlanList({
                   messageId={messageId}
                   onAddToDraft={onAddToDraft}
                   onCopy={onCopy}
-                  onRerun={onRerun}
                   onToggle={onToggleRun}
                   runs={steps}
                   sending={sending}
-                  sessionAvailable={sessionAvailable}
                 />
                 {plan.status === "running" && (
                   <div className="ai-diagnostic-plan-actions">

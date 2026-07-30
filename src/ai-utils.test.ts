@@ -25,10 +25,10 @@ describe("AI terminal command safety", () => {
 
   test("rejects multiline and control-character payloads", () => {
     expect(() => normalizeAiTerminalCommand("pwd\nwhoami")).toThrow(
-      "多行命令不能直接填入终端",
+      "多行命令不能直接提交到终端",
     );
     expect(() => normalizeAiTerminalCommand("printf '\u0007'")).toThrow(
-      "多行命令不能直接填入终端",
+      "多行命令不能直接提交到终端",
     );
   });
 

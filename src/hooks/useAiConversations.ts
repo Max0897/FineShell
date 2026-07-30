@@ -32,6 +32,7 @@ export interface AiMessage {
   fileOperationProposals?: AiFileOperationProposal[];
   id: string;
   role: "user" | "assistant";
+  taskId?: string;
   toolRuns?: AiToolRun[];
 }
 

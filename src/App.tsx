@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import {
   Alert,
@@ -19,6 +20,8 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import {
   IconClose,
   IconCloseCircle,
+  IconDragDot,
+  IconDragDotVertical,
   IconPoweroff,
   IconRefresh,
 } from "@arco-design/web-react/icon";
@@ -57,16 +60,11 @@ import {
   aiRemoteFileContextSource,
   mergeAiRemoteFileContexts,
   formatAiServerContext,
-  normalizeAiTerminalCommand,
 } from "./ai-utils";
 import {
   createSftpSelectionAiHandoff,
   type AiHandoffRequest,
 } from "./ai-handoff";
-import type {
-  AiFileOperationExecutionRequest,
-  AiFileOperationResult,
-} from "./ai-file-operations";
 import {
   AI_SIDEBAR_DEFAULT_WIDTH,
   aiWindowTargetWidth,
@@ -95,6 +93,7 @@ import {
   emitProtocolEventTo,
   FineShellCommandError,
   listenProtocolEvent,
+  type AgentActionExecutionResult,
   type SshConnectResult,
   verifyProtocolVersion,
 } from "./tauri-protocol";
@@ -249,6 +248,59 @@ function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+interface CollapsibleSplitTriggerProps {
+  collapsed: boolean;
+  direction: "horizontal" | "vertical";
+  label: string;
+  nextNode: ReactNode;
+  onToggle: () => void;
+  prevNode: ReactNode;
+}
+
+export function CollapsibleSplitTrigger({
+  collapsed,
+  direction,
+  label,
+  nextNode,
+  onToggle,
+  prevNode,
+}: CollapsibleSplitTriggerProps) {
+  const lastPressAtRef = useRef(0);
+
+  return (
+    <div
+      aria-label={`双击${collapsed ? "显示" : "隐藏"}${label}`}
+      aria-orientation={direction === "horizontal" ? "vertical" : "horizontal"}
+      className="arco-resizebox-trigger-icon-wrapper collapsible-split-trigger"
+      data-collapsed={collapsed}
+      onMouseDownCapture={(event) => {
+        if (event.button !== 0) return;
+        const now = performance.now();
+        const doublePress =
+          lastPressAtRef.current > 0 && now - lastPressAtRef.current <= 400;
+        lastPressAtRef.current = doublePress ? 0 : now;
+        if (doublePress) {
+          event.preventDefault();
+          event.stopPropagation();
+          onToggle();
+        }
+      }}
+      role="separator"
+      title={`双击${collapsed ? "显示" : "隐藏"}${label}`}
+    >
+      {prevNode}
+      <span className="arco-resizebox-trigger-icon">
+        {direction === "horizontal" ? (
+          <IconDragDotVertical />
+        ) : (
+          <IconDragDot />
+        )}
+      </span>
+      {nextNode}
+    </div>
+  );
+}
+
 function App() {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -257,6 +309,8 @@ function App() {
   const [quickCommandDrawerVisible, setQuickCommandDrawerVisible] =
     useState(false);
   const [aiAssistantVisible, setAiAssistantVisible] = useState(false);
+  const [serverMonitorCollapsed, setServerMonitorCollapsed] = useState(false);
+  const [sftpCollapsed, setSftpCollapsed] = useState(false);
   const [aiSidebarWidth, setAiSidebarWidth] = useState(
     AI_SIDEBAR_DEFAULT_WIDTH,
   );
@@ -303,6 +357,8 @@ function App() {
   const aiWindowExpansionRef = useRef(0);
   const aiWindowResizeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const mainSplitRef = useRef<HTMLElement | null>(null);
+  const serverMonitorWidthRef = useRef("220px");
+  const rightPanelRatiosRef = useRef({ terminal: 0.64, sftp: 0.36 });
   const sessionsRef = useRef<TerminalSession[]>([]);
   const reconnectTimersRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
@@ -968,82 +1024,27 @@ function App() {
     Message.success(execute ? "命令已发送" : "命令已填入终端");
   }
 
-  async function insertAiCommand(command: string) {
-    if (!activeSession || activeSession.status !== "connected") {
-      throw new Error("当前终端未连接");
-    }
-    const value = normalizeAiTerminalCommand(command);
-    await invoke("ssh_write", {
-      sessionId: activeSession.id,
-      data: Array.from(new TextEncoder().encode(value)),
-    });
-    if (settings.aiCommandTrackingEnabled) {
-      setTerminalInjectedInputs((current) => ({
-        ...current,
-        [activeSession.id]: {
-          id: createId("terminal-input"),
-          value,
-        },
-      }));
-    }
-    Message.success("命令已填入终端");
-  }
-
-  async function applyAiRemoteFileEdit(
+  function handleAiCommandPrepared(
     sessionId: string,
-    file: AiRemoteFileContext,
-    content: string,
+    command: string,
   ) {
-    const targetSession = sessionsRef.current.find(
-      (session) => session.id === sessionId,
-    );
-    if (!targetSession || targetSession.status !== "connected") {
-      throw new Error("目标会话已断开，无法应用文件修改");
-    }
-    const result = await invoke<{
-      content: string;
-      path: string;
-      size: number;
-    }>("sftp_write_text_file", {
-      sessionId,
-      path: file.path,
-      content,
-      originalContent: file.content,
-      overwrite: false,
-    });
-    const updatedFile: AiRemoteFileContext = {
-      content: result.content,
-      name: file.name,
-      path: result.path,
-      size: result.size,
-    };
-    setAiRemoteFileContexts((current) => ({
+    setTerminalInjectedInputs((current) => ({
       ...current,
-      [sessionId]: (current[sessionId] ?? []).map((candidate) =>
-        candidate.path === updatedFile.path ? updatedFile : candidate,
-      ),
+      [sessionId]: {
+        id: createId("terminal-input"),
+        submit: true,
+        value: command,
+      },
     }));
-    setSftpRefreshRequests((current) => ({
-      ...current,
-      [sessionId]: (current[sessionId] ?? 0) + 1,
-    }));
-    return updatedFile;
+    Message.success("命令已批准并提交");
   }
 
-  async function applyAiRemoteFileOperation(
+  function handleAiAgentActionExecuted(
     sessionId: string,
-    request: AiFileOperationExecutionRequest,
-  ): Promise<AiFileOperationResult> {
-    const targetSession = sessionsRef.current.find(
-      (session) => session.id === sessionId,
-    );
-    if (!targetSession || targetSession.status !== "connected") {
-      throw new Error("目标会话已断开，无法应用文件操作");
-    }
-    const result = await invoke<{
-      file: { content: string; path: string; size: number } | null;
-    }>("sftp_apply_ai_file_operation", { sessionId, request });
-    const updatedFile = result.file
+    result: AgentActionExecutionResult,
+  ) {
+    if (result.actionType === "terminal_command") return;
+    const updatedFile: AiRemoteFileContext | null = result.file
       ? {
           content: result.file.content,
           name: result.file.path.split("/").pop() || result.file.path,
@@ -1053,8 +1054,7 @@ function App() {
       : null;
     setAiRemoteFileContexts((current) => {
       const remaining = (current[sessionId] ?? []).filter(
-        (file) =>
-          file.path !== request.path && file.path !== request.targetPath,
+        (file) => !result.affectedPaths.includes(file.path),
       );
       if (!updatedFile) {
         return { ...current, [sessionId]: remaining };
@@ -1075,7 +1075,6 @@ function App() {
       ...current,
       [sessionId]: (current[sessionId] ?? 0) + 1,
     }));
-    return { file: updatedFile };
   }
 
   async function openAiAssistant(
@@ -1480,11 +1479,42 @@ function App() {
 
   const rightPanels = (
     <ResizeBox.SplitGroup
-      className="right-split"
+      className={`right-split${sftpCollapsed ? " right-split-sftp-collapsed" : ""}`}
       direction="vertical"
+      onMoving={(_, sizes) => {
+        if (sftpCollapsed) return;
+        const terminalSize = Number.parseFloat(sizes[0]);
+        const sftpSize = Number.parseFloat(sizes[1]);
+        const totalSize = terminalSize + sftpSize;
+        if (Number.isFinite(totalSize) && totalSize > 0) {
+          rightPanelRatiosRef.current = {
+            terminal: terminalSize / totalSize,
+            sftp: sftpSize / totalSize,
+          };
+        }
+      }}
       panes={[
-        { content: terminalPanel, size: 0.64, min: "240px" },
-        { content: sftpPanel, min: "180px" },
+        {
+          content: terminalPanel,
+          size: sftpCollapsed ? 1 : rightPanelRatiosRef.current.terminal,
+          min: "240px",
+          resizable: !sftpCollapsed,
+          trigger: (prevNode, _resizeNode, nextNode) => (
+            <CollapsibleSplitTrigger
+              collapsed={sftpCollapsed}
+              direction="vertical"
+              label="文件管理栏"
+              nextNode={nextNode}
+              onToggle={() => setSftpCollapsed((current) => !current)}
+              prevNode={prevNode}
+            />
+          ),
+        },
+        {
+          content: sftpPanel,
+          size: sftpCollapsed ? 0 : rightPanelRatiosRef.current.sftp,
+          min: sftpCollapsed ? 0 : "180px",
+        },
       ]}
     />
   );
@@ -1493,16 +1523,42 @@ function App() {
     <main className="app-shell">
       <div className="app-workspace">
         <ResizeBox.SplitGroup
-          className="main-split"
+          className={`main-split${serverMonitorCollapsed ? " main-split-left-collapsed" : ""}`}
           direction="horizontal"
+          onMoving={(_, sizes) => {
+            if (serverMonitorCollapsed) return;
+            const width = Number.parseFloat(sizes[0]);
+            if (Number.isFinite(width)) {
+              serverMonitorWidthRef.current = `${width}px`;
+            }
+          }}
           panes={[
             {
               content: serverMonitorPanel,
-              size: "220px",
-              min: "220px",
+              size: serverMonitorCollapsed
+                ? 0
+                : serverMonitorWidthRef.current,
+              min: serverMonitorCollapsed ? 0 : "220px",
               max: "400px",
+              resizable: !serverMonitorCollapsed,
+              trigger: (prevNode, _resizeNode, nextNode) => (
+                <CollapsibleSplitTrigger
+                  collapsed={serverMonitorCollapsed}
+                  direction="horizontal"
+                  label="服务器监控栏"
+                  nextNode={nextNode}
+                  onToggle={() =>
+                    setServerMonitorCollapsed((current) => !current)
+                  }
+                  prevNode={prevNode}
+                />
+              ),
             },
-            { content: rightPanels, min: "480px" },
+            {
+              content: rightPanels,
+              min: "480px",
+              size: serverMonitorCollapsed ? 1 : undefined,
+            },
           ]}
           ref={mainSplitRef}
           style={
@@ -1535,11 +1591,7 @@ function App() {
         >
           <AiAssistantPanel
             canInsertCommand={activeSession?.status === "connected"}
-            commandSubmission={
-              settings.aiCommandTrackingEnabled
-                ? terminalCommandSubmission
-                : null
-            }
+            commandSubmission={terminalCommandSubmission}
             contextSources={aiContextSources}
             hostId={activeSession?.host.id ?? null}
             hostName={activeSession?.host.name ?? ""}
@@ -1547,9 +1599,8 @@ function App() {
             initialContextIds={aiInitialContextIds}
             initialPromptRequest={aiInitialPromptRequest}
             onClose={closeAiAssistant}
-            onApplyRemoteFileEdit={applyAiRemoteFileEdit}
-            onApplyRemoteFileOperation={applyAiRemoteFileOperation}
-            onInsertCommand={insertAiCommand}
+            onAgentActionExecuted={handleAiAgentActionExecuted}
+            onCommandPrepared={handleAiCommandPrepared}
             onRemoveRemoteFile={(sessionId, path) =>
               setAiRemoteFileContexts((current) => {
                 const remaining = (current[sessionId] ?? []).filter(

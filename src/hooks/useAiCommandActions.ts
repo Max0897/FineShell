@@ -1,18 +1,11 @@
 import { useEffect, useState } from "react";
 import {
-  markAiCommandProposalInserted,
+  markAiCommandProposalApproved,
   markAiCommandProposalVerified,
   type AiCommandProposal,
 } from "../ai-command-proposals";
 import { appendAiContextMentions, type AiContextSource } from "../ai-utils";
 import { commandErrorMessage } from "../tauri-protocol";
-
-export interface AiCommandConfirmation {
-  content: string;
-  danger: boolean;
-  onConfirm: () => void | Promise<void>;
-  title: string;
-}
 
 export type AiCommandNotice = "error" | "info" | "success" | "warning";
 
@@ -27,9 +20,12 @@ interface UseAiCommandActionsOptions {
   contextSources: AiContextSource[];
   conversationId?: string;
   hostId: string | null;
-  onConfirm: (confirmation: AiCommandConfirmation) => void;
   onCopyText: (value: string) => Promise<void>;
-  onInsertCommand: (command: string) => Promise<void>;
+  onPrepareCommand: (
+    messageId: string,
+    proposal: AiCommandProposal,
+    userConfirmed: boolean,
+  ) => Promise<void>;
   onNotice: (type: AiCommandNotice, content: string) => void;
   sessionId: string | null;
   setDraft: (conversationId: string, value: string) => void;
@@ -51,9 +47,8 @@ export function useAiCommandActions({
   contextSources,
   conversationId,
   hostId,
-  onConfirm,
   onCopyText,
-  onInsertCommand,
+  onPrepareCommand,
   onNotice,
   sessionId,
   setDraft,
@@ -81,41 +76,24 @@ export function useAiCommandActions({
     setDraft(targetConversationId, value);
   };
 
-  const insertCommandProposal = async (
+  const approveCommandProposal = async (
     messageId: string,
     proposal: AiCommandProposal,
+    userConfirmed = true,
   ) => {
-    if (proposal.status !== "pending") return;
+    if (proposal.status !== "pending") return false;
     try {
-      await onInsertCommand(proposal.command);
+      await onPrepareCommand(messageId, proposal, userConfirmed);
       updateCommandProposal(
         messageId,
         proposal.id,
-        markAiCommandProposalInserted,
+        markAiCommandProposalApproved,
       );
+      return true;
     } catch (error) {
       onNotice("error", commandErrorMessage(error));
+      return false;
     }
-  };
-
-  const confirmInsertCommandProposal = (
-    messageId: string,
-    proposal: AiCommandProposal,
-  ) => {
-    if (proposal.assessment.risk === "safe") {
-      void insertCommandProposal(messageId, proposal);
-      return;
-    }
-    onConfirm({
-      content:
-        proposal.assessment.reason ?? "请确认命令内容及其影响后再填入终端。",
-      danger: proposal.assessment.risk === "danger",
-      onConfirm: () => insertCommandProposal(messageId, proposal),
-      title:
-        proposal.assessment.risk === "danger"
-          ? "确认填入高风险命令"
-          : "确认填入命令",
-    });
   };
 
   const copyCommandProposal = async (command: string) => {
@@ -213,9 +191,9 @@ export function useAiCommandActions({
   };
 
   return {
+    approveCommandProposal,
     captureVerificationTarget,
     completeVerification,
-    confirmInsertCommandProposal,
     copyAllCommandProposals,
     copyCommandProposal,
     prepareCommandVerification,

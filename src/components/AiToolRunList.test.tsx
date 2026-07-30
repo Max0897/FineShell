@@ -22,7 +22,6 @@ describe("AiToolRunList", () => {
   test("keeps tool actions controlled by the parent", () => {
     const onAddToDraft = mock(() => undefined);
     const onCopy = mock(() => undefined);
-    const onRerun = mock(() => undefined);
     const onToggle = mock(() => undefined);
     render(
       <AiToolRunList
@@ -30,11 +29,9 @@ describe("AiToolRunList", () => {
         messageId="message-1"
         onAddToDraft={onAddToDraft}
         onCopy={onCopy}
-        onRerun={onRerun}
         onToggle={onToggle}
         runs={[RUN]}
         sending={false}
-        sessionAvailable
       />,
     );
 
@@ -44,12 +41,11 @@ describe("AiToolRunList", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "将诊断摘要加入下一次提问" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "重新执行诊断工具" }));
 
     expect(onToggle).toHaveBeenCalledWith("message-1:tool-1:0");
     expect(onCopy).toHaveBeenCalledWith(RUN);
     expect(onAddToDraft).toHaveBeenCalledWith(RUN);
-    expect(onRerun).toHaveBeenCalledWith("message-1", RUN);
+    expect(screen.queryByRole("button", { name: "重新执行诊断工具" })).toBeNull();
   });
 
   test("shows the bounded summary only when expanded", () => {
@@ -59,11 +55,9 @@ describe("AiToolRunList", () => {
         messageId="message-1"
         onAddToDraft={() => undefined}
         onCopy={() => undefined}
-        onRerun={() => undefined}
         onToggle={() => undefined}
         runs={[RUN]}
         sending={false}
-        sessionAvailable
       />,
     );
 

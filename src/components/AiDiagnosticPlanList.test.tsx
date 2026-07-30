@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { AiDiagnosticPlan } from "../ai-diagnostic-plans";
 import type { AiToolRun } from "../ai-tools";
 import AiDiagnosticPlanList from "./AiDiagnosticPlanList";
@@ -40,11 +40,13 @@ function renderPlans(
   onConfirm = mock(() => undefined),
   onCancel = mock(() => undefined),
   onStop = mock(() => undefined),
+  onRevise = mock(() => undefined),
 ) {
   return {
     onCancel,
     onConfirm,
     onStop,
+    onRevise,
     ...render(
       <AiDiagnosticPlanList
         expandedRuns={new Set()}
@@ -53,35 +55,60 @@ function renderPlans(
         onCancel={onCancel}
         onConfirm={onConfirm}
         onCopy={() => undefined}
-        onRerun={() => undefined}
+        onRevise={onRevise}
         onStop={onStop}
         onToggleRun={() => undefined}
         plans={[currentPlan]}
+        presentation={currentPlan.status === "pending" ? "approval" : "timeline"}
         runs={runs}
         sending
-        sessionAvailable
       />,
     ),
   };
 }
 
 describe("AiDiagnosticPlanList", () => {
-  test("shows active probe targets and confirms only selected optional steps", () => {
+  test("shows the whole active probe request as one approval", async () => {
     const view = renderPlans();
     expect(screen.getByText("example.com")).not.toBeNull();
     expect(screen.getByText("主动探测")).not.toBeNull();
     expect(screen.getByText("确认目标是否可达")).not.toBeNull();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "执行可选步骤：Ping" }));
-    fireEvent.click(screen.getByRole("button", { name: "确认并执行" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "同意" }));
+      await Promise.resolve();
+    });
 
-    expect(view.onConfirm).toHaveBeenCalledWith("plan-1", ["call-status"]);
+    expect(view.onConfirm).toHaveBeenCalledWith("plan-1", [
+      "call-status",
+      "call-ping",
+    ]);
   });
 
-  test("cancels a pending plan", () => {
+  test("cancels a pending plan", async () => {
     const view = renderPlans();
-    fireEvent.click(screen.getByRole("button", { name: "取消计划" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "驳回" }));
+      await Promise.resolve();
+    });
     expect(view.onCancel).toHaveBeenCalledWith("plan-1");
+  });
+
+  test("returns other instructions through the approval", async () => {
+    const view = renderPlans();
+    fireEvent.click(screen.getByRole("button", { name: "其他" }));
+    fireEvent.change(
+      screen.getByPlaceholderText(
+        "输入其他处理要求，例如：不要探测公网，只读取本机连接",
+      ),
+      { target: { value: "只读取本机连接" } },
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "提交" }));
+      await Promise.resolve();
+    });
+
+    expect(view.onRevise).toHaveBeenCalledWith("plan-1", "只读取本机连接");
   });
 
   test("stops remaining steps while a plan is running", () => {

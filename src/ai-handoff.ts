@@ -2,8 +2,6 @@ import type {
   NetworkConnectionsResult,
   NetworkPingResult,
   NetworkTraceResult,
-  ServerMonitorHistoryPoint,
-  ServerMonitorSnapshot,
   ServerProcess,
   SftpEntry,
 } from "./models";
@@ -11,7 +9,6 @@ import type { AiContextSource } from "./ai-utils";
 
 const MAX_PROCESS_CONTEXT_ITEMS = 20;
 const MAX_NETWORK_CONNECTION_ITEMS = 30;
-const MAX_MONITOR_HISTORY_ITEMS = 24;
 const MAX_SFTP_CONTEXT_ITEMS = 50;
 
 export interface AiHandoffRequest {
@@ -21,36 +18,6 @@ export interface AiHandoffRequest {
 
 function rounded(value: number) {
   return Math.round(value * 10) / 10;
-}
-
-export function createMonitorAiHandoff(
-  snapshot: ServerMonitorSnapshot,
-  history: ServerMonitorHistoryPoint[],
-): AiHandoffRequest {
-  const recentHistory = history
-    .slice(-MAX_MONITOR_HISTORY_ITEMS)
-    .map((point) => ({
-      collectedAt: new Date(point.collectedAt).toISOString(),
-      cpuUsagePercent: rounded(point.cpuUsagePercent),
-      memoryUsagePercent: rounded(point.memoryUsagePercent),
-      networkReceiveBytesPerSecond: Math.round(
-        point.networkReceiveBytesPerSecond,
-      ),
-      networkTransmitBytesPerSecond: Math.round(
-        point.networkTransmitBytesPerSecond,
-      ),
-    }));
-  return {
-    prompt:
-      "请分析当前服务器资源状态和近期趋势，指出异常、可能原因与建议的只读排查步骤。",
-    source: {
-      id: "server-trend",
-      label: "服务器资源趋势",
-      content: JSON.stringify({ snapshot, recentHistory }, null, 2),
-      preserveWhitespace: true,
-      truncateFrom: "start",
-    },
-  };
 }
 
 export function createProcessesAiHandoff(

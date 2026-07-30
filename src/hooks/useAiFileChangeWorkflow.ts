@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { AiActionExecutionHandler } from "../ai-action-lifecycle";
 import {
   aiFileEditRollbackEligibilityError,
   markAiFileEditApplied,
@@ -7,14 +8,11 @@ import {
   type AiFileEditProposal,
 } from "../ai-file-edits";
 import {
-  aiFileOperationApplyRequest,
   aiFileOperationDisplayName,
   aiFileOperationLabel,
   aiFileOperationRollbackEligibilityError,
-  aiFileOperationRollbackRequest,
   markAiFileOperationApplied,
   markAiFileOperationRolledBack,
-  type AiFileOperationExecutionRequest,
   type AiFileOperationProposal,
   type AiFileOperationResult,
 } from "../ai-file-operations";
@@ -52,15 +50,7 @@ interface FileChangeReviewState {
 
 interface UseAiFileChangeWorkflowOptions {
   messages: AiMessage[];
-  onApplyRemoteFileEdit: (
-    sessionId: string,
-    file: AiRemoteFileContext,
-    content: string,
-  ) => Promise<AiRemoteFileContext>;
-  onApplyRemoteFileOperation: (
-    sessionId: string,
-    request: AiFileOperationExecutionRequest,
-  ) => Promise<AiFileOperationResult>;
+  onExecuteAction: AiActionExecutionHandler;
   onConfirm: (confirmation: AiFileChangeConfirmation) => void;
   onNotice: (type: AiFileChangeNotice, content: string) => void;
   sessionId: string | null;
@@ -88,8 +78,7 @@ function isFileOperationConflict(message: string) {
 
 export function useAiFileChangeWorkflow({
   messages,
-  onApplyRemoteFileEdit,
-  onApplyRemoteFileOperation,
+  onExecuteAction,
   onConfirm,
   onNotice,
   sessionId,
@@ -249,13 +238,27 @@ export function useAiFileChangeWorkflow({
     messageId: string,
     proposal: AiFileEditProposal,
     content: string,
+    userConfirmed = true,
   ): Promise<ApplyResult> => {
     try {
-      const updatedFile = await onApplyRemoteFileEdit(
-        proposal.sessionId,
-        proposal.originalFile,
-        content,
-      );
+      const execution = userConfirmed
+        ? await onExecuteAction(messageId, proposal.id, false, content)
+        : await onExecuteAction(
+            messageId,
+            proposal.id,
+            false,
+            content,
+            false,
+          );
+      if (execution.actionType !== "file_edit" || !execution.file) {
+        throw new Error("AI 文件修改返回了无效结果");
+      }
+      const updatedFile: AiRemoteFileContext = {
+        content: execution.file.content,
+        name: proposal.originalFile.name,
+        path: execution.file.path,
+        size: execution.file.size,
+      };
       updateFileEditProposal(messageId, proposal.id, (current) =>
         markAiFileEditApplied(
           current,
@@ -285,11 +288,14 @@ export function useAiFileChangeWorkflow({
       return "failed";
     }
     try {
-      await onApplyRemoteFileEdit(
-        proposal.sessionId,
-        proposal.appliedFile,
-        proposal.originalFile.content,
-      );
+      const execution = await onExecuteAction(messageId, proposal.id, true);
+      if (
+        execution.actionType !== "file_edit" ||
+        execution.file?.content !== proposal.originalFile.content ||
+        execution.file.path !== proposal.originalFile.path
+      ) {
+        throw new Error("AI 文件回滚返回了无效结果");
+      }
       updateFileEditProposal(messageId, proposal.id, (current) =>
         markAiFileEditRolledBack(current, new Date().toISOString()),
       );
@@ -310,12 +316,32 @@ export function useAiFileChangeWorkflow({
   const applyFileOperationProposal = async (
     messageId: string,
     proposal: AiFileOperationProposal,
+    userConfirmed = true,
   ): Promise<ApplyResult> => {
     try {
-      const result = await onApplyRemoteFileOperation(
-        proposal.sessionId,
-        aiFileOperationApplyRequest(proposal),
-      );
+      const execution = userConfirmed
+        ? await onExecuteAction(messageId, proposal.id)
+        : await onExecuteAction(
+            messageId,
+            proposal.id,
+            false,
+            undefined,
+            false,
+          );
+      if (execution.actionType !== "file_operation") {
+        throw new Error("AI 文件操作返回了无效结果");
+      }
+      const result: AiFileOperationResult = {
+        file: execution.file
+          ? {
+              content: execution.file.content,
+              name:
+                execution.file.path.split("/").pop() || execution.file.path,
+              path: execution.file.path,
+              size: execution.file.size,
+            }
+          : null,
+      };
       updateFileOperationProposal(messageId, proposal.id, (current) =>
         markAiFileOperationApplied(current, result, new Date().toISOString()),
       );
@@ -338,10 +364,10 @@ export function useAiFileChangeWorkflow({
   ): Promise<RollbackResult> => {
     if (aiFileOperationRollbackEligibilityError(proposal)) return "failed";
     try {
-      await onApplyRemoteFileOperation(
-        proposal.sessionId,
-        aiFileOperationRollbackRequest(proposal),
-      );
+      const execution = await onExecuteAction(messageId, proposal.id, true);
+      if (execution.actionType !== "file_operation") {
+        throw new Error("AI 文件回滚返回了无效结果");
+      }
       updateFileOperationProposal(messageId, proposal.id, (current) =>
         markAiFileOperationRolledBack(current, new Date().toISOString()),
       );
@@ -387,6 +413,7 @@ export function useAiFileChangeWorkflow({
     } else {
       onNotice("error", "文件修改应用失败，请查看错误信息");
     }
+    return result;
   };
 
   const applyReviewedFileOperation = async () => {
@@ -414,6 +441,63 @@ export function useAiFileChangeWorkflow({
       onNotice("warning", "远端文件状态已变化，未执行操作");
     } else {
       onNotice("error", "文件操作失败，请查看错误信息");
+    }
+    return result;
+  };
+
+  const approveFileEditProposal = async (
+    messageId: string,
+    proposal: AiFileEditProposal,
+    userConfirmed = true,
+  ): Promise<ApplyResult> => {
+    if (applying || proposal.status !== "pending") return "failed";
+    setApplying(true);
+    try {
+      const result = await applyFileEditProposal(
+        messageId,
+        proposal,
+        proposal.content,
+        userConfirmed,
+      );
+      if (result === "applied") {
+        onNotice("success", `已更新 ${proposal.originalFile.name}`);
+      } else if (result === "conflict") {
+        onNotice("warning", "远程文件已变化，未应用修改");
+      } else {
+        onNotice("error", "文件修改应用失败");
+      }
+      return result;
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const approveFileOperationProposal = async (
+    messageId: string,
+    proposal: AiFileOperationProposal,
+    userConfirmed = true,
+  ): Promise<ApplyResult> => {
+    if (applying || proposal.status !== "pending") return "failed";
+    setApplying(true);
+    try {
+      const result = await applyFileOperationProposal(
+        messageId,
+        proposal,
+        userConfirmed,
+      );
+      if (result === "applied") {
+        onNotice(
+          "success",
+          `已${aiFileOperationLabel(proposal.operation)} ${aiFileOperationDisplayName(proposal)}`,
+        );
+      } else if (result === "conflict") {
+        onNotice("warning", "远端文件状态已变化，未执行操作");
+      } else {
+        onNotice("error", "文件操作失败");
+      }
+      return result;
+    } finally {
+      setApplying(false);
     }
   };
 
@@ -618,6 +702,8 @@ export function useAiFileChangeWorkflow({
 
   return {
     applying,
+    approveFileEditProposal,
+    approveFileOperationProposal,
     applyReviewedFileEdit,
     applyReviewedFileOperation,
     closeFileChangeReview,

@@ -28,6 +28,7 @@ notify = "8.2.0"
 regex = "1.11.1"
 httparse = "1.10.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
+rig-core = { version = "0.40.0", default-features = false, features = ["reqwest", "rustls"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"

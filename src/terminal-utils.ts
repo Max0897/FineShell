@@ -13,6 +13,7 @@ export interface TerminalInputState {
 
 export interface TerminalInjectedInput {
   id: string;
+  submit?: boolean;
   value: string;
 }
 
@@ -53,6 +54,22 @@ export function appendInjectedTerminalInput(
   return nextValue.length <= MAX_TRACKED_TERMINAL_INPUT_CHARS
     ? { reliable: true, value: nextValue }
     : { reliable: false, value: "" };
+}
+
+export function trackInjectedTerminalInput(
+  state: TerminalInputState,
+  input: Pick<TerminalInjectedInput, "submit" | "value">,
+) {
+  const inserted = appendInjectedTerminalInput(state, input.value);
+  return input.submit
+    ? trackTerminalInput(inserted, "\r")
+    : { state: inserted, submissions: [] as string[] };
+}
+
+export function terminalInjectedInputData(
+  input: Pick<TerminalInjectedInput, "submit" | "value">,
+) {
+  return `${input.value}${input.submit ? "\r" : ""}`;
 }
 
 export function consumeTerminalCommandCandidate(

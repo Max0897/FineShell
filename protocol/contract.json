@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 25,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -22,6 +22,12 @@
     "ai_probe_capabilities": true,
     "ai_chat_start": true,
     "ai_chat_cancel": true,
+    "ai_task_get": true,
+    "ai_task_events_since": true,
+    "ai_task_plan_decide": true,
+    "ai_task_action_transition": true,
+    "ai_task_command_observe": true,
+    "ai_task_action_execute": true,
     "managed_ssh_key_import": true,
     "managed_ssh_key_delete": true,
     "diagnostic_set_level": true,
@@ -81,9 +87,137 @@
     "sftp-external-edit": true,
     "ai-stream": true,
     "ai-complete": true,
+    "ai-task": true,
     "configuration:changed": true,
     "settings:changed": true,
     "menu-select-all": true
+  },
+  "agentTaskStatuses": {
+    "understanding": true,
+    "gathering_context": true,
+    "planning": true,
+    "running": true,
+    "awaiting_approval": true,
+    "awaiting_user_input": true,
+    "verifying": true,
+    "paused": true,
+    "paused_disconnected": true,
+    "completed": true,
+    "failed": true,
+    "cancelled": true
+  },
+  "agentTaskEventKinds": {
+    "task_created": true,
+    "model_turn_started": true,
+    "model_turn_completed": true,
+    "plan_created": true,
+    "plan_started": true,
+    "plan_updated": true,
+    "plan_completed": true,
+    "action_proposed": true,
+    "action_approved": true,
+    "action_rejected": true,
+    "action_started": true,
+    "action_succeeded": true,
+    "action_conflicted": true,
+    "action_failed": true,
+    "action_rollback_started": true,
+    "action_rolled_back": true,
+    "action_rollback_conflicted": true,
+    "action_rollback_failed": true,
+    "action_retried": true,
+    "action_verification_recorded": true,
+    "task_paused": true,
+    "task_resumed": true,
+    "task_completed": true,
+    "task_failed": true,
+    "task_cancelled": true
+  },
+  "agentPlanStepStatuses": {
+    "pending": true,
+    "in_progress": true,
+    "completed": true,
+    "skipped": true,
+    "failed": true
+  },
+  "agentPlanStatuses": {
+    "pending": true,
+    "running": true,
+    "completed": true,
+    "partial": true,
+    "cancelled": true
+  },
+  "agentApprovalModes": {
+    "on_request": true,
+    "auto_safe": true,
+    "full_access": true
+  },
+  "agentActionRisks": {
+    "low_risk": true,
+    "read_only": true,
+    "reversible_write": true,
+    "elevated": true,
+    "critical": true
+  },
+  "agentActionStatuses": {
+    "pending": true,
+    "approved": true,
+    "running": true,
+    "succeeded": true,
+    "conflict": true,
+    "failed": true,
+    "rejected": true,
+    "rolling_back": true,
+    "rolled_back": true,
+    "rollback_conflict": true,
+    "rollback_failed": true,
+    "cancelled": true
+  },
+  "agentActionTransitions": {
+    "approve": true,
+    "reject": true,
+    "start": true,
+    "succeed": true,
+    "conflict": true,
+    "fail": true,
+    "rollback_start": true,
+    "rolled_back": true,
+    "retry": true
+  },
+  "agentVerificationStatuses": {
+    "pending": true,
+    "verified": true,
+    "partial": true,
+    "unverified": true,
+    "failed": true,
+    "not_applicable": true
+  },
+  "agentVerificationEvidenceKinds": {
+    "remote_content_match": true,
+    "remote_path_state": true,
+    "recovery_state_match": true,
+    "command_exit_status": true,
+    "service_status": true,
+    "port_listening": true,
+    "config_syntax": true,
+    "result_unavailable": true
+  },
+  "agentRepairStopReasons": {
+    "verification_failed": true,
+    "action_failed": true,
+    "repair_budget_exhausted": true
+  },
+  "agentRecoveryRecommendations": {
+    "rollback": true,
+    "retry": true,
+    "manual_review": true
+  },
+  "agentRecoveryStatuses": {
+    "suggested": true,
+    "running": true,
+    "verified": true,
+    "unverified": true,
+    "failed": true
   },
   "errorCodes": {
     "invalid_request": true,

@@ -74,6 +74,23 @@
 - Linux：x64 / ARM64 `.deb`
 - Windows：x64 `.exe`（NSIS）/ `.msi`，ARM64 `.exe`（NSIS）
 
+### Linux
+
+请使用 APT 安装 `.deb`，APT 会同时安装 FineShell 所需的 WebKitGTK 等系统依赖：
+
+```bash
+sudo apt update
+sudo apt install ./FineShell_0.1.11_linux_arm64.deb
+```
+
+请根据实际下载的文件名调整命令。不要直接使用 `dpkg -i`，因为 `dpkg` 不会自动下载缺失的依赖。
+
+如果已经使用 `dpkg -i` 导致软件包处于未配置状态，可执行：
+
+```bash
+sudo apt --fix-broken install
+```
+
 ## 从源码运行
 
 ### 环境要求

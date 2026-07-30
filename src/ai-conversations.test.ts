@@ -26,6 +26,7 @@ function conversation(id = "conversation-1") {
         id: "message-2",
         role: "assistant" as const,
         content: "请先运行 `nginx -t`。",
+        taskId: "task-1",
         diagnosticPlans: [
           {
             createdAt: "2026-07-28T00:20:00.000Z",
@@ -113,6 +114,7 @@ describe("AI conversation persistence", () => {
       startedAt: 123,
       status: "success",
     });
+    expect(sanitized.messages[1]?.taskId).toBe("task-1");
     expect(sanitized.messages[1]?.toolRuns?.[0]?.summary).not.toContain(
       "must-not-be-saved",
     );

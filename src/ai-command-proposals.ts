@@ -1,25 +1,36 @@
 import {
-  assessAiTerminalCommand,
+  combineAiTerminalCommandAssessment,
   normalizeAiTerminalCommand,
   redactAiContext,
   type AiContextSource,
   type AiCommandAssessment,
+  type AiCommandRisk,
 } from "./ai-utils";
 import type { AiToolCall, AiToolResult } from "./tauri-protocol";
 import type { TerminalCommandSubmission } from "./terminal-utils";
 
 export const AI_COMMAND_PROPOSAL_TOOL_NAME = "propose_terminal_command";
 export const MAX_AI_COMMAND_PURPOSE_CHARS = 240;
+export const MAX_AI_COMMAND_RISK_REASON_CHARS = 240;
 
 export type AiCommandProposalStatus =
   | "pending"
-  | "inserted"
+  | "approved"
   | "executed"
   | "succeeded"
   | "failed"
   | "unavailable"
   | "verified"
   | "rejected";
+
+export type AiCommandVerification =
+  | { kind: "service_active"; service: string }
+  | { kind: "port_listening"; port: number; protocol: "tcp" | "udp" }
+  | {
+      kind: "config_syntax";
+      validator: "nginx" | "apache" | "caddy" | "sshd" | "haproxy";
+      path?: string;
+    };
 
 export interface AiCommandProposal {
   assessment: AiCommandAssessment;
@@ -30,7 +41,7 @@ export interface AiCommandProposal {
   executedAt?: string;
   exitCode?: number;
   id: string;
-  insertedAt?: string;
+  approvedAt?: string;
   purpose: string;
   resultOutput?: string;
   resultOutputTruncated?: boolean;
@@ -39,7 +50,29 @@ export interface AiCommandProposal {
   status: AiCommandProposalStatus;
   submissionId?: string;
   verifiedAt?: string;
+  verification?: AiCommandVerification;
 }
+
+export type AiCommandApprovalDecision =
+  | {
+      durationMs?: number;
+      exitCode: number;
+      kind: "execution_completed";
+      output?: string;
+      outputTruncated?: boolean;
+    }
+  | {
+      durationMs?: number;
+      kind: "execution_unavailable";
+      reason: string;
+    }
+  | {
+      kind: "rejected";
+    }
+  | {
+      feedback: string;
+      kind: "revision_requested";
+    };
 
 export interface AiCommandRecord {
   id: string;
@@ -49,14 +82,14 @@ export interface AiCommandRecord {
   purpose: string;
   risk: AiCommandAssessment["risk"];
   status:
-    | "inserted"
+    | "approved"
     | "executed"
     | "succeeded"
     | "failed"
     | "unavailable"
     | "verified"
     | "rejected"
-    | "not-inserted";
+    | "not-executed";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -70,6 +103,63 @@ function exactKeys(value: Record<string, unknown>, keys: string[]) {
     actual.length === expected.length &&
     actual.every((key, index) => key === expected[index])
   );
+}
+
+export function normalizeAiCommandVerification(
+  value: unknown,
+): AiCommandVerification {
+  if (!isRecord(value) || typeof value.kind !== "string") {
+    throw new Error("AI 返回的业务验证参数无效");
+  }
+  if (
+    value.kind === "service_active" &&
+    exactKeys(value, ["kind", "service"]) &&
+    typeof value.service === "string" &&
+    value.service.length > 0 &&
+    value.service.length <= 128 &&
+    !value.service.startsWith("-") &&
+    /^[A-Za-z0-9_.@:-]+$/.test(value.service)
+  ) {
+    return { kind: value.kind, service: value.service };
+  }
+  if (
+    value.kind === "port_listening" &&
+    exactKeys(value, ["kind", "port", "protocol"]) &&
+    Number.isInteger(value.port) &&
+    typeof value.port === "number" &&
+    value.port >= 1 &&
+    value.port <= 65_535 &&
+    (value.protocol === "tcp" || value.protocol === "udp")
+  ) {
+    return { kind: value.kind, port: value.port, protocol: value.protocol };
+  }
+  if (
+    value.kind === "config_syntax" &&
+    (exactKeys(value, ["kind", "validator"]) ||
+      exactKeys(value, ["kind", "validator", "path"])) &&
+    ["nginx", "apache", "caddy", "sshd", "haproxy"].includes(
+      String(value.validator),
+    ) &&
+    (value.path === undefined ||
+      (typeof value.path === "string" &&
+        value.path.startsWith("/") &&
+        value.path.length <= 1_024 &&
+        !value.path.split("/").some((part) => part === "." || part === "..") &&
+        !/[\x00-\x1f\x7f]/.test(value.path)))
+  ) {
+    const validator = value.validator as
+      | "nginx"
+      | "apache"
+      | "caddy"
+      | "sshd"
+      | "haproxy";
+    return {
+      kind: value.kind,
+      validator,
+      ...(typeof value.path === "string" ? { path: value.path } : {}),
+    };
+  }
+  throw new Error("AI 返回的业务验证参数无效");
 }
 
 export function isAiCommandProposalToolCall(call: AiToolCall) {
@@ -90,7 +180,17 @@ export function createAiCommandProposal(
   } catch {
     throw new Error("AI 返回了无效的终端命令参数");
   }
-  if (!isRecord(value) || !exactKeys(value, ["command", "purpose"])) {
+  if (
+    !isRecord(value) ||
+    (!exactKeys(value, ["command", "purpose", "risk", "risk_reason"]) &&
+      !exactKeys(value, [
+        "command",
+        "purpose",
+        "risk",
+        "risk_reason",
+        "verification",
+      ]))
+  ) {
     throw new Error("AI 返回了无效的终端命令参数");
   }
   if (typeof value.command !== "string") {
@@ -108,44 +208,106 @@ export function createAiCommandProposal(
   ) {
     throw new Error("AI 返回的命令用途无效");
   }
+  if (
+    value.risk !== "safe" &&
+    value.risk !== "caution" &&
+    value.risk !== "danger"
+  ) {
+    throw new Error("AI 返回的命令风险等级无效");
+  }
+  if (typeof value.risk_reason !== "string") {
+    throw new Error("AI 返回的命令风险说明无效");
+  }
+  const riskReason = redactAiContext(value.risk_reason)
+    .trim()
+    .replace(/\s+/g, " ");
+  if (
+    !riskReason ||
+    riskReason.length > MAX_AI_COMMAND_RISK_REASON_CHARS ||
+    /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(riskReason)
+  ) {
+    throw new Error("AI 返回的命令风险说明无效");
+  }
+  const risk = value.risk as AiCommandRisk;
+  const verification = value.verification === undefined
+    ? undefined
+    : normalizeAiCommandVerification(value.verification);
   return {
-    assessment: assessAiTerminalCommand(command),
+    assessment: combineAiTerminalCommandAssessment(command, risk, riskReason),
     command,
     directory: directory?.trim() || undefined,
     id: call.id,
     purpose,
     sessionId,
     status: "pending",
+    verification,
   };
 }
 
 export function aiCommandProposalToolResult(
   call: AiToolCall,
-  error?: string,
+  error: string,
 ): AiToolResult {
   return {
     callId: call.id,
     name: call.name,
-    content: JSON.stringify(
-      error
-        ? { ok: false, error }
-        : {
-            ok: true,
-            proposalCaptured: true,
-            message: "终端命令提案已记录，等待用户确认，尚未填入或执行",
-          },
-    ),
+    content: JSON.stringify({ ok: false, error }),
   };
 }
 
-export function markAiCommandProposalInserted(
+export function aiCommandApprovalToolResult(
+  call: AiToolCall,
+  decision: AiCommandApprovalDecision,
+): AiToolResult {
+  const content =
+    decision.kind === "execution_completed"
+        ? {
+            ok: decision.exitCode === 0,
+            decision: "approved_and_completed",
+            durationMs: decision.durationMs,
+            exitCode: decision.exitCode,
+            output: decision.output?.trim() || undefined,
+            outputTruncated: decision.outputTruncated || undefined,
+            message:
+              decision.exitCode === 0
+                ? "命令已获批准，终端已完成执行"
+                : "命令已获批准，但终端执行返回非零退出码",
+          }
+        : decision.kind === "execution_unavailable"
+          ? {
+              ok: false,
+              decision: "execution_result_unavailable",
+              durationMs: decision.durationMs,
+              error: decision.reason,
+              message: "命令已获批准，但无法获取可靠的终端结束状态",
+            }
+      : decision.kind === "revision_requested"
+        ? {
+            ok: false,
+            decision: "revision_requested",
+            feedback: decision.feedback.trim(),
+            message: "用户拒绝了当前命令，并要求按反馈重新提案",
+          }
+          : {
+              ok: false,
+              decision: "rejected",
+              message: "用户拒绝了当前命令，不得执行",
+            };
+  return {
+    callId: call.id,
+    name: call.name,
+    content: JSON.stringify(content),
+  };
+}
+
+export function markAiCommandProposalApproved(
   proposal: AiCommandProposal,
-  insertedAt = new Date().toISOString(),
+  approvedAt = new Date().toISOString(),
 ) {
   if (proposal.status !== "pending") {
-    throw new Error("当前终端命令提案不能再次填入");
+    throw new Error("当前终端命令提案不能再次审批");
   }
-  return { ...proposal, insertedAt, status: "inserted" as const };
+  return { ...proposal, approvedAt, status: "approved" as const };
 }
 
 export function aiCommandProposalMatchesSubmission(
@@ -153,7 +315,7 @@ export function aiCommandProposalMatchesSubmission(
   submission: TerminalCommandSubmission,
 ) {
   if (
-    proposal.status !== "inserted" ||
+    proposal.status !== "approved" ||
     proposal.sessionId !== submission.sessionId
   ) {
     return false;
@@ -190,6 +352,31 @@ export function aiCommandProposalMatchesResult(
     proposal.submissionId === result.id &&
     (result.phase === "completed" || result.phase === "unavailable")
   );
+}
+
+export function aiCommandApprovalDecisionFromSubmission(
+  submission: TerminalCommandSubmission,
+): AiCommandApprovalDecision | null {
+  if (submission.phase === "unavailable") {
+    return {
+      durationMs: submission.durationMs,
+      kind: "execution_unavailable",
+      reason: submission.reason?.trim() || "终端未能提供可靠的执行结果",
+    };
+  }
+  if (submission.phase !== "completed") return null;
+  if (typeof submission.exitCode !== "number") {
+    throw new Error("终端结果缺少退出码");
+  }
+  const redactedOutput = redactAiContext(submission.output ?? "");
+  return {
+    durationMs: submission.durationMs,
+    exitCode: submission.exitCode,
+    kind: "execution_completed",
+    output: redactedOutput.slice(-12_000),
+    outputTruncated:
+      submission.outputTruncated === true || redactedOutput.length > 12_000,
+  };
 }
 
 export function markAiCommandProposalCompleted(
@@ -249,7 +436,7 @@ export function aiCommandRecordFromProposal(
       proposal.verifiedAt ??
       proposal.completedAt ??
       proposal.executedAt ??
-      proposal.insertedAt,
+      proposal.approvedAt,
     durationMs: proposal.durationMs,
     exitCode: proposal.exitCode,
     purpose: redactAiContext(proposal.purpose).slice(
@@ -257,7 +444,7 @@ export function aiCommandRecordFromProposal(
       MAX_AI_COMMAND_PURPOSE_CHARS,
     ),
     risk: proposal.assessment.risk,
-    status: proposal.status === "pending" ? "not-inserted" : proposal.status,
+    status: proposal.status === "pending" ? "not-executed" : proposal.status,
   };
 }
 

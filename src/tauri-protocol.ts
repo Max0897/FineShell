@@ -15,6 +15,21 @@ export const PROTOCOL_VERSION = contract.version;
 export type TauriCommand = keyof typeof contract.commands;
 export type TauriEvent = keyof typeof contract.events;
 export type CommandErrorCode = keyof typeof contract.errorCodes;
+export type AgentTaskStatus = keyof typeof contract.agentTaskStatuses;
+export type AgentTaskEventKind = keyof typeof contract.agentTaskEventKinds;
+export type AgentPlanStepStatus = keyof typeof contract.agentPlanStepStatuses;
+export type AgentPlanStatus = keyof typeof contract.agentPlanStatuses;
+export type AgentApprovalMode = keyof typeof contract.agentApprovalModes;
+export type AgentActionRisk = keyof typeof contract.agentActionRisks;
+export type AgentActionStatus = keyof typeof contract.agentActionStatuses;
+export type AgentActionTransition = keyof typeof contract.agentActionTransitions;
+export type AgentVerificationStatus = keyof typeof contract.agentVerificationStatuses;
+export type AgentVerificationEvidenceKind =
+  keyof typeof contract.agentVerificationEvidenceKinds;
+export type AgentRepairStopReason = keyof typeof contract.agentRepairStopReasons;
+export type AgentRecoveryRecommendation =
+  keyof typeof contract.agentRecoveryRecommendations;
+export type AgentRecoveryStatus = keyof typeof contract.agentRecoveryStatuses;
 
 export interface CommandErrorPayload {
   code: CommandErrorCode;
@@ -99,10 +114,180 @@ export interface AiCompletePayload {
   requestId: string;
 }
 
+export interface AgentPlanStep {
+  id: string;
+  title: string;
+  tool: string;
+  status: AgentPlanStepStatus;
+  detail: string | null;
+  reason: string;
+  optional: boolean;
+  dependsOn: string[];
+  summary: string | null;
+  error: string | null;
+  startedAt: number | null;
+  durationMs: number | null;
+}
+
+export interface AgentPlan {
+  id: string;
+  description: string | null;
+  status: AgentPlanStatus;
+  createdAt: number;
+  steps: AgentPlanStep[];
+}
+
+export interface AgentActionIntent {
+  id: string;
+  tool: string;
+  arguments: unknown;
+  reason: string;
+  expectedEffect: string;
+  risk: AgentActionRisk;
+}
+
+export interface AgentActionState {
+  id: string;
+  tool: string;
+  reason: string;
+  expectedEffect: string;
+  risk: AgentActionRisk;
+  status: AgentActionStatus;
+  summary: string | null;
+  error: string | null;
+  startedAt: number | null;
+  completedAt: number | null;
+  durationMs: number | null;
+  verificationStatus: AgentVerificationStatus;
+  verificationEvidence: AgentVerificationEvidence[];
+  recoveryState: AgentRecoveryState | null;
+}
+
+export interface AgentRecoveryState {
+  recommendation: AgentRecoveryRecommendation;
+  status: AgentRecoveryStatus;
+  summary: string;
+  updatedAt: number;
+}
+
+export interface AgentVerificationEvidence {
+  kind: AgentVerificationEvidenceKind;
+  summary: string;
+  observedAt: number;
+}
+
+export interface AgentActionTransitionRequest {
+  taskId: string;
+  actionId: string;
+  transition: AgentActionTransition;
+  summary?: string;
+  error?: string;
+}
+
+export interface AgentCommandObservationRequest {
+  taskId: string;
+  actionId: string;
+  hostId: string;
+  sessionId: string;
+  submissionId: string;
+  phase: "submitted" | "completed" | "unavailable";
+  command: string;
+  exitCode?: number;
+  durationMs?: number;
+  reason?: string;
+}
+
+export interface AgentActionExecutionResult {
+  actionId: string;
+  actionType: "file_edit" | "file_operation" | "terminal_command";
+  file: {
+    path: string;
+    content: string;
+    size: number;
+    modifiedAt: number | null;
+    permissions: number | null;
+  } | null;
+  affectedPaths: string[];
+}
+
+export interface AgentTaskResult {
+  summary: string;
+  verified: boolean;
+  verificationStatus: AgentVerificationStatus;
+  stopReason: string | null;
+}
+
+export interface AgentTaskDiagnostics {
+  durationMs: number;
+  modelTurnCount: number;
+  planStepCount: number;
+  actionCount: number;
+  verificationEvidenceCount: number;
+  repairAttemptCount: number;
+  stopReason: string | null;
+}
+
+export interface AgentTaskContext {
+  id: string;
+  conversationId: string;
+  hostId: string;
+  terminalSessionId?: string;
+  currentDirectory?: string;
+  fileOperationDirectory?: string;
+  writableFiles: Array<{
+    path: string;
+    content: string;
+    size: number;
+  }>;
+  objective: string;
+  approvalMode: AgentApprovalMode;
+}
+
+export interface AgentTask {
+  id: string;
+  conversationId: string;
+  hostId: string;
+  terminalSessionId: string | null;
+  currentDirectory: string | null;
+  approvalMode: AgentApprovalMode;
+  status: AgentTaskStatus;
+  objective: string;
+  plan: AgentPlan | null;
+  activeStepId: string | null;
+  actions: AgentActionState[];
+  modelCompleted: boolean;
+  iteration: number;
+  repairAttempts: number;
+  repairLimit: number;
+  repairStopReason: AgentRepairStopReason | null;
+  diagnostics: AgentTaskDiagnostics;
+  lastEventSequence: number;
+  result: AgentTaskResult | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AgentTaskEventPayload {
+  protocolVersion: number;
+  sequence: number;
+  kind: AgentTaskEventKind;
+  actionId?: string;
+  task: AgentTask;
+}
+
 export interface AiChatResult {
   content: string;
   toolCalls: AiToolCall[];
+  actionIntents?: AgentActionIntent[];
+  diagnosticPlans?: AgentPlan[];
+  diagnosticToolRounds?: AiToolRound[];
 }
+
+export type AiFinalizeReason =
+  | "tool_budget"
+  | "no_progress"
+  | "consecutive_failures";
 
 export interface AiToolCall {
   id: string;
@@ -149,6 +334,7 @@ interface EventPayloadMap {
   "sftp-external-edit": ExternalEditPayload;
   "ai-stream": AiStreamPayload;
   "ai-complete": AiCompletePayload;
+  "ai-task": AgentTaskEventPayload;
   "configuration:changed": undefined;
   "settings:changed": AppSettings;
   "menu-select-all": MenuSelectAllPayload;

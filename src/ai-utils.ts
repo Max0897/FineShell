@@ -6,7 +6,7 @@ export function normalizeAiTerminalCommand(command: string) {
     throw new Error("命令为空或内容过长");
   }
   if (/\r|\n|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) {
-    throw new Error("为避免误执行，多行命令不能直接填入终端");
+    throw new Error("为避免误执行，多行命令不能直接提交到终端");
   }
   return value;
 }
@@ -15,7 +15,6 @@ export type AiContextSourceId =
   | "terminal-selection"
   | "terminal-output"
   | "server-monitor"
-  | "server-trend"
   | "process-selection"
   | "network-diagnostic"
   | "sftp-path"
@@ -184,6 +183,37 @@ export interface AiCommandAssessment {
   label: string;
   reason?: string;
   risk: "safe" | "caution" | "danger";
+}
+
+export type AiCommandRisk = AiCommandAssessment["risk"];
+
+const AI_COMMAND_RISK_LEVEL: Record<AiCommandRisk, number> = {
+  safe: 0,
+  caution: 1,
+  danger: 2,
+};
+
+function aiCommandRiskLabel(risk: AiCommandRisk) {
+  if (risk === "danger") return "高风险";
+  if (risk === "caution") return "需确认";
+  return "低风险";
+}
+
+export function combineAiTerminalCommandAssessment(
+  command: string,
+  aiRisk: AiCommandRisk,
+  aiReason: string,
+): AiCommandAssessment {
+  const local = assessAiTerminalCommand(command);
+  if (AI_COMMAND_RISK_LEVEL[local.risk] > AI_COMMAND_RISK_LEVEL[aiRisk]) {
+    return local;
+  }
+  return {
+    canInsert: local.canInsert,
+    label: aiCommandRiskLabel(aiRisk),
+    reason: aiReason,
+    risk: aiRisk,
+  };
 }
 
 const PRIVATE_KEY_PATTERN =
@@ -363,7 +393,7 @@ export function assessAiTerminalCommand(command: string): AiCommandAssessment {
     return {
       canInsert: false,
       label: "仅供查看",
-      reason: error instanceof Error ? error.message : "无法填入终端",
+      reason: error instanceof Error ? error.message : "无法提交到终端",
       risk: "caution",
     };
   }

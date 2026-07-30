@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import type { AiActionTransitionHandler } from "../ai-action-lifecycle";
 import {
   aiCommandProposalMatchesSubmission,
   aiCommandProposalMatchesResult,
@@ -17,6 +18,12 @@ type UpdateMessages = (
   update: (messages: AiMessage[]) => AiMessage[],
 ) => AiConversation | undefined;
 
+type ObserveCommandLifecycle = (
+  messageId: string,
+  actionId: string,
+  submission: TerminalCommandSubmission,
+) => Promise<void>;
+
 interface UseAiProposalStateOptions {
   activeConversationId?: string;
   commandSubmission: TerminalCommandSubmission | null;
@@ -24,6 +31,13 @@ interface UseAiProposalStateOptions {
   getHostConversations: (hostId: string) => AiConversation[];
   hostId: string | null;
   isHostLoaded: (hostId: string) => boolean;
+  onActionTransition: AiActionTransitionHandler;
+  onActionTransitionError: (error: unknown) => void;
+  onCommandLifecycleObserved: ObserveCommandLifecycle;
+  onCommandLifecycleProcessed?: (
+    proposalId: string,
+    submission: TerminalCommandSubmission,
+  ) => void;
   persistConversation: (conversation?: AiConversation) => Promise<void>;
   updateMessages: UpdateMessages;
 }
@@ -35,6 +49,10 @@ export function useAiProposalState({
   getHostConversations,
   hostId,
   isHostLoaded,
+  onActionTransition,
+  onActionTransitionError,
+  onCommandLifecycleObserved,
+  onCommandLifecycleProcessed,
   persistConversation,
   updateMessages,
 }: UseAiProposalStateOptions) {
@@ -146,50 +164,85 @@ export function useAiProposalState({
   );
 
   const rejectCommandProposal = useCallback(
-    (messageId: string, proposalId: string) =>
-      updateCommandProposal(messageId, proposalId, (proposal) => ({
-        ...proposal,
-        status: "rejected",
-      })),
-    [updateCommandProposal],
+    async (messageId: string, proposalId: string) => {
+      try {
+        await onActionTransition(messageId, proposalId, "reject");
+        return updateCommandProposal(messageId, proposalId, (proposal) => ({
+          ...proposal,
+          status: "rejected",
+        }));
+      } catch (error) {
+        onActionTransitionError(error);
+        return undefined;
+      }
+    },
+    [onActionTransition, onActionTransitionError, updateCommandProposal],
   );
 
   const rejectFileEditProposal = useCallback(
-    (messageId: string, proposalId: string) =>
-      updateFileEditProposal(messageId, proposalId, (proposal) => ({
-        ...proposal,
-        status: "rejected",
-      })),
-    [updateFileEditProposal],
+    async (messageId: string, proposalId: string) => {
+      try {
+        await onActionTransition(messageId, proposalId, "reject");
+        return updateFileEditProposal(messageId, proposalId, (proposal) => ({
+          ...proposal,
+          status: "rejected",
+        }));
+      } catch (error) {
+        onActionTransitionError(error);
+        return undefined;
+      }
+    },
+    [onActionTransition, onActionTransitionError, updateFileEditProposal],
   );
 
   const retryFileEditProposal = useCallback(
-    (messageId: string, proposalId: string) =>
-      updateFileEditProposal(messageId, proposalId, (proposal) => ({
-        ...proposal,
-        error: undefined,
-        status: "pending",
-      })),
-    [updateFileEditProposal],
+    async (messageId: string, proposalId: string) => {
+      try {
+        await onActionTransition(messageId, proposalId, "retry");
+        return updateFileEditProposal(messageId, proposalId, (proposal) => ({
+          ...proposal,
+          error: undefined,
+          status: "pending",
+        }));
+      } catch (error) {
+        onActionTransitionError(error);
+        return undefined;
+      }
+    },
+    [onActionTransition, onActionTransitionError, updateFileEditProposal],
   );
 
   const rejectFileOperationProposal = useCallback(
-    (messageId: string, proposalId: string) =>
-      updateFileOperationProposal(messageId, proposalId, (proposal) => ({
-        ...proposal,
-        status: "rejected",
-      })),
-    [updateFileOperationProposal],
+    async (messageId: string, proposalId: string) => {
+      try {
+        await onActionTransition(messageId, proposalId, "reject");
+        return updateFileOperationProposal(messageId, proposalId, (proposal) => ({
+          ...proposal,
+          status: "rejected",
+        }));
+      } catch (error) {
+        onActionTransitionError(error);
+        return undefined;
+      }
+    },
+    [onActionTransition, onActionTransitionError, updateFileOperationProposal],
   );
 
   const retryFileOperationProposal = useCallback(
-    (messageId: string, proposalId: string) =>
-      updateFileOperationProposal(messageId, proposalId, (proposal) => ({
-        ...proposal,
-        error: undefined,
-        status: "pending",
-      })),
-    [updateFileOperationProposal],
+    async (messageId: string, proposalId: string) => {
+      try {
+        await onActionTransition(messageId, proposalId, "retry");
+        return updateFileOperationProposal(messageId, proposalId, (proposal) => ({
+          ...proposal,
+          error: undefined,
+          status: "pending",
+        }));
+      } catch (error) {
+        onActionTransitionError(error);
+        return undefined;
+      }
+    },
+    [onActionTransition, onActionTransitionError, updateFileOperationProposal],
   );
 
   useEffect(() => {
@@ -223,22 +276,35 @@ export function useAiProposalState({
                 aiCommandProposalMatchesSubmission(item, submission),
           );
         if (!proposal) continue;
-        updateCommandProposalInConversation(
-          submission.hostId,
-          conversation.id,
-          message.id,
-          proposal.id,
-          (current) => {
-            if (phase === "submitted") {
-              return markAiCommandProposalExecuted(current, submission);
-            }
-            const executed =
-              current.status === "inserted"
-                ? markAiCommandProposalExecuted(current, submission)
-                : current;
-            return markAiCommandProposalCompleted(executed, submission);
-          },
-        );
+        void (async () => {
+          try {
+            await onCommandLifecycleObserved(
+              message.id,
+              proposal.id,
+              submission,
+            );
+            updateCommandProposalInConversation(
+              submission.hostId,
+              conversation.id,
+              message.id,
+              proposal.id,
+              (current) => {
+                if (phase === "submitted") {
+                  return markAiCommandProposalExecuted(current, submission);
+                }
+                const executed =
+                  current.status === "approved"
+                    ? markAiCommandProposalExecuted(current, submission)
+                    : current;
+                return markAiCommandProposalCompleted(executed, submission);
+              },
+            );
+            onCommandLifecycleProcessed?.(proposal.id, submission);
+          } catch (error) {
+            processedCommandSubmissionsRef.current.delete(eventKey);
+            onActionTransitionError(error);
+          }
+        })();
         return;
       }
     }
@@ -247,6 +313,9 @@ export function useAiProposalState({
     conversationsByHost,
     getHostConversations,
     isHostLoaded,
+    onActionTransitionError,
+    onCommandLifecycleObserved,
+    onCommandLifecycleProcessed,
     updateCommandProposalInConversation,
   ]);
 
