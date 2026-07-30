@@ -15,7 +15,6 @@ export type AiContextSourceId =
   | "terminal-selection"
   | "terminal-output"
   | "server-monitor"
-  | "server-trend"
   | "process-selection"
   | "network-diagnostic"
   | "sftp-path"

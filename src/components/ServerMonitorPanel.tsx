@@ -51,7 +51,6 @@ import ServerProcessDrawer from "./ServerProcessDrawer";
 import PortForwardDrawer from "./PortForwardDrawer";
 import { commandErrorMessage } from "../tauri-protocol";
 import {
-  createMonitorAiHandoff,
   createNetworkAiHandoff,
   type AiHandoffRequest,
 } from "../ai-handoff";
@@ -403,10 +402,6 @@ function ServerMonitorPanel({
   );
 
   const connected = session?.status === "connected";
-  const sendMonitorToAi = () => {
-    if (!session || !snapshot) return;
-    onSendToAi(session.id, createMonitorAiHandoff(snapshot, history));
-  };
   const sendNetworkToAi = () => {
     if (!session || (!pingResult && !traceResult && !connectionsResult)) return;
     onSendToAi(
@@ -424,16 +419,6 @@ function ServerMonitorPanel({
       <div className="server-monitor-heading">
         <Typography.Text bold>服务器监控</Typography.Text>
         <Space size="mini">
-          <Tooltip content="交给 AI 分析监控数据">
-            <Button
-              aria-label="交给 AI 分析监控数据"
-              disabled={!snapshot}
-              icon={<IconRobot />}
-              onClick={sendMonitorToAi}
-              size="mini"
-              type="text"
-            />
-          </Tooltip>
           <Tooltip content="进程管理">
             <Button
               aria-label="打开进程管理"
