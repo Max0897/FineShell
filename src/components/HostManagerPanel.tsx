@@ -116,6 +116,17 @@ function formatTime(value?: string) {
   }).format(new Date(value));
 }
 
+function isInteractiveRowTarget(target: EventTarget | null) {
+  return (
+    target instanceof Element &&
+    Boolean(
+      target.closest(
+        "button, a, input, textarea, select, [role='button'], [role='menuitem']",
+      ),
+    )
+  );
+}
+
 function resolveManagedPrivateKey(
   host: HostRecord,
   sshKeys: SshKeyRecord[],
@@ -849,9 +860,26 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
             noDataElement={
               <Empty description={keyword ? "没有匹配的主机" : "暂无主机"} />
             }
+            onRow={(row) => ({
+              onDoubleClick: (event) => {
+                if (
+                  row.type !== "host" ||
+                  configurationLoading ||
+                  configurationAction ||
+                  isInteractiveRowTarget(event.target)
+                ) {
+                  return;
+                }
+                event.preventDefault();
+                void sendConnection(row.host);
+              },
+              title: row.type === "host" ? "双击连接" : undefined,
+            })}
             pagination={false}
             rowClassName={(row) =>
-              row.type === "group" ? "host-table-group-row" : ""
+              row.type === "group"
+                ? "host-table-group-row"
+                : "host-table-host-row"
             }
             rowKey="id"
             size="small"

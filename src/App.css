@@ -3852,6 +3852,11 @@ body.sftp-remote-dragging * {
   background: #f7f8fa;
 }
 
+.host-table-host-row {
+  cursor: pointer;
+  user-select: none;
+}
+
 .host-tree-table tbody > .arco-table-tr:last-child > .arco-table-td,
 .host-tree-table .arco-table-empty-row > .arco-table-td {
   border-bottom: 0;
