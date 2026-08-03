@@ -216,7 +216,9 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-版本标签会触发 GitHub Actions 构建 macOS、Linux 和 Windows 安装包；所有平台构建成功后，工作流会将 `CHANGELOG.md` 中对应版本的内容写入 Release，随后才会公开发布。
+版本标签会触发 GitHub Actions 构建 macOS、Linux 和 Windows 安装包；所有平台构建成功后，工作流会将 `CHANGELOG.md` 中对应版本的内容写入 GitHub Release，随后同步相同的安装包、签名和发布说明到 Gitee Release。客户端优先使用 Gitee 更新清单，Gitee 不可用时自动回退到 GitHub。
+
+Gitee 发布同步需要在 GitHub 仓库中配置 `GITEE_ACCESS_TOKEN`、`GITEE_SSH_PRIVATE_KEY` 和 `GITEE_KNOWN_HOSTS` 三个 Secrets。
 
 ## 支持项目
 

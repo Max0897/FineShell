@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -265,3 +265,116 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
         run: gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --draft=false
+
+  sync-gitee-release:
+    name: Sync Gitee release
+    needs:
+      - validate
+      - publish
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - name: Validate Gitee release credentials
+        shell: bash
+        env:
+          GITEE_ACCESS_TOKEN: ${{ secrets.GITEE_ACCESS_TOKEN }}
+          GITEE_KNOWN_HOSTS: ${{ secrets.GITEE_KNOWN_HOSTS }}
+          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
+        run: |
+          test -n "$GITEE_ACCESS_TOKEN" || {
+            echo "GITEE_ACCESS_TOKEN is not configured." >&2
+            exit 1
+          }
+          test -n "$GITEE_KNOWN_HOSTS" || {
+            echo "GITEE_KNOWN_HOSTS is not configured." >&2
+            exit 1
+          }
+          test -n "$GITEE_SSH_PRIVATE_KEY" || {
+            echo "GITEE_SSH_PRIVATE_KEY is not configured." >&2
+            exit 1
+          }
+      - name: Configure Gitee SSH access
+        shell: bash
+        env:
+          GITEE_KNOWN_HOSTS: ${{ secrets.GITEE_KNOWN_HOSTS }}
+          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$GITEE_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$GITEE_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+      - name: Sync release tag to Gitee
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG" --force
+          git remote add gitee git@gitee.com:Max0897/FineShell.git
+          git push gitee "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+      - name: Download GitHub release assets for Gitee
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/gitee-assets" "$RUNNER_TEMP/gitee-updater"
+          gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/gitee-assets"
+          bun scripts/extract-release-notes.ts "$RELEASE_TAG" \
+            > "$RUNNER_TEMP/release-notes.md"
+      - name: Publish Gitee release
+        shell: bash
+        env:
+          GITEE_ACCESS_TOKEN: ${{ secrets.GITEE_ACCESS_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          bun scripts/publish-gitee-release.ts \
+            "$RELEASE_TAG" \
+            "$GITHUB_SHA" \
+            "$RUNNER_TEMP/release-notes.md" \
+            "$RUNNER_TEMP/gitee-assets" \
+            "$RUNNER_TEMP/gitee-assets/latest.json" \
+            "$RUNNER_TEMP/gitee-updater/latest.json"
+      - name: Validate Gitee updater manifest
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          bun scripts/validate-updater-manifest.ts \
+            "$RUNNER_TEMP/gitee-updater/latest.json" \
+            "$RELEASE_TAG" \
+            gitee
+      - name: Publish latest Gitee updater manifest
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          ota_directory="$RUNNER_TEMP/gitee-ota"
+          if git ls-remote --exit-code --heads gitee refs/heads/ota >/dev/null 2>&1; then
+            git clone --depth 1 --branch ota --single-branch \
+              git@gitee.com:Max0897/FineShell.git "$ota_directory"
+          else
+            git -C "$ota_directory" init -b ota
+            git -C "$ota_directory" remote add gitee \
+              git@gitee.com:Max0897/FineShell.git
+          fi
+
+          install -m 644 "$RUNNER_TEMP/gitee-updater/latest.json" \
+            "$ota_directory/latest.json"
+          git -C "$ota_directory" config user.name "FineShell Release"
+          git -C "$ota_directory" config user.email "actions@github.com"
+          git -C "$ota_directory" add latest.json
+
+          if git -C "$ota_directory" diff --cached --quiet; then
+            echo "Gitee OTA manifest is already up to date."
+            exit 0
+          fi
+
+          git -C "$ota_directory" commit -m "发布 $RELEASE_TAG 更新清单"
+          git -C "$ota_directory" push gitee HEAD:refs/heads/ota
