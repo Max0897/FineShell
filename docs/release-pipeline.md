@@ -29,7 +29,7 @@ Gitee API 访问令牌不再由 GitHub Actions 使用，旧的访问令牌仓库
 - 类型：密钥变量
 - 权限：能够管理当前仓库的 Release，并能够推送 `ota` 分支
 
-流水线运行环境需要提供 `bash`、`curl`、`git` 和 `python3`。发布脚本只使用 Python 标准库，不需要安装项目依赖。
+流水线使用 Gitee Python 3.11 构建环境，并需要提供 `bash`、`curl` 和 `git`。发布脚本只使用 Python 标准库，不需要安装项目依赖。
 
 ## 失败重试
 
