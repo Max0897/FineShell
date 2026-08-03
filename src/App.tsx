@@ -16,7 +16,6 @@ import {
   Typography,
 } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import {
   IconClose,
   IconCloseCircle,
@@ -67,9 +66,9 @@ import {
 } from "./ai-handoff";
 import {
   AI_SIDEBAR_DEFAULT_WIDTH,
-  aiWindowTargetWidth,
   clampAiSidebarWidth,
 } from "./ai-sidebar";
+import { useAiSidebarController } from "./hooks/useAiSidebarController";
 import {
   applicationUpdater,
   checkForApplicationUpdateOnStartup,
@@ -308,15 +307,11 @@ function App() {
   const [quickCommands, setQuickCommands] = useState<QuickCommandRecord[]>([]);
   const [quickCommandDrawerVisible, setQuickCommandDrawerVisible] =
     useState(false);
-  const [aiAssistantVisible, setAiAssistantVisible] = useState(false);
   const [serverMonitorCollapsed, setServerMonitorCollapsed] = useState(false);
   const [sftpCollapsed, setSftpCollapsed] = useState(false);
   const [aiSidebarWidth, setAiSidebarWidth] = useState(
     AI_SIDEBAR_DEFAULT_WIDTH,
   );
-  const [mainWorkspaceFrozenWidth, setMainWorkspaceFrozenWidth] = useState<
-    number | null
-  >(null);
   const [aiInitialPrompt, setAiInitialPrompt] = useState("");
   const [aiInitialContextIds, setAiInitialContextIds] = useState<
     AiContextSourceId[]
@@ -352,10 +347,6 @@ function App() {
     Record<string, number>
   >({});
   const [terminalFocusRequest, setTerminalFocusRequest] = useState(0);
-  const aiWindowShouldExpandRef = useRef(false);
-  const aiWindowExpandedRef = useRef(false);
-  const aiWindowExpansionRef = useRef(0);
-  const aiWindowResizeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const mainSplitRef = useRef<HTMLElement | null>(null);
   const serverMonitorWidthRef = useRef("220px");
   const rightPanelRatiosRef = useRef({ terminal: 0.64, sftp: 0.36 });
@@ -365,6 +356,45 @@ function App() {
   );
   const manualReconnectsRef = useRef(new Set<string>());
   const intentionallyDisconnectedRef = useRef(new Set<string>());
+  const {
+    active: aiAssistantActive,
+    close: closeAiSidebar,
+    frozenWorkspaceWidth: mainWorkspaceFrozenWidth,
+    open: openAiSidebar,
+    phase: aiSidebarPhase,
+    toggle: toggleAiSidebar,
+    visible: aiAssistantVisible,
+  } = useAiSidebarController({
+    getWorkspaceWidth: () =>
+      mainSplitRef.current?.getBoundingClientRect().width,
+    onResizeFailure: (error, operation) => {
+      recordDiagnostic(
+        "warn",
+        "application.window",
+        operation === "expand"
+          ? "AI 侧栏窗口扩宽失败"
+          : "AI 侧栏窗口还原失败",
+        { error: commandErrorMessage(error) },
+      );
+      Message.warning(
+        operation === "expand"
+          ? "窗口无法扩宽，AI 助手已在当前窗口内打开"
+          : "窗口尺寸无法自动还原，请手动调整",
+      );
+    },
+    sidebarWidth: aiSidebarWidth,
+  });
+  const previousAiSidebarPhaseRef = useRef(aiSidebarPhase);
+
+  useEffect(() => {
+    if (
+      aiSidebarPhase === "closed" &&
+      previousAiSidebarPhaseRef.current !== "closed"
+    ) {
+      setTerminalFocusRequest((current) => current + 1);
+    }
+    previousAiSidebarPhaseRef.current = aiSidebarPhase;
+  }, [aiSidebarPhase]);
 
   const updateSession = useCallback(
     (sessionId: string, values: Partial<TerminalSession>) => {
@@ -1088,27 +1118,7 @@ function App() {
     setAiInitialPrompt(prompt);
     setAiInitialContextIds(contextIds);
     setAiInitialPromptRequest((current) => current + 1);
-    if (aiWindowShouldExpandRef.current) return;
-
-    aiWindowShouldExpandRef.current = true;
-    if (!isTauri()) {
-      setAiAssistantVisible(true);
-      return;
-    }
-
-    const currentMainWidth =
-      mainSplitRef.current?.getBoundingClientRect().width;
-    if (currentMainWidth) {
-      setMainWorkspaceFrozenWidth(currentMainWidth);
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => resolve()),
-      );
-    }
-    await synchronizeAiWindowWidth();
-    if (aiWindowShouldExpandRef.current) {
-      setAiAssistantVisible(true);
-      setMainWorkspaceFrozenWidth(null);
-    }
+    await openAiSidebar();
   }
 
   async function handoffToAi(sessionId: string, request: AiHandoffRequest) {
@@ -1129,81 +1139,16 @@ function App() {
     await openAiAssistant(request.prompt, [request.source.id]);
   }
 
-  async function closeAiAssistant() {
-    if (!aiWindowShouldExpandRef.current && !aiAssistantVisible) return;
-    aiWindowShouldExpandRef.current = false;
-    if (!isTauri()) {
-      setAiAssistantVisible(false);
-      setTerminalFocusRequest((current) => current + 1);
-      return;
-    }
-
-    const currentMainWidth =
-      mainSplitRef.current?.getBoundingClientRect().width;
-    if (currentMainWidth) setMainWorkspaceFrozenWidth(currentMainWidth);
-    setAiAssistantVisible(false);
-    if (currentMainWidth) {
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => resolve()),
-      );
-    }
-    await synchronizeAiWindowWidth();
-    if (!aiWindowShouldExpandRef.current) setMainWorkspaceFrozenWidth(null);
-    setTerminalFocusRequest((current) => current + 1);
+  function closeAiAssistant() {
+    closeAiSidebar();
   }
 
   function toggleAiAssistant() {
-    if (aiWindowShouldExpandRef.current || aiAssistantVisible) {
-      void closeAiAssistant();
-    } else {
-      void openAiAssistant();
+    if (!activeSession) {
+      Message.warning("请先打开终端会话");
+      return;
     }
-  }
-
-  function synchronizeAiWindowWidth() {
-    if (!isTauri()) return Promise.resolve();
-    aiWindowResizeQueueRef.current = aiWindowResizeQueueRef.current
-      .catch(() => undefined)
-      .then(async () => {
-        const shouldExpand = aiWindowShouldExpandRef.current;
-        const expanded = aiWindowExpandedRef.current;
-        const appliedExpansion = aiWindowExpansionRef.current;
-        if (shouldExpand === expanded) return;
-
-        const appWindow = getCurrentWindow();
-        const scaleFactor = await appWindow.scaleFactor();
-        const before = (await appWindow.innerSize()).toLogical(scaleFactor);
-        const targetWidth = aiWindowTargetWidth(
-          before.width,
-          shouldExpand,
-          appliedExpansion,
-        );
-        await appWindow.setSize(new LogicalSize(targetWidth, before.height));
-
-        if (shouldExpand) {
-          aiWindowExpandedRef.current = true;
-          aiWindowExpansionRef.current = AI_SIDEBAR_DEFAULT_WIDTH;
-          const after = (await appWindow.innerSize()).toLogical(scaleFactor);
-          aiWindowExpansionRef.current = Math.max(
-            0,
-            after.width - before.width,
-          );
-        } else {
-          aiWindowExpandedRef.current = false;
-          aiWindowExpansionRef.current = 0;
-        }
-      })
-      .catch((error) => {
-        recordDiagnostic(
-          "warn",
-          "application.window",
-          "AI 侧栏窗口尺寸调整失败",
-          {
-            error: commandErrorMessage(error),
-          },
-        );
-      });
-    return aiWindowResizeQueueRef.current;
+    toggleAiSidebar();
   }
 
   function disconnectSession(sessionId: string) {
@@ -1368,7 +1313,7 @@ function App() {
     <section className="panel terminal-panel">
       <SessionTabs
         activeSessionId={activeSessionId}
-        aiAssistantVisible={aiAssistantVisible}
+        aiAssistantVisible={aiAssistantActive}
         homeContent={
           <HostManagerPanel onConnect={openSession} settings={settings} />
         }

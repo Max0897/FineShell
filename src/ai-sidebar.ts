@@ -20,9 +20,9 @@ export function clampAiSidebarWidth(
 export function aiWindowTargetWidth(
   currentWidth: number,
   shouldExpand: boolean,
-  appliedExpansion: number,
+  expansion: number,
 ) {
   return shouldExpand
-    ? currentWidth + AI_SIDEBAR_DEFAULT_WIDTH
-    : Math.max(MAIN_WINDOW_MIN_WIDTH, currentWidth - appliedExpansion);
+    ? currentWidth + expansion
+    : Math.max(MAIN_WINDOW_MIN_WIDTH, currentWidth - expansion);
 }

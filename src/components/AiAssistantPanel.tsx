@@ -873,6 +873,12 @@ function AiAssistantPanel({
     return () => cancelAnimationFrame(frame);
   }, [messages, visible]);
 
+  useEffect(() => {
+    if (visible) return;
+    closeHistory();
+    closeFileChangeReview();
+  }, [fileEditApplying, visible]);
+
   const sendConversationMessage = (
     value: string,
     history: AiConversation["messages"] = messages,
@@ -974,8 +980,6 @@ function AiAssistantPanel({
   };
 
   const closePanel = () => {
-    if (sending) void cancelRequest();
-    closeHistory();
     onClose();
   };
 

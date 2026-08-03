@@ -7,7 +7,11 @@ import {
 
 describe("AI sidebar layout", () => {
   test("opens by adding the default sidebar width and restores it once", () => {
-    const expanded = aiWindowTargetWidth(1_280, true, 0);
+    const expanded = aiWindowTargetWidth(
+      1_280,
+      true,
+      AI_SIDEBAR_DEFAULT_WIDTH,
+    );
     expect(expanded).toBe(1_280 + AI_SIDEBAR_DEFAULT_WIDTH);
     expect(
       aiWindowTargetWidth(expanded, false, AI_SIDEBAR_DEFAULT_WIDTH),
