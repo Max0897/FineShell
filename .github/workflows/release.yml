@@ -7,6 +7,11 @@ on:
         description: "版本标签，例如 v0.1.0（必须与应用版本一致）"
         required: true
         type: string
+      sync_gitee_only:
+        description: "仅重试 Gitee Release 与 OTA 清单同步"
+        default: false
+        required: false
+        type: boolean
   push:
     tags:
       - "v*"
@@ -55,6 +60,7 @@ jobs:
   prepare:
     name: Prepare draft release
     needs: validate
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.sync_gitee_only) }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -93,6 +99,7 @@ jobs:
       - prepare
     permissions:
       contents: write
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.sync_gitee_only) }}
     strategy:
       fail-fast: false
       matrix:
@@ -216,6 +223,7 @@ jobs:
       - build
     permissions:
       contents: write
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.sync_gitee_only) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -273,6 +281,7 @@ jobs:
       - publish
     permissions:
       contents: read
+    if: ${{ always() && needs.validate.result == 'success' && (needs.publish.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.sync_gitee_only)) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -334,9 +343,10 @@ jobs:
           GITEE_ACCESS_TOKEN: ${{ secrets.GITEE_ACCESS_TOKEN }}
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
         run: |
+          release_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
           bun scripts/publish-gitee-release.ts \
             "$RELEASE_TAG" \
-            "$GITHUB_SHA" \
+            "$release_commit" \
             "$RUNNER_TEMP/release-notes.md" \
             "$RUNNER_TEMP/gitee-assets" \
             "$RUNNER_TEMP/gitee-assets/latest.json" \
