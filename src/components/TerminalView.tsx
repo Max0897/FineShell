@@ -37,6 +37,7 @@ import {
   consumeTerminalCommandCandidate,
   decodeSshOutput,
   EMPTY_TERMINAL_INPUT_STATE,
+  isWindowsTerminalPasteShortcut,
   terminalStatusNoticeKey,
   terminalInjectedInputData,
   trackInjectedTerminalInput,
@@ -380,6 +381,13 @@ function TerminalView({
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
     terminal.open(container);
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (!isWindowsTerminalPasteShortcut(event)) return true;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) void pasteTerminalClipboard();
+      return false;
+    });
     terminalRef.current = terminal;
     lastStatusNoticeRef.current = undefined;
     fitAddonRef.current = fitAddon;

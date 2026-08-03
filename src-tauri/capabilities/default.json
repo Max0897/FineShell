@@ -6,8 +6,11 @@
   "permissions": [
     "core:default",
     "core:window:allow-close",
+    "core:window:allow-request-user-attention",
     "core:window:allow-set-focus",
     "core:window:allow-set-size",
+    "core:window:allow-show",
+    "core:window:allow-unminimize",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
     "dialog:allow-open",

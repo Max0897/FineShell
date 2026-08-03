@@ -1,13 +1,21 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import { UserAttentionType } from "@tauri-apps/api/window";
 import packageMetadata from "../package.json";
 import {
   checkForApplicationUpdateOnStartup,
   createMockApplicationUpdate,
   formatUpdateBytes,
   listenApplicationUpdateNotice,
+  markApplicationUpdateRelaunchFocus,
   readApplicationUpdateNotice,
+  restoreApplicationFocusAfterUpdateRelaunch,
   setApplicationUpdateNotice,
 } from "./app-updater";
+
+afterEach(() => {
+  window.localStorage.removeItem("fineshell:application-update");
+  window.localStorage.removeItem("fineshell:application-update-relaunch-focus");
+});
 
 describe("application updater helpers", () => {
   test("formats update download sizes", () => {
@@ -68,5 +76,95 @@ describe("application updater helpers", () => {
 
   test("skips the startup update request outside production Tauri", async () => {
     expect(await checkForApplicationUpdateOnStartup()).toBeNull();
+  });
+
+  test("records a bounded one-shot focus request before relaunch", () => {
+    markApplicationUpdateRelaunchFocus("0.2.0", 1234);
+
+    expect(
+      JSON.parse(
+        window.localStorage.getItem(
+          "fineshell:application-update-relaunch-focus",
+        ) ?? "null",
+      ),
+    ).toEqual({ requestedAt: 1234, targetVersion: "0.2.0" });
+  });
+
+  test("restores the updated main window after the workspace is ready", async () => {
+    const calls: string[] = [];
+    let focusChecks = 0;
+    window.localStorage.setItem(
+      "fineshell:application-update-relaunch-focus",
+      JSON.stringify({
+        requestedAt: Date.now(),
+        targetVersion: packageMetadata.version,
+      }),
+    );
+    const requestUserAttention = mock(
+      async (type: UserAttentionType | null) => {
+        calls.push(`attention:${type}`);
+      },
+    );
+
+    const focused = await restoreApplicationFocusAfterUpdateRelaunch(
+      {
+        async isFocused() {
+          calls.push("isFocused");
+          focusChecks += 1;
+          return focusChecks === 2;
+        },
+        requestUserAttention,
+        async setFocus() {
+          calls.push("setFocus");
+        },
+        async show() {
+          calls.push("show");
+        },
+        async unminimize() {
+          calls.push("unminimize");
+        },
+      },
+      async () => undefined,
+    );
+
+    expect(focused).toBe(true);
+    expect(calls).toEqual([
+      "show",
+      "unminimize",
+      "setFocus",
+      "isFocused",
+      "setFocus",
+      "isFocused",
+    ]);
+    expect(requestUserAttention).not.toHaveBeenCalled();
+    expect(
+      window.localStorage.getItem(
+        "fineshell:application-update-relaunch-focus",
+      ),
+    ).toBeNull();
+  });
+
+  test("ignores stale or mismatched relaunch focus requests", async () => {
+    window.localStorage.setItem(
+      "fineshell:application-update-relaunch-focus",
+      JSON.stringify({ requestedAt: 1, targetVersion: "0.0.1" }),
+    );
+    const show = mock(async () => undefined);
+
+    expect(
+      await restoreApplicationFocusAfterUpdateRelaunch({
+        isFocused: async () => false,
+        requestUserAttention: async () => undefined,
+        setFocus: async () => undefined,
+        show,
+        unminimize: async () => undefined,
+      }),
+    ).toBe(false);
+    expect(show).not.toHaveBeenCalled();
+    expect(
+      window.localStorage.getItem(
+        "fineshell:application-update-relaunch-focus",
+      ),
+    ).toBeNull();
   });
 });

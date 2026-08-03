@@ -23,6 +23,7 @@ import {
   applicationUpdater,
   formatUpdateBytes,
   isApplicationUpdateInstalling,
+  markApplicationUpdateRelaunchFocus,
   openApplicationUrl,
   setApplicationUpdateNotice,
   setApplicationUpdateInstalling,
@@ -218,6 +219,7 @@ function AboutSettings({
           setDownloadedBytes(contentLength);
         }
       });
+      markApplicationUpdateRelaunchFocus(update.version);
       setApplicationUpdateNotice(null);
       if (mountedRef.current) setStatus("restarting");
       await updater.relaunch();

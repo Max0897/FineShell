@@ -32,10 +32,30 @@ export interface TerminalCommandSubmission {
   submittedAt: string;
 }
 
+type TerminalPasteKeyEvent = Pick<
+  KeyboardEvent,
+  "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey" | "type"
+>;
+
 export const EMPTY_TERMINAL_INPUT_STATE: TerminalInputState = {
   reliable: true,
   value: "",
 };
+
+export function isWindowsTerminalPasteShortcut(
+  event: TerminalPasteKeyEvent,
+  platform: string = navigator.platform,
+) {
+  return (
+    /^win/i.test(platform) &&
+    event.type === "keydown" &&
+    event.ctrlKey &&
+    !event.altKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    event.key.toLowerCase() === "v"
+  );
+}
 
 function removeLastCharacter(value: string) {
   return Array.from(value).slice(0, -1).join("");

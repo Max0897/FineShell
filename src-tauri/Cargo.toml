@@ -1,6 +1,6 @@
 [package]
 name = "fineshell"
-version = "0.1.14"
+version = "0.1.15"
 description = "A cross-platform SSH and SFTP client for terminal access, file management, and server monitoring."
 authors = ["Max"]
 license = "Apache-2.0"

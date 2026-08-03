@@ -1,6 +1,7 @@
 import packageMetadata from "../package.json";
 import { getName, getTauriVersion, getVersion } from "@tauri-apps/api/app";
 import { Channel, isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { AppSettings, GithubMirrorRoute } from "./app-settings";
@@ -14,6 +15,10 @@ const APPLICATION_UPDATE_NOTICE_KEY = "fineshell:application-update";
 const APPLICATION_UPDATE_NOTICE_EVENT = "fineshell:application-update-changed";
 const APPLICATION_UPDATE_INSTALLING_EVENT =
   "fineshell:application-update-installing-changed";
+const APPLICATION_UPDATE_RELAUNCH_FOCUS_KEY =
+  "fineshell:application-update-relaunch-focus";
+const APPLICATION_UPDATE_RELAUNCH_FOCUS_MAX_AGE_MS = 10 * 60 * 1000;
+const APPLICATION_UPDATE_FOCUS_RETRY_DELAYS_MS = [0, 120, 320] as const;
 const MOCK_UPDATE_SIZE = 6 * 1024 * 1024;
 const MOCK_UPDATE_BODY = `### 新增
 
@@ -97,6 +102,16 @@ export interface ApplicationUpdateNotice {
   currentVersion: string;
   date?: string;
   version: string;
+}
+
+interface ApplicationWindowFocusTarget {
+  isFocused: () => Promise<boolean>;
+  requestUserAttention: (
+    requestType: UserAttentionType | null,
+  ) => Promise<void>;
+  setFocus: () => Promise<void>;
+  show: () => Promise<void>;
+  unminimize: () => Promise<void>;
 }
 
 let applicationUpdateInstalling = false;
@@ -309,6 +324,85 @@ export function setApplicationUpdateInstalling(installing: boolean) {
   applicationUpdateInstalling = installing;
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(APPLICATION_UPDATE_INSTALLING_EVENT));
+  }
+}
+
+export function markApplicationUpdateRelaunchFocus(
+  targetVersion: string,
+  requestedAt = Date.now(),
+) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      APPLICATION_UPDATE_RELAUNCH_FOCUS_KEY,
+      JSON.stringify({ requestedAt, targetVersion }),
+    );
+  } catch {
+    // The update can still relaunch when persistent web storage is unavailable.
+  }
+}
+
+function takeApplicationUpdateRelaunchFocusRequest(now = Date.now()) {
+  if (typeof window === "undefined") return false;
+  try {
+    const stored = window.localStorage.getItem(
+      APPLICATION_UPDATE_RELAUNCH_FOCUS_KEY,
+    );
+    if (!stored) return false;
+    window.localStorage.removeItem(APPLICATION_UPDATE_RELAUNCH_FOCUS_KEY);
+
+    const value = JSON.parse(stored) as unknown;
+    if (typeof value !== "object" || value === null) return false;
+    const targetVersion =
+      "targetVersion" in value && typeof value.targetVersion === "string"
+        ? value.targetVersion
+        : "";
+    const requestedAt =
+      "requestedAt" in value && typeof value.requestedAt === "number"
+        ? value.requestedAt
+        : Number.NaN;
+    const age = now - requestedAt;
+    return (
+      targetVersion === packageMetadata.version &&
+      Number.isFinite(requestedAt) &&
+      age >= 0 &&
+      age <= APPLICATION_UPDATE_RELAUNCH_FOCUS_MAX_AGE_MS
+    );
+  } catch {
+    try {
+      window.localStorage.removeItem(APPLICATION_UPDATE_RELAUNCH_FOCUS_KEY);
+    } catch {
+      // Ignore unavailable persistent storage.
+    }
+    return false;
+  }
+}
+
+export async function restoreApplicationFocusAfterUpdateRelaunch(
+  focusTarget?: ApplicationWindowFocusTarget,
+  pause: (delayMs: number) => Promise<void> = (delayMs) =>
+    new Promise((resolve) => window.setTimeout(resolve, delayMs)),
+) {
+  if (!takeApplicationUpdateRelaunchFocusRequest()) return false;
+  const target = focusTarget ?? getCurrentWindow();
+
+  try {
+    await target.show();
+    await target.unminimize();
+    for (const delayMs of APPLICATION_UPDATE_FOCUS_RETRY_DELAYS_MS) {
+      if (delayMs > 0) await pause(delayMs);
+      await target.setFocus();
+      if (await target.isFocused()) return true;
+    }
+    await target.requestUserAttention(UserAttentionType.Informational);
+    return false;
+  } catch (error) {
+    try {
+      await target.requestUserAttention(UserAttentionType.Informational);
+    } catch {
+      // Preserve the original focus restoration error for diagnostics.
+    }
+    throw error;
   }
 }
 
