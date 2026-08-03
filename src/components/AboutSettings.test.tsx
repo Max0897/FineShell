@@ -30,6 +30,7 @@ function updaterService(
 ): ApplicationUpdaterService {
   return {
     canInstallUpdates: true,
+    canTestRoutes: true,
     checkForUpdate: async () => null,
     getApplicationInfo: async () => ({
       name: "FineShell",
@@ -53,7 +54,11 @@ describe("AboutSettings", () => {
       <AboutSettings
         settings={DEFAULT_APP_SETTINGS}
         updateSetting={updateSetting}
-        updater={updaterService({ testRoute })}
+        updater={updaterService({
+          canInstallUpdates: false,
+          canTestRoutes: true,
+          testRoute,
+        })}
       />,
     );
 

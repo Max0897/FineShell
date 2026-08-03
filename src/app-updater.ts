@@ -81,6 +81,7 @@ export interface ApplicationUpdateRouteTestResult {
 
 export interface ApplicationUpdaterService {
   canInstallUpdates: boolean;
+  canTestRoutes: boolean;
   checkForUpdate: (
     options?: ApplicationUpdateOptions,
   ) => Promise<ApplicationUpdate | null>;
@@ -184,9 +185,11 @@ const mockApplicationUpdateEnabled =
   import.meta.env.DEV && import.meta.env.VITE_MOCK_UPDATE === "true";
 const canInstallUpdates =
   mockApplicationUpdateEnabled || (isTauri() && !import.meta.env.DEV);
+const canTestRoutes = mockApplicationUpdateEnabled || isTauri();
 
 export const applicationUpdater: ApplicationUpdaterService = {
   canInstallUpdates,
+  canTestRoutes,
   getApplicationInfo,
   async checkForUpdate(options) {
     if (mockApplicationUpdateEnabled) {
@@ -207,8 +210,8 @@ export const applicationUpdater: ApplicationUpdaterService = {
     if (mockApplicationUpdateEnabled) {
       return { latencyMs: 80, route: "模拟更新" };
     }
-    if (!canInstallUpdates) {
-      throw new Error("开发模式不支持测试更新线路，请使用正式安装包测试");
+    if (!canTestRoutes) {
+      throw new Error("仅桌面应用支持测试更新线路");
     }
     return invokeProtocolCommand("application_update_test_route", {
       request: options,

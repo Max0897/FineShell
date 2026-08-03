@@ -356,7 +356,7 @@ function AboutSettings({
               </Select>
               <Button
                 disabled={
-                  !updater.canInstallUpdates ||
+                  !updater.canTestRoutes ||
                   (settings.githubMirrorRoute === "custom" &&
                     !settings.githubMirrorCustomUrl.trim())
                 }
