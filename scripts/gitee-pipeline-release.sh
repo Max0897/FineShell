@@ -8,10 +8,12 @@ test -f "$trigger_file" || {
   echo "缺少 .gitee-release-trigger.json，拒绝发布。" >&2
   exit 1
 }
-test -n "${FINESHELL_RELEASE_TOKEN:-}" || {
-  echo "缺少 FINESHELL_RELEASE_TOKEN 流水线密钥变量。" >&2
-  exit 1
-}
+case "${FINESHELL_RELEASE_TOKEN:-}" in
+  ""|*'${{'*|*'}}'*)
+    echo "FINESHELL_RELEASE_TOKEN 通用变量未正确注入流水线。" >&2
+    exit 1
+    ;;
+esac
 
 for command_name in curl git python3; do
   command -v "$command_name" >/dev/null 2>&1 || {
