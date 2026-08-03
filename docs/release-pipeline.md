@@ -17,7 +17,7 @@ GitHub Actions 需要以下仓库密钥：
 - `GITEE_SSH_PRIVATE_KEY`：用于同步 Gitee 标签和发布触发分支。
 - `GITEE_KNOWN_HOSTS`：Gitee SSH 主机指纹。
 
-`GITEE_ACCESS_TOKEN` 不再由 GitHub Actions 使用，可以从 GitHub 仓库密钥中移除。
+Gitee API 访问令牌不再由 GitHub Actions 使用，旧的访问令牌仓库密钥可以移除。
 
 ## Gitee 配置
 
@@ -25,7 +25,7 @@ GitHub Actions 需要以下仓库密钥：
 
 在 Gitee 项目的流水线设置中创建密钥变量：
 
-- 名称：`GITEE_ACCESS_TOKEN`
+- 名称：`FINESHELL_RELEASE_TOKEN`
 - 类型：密钥变量
 - 权限：能够管理当前仓库的 Release，并能够推送 `ota` 分支
 

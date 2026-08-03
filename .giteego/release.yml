@@ -11,7 +11,7 @@ triggers:
         - gitee-release-trigger
 
 variables:
-  GITEE_ACCESS_TOKEN: ${{GITEE_ACCESS_TOKEN}}
+  FINESHELL_RELEASE_TOKEN: ${{FINESHELL_RELEASE_TOKEN}}
 
 stages:
   - stage:
