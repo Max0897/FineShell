@@ -1,9 +1,13 @@
 {
-  "version": 25,
+  "version": 26,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
     "open_shortcut_guide_window": true,
+    "application_update_check": true,
+    "application_update_download_and_install": true,
+    "application_update_close": true,
+    "application_update_test_route": true,
     "read_config_file": true,
     "write_config_file": true,
     "store_host_password": true,

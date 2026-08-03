@@ -15,6 +15,13 @@ export type TerminalRightClickAction = "menu" | "paste";
 export type ConnectionHistoryLimit = 0 | 20 | 50 | 100;
 export type ConnectionHistoryRetentionDays = 0 | 7 | 30 | 90;
 export type DiagnosticLogLevel = "debug" | "info" | "warn" | "error";
+export type GithubMirrorRoute =
+  | "auto"
+  | "direct"
+  | "gh-proxy.com"
+  | "ghproxy.net"
+  | "githubproxy.cc"
+  | "custom";
 
 export interface AppSettings {
   terminalColorScheme: TerminalColorScheme;
@@ -38,6 +45,8 @@ export interface AppSettings {
   connectionHistoryLimit: ConnectionHistoryLimit;
   connectionHistoryRetentionDays: ConnectionHistoryRetentionDays;
   diagnosticLogLevel: DiagnosticLogLevel;
+  githubMirrorRoute: GithubMirrorRoute;
+  githubMirrorCustomUrl: string;
   aiProvider: AiProvider;
   aiBaseUrl: string;
   aiModel: string;
@@ -70,6 +79,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   connectionHistoryLimit: 50,
   connectionHistoryRetentionDays: 0,
   diagnosticLogLevel: "info",
+  githubMirrorRoute: "auto",
+  githubMirrorCustomUrl: "",
   aiProvider: "openai",
   aiBaseUrl: "https://api.openai.com/v1",
   aiModel: "",
@@ -138,6 +149,16 @@ function aiProviderValue(value: unknown, baseUrl: string): AiProvider {
     value === "custom"
     ? value
     : inferAiProvider(baseUrl);
+}
+
+function githubMirrorRouteValue(value: unknown): GithubMirrorRoute {
+  return value === "direct" ||
+    value === "gh-proxy.com" ||
+    value === "ghproxy.net" ||
+    value === "githubproxy.cc" ||
+    value === "custom"
+    ? value
+    : "auto";
 }
 
 export function sanitizeAppSettings(value: unknown): AppSettings {
@@ -241,6 +262,11 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
       settings.diagnosticLogLevel === "error"
         ? settings.diagnosticLogLevel
         : DEFAULT_APP_SETTINGS.diagnosticLogLevel,
+    githubMirrorRoute: githubMirrorRouteValue(settings.githubMirrorRoute),
+    githubMirrorCustomUrl: stringValue(settings.githubMirrorCustomUrl).slice(
+      0,
+      512,
+    ),
     aiProvider: aiProviderValue(settings.aiProvider, aiBaseUrl),
     aiBaseUrl,
     aiModel: stringValue(settings.aiModel).slice(0, 160),

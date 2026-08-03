@@ -3302,6 +3302,22 @@ body.sftp-remote-dragging * {
   border-top: 1px solid #e5e6eb;
 }
 
+.about-update-route {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.about-update-route > .arco-typography {
+  margin: 0;
+}
+
+.about-update-route-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
 .about-update-heading,
 .about-release-heading,
 .about-download-meta {

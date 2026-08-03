@@ -2,8 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Button,
+  Input,
+  Message,
   Modal,
   Progress,
+  Select,
   Space,
   Spin,
   Typography,
@@ -27,7 +30,9 @@ import {
   type ApplicationUpdate,
   type ApplicationUpdateNotice,
   type ApplicationUpdaterService,
+  applicationUpdateOptionsFromSettings,
 } from "../app-updater";
+import type { AppSettings } from "../app-settings";
 import ReleaseNotesMarkdown from "./ReleaseNotesMarkdown";
 
 type UpdateStatus =
@@ -41,6 +46,11 @@ type UpdateStatus =
 
 interface AboutSettingsProps {
   knownUpdate?: ApplicationUpdateNotice | null;
+  settings?: AppSettings;
+  updateSetting?: <Key extends keyof AppSettings>(
+    key: Key,
+    value: AppSettings[Key],
+  ) => void;
   updater?: ApplicationUpdaterService;
 }
 
@@ -59,6 +69,8 @@ function releaseDate(value?: string) {
 
 function AboutSettings({
   knownUpdate = null,
+  settings,
+  updateSetting,
   updater = applicationUpdater,
 }: AboutSettingsProps) {
   const [applicationInfo, setApplicationInfo] = useState<ApplicationInfo>();
@@ -71,6 +83,8 @@ function AboutSettings({
   const [updateError, setUpdateError] = useState("");
   const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [totalBytes, setTotalBytes] = useState(0);
+  const [downloadRoute, setDownloadRoute] = useState("");
+  const [testingRoute, setTestingRoute] = useState(false);
   const updateRef = useRef<ApplicationUpdate | null>(null);
   const mountedRef = useRef(true);
   const checkRequestRef = useRef(0);
@@ -124,12 +138,15 @@ function AboutSettings({
     setDownloadedBytes(0);
     setTotalBytes(0);
     try {
-      const update = await updater.checkForUpdate();
+      const update = await updater.checkForUpdate(
+        settings ? applicationUpdateOptionsFromSettings(settings) : undefined,
+      );
       if (!mountedRef.current || checkRequestRef.current !== request) {
         if (update) await update.close();
         return;
       }
       replaceAvailableUpdate(update);
+      setDownloadRoute(update?.route ?? "");
       if (update) automaticallyCheckedVersionRef.current = update.version;
       setApplicationUpdateNotice(update);
       setStatus(update ? "available" : "latest");
@@ -138,7 +155,12 @@ function AboutSettings({
       setStatus("error");
       setUpdateError(errorMessage(error));
     }
-  }, [replaceAvailableUpdate, updater]);
+  }, [
+    replaceAvailableUpdate,
+    settings?.githubMirrorCustomUrl,
+    settings?.githubMirrorRoute,
+    updater,
+  ]);
 
   const knownUpdateVersion = knownUpdate?.version;
 
@@ -175,6 +197,16 @@ function AboutSettings({
         if (event.event === "Started") {
           contentLength = event.data.contentLength ?? 0;
           if (mountedRef.current) setTotalBytes(contentLength);
+          return;
+        }
+        if (event.event === "Fallback") {
+          downloaded = 0;
+          contentLength = 0;
+          if (mountedRef.current) {
+            setDownloadedBytes(0);
+            setTotalBytes(0);
+            setDownloadRoute(event.data.route);
+          }
           return;
         }
         if (event.event === "Progress") {
@@ -217,6 +249,23 @@ function AboutSettings({
       },
       title: `安装 FineShell ${update.version}？`,
     });
+  };
+
+  const testUpdateRoute = async () => {
+    if (!settings || !updater.testRoute) return;
+    setTestingRoute(true);
+    try {
+      const result = await updater.testRoute(
+        applicationUpdateOptionsFromSettings(settings),
+      );
+      Message.success(
+        `线路可用：${result.route}（${result.latencyMs} ms）`,
+      );
+    } catch (error) {
+      Message.error(errorMessage(error));
+    } finally {
+      setTestingRoute(false);
+    }
   };
 
   const progressPercent =
@@ -288,6 +337,52 @@ function AboutSettings({
       </Space>
 
       <section className="about-update-section">
+        {settings && updateSetting && (
+          <div className="about-update-route">
+            <Typography.Title heading={6}>更新线路</Typography.Title>
+            <div className="about-update-route-controls">
+              <Select
+                aria-label="更新线路"
+                disabled={status === "downloading" || status === "restarting"}
+                onChange={(value) => updateSetting("githubMirrorRoute", value)}
+                value={settings.githubMirrorRoute}
+              >
+                <Select.Option value="auto">自动选择（推荐）</Select.Option>
+                <Select.Option value="direct">GitHub 直连</Select.Option>
+                <Select.Option value="gh-proxy.com">gh-proxy.com</Select.Option>
+                <Select.Option value="ghproxy.net">ghproxy.net</Select.Option>
+                <Select.Option value="githubproxy.cc">githubproxy.cc</Select.Option>
+                <Select.Option value="custom">自定义镜像</Select.Option>
+              </Select>
+              <Button
+                disabled={
+                  !updater.canInstallUpdates ||
+                  (settings.githubMirrorRoute === "custom" &&
+                    !settings.githubMirrorCustomUrl.trim())
+                }
+                loading={testingRoute}
+                onClick={() => void testUpdateRoute()}
+              >
+                测试线路
+              </Button>
+            </div>
+            {settings.githubMirrorRoute === "custom" && (
+              <Input
+                aria-label="自定义镜像地址"
+                disabled={status === "downloading" || status === "restarting"}
+                onChange={(value) =>
+                  updateSetting("githubMirrorCustomUrl", value)
+                }
+                placeholder="https://mirror.example.com/"
+                value={settings.githubMirrorCustomUrl}
+              />
+            )}
+            <Typography.Text type="secondary">
+              镜像线路由第三方提供；不可用时会自动回退 GitHub 直连。
+            </Typography.Text>
+          </div>
+        )}
+
         <div className="about-update-heading">
           <div>
             <Typography.Title heading={6}>软件更新</Typography.Title>
@@ -351,7 +446,9 @@ function AboutSettings({
         {status === "downloading" && (
           <div className="about-download-progress">
             <div className="about-download-meta">
-              <Typography.Text>正在下载更新</Typography.Text>
+              <Typography.Text>
+                正在下载更新{downloadRoute ? ` · ${downloadRoute}` : ""}
+              </Typography.Text>
               <Typography.Text type="secondary">
                 {formatUpdateBytes(downloadedBytes)}
                 {totalBytes > 0 ? ` / ${formatUpdateBytes(totalBytes)}` : ""}

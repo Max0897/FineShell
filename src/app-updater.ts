@@ -1,12 +1,11 @@
 import packageMetadata from "../package.json";
 import { getName, getTauriVersion, getVersion } from "@tauri-apps/api/app";
-import { isTauri } from "@tauri-apps/api/core";
+import { Channel, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
-import {
-  check,
-  type DownloadEvent,
-} from "@tauri-apps/plugin-updater";
+import type { AppSettings, GithubMirrorRoute } from "./app-settings";
+import { loadConfiguration } from "./config-database";
+import { invokeProtocolCommand } from "./tauri-protocol";
 
 export const FINESHELL_REPOSITORY_URL =
   "https://github.com/Max0897/fineshell";
@@ -43,16 +42,53 @@ export interface ApplicationUpdate {
   currentVersion: string;
   date?: string;
   downloadAndInstall: (
-    onEvent?: (event: DownloadEvent) => void,
+    onEvent?: (event: ApplicationUpdateDownloadEvent) => void,
   ) => Promise<void>;
+  route?: string;
   version: string;
+}
+
+export type ApplicationUpdateDownloadEvent =
+  | {
+      event: "Started";
+      data: { contentLength?: number };
+    }
+  | {
+      event: "Progress";
+      data: { chunkLength: number };
+    }
+  | { event: "Finished" }
+  | { event: "Fallback"; data: { route: string } };
+
+export interface ApplicationUpdateOptions {
+  customUrl?: string;
+  route: GithubMirrorRoute;
+}
+
+interface ApplicationUpdateMetadata {
+  body?: string;
+  currentVersion: string;
+  date?: string;
+  route: string;
+  updateId: number;
+  version: string;
+}
+
+export interface ApplicationUpdateRouteTestResult {
+  latencyMs: number;
+  route: string;
 }
 
 export interface ApplicationUpdaterService {
   canInstallUpdates: boolean;
-  checkForUpdate: () => Promise<ApplicationUpdate | null>;
+  checkForUpdate: (
+    options?: ApplicationUpdateOptions,
+  ) => Promise<ApplicationUpdate | null>;
   getApplicationInfo: () => Promise<ApplicationInfo>;
   relaunch: () => Promise<void>;
+  testRoute: (
+    options: ApplicationUpdateOptions,
+  ) => Promise<ApplicationUpdateRouteTestResult>;
 }
 
 export interface ApplicationUpdateNotice {
@@ -82,7 +118,49 @@ export function createMockApplicationUpdate(): ApplicationUpdate {
       }
       onEvent?.({ event: "Finished" });
     },
+    route: "模拟更新",
     version: "0.2.0",
+  };
+}
+
+export function applicationUpdateOptionsFromSettings(
+  settings: Pick<
+    AppSettings,
+    "githubMirrorCustomUrl" | "githubMirrorRoute"
+  >,
+): ApplicationUpdateOptions {
+  return {
+    customUrl: settings.githubMirrorCustomUrl || undefined,
+    route: settings.githubMirrorRoute,
+  };
+}
+
+async function savedApplicationUpdateOptions() {
+  const configuration = await loadConfiguration();
+  return applicationUpdateOptionsFromSettings(configuration.settings);
+}
+
+function applicationUpdateFromMetadata(
+  metadata: ApplicationUpdateMetadata,
+): ApplicationUpdate {
+  return {
+    body: metadata.body,
+    close: () =>
+      invokeProtocolCommand("application_update_close", {
+        updateId: metadata.updateId,
+      }),
+    currentVersion: metadata.currentVersion,
+    date: metadata.date,
+    downloadAndInstall(onEvent) {
+      const onEventChannel = new Channel<ApplicationUpdateDownloadEvent>();
+      if (onEvent) onEventChannel.onmessage = onEvent;
+      return invokeProtocolCommand("application_update_download_and_install", {
+        onEvent: onEventChannel,
+        updateId: metadata.updateId,
+      });
+    },
+    route: metadata.route,
+    version: metadata.version,
   };
 }
 
@@ -110,16 +188,32 @@ const canInstallUpdates =
 export const applicationUpdater: ApplicationUpdaterService = {
   canInstallUpdates,
   getApplicationInfo,
-  async checkForUpdate() {
+  async checkForUpdate(options) {
     if (mockApplicationUpdateEnabled) {
       return createMockApplicationUpdate();
     }
     if (!canInstallUpdates) {
       throw new Error("开发模式不支持安装更新，请使用正式安装包测试");
     }
-    return check({ timeout: 15_000 });
+    const request = options ?? (await savedApplicationUpdateOptions());
+    const metadata = await invokeProtocolCommand<ApplicationUpdateMetadata | null>(
+      "application_update_check",
+      { request },
+    );
+    return metadata ? applicationUpdateFromMetadata(metadata) : null;
   },
   relaunch: mockApplicationUpdateEnabled ? async () => undefined : relaunch,
+  async testRoute(options) {
+    if (mockApplicationUpdateEnabled) {
+      return { latencyMs: 80, route: "模拟更新" };
+    }
+    if (!canInstallUpdates) {
+      throw new Error("开发模式不支持测试更新线路，请使用正式安装包测试");
+    }
+    return invokeProtocolCommand("application_update_test_route", {
+      request: options,
+    });
+  },
 };
 
 let startupUpdateCheck: Promise<ApplicationUpdate | null> | undefined;
@@ -128,7 +222,9 @@ export function checkForApplicationUpdateOnStartup() {
   if (!applicationUpdater.canInstallUpdates) {
     return Promise.resolve<ApplicationUpdate | null>(null);
   }
-  startupUpdateCheck ??= applicationUpdater.checkForUpdate();
+  startupUpdateCheck ??= savedApplicationUpdateOptions().then((options) =>
+    applicationUpdater.checkForUpdate(options),
+  );
   return startupUpdateCheck;
 }
 

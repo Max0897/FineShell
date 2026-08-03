@@ -660,7 +660,13 @@ function SettingsWindow() {
       case "trash":
         return <ConfigurationMaintenance section="trash" />;
       case "about":
-        return <AboutSettings knownUpdate={updateNotice} />;
+        return (
+          <AboutSettings
+            knownUpdate={updateNotice}
+            settings={settings}
+            updateSetting={updateSetting}
+          />
+        );
       default:
         return null;
     }
