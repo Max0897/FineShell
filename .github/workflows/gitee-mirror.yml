@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   mirror:
-    name: Sync main and tags
+    name: Sync main
     runs-on: ubuntu-latest
 
     steps:
