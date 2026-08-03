@@ -37,6 +37,24 @@ function parseJson(text: string, label: string) {
   }
 }
 
+export function parseCurlJsonResponse(
+  value: string,
+  expectedStatus: number,
+  label: string,
+) {
+  const separator = value.lastIndexOf("\n");
+  const statusText = separator >= 0 ? value.slice(separator + 1).trim() : "";
+  const body = separator >= 0 ? value.slice(0, separator) : value;
+  const status = Number(statusText);
+  if (!Number.isInteger(status)) {
+    throw new Error(`${label}未返回有效 HTTP 状态`);
+  }
+  if (status !== expectedStatus) {
+    throw new Error(`${label}失败（HTTP ${status}）：${body.slice(0, 500)}`);
+  }
+  return parseJson(body, label);
+}
+
 function parseRelease(value: unknown): GiteeRelease {
   if (!isRecord(value) || !Number.isInteger(value.id)) {
     throw new Error("Gitee Release 响应缺少有效 ID");
@@ -249,16 +267,40 @@ class GiteeReleaseClient {
     path: string,
     name = basename(path),
   ) {
-    const form = new FormData();
-    form.append("access_token", this.accessToken);
-    form.append("file", Bun.file(path), name);
-    const response = await fetch(
-      `${this.apiBase}/releases/${releaseId}/attach_files`,
-      { body: form, method: "POST" },
+    const label = `上传 Gitee 附件 ${name}`;
+    console.log(`${label}...`);
+    const process = Bun.spawn(
+      [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--request",
+        "POST",
+        "--connect-timeout",
+        "30",
+        "--max-time",
+        "300",
+        "--form-string",
+        `access_token=${this.accessToken}`,
+        "--form",
+        `file=@${path};filename=${name}`,
+        "--write-out",
+        "\n%{http_code}",
+        `${this.apiBase}/releases/${releaseId}/attach_files`,
+      ],
+      { stderr: "pipe", stdout: "pipe" },
     );
-    return parseAttachment(
-      await this.responseJson(response, 201, `上传 Gitee 附件 ${name}`),
-    );
+    const [output, errorOutput, exitCode] = await Promise.all([
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+      process.exited,
+    ]);
+    if (exitCode !== 0) {
+      throw new Error(
+        `${label}失败（curl ${exitCode}）：${errorOutput.trim().slice(0, 500)}`,
+      );
+    }
+    return parseAttachment(parseCurlJsonResponse(output, 201, label));
   }
 }
 
@@ -276,7 +318,11 @@ async function ensureAttachments(
     .filter(
       (path) => statSync(path).isFile() && basename(path) !== "latest.json",
     )
-    .sort((left, right) => basename(left).localeCompare(basename(right)));
+    .sort(
+      (left, right) =>
+        statSync(left).size - statSync(right).size ||
+        basename(left).localeCompare(basename(right)),
+    );
 
   for (const path of assetPaths) {
     const name = basename(path);
@@ -292,6 +338,7 @@ async function ensureAttachments(
     }
     const uploaded = await client.uploadAttachment(releaseId, path);
     byName.set(uploaded.name, uploaded);
+    console.log(`Gitee 附件已上传：${uploaded.name}`);
   }
   return [...byName.values()];
 }
