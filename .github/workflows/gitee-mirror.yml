@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -36,10 +34,9 @@ jobs:
           printf '%s\n' "$GITEE_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
-      - name: Sync GitHub main and tags to Gitee
+      - name: Sync GitHub main to Gitee
         shell: bash
         run: |
-          git fetch origin main --tags --force
+          git fetch origin main --force
           git remote add gitee git@gitee.com:Max0897/FineShell.git
           git push gitee refs/remotes/origin/main:refs/heads/main
-          git push gitee --tags
