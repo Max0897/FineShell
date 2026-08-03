@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { createGiteeUpdaterManifest } from "./publish-gitee-release";
+import {
+  createGiteeUpdaterManifest,
+  parseGiteeReleaseLookup,
+} from "./publish-gitee-release";
 
 const githubUrl =
   "https://github.com/Max0897/fineshell/releases/download/v1.2.3/FineShell_1.2.3_windows_x64-setup.exe";
@@ -104,5 +107,19 @@ describe("Gitee updater manifest", () => {
         },
       ]),
     ).toThrow("必须使用 gitee.com HTTPS 地址");
+  });
+});
+
+describe("Gitee release lookup", () => {
+  test("treats a successful null response as a missing release", () => {
+    expect(parseGiteeReleaseLookup(null)).toBeNull();
+  });
+
+  test("returns a valid release ID", () => {
+    expect(parseGiteeReleaseLookup({ id: 42 })).toEqual({ id: 42 });
+  });
+
+  test("rejects malformed release responses", () => {
+    expect(() => parseGiteeReleaseLookup({ id: "42" })).toThrow("缺少有效 ID");
   });
 });

@@ -44,6 +44,13 @@ function parseRelease(value: unknown): GiteeRelease {
   return { id: Number(value.id) };
 }
 
+export function parseGiteeReleaseLookup(value: unknown): GiteeRelease | null {
+  // Gitee returns HTTP 200 with a JSON null body when the tag exists but a
+  // corresponding Release has not been created yet.
+  if (value === null) return null;
+  return parseRelease(value);
+}
+
 function parseAttachment(value: unknown): GiteeAttachment {
   if (
     !isRecord(value) ||
@@ -179,7 +186,7 @@ class GiteeReleaseClient {
       this.authenticatedUrl(`/releases/tags/${encodeURIComponent(tag)}`),
     );
     if (response.status === 404) return null;
-    return parseRelease(
+    return parseGiteeReleaseLookup(
       await this.responseJson(response, 200, "查询 Gitee Release"),
     );
   }
