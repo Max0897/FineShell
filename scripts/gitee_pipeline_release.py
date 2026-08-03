@@ -395,9 +395,9 @@ def create_gitee_updater_manifest(
 
 
 def publish(trigger_path: Path, assets_directory: Path, output_path: Path) -> None:
-    token = os.environ.get("GITEE_ACCESS_TOKEN", "").strip()
+    token = os.environ.get("FINESHELL_RELEASE_TOKEN", "").strip()
     if not token:
-        raise ReleaseError("缺少 GITEE_ACCESS_TOKEN 流水线密钥变量")
+        raise ReleaseError("缺少 FINESHELL_RELEASE_TOKEN 流水线密钥变量")
     owner = os.environ.get("GITEE_OWNER", "Max0897").strip()
     repository = os.environ.get("GITEE_REPOSITORY", "FineShell").strip()
     trigger = load_trigger(trigger_path)

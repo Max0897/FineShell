@@ -8,8 +8,8 @@ test -f "$trigger_file" || {
   echo "缺少 .gitee-release-trigger.json，拒绝发布。" >&2
   exit 1
 }
-test -n "${GITEE_ACCESS_TOKEN:-}" || {
-  echo "缺少 GITEE_ACCESS_TOKEN 流水线密钥变量。" >&2
+test -n "${FINESHELL_RELEASE_TOKEN:-}" || {
+  echo "缺少 FINESHELL_RELEASE_TOKEN 流水线密钥变量。" >&2
   exit 1
 }
 
@@ -39,7 +39,7 @@ cat > "$askpass_file" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
   *Username*) printf '%s\n' 'oauth2' ;;
-  *) printf '%s\n' "$GITEE_ACCESS_TOKEN" ;;
+  *) printf '%s\n' "$FINESHELL_RELEASE_TOKEN" ;;
 esac
 EOF
 chmod 700 "$askpass_file"
