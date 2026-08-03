@@ -20,7 +20,6 @@ export type GithubMirrorRoute =
   | "direct"
   | "gh-proxy.com"
   | "ghproxy.net"
-  | "githubproxy.cc"
   | "custom";
 
 export interface AppSettings {
@@ -155,7 +154,6 @@ function githubMirrorRouteValue(value: unknown): GithubMirrorRoute {
   return value === "direct" ||
     value === "gh-proxy.com" ||
     value === "ghproxy.net" ||
-    value === "githubproxy.cc" ||
     value === "custom"
     ? value
     : "auto";

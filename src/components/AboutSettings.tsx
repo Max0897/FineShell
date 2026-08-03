@@ -351,7 +351,6 @@ function AboutSettings({
                 <Select.Option value="direct">GitHub 直连</Select.Option>
                 <Select.Option value="gh-proxy.com">gh-proxy.com</Select.Option>
                 <Select.Option value="ghproxy.net">ghproxy.net</Select.Option>
-                <Select.Option value="githubproxy.cc">githubproxy.cc</Select.Option>
                 <Select.Option value="custom">自定义镜像</Select.Option>
               </Select>
               <Button
