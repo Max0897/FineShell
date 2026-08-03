@@ -10,6 +10,8 @@ interface UpdaterManifest {
   version?: unknown;
 }
 
+export type UpdaterDistribution = "gitee" | "github";
+
 const REQUIRED_PLATFORM_GROUPS = [
   {
     keys: ["darwin-aarch64-app", "darwin-aarch64"],
@@ -28,11 +30,7 @@ const REQUIRED_PLATFORM_GROUPS = [
     label: "Linux ARM64",
   },
   {
-    keys: [
-      "windows-x86_64-nsis",
-      "windows-x86_64-msi",
-      "windows-x86_64",
-    ],
+    keys: ["windows-x86_64-nsis", "windows-x86_64-msi", "windows-x86_64"],
     label: "Windows x64",
   },
   {
@@ -46,13 +44,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function expectedVersionFromTag(releaseTag: string) {
-  if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(releaseTag)) {
+  if (
+    !/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(releaseTag)
+  ) {
     throw new Error(`版本标签“${releaseTag}”格式无效`);
   }
   return releaseTag.slice(1);
 }
 
-function validatePlatform(key: string, value: unknown, releaseTag: string) {
+function validatePlatform(
+  key: string,
+  value: unknown,
+  releaseTag: string,
+  distribution: UpdaterDistribution,
+) {
   if (!isRecord(value)) {
     throw new Error(`更新清单平台 ${key} 格式无效`);
   }
@@ -74,6 +79,15 @@ function validatePlatform(key: string, value: unknown, releaseTag: string) {
   if (url.protocol !== "https:") {
     throw new Error(`更新清单平台 ${key} 的下载地址必须使用 HTTPS`);
   }
+  if (distribution === "gitee") {
+    if (url.hostname !== "gitee.com") {
+      throw new Error(
+        `更新清单平台 ${key} 必须使用 Gitee Release 公开下载地址`,
+      );
+    }
+    return;
+  }
+
   const match = url.pathname.match(
     /^\/[^/]+\/[^/]+\/releases\/download\/([^/]+)\/[^/]+$/,
   );
@@ -87,6 +101,7 @@ function validatePlatform(key: string, value: unknown, releaseTag: string) {
 export function validateUpdaterManifest(
   value: unknown,
   releaseTag: string,
+  distribution: UpdaterDistribution = "github",
 ) {
   if (!isRecord(value)) throw new Error("更新清单格式无效");
 
@@ -100,13 +115,14 @@ export function validateUpdaterManifest(
   if (!isRecord(manifest.platforms)) {
     throw new Error("更新清单缺少 platforms 对象");
   }
+  const platforms = manifest.platforms;
 
-  Object.entries(manifest.platforms).forEach(([key, platform]) => {
-    validatePlatform(key, platform, releaseTag);
+  Object.entries(platforms).forEach(([key, platform]) => {
+    validatePlatform(key, platform, releaseTag, distribution);
   });
 
   const matchedPlatforms = REQUIRED_PLATFORM_GROUPS.map(({ keys, label }) => {
-    const key = keys.find((candidate) => candidate in manifest.platforms!);
+    const key = keys.find((candidate) => candidate in platforms);
     if (!key) {
       throw new Error(
         `更新清单缺少 ${label}，需要以下平台键之一：${keys.join(", ")}`,
@@ -122,10 +138,18 @@ if (import.meta.main) {
   try {
     const manifestPath = process.argv[2];
     const releaseTag = process.argv[3] ?? "";
+    const distribution = process.argv[4] ?? "github";
     if (!manifestPath) throw new Error("缺少 latest.json 路径");
+    if (distribution !== "github" && distribution !== "gitee") {
+      throw new Error(`不支持的更新分发源：${distribution}`);
+    }
 
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    const platforms = validateUpdaterManifest(manifest, releaseTag);
+    const platforms = validateUpdaterManifest(
+      manifest,
+      releaseTag,
+      distribution,
+    );
     console.log(`更新清单校验通过：${platforms.join(", ")}`);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
