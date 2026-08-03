@@ -44,7 +44,6 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERCNjFDQ0VGNzRBMzZDQTUKUldTbGJLTjA3OHhoMjFNcjM4SHBGc1J3ZThJdC9LU3poMHFJV2g2aDR0ZmlEdHRZMzlrQUdTbisK",
       "endpoints": [
-        "https://gitee.com/Max0897/FineShell/raw/ota/latest.json",
         "https://github.com/Max0897/fineshell/releases/latest/download/latest.json"
       ],
       "windows": {

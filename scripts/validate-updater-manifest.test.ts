@@ -6,11 +6,6 @@ const platform = {
   url: "https://github.com/example/app/releases/download/v1.2.3/app.tar.gz",
 };
 
-const giteePlatform = {
-  signature: "signed-update",
-  url: "https://gitee.com/api/v5/repos/example/app/releases/42/attach_files/7/download",
-};
-
 function manifest(platforms: Record<string, unknown>) {
   return { platforms, version: "1.2.3" };
 }
@@ -106,9 +101,9 @@ describe("updater manifest validation", () => {
       ),
     ).toThrow("缺少签名");
 
-    expect(() => validateUpdaterManifest(manifest({}), "v1.2.4")).toThrow(
-      "版本不一致",
-    );
+    expect(() =>
+      validateUpdaterManifest(manifest({}), "v1.2.4"),
+    ).toThrow("版本不一致");
   });
 
   test("requires HTTPS download URLs", () => {
@@ -148,34 +143,5 @@ describe("updater manifest validation", () => {
         "v1.2.3",
       ),
     ).toThrow("必须使用当前版本的 GitHub Release 公开下载地址");
-  });
-
-  test("accepts a complete Gitee release manifest", () => {
-    expect(
-      validateUpdaterManifest(
-        manifest({
-          "darwin-aarch64-app": giteePlatform,
-          "darwin-x86_64": giteePlatform,
-          "linux-x86_64-deb": giteePlatform,
-          "linux-aarch64-deb": giteePlatform,
-          "windows-x86_64-nsis": giteePlatform,
-          "windows-aarch64-nsis": giteePlatform,
-        }),
-        "v1.2.3",
-        "gitee",
-      ),
-    ).toHaveLength(6);
-  });
-
-  test("rejects non-Gitee URLs in Gitee manifests", () => {
-    expect(() =>
-      validateUpdaterManifest(
-        manifest({
-          "darwin-aarch64-app": platform,
-        }),
-        "v1.2.3",
-        "gitee",
-      ),
-    ).toThrow("必须使用 Gitee Release 公开下载地址");
   });
 });

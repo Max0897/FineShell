@@ -7,11 +7,6 @@ on:
         description: "版本标签，例如 v0.1.0（必须与应用版本一致）"
         required: true
         type: string
-      sync_gitee_only:
-        description: "仅重新触发 Gitee 发布流水线"
-        default: false
-        required: false
-        type: boolean
   push:
     tags:
       - "v*"
@@ -20,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -60,7 +55,6 @@ jobs:
   prepare:
     name: Prepare draft release
     needs: validate
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.sync_gitee_only) }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -99,7 +93,6 @@ jobs:
       - prepare
     permissions:
       contents: write
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.sync_gitee_only) }}
     strategy:
       fail-fast: false
       matrix:
@@ -223,7 +216,6 @@ jobs:
       - build
     permissions:
       contents: write
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.sync_gitee_only) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -273,84 +265,3 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
         run: gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --draft=false
-
-  trigger-gitee-release:
-    name: Trigger Gitee release pipeline
-    needs:
-      - validate
-      - publish
-    permissions:
-      contents: read
-    if: ${{ always() && needs.validate.result == 'success' && (needs.publish.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.sync_gitee_only)) }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: Validate Gitee mirror credentials
-        shell: bash
-        env:
-          GITEE_KNOWN_HOSTS: ${{ secrets.GITEE_KNOWN_HOSTS }}
-          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
-        run: |
-          test -n "$GITEE_KNOWN_HOSTS" || {
-            echo "GITEE_KNOWN_HOSTS is not configured." >&2
-            exit 1
-          }
-          test -n "$GITEE_SSH_PRIVATE_KEY" || {
-            echo "GITEE_SSH_PRIVATE_KEY is not configured." >&2
-            exit 1
-          }
-      - name: Configure Gitee SSH access
-        shell: bash
-        env:
-          GITEE_KNOWN_HOSTS: ${{ secrets.GITEE_KNOWN_HOSTS }}
-          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
-        run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$GITEE_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          printf '%s\n' "$GITEE_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
-      - name: Sync release tag to Gitee
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
-        run: |
-          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG" --force
-          git remote add gitee git@gitee.com:Max0897/FineShell.git
-          git push gitee "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-      - name: Push Gitee pipeline trigger
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
-        run: |
-          release_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
-          trigger_directory="$RUNNER_TEMP/gitee-release-trigger"
-          git clone --no-hardlinks --no-checkout . "$trigger_directory"
-          # The trigger branch must contain the latest pipeline definition even
-          # when an older release is retried from main.
-          git -C "$trigger_directory" checkout --detach "$GITHUB_SHA"
-          git -C "$trigger_directory" switch -C gitee-release-trigger
-          git -C "$trigger_directory" remote add gitee \
-            git@gitee.com:Max0897/FineShell.git
-
-          cat > "$trigger_directory/.gitee-release-trigger.json" <<EOF
-          {
-            "tag": "$RELEASE_TAG",
-            "commit": "$release_commit",
-            "github_repository": "$GITHUB_REPOSITORY",
-            "run_id": "$GITHUB_RUN_ID",
-            "run_attempt": "$GITHUB_RUN_ATTEMPT"
-          }
-          EOF
-
-          git -C "$trigger_directory" config user.name "FineShell Release"
-          git -C "$trigger_directory" config user.email "actions@github.com"
-          git -C "$trigger_directory" add .gitee-release-trigger.json
-          git -C "$trigger_directory" commit \
-            --allow-empty \
-            -m "触发 $RELEASE_TAG Gitee 发布流水线"
-          git -C "$trigger_directory" push \
-            --force \
-            gitee \
-            HEAD:refs/heads/gitee-release-trigger
