@@ -4,6 +4,7 @@ import {
   consumeTerminalCommandCandidate,
   decodeSshOutput,
   EMPTY_TERMINAL_INPUT_STATE,
+  isWindowsTerminalPasteShortcut,
   jumpHostRequest,
   reconnectDelaySeconds,
   sessionTabName,
@@ -13,6 +14,43 @@ import {
   terminalInjectedInputData,
   terminalStatusNoticeKey,
 } from "./terminal-utils";
+
+describe("terminal clipboard shortcuts", () => {
+  const pasteEvent = {
+    altKey: false,
+    ctrlKey: true,
+    key: "v",
+    metaKey: false,
+    shiftKey: false,
+    type: "keydown",
+  };
+
+  test("maps Ctrl+V to paste for Windows clipboard history", () => {
+    expect(isWindowsTerminalPasteShortcut(pasteEvent, "Win32")).toBe(true);
+    expect(
+      isWindowsTerminalPasteShortcut({ ...pasteEvent, key: "V" }, "Win64"),
+    ).toBe(true);
+  });
+
+  test("preserves terminal key semantics on other platforms", () => {
+    expect(isWindowsTerminalPasteShortcut(pasteEvent, "MacIntel")).toBe(false);
+    expect(
+      isWindowsTerminalPasteShortcut(pasteEvent, "Linux x86_64"),
+    ).toBe(false);
+    expect(
+      isWindowsTerminalPasteShortcut(
+        { ...pasteEvent, shiftKey: true },
+        "Win32",
+      ),
+    ).toBe(false);
+    expect(
+      isWindowsTerminalPasteShortcut(
+        { ...pasteEvent, type: "keyup" },
+        "Win32",
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("decodeSshOutput", () => {
   test("decodes unpadded SSH output without changing bytes", () => {
