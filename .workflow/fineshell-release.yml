@@ -21,5 +21,6 @@ stages:
       - step: build@python
         name: publish-release
         displayName: 同步安装包并更新 OTA
+        pythonVersion: "3.11"
         commands:
           - bash scripts/gitee-pipeline-release.sh
