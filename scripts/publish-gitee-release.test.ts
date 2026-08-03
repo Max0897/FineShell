@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   createGiteeUpdaterManifest,
+  parseCurlJsonResponse,
   parseGiteeReleaseLookup,
 } from "./publish-gitee-release";
 
@@ -121,5 +122,19 @@ describe("Gitee release lookup", () => {
 
   test("rejects malformed release responses", () => {
     expect(() => parseGiteeReleaseLookup({ id: "42" })).toThrow("缺少有效 ID");
+  });
+});
+
+describe("Gitee curl response", () => {
+  test("parses a successful multipart upload response", () => {
+    expect(parseCurlJsonResponse('{"id":7}\n201', 201, "上传附件")).toEqual({
+      id: 7,
+    });
+  });
+
+  test("keeps the response body in HTTP errors", () => {
+    expect(() =>
+      parseCurlJsonResponse('{"message":"too large"}\n413', 201, "上传附件"),
+    ).toThrow('HTTP 413）：{"message":"too large"}');
   });
 });
