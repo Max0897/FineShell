@@ -13,6 +13,7 @@ import type {
   ApplicationUpdateNotice,
   ApplicationUpdaterService,
 } from "../app-updater";
+import { DEFAULT_APP_SETTINGS } from "../app-settings";
 import AboutSettings from "./AboutSettings";
 
 afterEach(async () => {
@@ -29,6 +30,7 @@ function updaterService(
 ): ApplicationUpdaterService {
   return {
     canInstallUpdates: true,
+    canTestRoutes: true,
     checkForUpdate: async () => null,
     getApplicationInfo: async () => ({
       name: "FineShell",
@@ -36,11 +38,38 @@ function updaterService(
       version: "0.1.0",
     }),
     relaunch: async () => undefined,
+    testRoute: async () => ({ latencyMs: 80, route: "GitHub 直连" }),
     ...overrides,
   };
 }
 
 describe("AboutSettings", () => {
+  test("tests the configured update route", async () => {
+    const testRoute = mock(async () => ({
+      latencyMs: 126,
+      route: "gh-proxy.com",
+    }));
+    const updateSetting = mock(() => undefined);
+    render(
+      <AboutSettings
+        settings={DEFAULT_APP_SETTINGS}
+        updateSetting={updateSetting}
+        updater={updaterService({
+          canInstallUpdates: false,
+          canTestRoutes: true,
+          testRoute,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "测试线路" }));
+    await waitFor(() => expect(testRoute).toHaveBeenCalledTimes(1));
+    expect(testRoute).toHaveBeenCalledWith({
+      customUrl: undefined,
+      route: "auto",
+    });
+  });
+
   test("shows installed application information", async () => {
     render(
       <AboutSettings

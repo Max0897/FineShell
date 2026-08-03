@@ -19,6 +19,8 @@ mod protocol;
 mod sftp;
 mod ssh;
 mod transport;
+#[cfg(desktop)]
+mod updater;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -54,7 +56,9 @@ pub fn run() {
         .plugin(log_builder.build());
 
     #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    let builder = builder
+        .manage(updater::ApplicationUpdateManager::default())
+        .plugin(tauri_plugin_updater::Builder::new().build());
 
     let builder = builder.setup(|app| {
         managed_keys::initialize(app.handle()).map_err(std::io::Error::other)?;
@@ -78,6 +82,14 @@ pub fn run() {
             native_menu::open_settings_window,
             #[cfg(desktop)]
             native_menu::open_shortcut_guide_window,
+            #[cfg(desktop)]
+            updater::application_update_check,
+            #[cfg(desktop)]
+            updater::application_update_download_and_install,
+            #[cfg(desktop)]
+            updater::application_update_close,
+            #[cfg(desktop)]
+            updater::application_update_test_route,
             config_files::read_config_file,
             config_files::write_config_file,
             credentials::store_host_password,

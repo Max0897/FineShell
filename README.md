@@ -216,9 +216,9 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-版本标签会触发 GitHub Actions 构建 macOS、Linux 和 Windows 安装包；所有平台构建成功后，工作流会将 `CHANGELOG.md` 中对应版本的内容写入 GitHub Release，再触发 Gitee 流水线同步安装包、签名、发布说明和 OTA 更新清单。客户端优先使用 Gitee 更新清单，Gitee 不可用时自动回退到 GitHub。
+版本标签会触发 GitHub Actions 构建 macOS、Linux 和 Windows 安装包；所有平台构建成功后，工作流会将 `CHANGELOG.md` 中对应版本的内容写入 GitHub Release，并发布签名后的 OTA 更新清单。客户端通过 GitHub Releases 检查和下载安装更新。
 
-GitHub 仓库需要配置 `GITEE_SSH_PRIVATE_KEY` 和 `GITEE_KNOWN_HOSTS`；Gitee 流水线需要单独配置密文变量 `FINESHELL_RELEASE_TOKEN`。完整架构与失败重试方式见 [发布流水线文档](docs/release-pipeline.md)。
+GitHub 仓库需要配置 Tauri 更新签名私钥 `TAURI_SIGNING_PRIVATE_KEY`。完整架构与失败重试方式见 [发布流水线文档](docs/release-pipeline.md)。
 
 ## 支持项目
 

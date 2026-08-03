@@ -38,6 +38,8 @@ describe("app settings", () => {
       connectionHistoryLimit: 100,
       connectionHistoryRetentionDays: 30,
       diagnosticLogLevel: "debug",
+      githubMirrorRoute: "custom",
+      githubMirrorCustomUrl: "  https://mirror.example.com/github/  ",
       aiProvider: "deepseek",
       aiBaseUrl: "  https://example.com/v1  ",
       aiModel: "  model-name  ",
@@ -70,6 +72,8 @@ describe("app settings", () => {
       connectionHistoryLimit: 100,
       connectionHistoryRetentionDays: 30,
       diagnosticLogLevel: "debug",
+      githubMirrorRoute: "custom",
+      githubMirrorCustomUrl: "https://mirror.example.com/github/",
       aiProvider: "deepseek",
       aiBaseUrl: "https://example.com/v1",
       aiModel: "model-name",
@@ -97,6 +101,15 @@ describe("app settings", () => {
       aiReadOnlyTools: ["list_processes", "unknown", "list_processes"],
     });
     expect(settings.aiReadOnlyTools).toEqual(["list_processes"]);
+  });
+
+  test("falls back to automatic GitHub routing for unsupported values", () => {
+    const settings = sanitizeAppSettings({
+      githubMirrorRoute: "unknown",
+      githubMirrorCustomUrl: " x".repeat(600),
+    });
+    expect(settings.githubMirrorRoute).toBe("auto");
+    expect(settings.githubMirrorCustomUrl.length).toBe(512);
   });
 
   test("compares every persisted setting", () => {

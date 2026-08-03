@@ -38,6 +38,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 tokio-socks = "0.5.3"
+time = { version = "0.3", features = ["formatting"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
