@@ -13,6 +13,14 @@ describe("window capabilities", () => {
     expect(defaultCapability.permissions).toContain(
       "core:window:allow-set-size",
     );
+    expect(defaultCapability.permissions).toEqual(
+      expect.arrayContaining([
+        "core:window:allow-request-user-attention",
+        "core:window:allow-set-focus",
+        "core:window:allow-show",
+        "core:window:allow-unminimize",
+      ]),
+    );
   });
 
   test("allows update checks from both application entry points", () => {

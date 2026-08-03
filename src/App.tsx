@@ -72,6 +72,8 @@ import { useAiSidebarController } from "./hooks/useAiSidebarController";
 import {
   applicationUpdater,
   checkForApplicationUpdateOnStartup,
+  markApplicationUpdateRelaunchFocus,
+  restoreApplicationFocusAfterUpdateRelaunch,
   setApplicationUpdateNotice,
   type ApplicationUpdate,
 } from "./app-updater";
@@ -133,6 +135,7 @@ function promptStartupApplicationUpdate(update: ApplicationUpdate) {
     onOk: async () => {
       try {
         await update.downloadAndInstall();
+        markApplicationUpdateRelaunchFocus(update.version);
         setApplicationUpdateNotice(null);
         await applicationUpdater.relaunch();
       } catch (error) {
@@ -859,6 +862,24 @@ function App() {
           window.requestAnimationFrame(() => {
             if (!disposed) {
               window.dispatchEvent(new Event("fineshell:workspace-ready"));
+              void restoreApplicationFocusAfterUpdateRelaunch()
+                .then((focused) => {
+                  if (focused) {
+                    recordDiagnostic(
+                      "info",
+                      "application.update",
+                      "更新重启后主窗口已恢复前台",
+                    );
+                  }
+                })
+                .catch((error) => {
+                  recordDiagnostic(
+                    "warn",
+                    "application.update",
+                    "更新重启后主窗口聚焦失败",
+                    { error: commandErrorMessage(error) },
+                  );
+                });
             }
           });
         });
