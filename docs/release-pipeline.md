@@ -21,7 +21,7 @@ Gitee API 访问令牌不再由 GitHub Actions 使用，旧的访问令牌仓库
 
 ## Gitee 配置
 
-流水线配置位于 `.giteego/release.yml`，监听 `gitee-release-trigger` 分支。
+流水线配置位于 `.workflow/fineshell-release.yml`，监听 `gitee-release-trigger` 分支。流水线配置以 GitHub 仓库为准，不要直接在 Gitee 页面中修改，以免两个仓库的 `main` 分支产生分叉。
 
 在 Gitee 项目的流水线设置中创建密钥变量：
 
