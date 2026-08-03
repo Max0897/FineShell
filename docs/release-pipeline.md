@@ -23,10 +23,10 @@ Gitee API 访问令牌不再由 GitHub Actions 使用，旧的访问令牌仓库
 
 流水线配置位于 `.workflow/fineshell-release.yml`，监听 `gitee-release-trigger` 分支。流水线配置以 GitHub 仓库为准，不要直接在 Gitee 页面中修改，以免两个仓库的 `main` 分支产生分叉。
 
-在 Gitee 项目的流水线设置中创建密钥变量：
+在 Gitee 项目的通用变量中创建密文变量；流水线配置会通过 `variables.global` 自动关联：
 
 - 名称：`FINESHELL_RELEASE_TOKEN`
-- 类型：密钥变量
+- 类型：密文
 - 权限：能够管理当前仓库的 Release，并能够推送 `ota` 分支
 
 流水线使用 Gitee Python 3.11 构建环境，并需要提供 `bash`、`curl` 和 `git`。发布脚本只使用 Python 标准库，不需要安装项目依赖。
