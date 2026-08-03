@@ -92,6 +92,34 @@ body,
   margin: 0;
 }
 
+body,
+body * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
+input,
+textarea,
+[contenteditable="true"],
+[role="textbox"],
+pre,
+pre *,
+code,
+code *,
+.application-error-content,
+.application-error-content *,
+.fingerprint-value,
+.fingerprint-value *,
+.ai-message-content,
+.ai-message-content *,
+.ai-file-edit-diff,
+.ai-file-edit-diff *,
+.release-notes-markdown,
+.release-notes-markdown * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
 .application-error {
   width: 100%;
   height: 100%;
@@ -3854,7 +3882,6 @@ body.sftp-remote-dragging * {
 
 .host-table-host-row {
   cursor: pointer;
-  user-select: none;
 }
 
 .host-tree-table tbody > .arco-table-tr:last-child > .arco-table-td,

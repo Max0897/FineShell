@@ -9,6 +9,7 @@ export interface SelectAllRequestDetail {
 
 function targetElement(target: EventTarget | null) {
   if (target instanceof Element) return target;
+  if (target instanceof Node) return target.parentElement;
   return null;
 }
 
@@ -24,6 +25,25 @@ const nonTextInputTypes = new Set([
   "reset",
   "submit",
 ]);
+
+const selectableTextSelector = [
+  "input",
+  "textarea",
+  '[contenteditable="true"]',
+  '[role="textbox"]',
+  "pre",
+  "code",
+  ".xterm",
+  ".application-error-content",
+  ".fingerprint-value",
+  ".ai-message-content",
+  ".ai-file-edit-diff",
+  ".release-notes-markdown",
+].join(", ");
+
+export function isSelectableTextTarget(target: EventTarget | null) {
+  return Boolean(targetElement(target)?.closest(selectableTextSelector));
+}
 
 export function isEditableSelectAllTarget(target: EventTarget | null) {
   const element = targetElement(target);
@@ -67,6 +87,10 @@ export function requestContextSelectAll(invert: boolean) {
   return event.defaultPrevented;
 }
 
+function clearDocumentSelection() {
+  window.getSelection()?.removeAllRanges();
+}
+
 function isSelectAllShortcut(event: KeyboardEvent) {
   return (
     (event.metaKey || event.ctrlKey) &&
@@ -75,25 +99,31 @@ function isSelectAllShortcut(event: KeyboardEvent) {
   );
 }
 
+export function handleSelectAllShortcut(event: KeyboardEvent) {
+  if (!isSelectAllShortcut(event)) return;
+  if (!event.shiftKey && isEditableSelectAllTarget(event.target)) return;
+
+  requestContextSelectAll(event.shiftKey);
+  clearDocumentSelection();
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
+export function handleDocumentSelectStart(event: Event) {
+  if (isSelectableTextTarget(event.target)) return;
+  event.preventDefault();
+  clearDocumentSelection();
+}
+
 export function installSelectAllShortcuts() {
   if (isTauri()) {
     void listenProtocolEvent("menu-select-all", ({ payload }) => {
       if (requestContextSelectAll(payload.invert)) return;
-      if (!payload.invert) selectEditableTarget(document.activeElement);
+      if (!payload.invert && selectEditableTarget(document.activeElement)) return;
+      clearDocumentSelection();
     });
-    return;
   }
 
-  window.addEventListener(
-    "keydown",
-    (event) => {
-      if (!isSelectAllShortcut(event)) return;
-      if (!event.shiftKey && isEditableSelectAllTarget(event.target)) return;
-
-      requestContextSelectAll(event.shiftKey);
-      event.preventDefault();
-      event.stopPropagation();
-    },
-    true,
-  );
+  window.addEventListener("keydown", handleSelectAllShortcut, true);
+  document.addEventListener("selectstart", handleDocumentSelectStart, true);
 }
