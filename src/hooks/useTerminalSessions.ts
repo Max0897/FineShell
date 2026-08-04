@@ -259,7 +259,7 @@ export function useTerminalSessions({
         reconnectAttempt: 0,
       });
 
-      if (session.status === "connected") {
+      if (session.status === "connected" || session.status === "suspect") {
         manualReconnectsRef.current.add(session.id);
         void invoke("ssh_disconnect", { sessionId: session.id }).catch(() => {
           if (!manualReconnectsRef.current.delete(session.id)) return;
@@ -407,6 +407,34 @@ export function useTerminalSessions({
             status: payload.status,
           },
         );
+      }
+      if (payload.status === "suspect") {
+        if (
+          intentionallyDisconnectedRef.current.has(session.id) ||
+          manualReconnectsRef.current.has(session.id)
+        ) {
+          return;
+        }
+        updateSession(session.id, {
+          status: "suspect",
+          error: payload.error || "SSH 连接响应异常，正在确认",
+        });
+        return;
+      }
+      if (payload.status === "connected") {
+        if (
+          intentionallyDisconnectedRef.current.has(session.id) ||
+          manualReconnectsRef.current.has(session.id)
+        ) {
+          return;
+        }
+        if (session.status === "suspect") {
+          updateSession(session.id, {
+            status: "connected",
+            error: undefined,
+          });
+        }
+        return;
       }
       if (manualReconnectsRef.current.delete(session.id)) {
         const reconnectingSession = {

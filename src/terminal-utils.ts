@@ -164,6 +164,10 @@ export function reconnectDelaySeconds(attempt: number) {
   return Math.min(30, 2 ** Math.max(0, Math.floor(attempt) - 1));
 }
 
+export function isTerminalSessionOperational(status: TerminalSessionStatus) {
+  return status === "connected" || status === "suspect";
+}
+
 export function terminalStatusNoticeKey(
   status: TerminalSessionStatus,
   error?: string,

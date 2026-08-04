@@ -54,6 +54,7 @@ import {
   setApplicationUpdateNotice,
 } from "./app-updater";
 import {
+  isTerminalSessionOperational,
   type TerminalCommandSubmission,
   type TerminalInjectedInput,
 } from "./terminal-utils";
@@ -476,7 +477,10 @@ function App() {
   }, [activeSessionId]);
 
   async function sendQuickCommand(command: string, execute: boolean) {
-    if (!activeSession || activeSession.status !== "connected") {
+    if (
+      !activeSession ||
+      !isTerminalSessionOperational(activeSession.status)
+    ) {
       throw new Error("当前终端未连接");
     }
     const input = execute ? `${command}\r` : command;
@@ -590,7 +594,7 @@ function App() {
   ): ContextMenuItem[] {
     const canDisconnect =
       session.status === "connecting" ||
-      session.status === "connected" ||
+      isTerminalSessionOperational(session.status) ||
       session.status === "reconnecting";
     const canReconnect =
       session.status !== "connecting" && session.status !== "reconnecting";
@@ -731,7 +735,9 @@ function App() {
         sessions={sessions}
       />
       <QuickCommandDrawer
-        canSend={activeSession?.status === "connected"}
+        canSend={Boolean(
+          activeSession && isTerminalSessionOperational(activeSession.status),
+        )}
         commands={quickCommands}
         onAfterClose={() => setTerminalFocusRequest((current) => current + 1)}
         onCancel={() => setQuickCommandDrawerVisible(false)}
@@ -789,7 +795,9 @@ function App() {
   const aiAssistantPanel = aiAssistantVisible ? (
     <Suspense fallback={<div className="ai-assistant-sidebar-panel" />}>
       <AiAssistantPanel
-        canInsertCommand={activeSession?.status === "connected"}
+        canInsertCommand={Boolean(
+          activeSession && isTerminalSessionOperational(activeSession.status),
+        )}
         commandSubmission={terminalCommandSubmission}
         contextSources={aiContextSources}
         hostId={activeSession?.host.id ?? null}

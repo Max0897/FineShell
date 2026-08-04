@@ -299,6 +299,7 @@ enum SessionHandle {
 mod auth;
 mod events;
 mod forwarding;
+mod health;
 mod manager;
 mod session;
 

@@ -33,6 +33,7 @@ function sessionStatusLabel(session: TerminalSession) {
   const labels = {
     connecting: "连接中",
     connected: "已连接",
+    suspect: "响应异常",
     failed: "连接失败",
     disconnected: "已断开",
     reconnecting: "重连中",

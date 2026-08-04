@@ -37,6 +37,7 @@ import {
   consumeTerminalCommandCandidate,
   decodeSshOutput,
   EMPTY_TERMINAL_INPUT_STATE,
+  isTerminalSessionOperational,
   isWindowsTerminalPasteShortcut,
   terminalStatusNoticeKey,
   terminalInjectedInputData,
@@ -144,7 +145,7 @@ function TerminalView({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<RefInputType>(null);
-  const connectedRef = useRef(session.status === "connected");
+  const connectedRef = useRef(isTerminalSessionOperational(session.status));
   const commandLifecycleRef = useRef(onCommandLifecycle);
   const commandTrackingEnabledRef = useRef(commandTrackingEnabled);
   const shellCommandResultsEnabledRef = useRef(commandTrackingEnabled);
@@ -255,7 +256,10 @@ function TerminalView({
   };
 
   startShellIntegrationMutationRef.current = (mutation) => {
-    if (session.status !== "connected" || shellIntegrationMutationRef.current) {
+    if (
+      !isTerminalSessionOperational(session.status) ||
+      shellIntegrationMutationRef.current
+    ) {
       return;
     }
     shellIntegrationMutationRef.current = mutation;
@@ -287,8 +291,8 @@ function TerminalView({
   };
 
   useEffect(() => {
-    connectedRef.current = session.status === "connected";
-    if (session.status !== "connected") {
+    connectedRef.current = isTerminalSessionOperational(session.status);
+    if (!isTerminalSessionOperational(session.status)) {
       currentDirectoryChangeRef.current(session.id, "");
       const completedAt = new Date().toISOString();
       for (const pending of pendingShellCommandsRef.current) {
@@ -319,7 +323,7 @@ function TerminalView({
   }, [commandTrackingEnabled]);
 
   useEffect(() => {
-    if (session.status !== "connected" || !terminalReady) return;
+    if (!isTerminalSessionOperational(session.status) || !terminalReady) return;
     if (!shellIntegrationInstalledRef.current) {
       if (!inputStateRef.current.reliable || inputStateRef.current.value) {
         shellIntegrationStateRef.current = "unavailable";
@@ -673,7 +677,7 @@ function TerminalView({
       } else {
         terminal.focus();
       }
-      if (session.status === "connected") {
+      if (isTerminalSessionOperational(session.status)) {
         void invoke("ssh_resize", {
           sessionId: session.id,
           cols: terminal.cols,

@@ -239,7 +239,8 @@
 }
 
 .terminal-status-connecting,
-.terminal-status-reconnecting {
+.terminal-status-reconnecting,
+.terminal-status-suspect {
   background: #ff7d00;
 }
 

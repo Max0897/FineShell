@@ -43,7 +43,11 @@ import {
   selectAllSftpEntryKeys,
   setRemotePathBookmark,
 } from "../sftp-utils";
-import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
+import {
+  isTerminalSessionOperational,
+  jumpHostRequest,
+  sshCredentialId,
+} from "../terminal-utils";
 import {
   commandErrorMessage,
   type ExternalEditPayload,
@@ -337,7 +341,7 @@ function SftpPanel({
   useEffect(() => {
     if (!session) return;
 
-    if (session.status === "connected") {
+    if (isTerminalSessionOperational(session.status)) {
       const browser = browsers[session.id];
       if (!browser || browser.status === "idle") {
         void connectAndLoad(session);
@@ -385,7 +389,9 @@ function SftpPanel({
   }, [browsers, loadDirectory, refreshRequest, session]);
 
   const browser = session ? (browsers[session.id] ?? INITIAL_BROWSER) : null;
-  const connected = session?.status === "connected";
+  const connected = Boolean(
+    session && isTerminalSessionOperational(session.status),
+  );
   const ready = Boolean(connected && browser?.status === "ready");
   const busy =
     browser?.status === "connecting" || browser?.status === "loading";

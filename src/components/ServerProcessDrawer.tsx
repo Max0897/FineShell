@@ -28,6 +28,7 @@ import type {
   TerminalSession,
 } from "../models";
 import { formatMonitorBytes } from "../monitor-utils";
+import { isTerminalSessionOperational } from "../terminal-utils";
 import {
   filterServerProcesses,
   formatProcessElapsed,
@@ -89,7 +90,9 @@ function ServerProcessDrawer({
 
   const loadProcesses = useCallback(
     async (showLoading = true) => {
-      if (loadingRef.current || session.status !== "connected") return;
+      if (loadingRef.current || !isTerminalSessionOperational(session.status)) {
+        return;
+      }
       loadingRef.current = true;
       const requestVersion = requestVersionRef.current;
       if (showLoading) setLoading(true);
@@ -136,7 +139,7 @@ function ServerProcessDrawer({
   }, [visible]);
 
   useEffect(() => {
-    if (!visible || session.status !== "connected") return;
+    if (!visible || !isTerminalSessionOperational(session.status)) return;
     void loadProcesses();
     if (!autoRefresh) return;
     const timer = window.setInterval(

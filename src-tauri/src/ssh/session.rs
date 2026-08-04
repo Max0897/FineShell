@@ -1,4 +1,65 @@
+use super::health::{
+    PendingRemoteCommand, RemoteCommandPoll, SessionHealth, SessionHealthUpdate,
+    HEALTH_PROBE_INTERVAL, HEALTH_PROBE_TIMEOUT,
+};
 use super::*;
+
+const MONITOR_COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
+
+struct PendingMonitorCommand {
+    response: Option<SyncSender<Result<ServerMonitorSnapshot, String>>>,
+    remote: PendingRemoteCommand,
+}
+
+impl PendingMonitorCommand {
+    fn new(response: SyncSender<Result<ServerMonitorSnapshot, String>>, now: Instant) -> Self {
+        Self {
+            response: Some(response),
+            remote: PendingRemoteCommand::new(
+                monitor::MONITOR_COMMAND,
+                "服务器监控",
+                MONITOR_COMMAND_TIMEOUT,
+                now,
+            ),
+        }
+    }
+
+    fn poll(&mut self, session: &Session, now: Instant) -> RemoteCommandPoll {
+        self.remote.poll(session, now)
+    }
+
+    fn respond(&mut self, result: Result<(String, i32), String>) {
+        let result = result.and_then(|(output, exit_status)| {
+            monitor::parse_server_snapshot_command(&output, exit_status)
+        });
+        if let Some(response) = self.response.take() {
+            let _ = response.send(result);
+        }
+    }
+}
+
+fn emit_health_update(
+    app: &AppHandle,
+    session_id: &str,
+    update: Option<SessionHealthUpdate>,
+    reason: Option<String>,
+) {
+    match update {
+        Some(SessionHealthUpdate::Connected) => {
+            emit_status(app, session_id, "connected", None, false);
+        }
+        Some(SessionHealthUpdate::Suspect) => {
+            emit_status(
+                app,
+                session_id,
+                "suspect",
+                Some(reason.unwrap_or_else(|| "SSH 连接响应异常，正在确认".to_string())),
+                true,
+            );
+        }
+        None => {}
+    }
+}
 
 pub(super) fn run_session(
     app: AppHandle,
@@ -19,6 +80,10 @@ pub(super) fn run_session(
     let mut stderr = channel.stderr();
     let mut pending = VecDeque::new();
     let mut pending_resize = None;
+    let mut monitor_queue = VecDeque::new();
+    let mut pending_monitor = None;
+    let mut pending_health_probe = None;
+    let mut health = SessionHealth::new();
     let mut terminal_error = None;
     let mut closing = false;
     let mut forward_connections = Vec::<ForwardConnection>::new();
@@ -31,6 +96,7 @@ pub(super) fn run_session(
         mpsc::channel::<DynamicConnectionResult>();
     let mut pending_dynamic_connections = HashMap::<String, usize>::new();
     let mut next_keepalive_at = Instant::now() + Duration::from_secs(1);
+    let mut next_health_probe_at = Instant::now() + HEALTH_PROBE_INTERVAL;
 
     while !closing && !channel.eof() {
         let mut active = false;
@@ -40,10 +106,7 @@ pub(super) fn run_session(
                 Ok(SessionCommand::Resize { cols, rows }) => {
                     pending_resize = Some((cols, rows));
                 }
-                Ok(SessionCommand::Monitor(response)) => {
-                    let _ = response.send(monitor::collect_server_snapshot(&session));
-                    active = true;
-                }
+                Ok(SessionCommand::Monitor(response)) => monitor_queue.push_back(response),
                 Ok(SessionCommand::Ping { target, response }) => {
                     let _ = response.send(monitor::collect_ping(&session, &target));
                     active = true;
@@ -528,6 +591,67 @@ pub(super) fn run_session(
             active = true;
         }
 
+        if pending_monitor.is_none() {
+            pending_monitor = monitor_queue
+                .pop_front()
+                .map(|response| PendingMonitorCommand::new(response, Instant::now()));
+        }
+        let now = Instant::now();
+        let mut monitor_finished = None;
+        if let Some(task) = pending_monitor.as_mut() {
+            match task.poll(&session, now) {
+                RemoteCommandPoll::Pending(task_active) => active |= task_active,
+                RemoteCommandPoll::Finished { result } => monitor_finished = Some(result),
+            }
+        }
+        if let Some(result) = monitor_finished {
+            let connection_confirmed = result.is_ok();
+            if let Some(task) = pending_monitor.as_mut() {
+                task.respond(result);
+            }
+            pending_monitor = None;
+            if connection_confirmed {
+                emit_health_update(&app, &session_id, health.confirm(), None);
+                next_health_probe_at = now + HEALTH_PROBE_INTERVAL;
+            } else {
+                next_health_probe_at = now;
+            }
+            active = true;
+        }
+
+        if pending_health_probe.is_none()
+            && pending_monitor.is_none()
+            && now >= next_health_probe_at
+        {
+            pending_health_probe = Some(PendingRemoteCommand::new(
+                ":",
+                "SSH 健康探测",
+                HEALTH_PROBE_TIMEOUT,
+                now,
+            ));
+        }
+        let mut health_probe_finished = None;
+        if let Some(probe) = pending_health_probe.as_mut() {
+            match probe.poll(&session, now) {
+                RemoteCommandPoll::Pending(probe_active) => active |= probe_active,
+                RemoteCommandPoll::Finished { result } => health_probe_finished = Some(result),
+            }
+        }
+        if let Some(result) = health_probe_finished {
+            pending_health_probe = None;
+            match result {
+                Ok(_) => {
+                    emit_health_update(&app, &session_id, health.confirm(), None);
+                    next_health_probe_at = now + HEALTH_PROBE_INTERVAL;
+                }
+                Err(error) => {
+                    emit_health_update(&app, &session_id, health.mark_suspect(now), Some(error));
+                    next_health_probe_at = now + Duration::from_millis(250);
+                }
+            }
+            active = true;
+        }
+
         let mut connection_index = 0;
         while connection_index < forward_connections.len() {
             match forward_connections[connection_index].poll() {
@@ -611,14 +735,24 @@ pub(super) fn run_session(
             }
         }
         match read_output(&mut channel, &app, &session_id) {
-            Ok(read) => active |= read,
+            Ok(read) => {
+                active |= read;
+                if read {
+                    emit_health_update(&app, &session_id, health.confirm(), None);
+                }
+            }
             Err(error) => {
                 terminal_error = Some(error);
                 break;
             }
         }
         match read_output(&mut stderr, &app, &session_id) {
-            Ok(read) => active |= read,
+            Ok(read) => {
+                active |= read;
+                if read {
+                    emit_health_update(&app, &session_id, health.confirm(), None);
+                }
+            }
             Err(error) => {
                 terminal_error = Some(error);
                 break;
@@ -644,11 +778,22 @@ pub(super) fn run_session(
             }
         }
 
+        if health.confirmation_timed_out(Instant::now()) {
+            terminal_error = Some("SSH 连接长时间未响应".to_string());
+            break;
+        }
+
         if !active {
             thread::sleep(Duration::from_millis(8));
         }
     }
 
+    if let Some(task) = pending_monitor.as_mut() {
+        task.respond(Err("SSH 会话已停止".to_string()));
+    }
+    for response in monitor_queue {
+        let _ = response.send(Err("SSH 会话已停止".to_string()));
+    }
     let _ = channel.close();
     manager.remove(&session_id);
     let (error, recoverable) = disconnect_status(closing, terminal_error);

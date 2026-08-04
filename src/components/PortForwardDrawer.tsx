@@ -27,6 +27,7 @@ import type {
   RemotePortForwardRule,
   TerminalSession,
 } from "../models";
+import { isTerminalSessionOperational } from "../terminal-utils";
 
 type ForwardKind = "local" | "remote" | "dynamic";
 type RuntimeForwardRule = (
@@ -106,7 +107,7 @@ function PortForwardDrawer({
       ),
     [session.portForwardStatuses],
   );
-  const connected = session.status === "connected";
+  const connected = isTerminalSessionOperational(session.status);
 
   const changeRuntimeStatus = async (
     rule: RuntimeForwardRule,

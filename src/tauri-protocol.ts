@@ -57,7 +57,7 @@ export interface SshOutputPayload {
 
 export interface SshStatusPayload {
   sessionId: string;
-  status: "disconnected";
+  status: "connected" | "suspect" | "disconnected";
   error?: string;
   recoverable: boolean;
 }
