@@ -75,8 +75,6 @@ import {
   promptStartupApplicationUpdate,
 } from "./app-window-actions";
 import { useTerminalSessions } from "./hooks/useTerminalSessions";
-import "./App.css";
-
 const ServerMonitorPanel = lazy(
   () => import("./components/ServerMonitorPanel"),
 );

@@ -4,27 +4,41 @@ import userEvent from "@testing-library/user-event";
 import SettingsWindow from "./SettingsWindow";
 
 describe("SettingsWindow", () => {
-  test("groups settings into seven primary menu entries", async () => {
+  test("moves grouped setting pages into sidebar submenus", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const view = render(<SettingsWindow />);
 
-    await screen.findByRole("tab", { name: "终端" });
-    expect(screen.queryByRole("heading", { name: "终端" })).toBeNull();
+    await screen.findByRole("heading", { name: "终端" });
+    expect(screen.queryByRole("tab")).toBeNull();
+    const submenuHeaders = Array.from(
+      view.container.querySelectorAll(
+        ".settings-sidebar .arco-menu-inline-header",
+      ),
+    ).map((item) => item.textContent?.trim());
+    expect(submenuHeaders).toEqual([
+      "常规",
+      "连接与安全",
+      "数据与隐私",
+    ]);
     const menuItems = Array.from(
       view.container.querySelectorAll(".settings-sidebar .arco-menu-item"),
     ).map((item) => item.textContent?.trim());
     expect(menuItems).toEqual([
-      "常规",
-      "连接与安全",
+      "终端",
+      "文件管理",
+      "服务器监控",
+      "连接默认值",
+      "代理",
+      "密钥",
+      "已知主机",
       "快捷命令",
       "AI 助手",
-      "数据与隐私",
+      "隐私与清理",
+      "备份与恢复",
+      "回收站",
       "高级",
       "关于",
     ]);
-
-    expect(screen.getByRole("tab", { name: "文件管理" })).not.toBeNull();
-    expect(screen.getByRole("tab", { name: "服务器监控" })).not.toBeNull();
 
     await user.click(screen.getByText("AI 助手"));
     await waitFor(() =>
@@ -57,22 +71,15 @@ describe("SettingsWindow", () => {
       screen.getByLabelText("允许 AI 生成终端命令提案"),
     ).not.toBeNull();
 
-    await user.click(screen.getByText("连接与安全"));
+    await user.click(screen.getByText("连接默认值"));
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "连接默认值" })).not.toBeNull(),
+      expect(screen.getByRole("heading", { name: "连接默认值" })).not.toBeNull(),
     );
-    expect(screen.queryByRole("heading", { name: "连接默认值" })).toBeNull();
-    expect(screen.getByRole("tab", { name: "代理" })).not.toBeNull();
-    expect(screen.getByRole("tab", { name: "密钥" })).not.toBeNull();
-    expect(screen.getByRole("tab", { name: "已知主机" })).not.toBeNull();
 
-    await user.click(screen.getByText("数据与隐私"));
+    await user.click(screen.getByText("隐私与清理"));
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "隐私与清理" })).not.toBeNull(),
+      expect(screen.getByRole("heading", { name: "隐私与清理" })).not.toBeNull(),
     );
-    expect(screen.queryByRole("heading", { name: "隐私与清理" })).toBeNull();
-    expect(screen.getByRole("tab", { name: "备份与恢复" })).not.toBeNull();
-    expect(screen.getByRole("tab", { name: "回收站" })).not.toBeNull();
 
     await user.click(screen.getByText("高级"));
     await waitFor(() =>

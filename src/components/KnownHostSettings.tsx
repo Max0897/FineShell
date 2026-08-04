@@ -168,7 +168,6 @@ function KnownHostSettings() {
     () => [
       {
         title: "主机",
-        width: 180,
         render: (_, record) => (
           <div className="known-host-target-cell">
             <Typography.Text
@@ -186,7 +185,9 @@ function KnownHostSettings() {
         ),
       },
       {
+        ellipsis: true,
         title: "SHA256 指纹",
+        width: 300,
         render: (_, record) => (
           <div className="known-host-fingerprint-cell">
             <Typography.Text title={record.fingerprint}>

@@ -12,7 +12,6 @@ import {
   Space,
   Spin,
   Switch,
-  Tabs,
   Typography,
 } from "@arco-design/web-react";
 import {
@@ -76,61 +75,17 @@ type SettingsSection =
   | "trash"
   | "about";
 
-type SettingsCategory =
-  | "general"
-  | "connectionSecurity"
-  | "quickCommands"
-  | "ai"
-  | "dataPrivacy"
-  | "advanced"
-  | "about";
-
-const CATEGORY_DEFAULT_SECTION: Record<SettingsCategory, SettingsSection> = {
-  general: "terminal",
-  connectionSecurity: "connection",
-  quickCommands: "quickCommands",
-  ai: "ai",
-  dataPrivacy: "privacy",
-  advanced: "advanced",
-  about: "about",
-};
-
-const SECTION_CATEGORY: Record<SettingsSection, SettingsCategory> = {
-  terminal: "general",
-  files: "general",
-  monitor: "general",
-  connection: "connectionSecurity",
-  proxies: "connectionSecurity",
-  sshKeys: "connectionSecurity",
-  knownHosts: "connectionSecurity",
-  quickCommands: "quickCommands",
-  ai: "ai",
-  privacy: "dataPrivacy",
-  backups: "dataPrivacy",
-  trash: "dataPrivacy",
-  advanced: "advanced",
-  about: "about",
-};
-
-const CATEGORY_TABS: Partial<
-  Record<SettingsCategory, { key: SettingsSection; title: string }[]>
-> = {
-  general: [
-    { key: "terminal", title: "终端" },
-    { key: "files", title: "文件管理" },
-    { key: "monitor", title: "服务器监控" },
-  ],
-  connectionSecurity: [
-    { key: "connection", title: "连接默认值" },
-    { key: "proxies", title: "代理" },
-    { key: "sshKeys", title: "密钥" },
-    { key: "knownHosts", title: "已知主机" },
-  ],
-  dataPrivacy: [
-    { key: "privacy", title: "隐私与清理" },
-    { key: "backups", title: "备份与恢复" },
-    { key: "trash", title: "回收站" },
-  ],
+const NESTED_SECTION_TITLES: Partial<Record<SettingsSection, string>> = {
+  terminal: "终端",
+  files: "文件管理",
+  monitor: "服务器监控",
+  connection: "连接默认值",
+  proxies: "代理",
+  sshKeys: "密钥",
+  knownHosts: "已知主机",
+  privacy: "隐私与清理",
+  backups: "备份与恢复",
+  trash: "回收站",
 };
 
 const SECTIONS_WITH_SETTINGS_FOOTER = new Set<SettingsSection>([
@@ -296,9 +251,6 @@ function SettingsWindow() {
       externalEditorName: editorNameFromPath(selected),
     }));
   };
-
-  const activeCategory = SECTION_CATEGORY[activeSection];
-  const categoryTabs = CATEGORY_TABS[activeCategory];
 
   const content = (() => {
     switch (activeSection) {
@@ -673,48 +625,55 @@ function SettingsWindow() {
     }
   })();
 
-  const pageContent = categoryTabs ? (
-    <Tabs
-      activeTab={activeSection}
-      animation={false}
-      className="settings-category-tabs"
-      destroyOnHide
-      headerPadding={false}
-      onChange={(key) => setActiveSection(key as SettingsSection)}
-      size="small"
-      type="capsule"
-    >
-      {categoryTabs.map((tab) => (
-        <Tabs.TabPane key={tab.key} title={tab.title}>
-          {activeSection === tab.key ? content : null}
-        </Tabs.TabPane>
-      ))}
-    </Tabs>
-  ) : (
-    content
-  );
+  const nestedSectionTitle = NESTED_SECTION_TITLES[activeSection];
+  const pageContent = nestedSectionTitle ? (
+    <>
+      <Typography.Title className="settings-section-title" heading={5}>
+        {nestedSectionTitle}
+      </Typography.Title>
+      {content}
+    </>
+  ) : content;
 
   return (
     <main className="settings-window">
       <aside className="settings-sidebar">
         <Menu
+          defaultOpenKeys={["general", "connectionSecurity", "dataPrivacy"]}
           onClickMenuItem={(key) =>
             updateInstalling && key !== "about"
               ? Message.warning("更新正在安装，请等待安装完成")
-              : setActiveSection(
-                  CATEGORY_DEFAULT_SECTION[key as SettingsCategory],
-                )
+              : setActiveSection(key as SettingsSection)
           }
-          selectedKeys={[activeCategory]}
+          selectedKeys={[activeSection]}
         >
-          <Menu.Item key="general">
-            <IconApps />
-            常规
-          </Menu.Item>
-          <Menu.Item key="connectionSecurity">
-            <IconThunderbolt />
-            连接与安全
-          </Menu.Item>
+          <Menu.SubMenu
+            key="general"
+            title={
+              <span className="settings-submenu-title">
+                <IconApps />
+                常规
+              </span>
+            }
+          >
+            <Menu.Item key="terminal">终端</Menu.Item>
+            <Menu.Item key="files">文件管理</Menu.Item>
+            <Menu.Item key="monitor">服务器监控</Menu.Item>
+          </Menu.SubMenu>
+          <Menu.SubMenu
+            key="connectionSecurity"
+            title={
+              <span className="settings-submenu-title">
+                <IconThunderbolt />
+                连接与安全
+              </span>
+            }
+          >
+            <Menu.Item key="connection">连接默认值</Menu.Item>
+            <Menu.Item key="proxies">代理</Menu.Item>
+            <Menu.Item key="sshKeys">密钥</Menu.Item>
+            <Menu.Item key="knownHosts">已知主机</Menu.Item>
+          </Menu.SubMenu>
           <Menu.Item key="quickCommands">
             <IconCommand />
             快捷命令
@@ -723,10 +682,19 @@ function SettingsWindow() {
             <IconRobot />
             AI 助手
           </Menu.Item>
-          <Menu.Item key="dataPrivacy">
-            <IconHistory />
-            数据与隐私
-          </Menu.Item>
+          <Menu.SubMenu
+            key="dataPrivacy"
+            title={
+              <span className="settings-submenu-title">
+                <IconHistory />
+                数据与隐私
+              </span>
+            }
+          >
+            <Menu.Item key="privacy">隐私与清理</Menu.Item>
+            <Menu.Item key="backups">备份与恢复</Menu.Item>
+            <Menu.Item key="trash">回收站</Menu.Item>
+          </Menu.SubMenu>
           <Menu.Item key="advanced">
             <IconTool />
             高级

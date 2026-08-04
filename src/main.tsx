@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "@arco-design/web-react/dist/css/arco.css";
+import "./App.css";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import ApplicationErrorBoundary from "./components/ApplicationErrorBoundary";

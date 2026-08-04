@@ -65,6 +65,10 @@
   margin-bottom: 4px;
 }
 
+.settings-sidebar .arco-menu-inline-header {
+  margin-bottom: 4px;
+}
+
 .settings-about-menu-label {
   display: inline-block;
 }
@@ -84,22 +88,9 @@
   overflow: auto;
 }
 
-.settings-page > .arco-typography {
+.settings-page > .arco-typography,
+.settings-section-title {
   margin: 0 0 24px;
-}
-
-.settings-category-tabs > .arco-tabs-header-nav {
-  margin-bottom: 24px;
-}
-
-.settings-category-tabs
-  > .arco-tabs-header-nav-capsule
-  .arco-tabs-header-wrapper {
-  justify-content: flex-start;
-}
-
-.settings-category-tabs > .arco-tabs-content {
-  overflow: visible;
 }
 
 .configuration-maintenance-heading,
