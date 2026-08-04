@@ -1,0 +1,78 @@
+.quick-command-group-title {
+  padding: 16px 0 8px;
+  display: block;
+  font-size: 12px;
+}
+
+.quick-command-list {
+  border-top: 1px solid #e5e6eb;
+}
+
+.quick-command-list-item {
+  min-height: 76px;
+  padding: 12px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid #e5e6eb;
+}
+
+.quick-command-list-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.quick-command-list-copy > .arco-typography {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-command-list-template {
+  display: block;
+}
+
+.quick-command-parameter-fields {
+  display: grid;
+  gap: 16px;
+}
+
+.quick-command-parameter-fields > label {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.quick-command-parameter-preview {
+  max-height: 120px;
+  margin-top: 20px;
+  padding: 10px 12px;
+  display: block;
+  overflow: auto;
+  border: 1px solid #e5e6eb;
+  border-radius: 4px;
+  background: #f7f8fa;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.quick-command-parameter-modal .modal-actions {
+  margin-top: 16px;
+}
+
+@container (max-width: 360px) {
+  .terminal-search-result {
+    display: none;
+  }
+}
+
+@container (max-width: 300px) {
+  .terminal-search-case {
+    display: none;
+  }
+}
