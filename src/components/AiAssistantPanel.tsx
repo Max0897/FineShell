@@ -1,24 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Button,
-  Input,
-  Message,
-  Modal,
-  Select,
-  Space,
-  Tag,
-  Tooltip,
-  Typography,
-} from "@arco-design/web-react";
-import {
-  IconClose,
-  IconDelete,
-  IconHistory,
-  IconPlus,
-} from "@arco-design/web-react/icon";
-import { isTauri } from "@tauri-apps/api/core";
-import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
-import { save } from "@tauri-apps/plugin-dialog";
+import { Message } from "@arco-design/web-react";
 import type { AppSettings } from "../app-settings";
 import {
   aiApprovalRequiresUserDecision,
@@ -30,10 +11,6 @@ import type {
 } from "../ai-action-lifecycle";
 import { buildAiConversationRequestMessages } from "../ai-summaries";
 import type { AiToolRun } from "../ai-tools";
-import {
-  aiConversationExportFilename,
-  serializeAiConversationMarkdown,
-} from "../ai-conversations";
 import { aiFileEditEligibilityError } from "../ai-file-edits";
 import type { AiFileApprovalDecision } from "../ai-file-approvals";
 import {
@@ -42,7 +19,6 @@ import {
   buildAiContextPayloadResult,
   estimateAiRequestTokenBudget,
   stripAiContextMentions,
-  isAiRemoteFileContextSourceId,
   type AiContextSource,
   type AiContextSourceId,
   type AiRemoteFileContext,
@@ -61,26 +37,14 @@ import {
   type AiCommandApprovalDecision,
   type AiCommandProposal,
 } from "../ai-command-proposals";
-import {
-  useAiCommandActions,
-  type AiCommandNotice,
-} from "../hooks/useAiCommandActions";
+import { useAiCommandActions } from "../hooks/useAiCommandActions";
 import {
   useAiConversations,
   type AiConversation,
 } from "../hooks/useAiConversations";
-import {
-  useAiConversationActions,
-  type AiConversationDeleteConfirmation,
-  type AiConversationNotice,
-  type AiConversationRenameRequest,
-} from "../hooks/useAiConversationActions";
+import { useAiConversationActions } from "../hooks/useAiConversationActions";
 import { useAiDraftActions } from "../hooks/useAiDraftActions";
-import {
-  useAiFileChangeWorkflow,
-  type AiFileChangeConfirmation,
-  type AiFileChangeNotice,
-} from "../hooks/useAiFileChangeWorkflow";
+import { useAiFileChangeWorkflow } from "../hooks/useAiFileChangeWorkflow";
 import { useAiProposalState } from "../hooks/useAiProposalState";
 import { useAiRequestOrchestrator } from "../hooks/useAiRequestOrchestrator";
 import AiComposer from "./AiComposer";
@@ -90,6 +54,19 @@ import AiDiagnosticPlanList from "./AiDiagnosticPlanList";
 import AiFileChangeReviewModals from "./AiFileChangeReviewModals";
 import AiFileApprovalCard from "./AiFileApprovalCard";
 import AiMessageTimeline from "./AiMessageTimeline";
+import AiAssistantHeader from "./ai/AiAssistantHeader";
+import {
+  confirmAiConversationDelete,
+  confirmAiFileChange,
+  contextSourceDisplayLabel,
+  copyCode,
+  exportAiConversationFile,
+  requestAiConversationRename,
+  showAiCommandNotice,
+  showAiConversationNotice,
+  showAiDraftNotice,
+  showAiFileChangeNotice,
+} from "./ai/aiPanelActions";
 
 interface AiAssistantPanelProps {
   canInsertCommand: boolean;
@@ -114,120 +91,6 @@ interface AiAssistantPanelProps {
   sessionId: string | null;
   settings: AppSettings;
   visible: boolean;
-}
-
-const AI_APPROVAL_MODE_OPTIONS = [
-  { label: "请求审批", value: "on_request" },
-  { label: "替我审批", value: "auto_safe" },
-  { label: "完全访问", value: "full_access" },
-] satisfies { label: string; value: AgentApprovalMode }[];
-
-function contextSourceDisplayLabel(source: AiContextSource) {
-  return isAiRemoteFileContextSourceId(source.id)
-    ? `文件:${
-        source.label
-          .replace(/^文件:/, "")
-          .split("/")
-          .pop() || "远程文件"
-      }`
-    : source.label;
-}
-
-function confirmAiFileChange(confirmation: AiFileChangeConfirmation) {
-  Modal.confirm({
-    content: confirmation.content,
-    okText: confirmation.okText,
-    onOk: confirmation.onConfirm,
-    title: confirmation.title,
-  });
-}
-
-function showAiFileChangeNotice(type: AiFileChangeNotice, content: string) {
-  if (type === "success") Message.success(content);
-  else if (type === "warning") Message.warning(content);
-  else Message.error(content);
-}
-
-function showAiCommandNotice(type: AiCommandNotice, content: string) {
-  if (type === "success") Message.success(content);
-  else if (type === "warning") Message.warning(content);
-  else if (type === "info") Message.info(content);
-  else Message.error(content);
-}
-
-function showAiDraftNotice(content: string) {
-  Message.success(content);
-}
-
-function confirmAiConversationDelete(
-  confirmation: AiConversationDeleteConfirmation,
-) {
-  Modal.confirm({
-    content: confirmation.content,
-    okButtonProps: { status: "danger" },
-    okText: "删除",
-    onOk: confirmation.onConfirm,
-    title: confirmation.title,
-  });
-}
-
-function requestAiConversationRename(request: AiConversationRenameRequest) {
-  let nextTitle = request.initialValue;
-  Modal.confirm({
-    content: (
-      <Input
-        autoFocus
-        defaultValue={request.initialValue}
-        maxLength={80}
-        onChange={(value) => {
-          nextTitle = value;
-        }}
-      />
-    ),
-    okText: "保存",
-    onOk: () => request.onConfirm(nextTitle),
-    title: request.title,
-  });
-}
-
-function showAiConversationNotice(type: AiConversationNotice, content: string) {
-  if (type === "success") Message.success(content);
-  else if (type === "warning") Message.warning(content);
-  else Message.error(content);
-}
-
-async function copyCode(value: string) {
-  if (isTauri()) return writeClipboardText(value);
-  if (!navigator.clipboard) throw new Error("当前环境无法写入剪贴板");
-  return navigator.clipboard.writeText(value);
-}
-
-function downloadMarkdownInBrowser(filename: string, contents: string) {
-  const url = URL.createObjectURL(
-    new Blob([contents], { type: "text/markdown;charset=utf-8" }),
-  );
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-
-async function exportAiConversationFile(conversation: AiConversation) {
-  const contents = serializeAiConversationMarkdown(conversation);
-  const filename = aiConversationExportFilename(conversation);
-  if (isTauri()) {
-    const path = await save({
-      defaultPath: filename,
-      filters: [{ extensions: ["md"], name: "Markdown" }],
-      title: "导出 AI 对话",
-    });
-    if (!path) return false;
-    await invoke("write_config_file", { path, contents });
-    return true;
-  }
-  downloadMarkdownInBrowser(filename, contents);
-  return true;
 }
 
 function AiAssistantPanel({
@@ -985,94 +848,32 @@ function AiAssistantPanel({
 
   return (
     <aside className="panel ai-assistant-sidebar-panel">
-      <div className="panel-toolbar ai-assistant-title">
-        <span className="ai-assistant-heading">
-          <span>AI 助手</span>
-          <Typography.Text ellipsis title={activeConversation?.title}>
-            {activeConversation?.title ?? ""}
-          </Typography.Text>
-          <Select
-            aria-label="AI 审批模式"
-            className={`ai-approval-mode ai-approval-mode-${approvalMode}`}
-            disabled={!canInsertCommand || sending}
-            onChange={(value) => {
-              const next = value as AgentApprovalMode;
-              if (next !== "full_access" || approvalMode === "full_access") {
-                setApprovalMode(next);
-                return;
-              }
-              Modal.confirm({
-                cancelText: "取消",
-                content:
-                  "完全访问会自动执行 AI 提出的终端命令和文件操作，仅在当前主机和当前连接周期内生效。",
-                okButtonProps: { status: "danger" },
-                okText: "启用",
-                onOk: () => setApprovalMode(next),
-                title: "启用完全访问？",
-              });
-            }}
-            options={AI_APPROVAL_MODE_OPTIONS}
-            size="mini"
-            value={approvalMode}
-          />
-          {activeConversation &&
-            (summarizingConversationIds.has(activeConversation.id) ? (
-              <Tooltip content="正在后台压缩较早的对话，不影响当前操作">
-                <Tag color="arcoblue" size="small">
-                  整理中
-                </Tag>
-              </Tooltip>
-            ) : activeConversation.summary ? (
-              <Tooltip content="较早对话已压缩为摘要，最近消息仍保留原文">
-                <Tag size="small">已摘要</Tag>
-              </Tooltip>
-            ) : null)}
-          {activeTask?.status === "paused_disconnected" && (
-            <Tooltip content={activeTask.error ?? "SSH 连接已断开，等待重连"}>
-              <Tag color="orange" size="small">
-                等待重连
-              </Tag>
-            </Tooltip>
-          )}
-        </span>
-        <Space size="mini">
-          <Tooltip content="新建对话">
-            <Button
-              aria-label="新建对话"
-              disabled={!sessionId || sending}
-              icon={<IconPlus />}
-              onClick={newConversation}
-              type="text"
-            />
-          </Tooltip>
-          <Tooltip content="对话历史">
-            <Button
-              aria-label="对话历史"
-              disabled={!sessionId || sending}
-              icon={<IconHistory />}
-              onClick={openHistory}
-              type="text"
-            />
-          </Tooltip>
-          <Tooltip content="删除当前对话">
-            <Button
-              aria-label="删除当前对话"
-              disabled={!activeConversation || sending}
-              icon={<IconDelete />}
-              onClick={() =>
-                activeConversation && removeConversation(activeConversation.id)
-              }
-              type="text"
-            />
-          </Tooltip>
-          <Button
-            aria-label="关闭 AI 助手"
-            icon={<IconClose />}
-            onClick={closePanel}
-            type="text"
-          />
-        </Space>
-      </div>
+      <AiAssistantHeader
+        approvalMode={approvalMode}
+        canInsertCommand={canInsertCommand}
+        conversationAvailable={Boolean(activeConversation)}
+        conversationSummarized={Boolean(activeConversation?.summary)}
+        conversationSummarizing={Boolean(
+          activeConversation &&
+            summarizingConversationIds.has(activeConversation.id),
+        )}
+        conversationTitle={activeConversation?.title ?? ""}
+        disconnectedError={
+          activeTask?.status === "paused_disconnected"
+            ? (activeTask.error ?? "")
+            : undefined
+        }
+        onApprovalModeChange={setApprovalMode}
+        onClose={closePanel}
+        onDelete={() =>
+          activeConversation && removeConversation(activeConversation.id)
+        }
+        onNew={newConversation}
+        onOpenHistory={openHistory}
+        sending={sending}
+        sessionAvailable={Boolean(sessionId)}
+      />
+
       <div className="ai-assistant-layout">
         <AiMessageTimeline
           activeConversationAvailable={Boolean(activeConversation)}
