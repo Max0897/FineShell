@@ -10,8 +10,6 @@ import {
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
-import { join } from "@tauri-apps/api/path";
-import { open, save } from "@tauri-apps/plugin-dialog";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
   IconExclamationCircle,
@@ -40,23 +38,13 @@ import {
   formatFileSize,
   formatPermissions,
   formatRemoteTime,
-  isRemotePathDescendant,
-  isValidRemoteName,
   invertSftpEntryKeys,
   localFileName,
   matchRemoteDirectoryPaths,
-  nextAvailableRemoteName,
-  nextAvailableRemoteArchiveName,
-  parsePermissions,
-  remoteArchiveBaseName,
-  remoteArchiveFileName,
-  remoteArchiveFormatFromName,
-  remoteJoinPath,
   remoteParentPath,
   selectAllSftpEntryKeys,
   setRemotePathBookmark,
 } from "../sftp-utils";
-import type { RemoteArchiveFormat } from "../sftp-utils";
 import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
 import {
   commandErrorMessage,
@@ -73,15 +61,15 @@ import {
   PermissionsDialog,
   RenameDialog,
   TextEditorDialog,
-  type ArchiveDialogState,
-  type CreateEntryKind,
-  type PasteConflictPolicy,
   type RemoteTextFile,
 } from "./sftp/SftpDialogs";
 import SftpTransferDrawer from "./sftp/SftpTransferDrawer";
 import buildSftpContextMenu from "./sftp/buildSftpContextMenu";
 import SftpToolbar from "./sftp/SftpToolbar";
-import useNativeSftpDrop from "./sftp/useNativeSftpDrop";
+import useSftpArchives from "./sftp/useSftpArchives";
+import useSftpClipboard from "./sftp/useSftpClipboard";
+import useSftpEntryOperations from "./sftp/useSftpEntryOperations";
+import useSftpFileTransfers from "./sftp/useSftpFileTransfers";
 import { isSftpSessionFailure } from "./sftp/sftpErrors";
 import useSftpLocations from "./sftp/useSftpLocations";
 import useSftpRemoteDrag from "./sftp/useSftpRemoteDrag";
@@ -96,25 +84,12 @@ import {
 } from "../select-all-shortcut";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
-type SftpClipboardMode = "copy" | "cut";
-
 interface BrowserState {
   status: BrowserStatus;
   path: string;
   inputPath: string;
   entries: SftpEntry[];
   error?: string;
-}
-
-interface SftpClipboard {
-  mode: SftpClipboardMode;
-  entries: SftpEntry[];
-}
-
-interface PendingPaste {
-  targetDirectory: string;
-  clipboard: SftpClipboard;
-  conflictCount: number;
 }
 
 interface SftpPanelProps {
@@ -137,28 +112,12 @@ interface SftpPanelProps {
   terminalDirectory?: { path: string; revision: number };
 }
 
-interface LocalUploadFile {
-  path: string;
-  relativePath: string;
-  size: number;
-}
-
-interface LocalUploadInspection {
-  files: LocalUploadFile[];
-  directories: string[];
-  skippedPaths: number;
-}
-
 const INITIAL_BROWSER: BrowserState = {
   status: "idle",
   path: "/",
   inputPath: "/",
   entries: [],
 };
-
-function createUploadBatchId() {
-  return `upload-batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 function ExternalEditStatusIcon({ edit }: { edit: ExternalEditPayload }) {
   const status = externalEditStatusMeta(edit.status);
@@ -193,30 +152,8 @@ function SftpPanel({
 }: SftpPanelProps) {
   const [browsers, setBrowsers] = useState<Record<string, BrowserState>>({});
   const [transferDrawerVisible, setTransferDrawerVisible] = useState(false);
-  const [creatingEntryKind, setCreatingEntryKind] =
-    useState<CreateEntryKind | null>(null);
-  const [newEntryName, setNewEntryName] = useState("");
-  const [renamingEntry, setRenamingEntry] = useState<SftpEntry | null>(null);
-  const [renameName, setRenameName] = useState("");
-  const [permissionEntries, setPermissionEntries] = useState<SftpEntry[]>([]);
-  const [permissionValue, setPermissionValue] = useState("");
-  const [permissionOwner, setPermissionOwner] = useState("");
-  const [permissionGroup, setPermissionGroup] = useState("");
-  const parsedPermissionValue = parsePermissions(permissionValue);
   const [operationLoading, setOperationLoading] = useState(false);
-  const [archiveDialog, setArchiveDialog] = useState<ArchiveDialogState | null>(
-    null,
-  );
-  const [archiveBaseName, setArchiveBaseName] = useState("");
-  const [archiveFormat, setArchiveFormat] =
-    useState<RemoteArchiveFormat>("tarGz");
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
-  const [clipboards, setClipboards] = useState<Record<string, SftpClipboard>>(
-    {},
-  );
-  const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
-  const [pasteConflictPolicy, setPasteConflictPolicy] =
-    useState<PasteConflictPolicy>("rename");
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
   const handledRefreshRequestsRef = useRef<Record<string, number>>({});
@@ -370,6 +307,30 @@ function SftpPanel({
       updateBrowser(sessionId, { status: "failed", error: message });
     },
   });
+  const {
+    clearClipboard,
+    currentClipboard,
+    cutEntryPaths,
+    pasteClipboard,
+    pasteConflictPolicy,
+    pendingPaste,
+    requestPaste,
+    selectPasteConflictPolicy,
+    setPendingPaste,
+    storeClipboard,
+  } = useSftpClipboard({
+    onClearSelection: () => setSelectedEntryKeys([]),
+    onLoadingChange: setOperationLoading,
+    onOperationError: handleOperationError,
+    onRefreshDirectory: async () => {
+      if (!session) return;
+      const currentBrowser = browsersRef.current[session.id];
+      if (currentBrowser) {
+        await loadDirectory(session.id, currentBrowser.path);
+      }
+    },
+    sessionId: session?.id,
+  });
 
   useEffect(() => {
     if (!session) return;
@@ -397,16 +358,12 @@ function SftpPanel({
         entries: [],
         error: undefined,
       });
-      setClipboards((current) => {
-        if (!current[session.id]) return current;
-        const next = { ...current };
-        delete next[session.id];
-        return next;
-      });
+      clearClipboard(session.id);
     }
   }, [
     browsers,
     cancelSessionTransfers,
+    clearClipboard,
     connectAndLoad,
     session,
     updateBrowser,
@@ -430,6 +387,46 @@ function SftpPanel({
   const ready = Boolean(connected && browser?.status === "ready");
   const busy =
     browser?.status === "connecting" || browser?.status === "loading";
+  const {
+    closeCreateDialog,
+    closePermissionsDialog,
+    closeRenameDialog,
+    createEntry,
+    creatingEntryKind,
+    newEntryName,
+    openCreateDialog,
+    openPermissionsDialog,
+    openRenameDialog,
+    parsedPermissionValue,
+    permissionEntries,
+    permissionGroup,
+    permissionOwner,
+    permissionValue,
+    renameEntry,
+    renameName,
+    renamingEntry,
+    requestDeleteEntries,
+    requestFastDelete,
+    setNewEntryName,
+    setPermissionGroup,
+    setPermissionOwner,
+    setPermissionValue,
+    setRenameName,
+    updatePermissions,
+  } = useSftpEntryOperations({
+    confirmFileDelete,
+    currentDirectory: browser?.path,
+    entries: browser?.entries ?? [],
+    onClearSelection: () => setSelectedEntryKeys([]),
+    onLoadingChange: setOperationLoading,
+    onOperationError: handleOperationError,
+    onRefreshDirectory: () => {
+      if (session && browser) {
+        return loadDirectory(session.id, browser.path);
+      }
+    },
+    sessionId: session?.id,
+  });
   const {
     chooseExternalEditor,
     currentExternalEdits,
@@ -471,16 +468,6 @@ function SftpPanel({
   );
   const transferActivityCount =
     currentTransfers.length + currentExternalEdits.length;
-  const currentClipboard = session ? clipboards[session.id] : undefined;
-  const cutEntryPaths = useMemo(
-    () =>
-      new Set(
-        currentClipboard?.mode === "cut"
-          ? currentClipboard.entries.map((entry) => entry.path)
-          : [],
-      ),
-    [currentClipboard],
-  );
   const visibleEntries = useMemo(
     () =>
       (browser?.entries ?? []).filter(
@@ -704,46 +691,6 @@ function SftpPanel({
     ],
   );
 
-  function runTransfer(
-    direction: "upload" | "download",
-    localPath: string,
-    remotePath: string,
-    overwrite: boolean,
-    transferId?: string,
-    totalBytes = 0,
-    batchId?: string,
-  ) {
-    if (!session) return;
-    queueTransfer({
-      batchId,
-      direction,
-      localPath,
-      overwrite,
-      remotePath,
-      sessionId: session.id,
-      transferId,
-      totalBytes,
-    });
-  }
-
-  function runArchiveDownload(
-    localPath: string,
-    sourcePaths: string[],
-    format: RemoteArchiveFormat,
-    archiveName: string,
-    transferId?: string,
-  ) {
-    if (!session) return;
-    queueArchiveDownload({
-      archiveName,
-      format,
-      localPath,
-      sessionId: session.id,
-      sourcePaths,
-      transferId,
-    });
-  }
-
   function confirmBatchOverwrite(title: string, content: string) {
     return new Promise<boolean>((resolve) => {
       let settled = false;
@@ -763,192 +710,61 @@ function SftpPanel({
     });
   }
 
-  async function queueUploadPaths(paths: string[], targetDirectory?: string) {
-    if (!session || !browser || !ready) return;
-    let inspection: LocalUploadInspection;
-    try {
-      inspection = await invoke<LocalUploadInspection>(
-        "sftp_inspect_upload_paths",
-        { paths },
-      );
-    } catch (error) {
-      Message.error(commandErrorMessage(error));
-      return;
-    }
-    if (inspection.skippedPaths > 0) {
-      Message.warning(`已跳过 ${inspection.skippedPaths} 个无效或不支持的项目`);
-    }
-    if (inspection.files.length === 0 && inspection.directories.length === 0) {
-      Message.warning("没有可上传的文件或文件夹");
-      return;
-    }
-
-    const destination = targetDirectory ?? browser.path;
-    let targetEntries = browser.entries;
-    if (destination !== browser.path) {
-      try {
-        const listing = await invoke<SftpListResult>("sftp_list", {
-          sessionId: session.id,
-          path: destination,
-        });
-        targetEntries = listing.entries;
-      } catch (error) {
-        Message.error(commandErrorMessage(error));
-        return;
-      }
-    }
-
-    const directoryRoots = new Set(
-      inspection.directories.filter((path) => !path.includes("/")),
-    );
-    const rootNames = new Set([
-      ...directoryRoots,
-      ...inspection.files.map((file) => file.relativePath.split("/")[0]),
-    ]);
-    const existingEntries = new Map(
-      targetEntries.map((entry) => [entry.name, entry]),
-    );
-    const incompatibleRoot = [...rootNames].find((name) => {
-      const existing = existingEntries.get(name);
-      return (
-        existing &&
-        (directoryRoots.has(name) !== (existing.kind === "directory"))
-      );
-    });
-    if (incompatibleRoot) {
-      Message.error(`远程目标“${incompatibleRoot}”与本地项目类型不一致`);
-      return;
-    }
-
-    const conflictingRoots = new Set(
-      [...rootNames].filter((name) => existingEntries.has(name)),
-    );
-    if (
-      conflictingRoots.size > 0 &&
-      !(await confirmBatchOverwrite(
-        "合并或覆盖远程项目？",
-        `有 ${conflictingRoots.size} 个同名项目，目录将合并，同名文件将覆盖。`,
-      ))
-    ) {
-      return;
-    }
-
-    try {
-      await invoke("sftp_ensure_upload_directories", {
-        sessionId: session.id,
-        basePath: destination,
-        relativePaths: inspection.directories,
-      });
-    } catch (error) {
-      Message.error(commandErrorMessage(error));
-      return;
-    }
-
-    const batchId =
-      inspection.files.length > 1 ? createUploadBatchId() : undefined;
-    for (const file of inspection.files) {
-      const rootName = file.relativePath.split("/")[0];
-      runTransfer(
-        "upload",
-        file.path,
-        remoteJoinPath(destination, file.relativePath),
-        conflictingRoots.has(rootName),
-        undefined,
-        file.size,
-        batchId,
-      );
-    }
-    if (
-      destination === browser.path &&
-      inspection.directories.length > 0 &&
-      inspection.files.length === 0
-    ) {
-      await loadDirectory(session.id, browser.path);
-    }
-    if (inspection.files.length > 0) {
-      Message.info(`已加入 ${inspection.files.length} 个上传任务`);
-    } else {
-      Message.success(`已创建 ${inspection.directories.length} 个目录`);
-    }
-  }
-
   const {
-    active: fileDropActive,
-    dropZoneRef,
-    targetPath: fileDropTargetPath,
-  } = useNativeSftpDrop({
-    onUploadPaths: queueUploadPaths,
-    ready,
+    archiveBaseName,
+    archiveDialog,
+    archiveFormat,
+    closeArchiveDialog,
+    extractRemoteArchive,
+    openArchiveDialog,
+    setArchiveBaseName,
+    setArchiveFormat,
+    submitArchiveDialog,
+  } = useSftpArchives({
+    confirmOverwrite: confirmBatchOverwrite,
+    currentDirectory: browser?.path,
+    entries: browser?.entries ?? [],
+    onClearSelection: () => setSelectedEntryKeys([]),
+    onLoadingChange: setOperationLoading,
+    onOperationError: handleOperationError,
+    onQueueDownload: ({ archiveName, format, localPath, sourcePaths }) => {
+      if (!session) return;
+      queueArchiveDownload({
+        archiveName,
+        format,
+        localPath,
+        sessionId: session.id,
+        sourcePaths,
+      });
+    },
+    onRefreshDirectory: () => {
+      if (session && browser) {
+        return loadDirectory(session.id, browser.path);
+      }
+    },
+    sessionId: session?.id,
   });
-
-  async function chooseUploadFiles() {
-    if (!session || !browser || !ready) return;
-    const selected = await open({
-      directory: false,
-      multiple: true,
-      title: "选择上传文件（可多选）",
-    });
-    const paths = Array.isArray(selected)
-      ? selected
-      : typeof selected === "string"
-        ? [selected]
-        : [];
-    if (paths.length > 0) {
-      await queueUploadPaths(paths);
-    }
-  }
-
-  async function downloadEntry(entry: SftpEntry) {
-    if (!session || !ready) return;
-    const target = await save({
-      defaultPath: entry.name,
-      title: `下载 ${entry.name}`,
-    });
-    if (!target) return;
-    runTransfer("download", target, entry.path, true, undefined, entry.size);
-  }
-
-  async function downloadEntries(entries: SftpEntry[]) {
-    const files = entries.filter((entry) => entry.kind !== "directory");
-    if (files.length === 0) {
-      Message.warning("请选择需要下载的文件");
-      return;
-    }
-    if (files.length < entries.length) {
-      Message.warning(`已跳过 ${entries.length - files.length} 个目录`);
-    }
-    if (files.length === 1) {
-      await downloadEntry(files[0]);
-      return;
-    }
-    const targetDirectory = await open({
-      directory: true,
-      multiple: false,
-      title: `选择 ${files.length} 个文件的下载目录`,
-    });
-    if (typeof targetDirectory !== "string") return;
-    if (
-      !(await confirmBatchOverwrite(
-        "开始批量下载？",
-        `将下载 ${files.length} 个文件，同名本地文件将统一覆盖。`,
-      ))
-    ) {
-      return;
-    }
-
-    for (const entry of files) {
-      runTransfer(
-        "download",
-        await join(targetDirectory, entry.name),
-        entry.path,
-        true,
-        undefined,
-        entry.size,
-      );
-    }
-    setSelectedEntryKeys([]);
-    Message.info(`已加入 ${files.length} 个下载任务`);
-  }
+  const {
+    chooseUploadFiles,
+    downloadEntries,
+    downloadEntry,
+    dropZoneRef,
+    fileDropActive,
+    fileDropTargetPath,
+  } = useSftpFileTransfers({
+    confirmOverwrite: confirmBatchOverwrite,
+    currentDirectory: browser?.path,
+    entries: browser?.entries ?? [],
+    onClearSelection: () => setSelectedEntryKeys([]),
+    onQueueTransfer: queueTransfer,
+    onRefreshDirectory: () => {
+      if (session && browser) {
+        return loadDirectory(session.id, browser.path);
+      }
+    },
+    ready,
+    sessionId: session?.id,
+  });
 
   function clearFinishedTransfers() {
     if (!session) return;
@@ -962,576 +778,6 @@ function SftpPanel({
       updateBrowser(session.id, { status: "failed", error: message });
     }
     Message.error(message);
-  }
-
-  function storeClipboard(entries: SftpEntry[], mode: SftpClipboardMode) {
-    if (!session || entries.length === 0) return;
-    setClipboards((current) => ({
-      ...current,
-      [session.id]: {
-        mode,
-        entries: entries.map((entry) => ({ ...entry })),
-      },
-    }));
-    Message.success(
-      `${mode === "copy" ? "已复制" : "已剪切"} ${entries.length} 个项目`,
-    );
-  }
-
-  async function pasteClipboard(
-    clipboard: SftpClipboard,
-    targetDirectory: string,
-    conflictPolicy: PasteConflictPolicy,
-  ) {
-    if (!session || !browser || clipboard.entries.length === 0) return;
-    const sessionId = session.id;
-    const invalidDirectory = clipboard.entries.find(
-      (entry) =>
-        entry.kind === "directory" &&
-        (entry.path === targetDirectory ||
-          isRemotePathDescendant(entry.path, targetDirectory)),
-    );
-    if (invalidDirectory) {
-      Message.warning(`不能将“${invalidDirectory.name}”放到其自身内部`);
-      return;
-    }
-
-    setOperationLoading(true);
-    let succeeded = 0;
-    let skipped = 0;
-    const completedSourcePaths = new Set<string>();
-    const failures: string[] = [];
-    try {
-      const targetListing = await invoke<SftpListResult>("sftp_list", {
-        sessionId,
-        path: targetDirectory,
-      });
-      const unavailableNames = new Set(
-        targetListing.entries.map((entry) => entry.name),
-      );
-
-      for (const entry of clipboard.entries) {
-        let targetName = entry.name;
-        let targetPath = remoteJoinPath(targetListing.path, targetName);
-        if (clipboard.mode === "cut" && targetPath === entry.path) {
-          skipped += 1;
-          continue;
-        }
-
-        const conflicts = unavailableNames.has(targetName);
-        if (conflicts && conflictPolicy === "skip") {
-          skipped += 1;
-          continue;
-        }
-        if (conflicts && conflictPolicy === "rename") {
-          targetName = nextAvailableRemoteName(targetName, unavailableNames);
-          targetPath = remoteJoinPath(targetListing.path, targetName);
-        }
-
-        try {
-          await invoke(
-            clipboard.mode === "copy" ? "sftp_copy" : "sftp_rename",
-            {
-              sessionId,
-              sourcePath: entry.path,
-              targetPath,
-              overwrite: conflicts && conflictPolicy === "overwrite",
-            },
-          );
-          unavailableNames.add(targetName);
-          completedSourcePaths.add(entry.path);
-          succeeded += 1;
-        } catch (error) {
-          failures.push(`${entry.name}：${commandErrorMessage(error)}`);
-        }
-      }
-
-      if (clipboard.mode === "cut" && completedSourcePaths.size > 0) {
-        setClipboards((current) => {
-          const active = current[sessionId];
-          if (!active || active.mode !== "cut") return current;
-          const remaining = active.entries.filter(
-            (entry) => !completedSourcePaths.has(entry.path),
-          );
-          if (remaining.length > 0) {
-            return {
-              ...current,
-              [sessionId]: { ...active, entries: remaining },
-            };
-          }
-          const next = { ...current };
-          delete next[sessionId];
-          return next;
-        });
-      }
-      setSelectedEntryKeys([]);
-
-      const activeBrowser = browsersRef.current[sessionId];
-      if (activeBrowser) {
-        await loadDirectory(sessionId, activeBrowser.path);
-      }
-      if (succeeded > 0) {
-        Message.success(
-          `${clipboard.mode === "copy" ? "已复制" : "已移动"} ${succeeded} 个项目`,
-        );
-      } else if (skipped > 0 && failures.length === 0) {
-        Message.info("没有需要处理的项目");
-      }
-      if (failures.length > 0) {
-        const remaining =
-          failures.length > 1 ? `，另有 ${failures.length - 1} 项失败` : "";
-        Message.error(`${failures[0]}${remaining}`);
-      }
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  async function requestPaste(
-    targetDirectory: string,
-    clipboard = currentClipboard,
-  ) {
-    if (!session || !clipboard || clipboard.entries.length === 0) return;
-    const invalidDirectory = clipboard.entries.find(
-      (entry) =>
-        entry.kind === "directory" &&
-        (entry.path === targetDirectory ||
-          isRemotePathDescendant(entry.path, targetDirectory)),
-    );
-    if (invalidDirectory) {
-      Message.warning(`不能将“${invalidDirectory.name}”放到其自身内部`);
-      return;
-    }
-
-    setOperationLoading(true);
-    try {
-      const targetListing = await invoke<SftpListResult>("sftp_list", {
-        sessionId: session.id,
-        path: targetDirectory,
-      });
-      const targetNames = new Set(
-        targetListing.entries.map((entry) => entry.name),
-      );
-      const conflictCount = clipboard.entries.filter((entry) => {
-        const targetPath = remoteJoinPath(targetListing.path, entry.name);
-        return (
-          !(clipboard.mode === "cut" && targetPath === entry.path) &&
-          targetNames.has(entry.name)
-        );
-      }).length;
-      if (conflictCount > 0) {
-        setPasteConflictPolicy("rename");
-        setPendingPaste({
-          targetDirectory: targetListing.path,
-          clipboard,
-          conflictCount,
-        });
-      } else {
-        await pasteClipboard(clipboard, targetListing.path, "skip");
-      }
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  function openCreateDialog(kind: CreateEntryKind) {
-    setCreatingEntryKind(kind);
-    setNewEntryName("");
-  }
-
-  async function createEntry() {
-    if (!session || !browser || !creatingEntryKind) return;
-    const name = newEntryName.trim();
-    if (!isValidRemoteName(name)) {
-      Message.warning("名称不能为空，且不能包含路径分隔符");
-      return;
-    }
-
-    setOperationLoading(true);
-    try {
-      await invoke(
-        creatingEntryKind === "directory"
-          ? "sftp_create_directory"
-          : "sftp_create_file",
-        {
-          sessionId: session.id,
-          path: remoteJoinPath(browser.path, name),
-        },
-      );
-      Message.success(
-        `已新建${creatingEntryKind === "directory" ? "目录" : "文件"} ${name}`,
-      );
-      setCreatingEntryKind(null);
-      setNewEntryName("");
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  function openRenameDialog(entry: SftpEntry) {
-    setRenamingEntry(entry);
-    setRenameName(entry.name);
-  }
-
-  async function renameEntry(overwrite = false) {
-    if (!session || !browser || !renamingEntry) return;
-    const name = renameName.trim();
-    if (!isValidRemoteName(name)) {
-      Message.warning("名称不能为空，且不能包含路径分隔符");
-      return;
-    }
-    if (name === renamingEntry.name) {
-      setRenamingEntry(null);
-      return;
-    }
-
-    const targetPath = remoteJoinPath(browser.path, name);
-    const targetExists = browser.entries.some(
-      (entry) => entry.id !== renamingEntry.id && entry.name === name,
-    );
-    if (targetExists && !overwrite) {
-      Modal.confirm({
-        title: "覆盖远程项目？",
-        content: `“${name}”已存在，继续将尝试覆盖目标。`,
-        okText: "覆盖",
-        cancelText: "取消",
-        onOk: () => renameEntry(true),
-      });
-      return;
-    }
-
-    setOperationLoading(true);
-    try {
-      await invoke("sftp_rename", {
-        sessionId: session.id,
-        sourcePath: renamingEntry.path,
-        targetPath,
-        overwrite,
-      });
-      setRenamingEntry(null);
-      setRenameName("");
-      Message.success(`已重命名为 ${name}`);
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  async function deleteEntries(entries: SftpEntry[]) {
-    if (!session || !browser || entries.length === 0) return;
-    let deletedCount = 0;
-    try {
-      for (const entry of entries) {
-        await invoke("sftp_delete", {
-          sessionId: session.id,
-          path: entry.path,
-        });
-        deletedCount += 1;
-      }
-      setSelectedEntryKeys([]);
-      Message.success(
-        entries.length === 1
-          ? `已删除 ${entries[0].name}`
-          : `已删除 ${entries.length} 个项目`,
-      );
-    } catch (error) {
-      handleOperationError(error);
-      throw error;
-    } finally {
-      if (deletedCount > 0) {
-        await loadDirectory(session.id, browser.path);
-      }
-    }
-  }
-
-  function requestDeleteEntries(entries: SftpEntry[]) {
-    const execute = () => deleteEntries(entries).catch(() => undefined);
-    if (!confirmFileDelete) {
-      void execute();
-      return;
-    }
-
-    const containsDirectory = entries.some(
-      (entry) => entry.kind === "directory",
-    );
-    Modal.confirm({
-      cancelText: "取消",
-      content:
-        entries.length === 1
-          ? `删除“${entries[0].name}”？${containsDirectory ? "目录必须为空。" : ""}`
-          : `删除选中的 ${entries.length} 个项目？${containsDirectory ? "目录必须为空。" : ""}`,
-      okButtonProps: { status: "danger" },
-      okText: "删除",
-      onOk: execute,
-      title: "确认删除",
-    });
-  }
-
-  async function fastDeleteEntries(entries: SftpEntry[]) {
-    if (!session || !browser || entries.length === 0) return;
-    setOperationLoading(true);
-    try {
-      await invoke("sftp_fast_delete", {
-        sessionId: session.id,
-        paths: entries.map((entry) => entry.path),
-      });
-      setSelectedEntryKeys([]);
-      Message.success(
-        entries.length === 1
-          ? `已快速删除 ${entries[0].name}`
-          : `已快速删除 ${entries.length} 个项目`,
-      );
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  function requestFastDelete(entries: SftpEntry[]) {
-    Modal.confirm({
-      cancelText: "取消",
-      content:
-        entries.length === 1
-          ? `将通过 rm -rf 永久删除“${entries[0].name}”，目录中的内容也会被删除。`
-          : `将通过 rm -rf 永久删除选中的 ${entries.length} 个项目，目录中的内容也会被删除。`,
-      okButtonProps: { status: "danger" },
-      okText: "快速删除",
-      onOk: () => fastDeleteEntries(entries),
-      title: "确认快速删除",
-    });
-  }
-
-  function openArchiveDialog(
-    entries: SftpEntry[],
-    mode: ArchiveDialogState["mode"],
-  ) {
-    const suggestedBase =
-      entries.length === 1 ? remoteArchiveBaseName(entries[0].name) : "archive";
-    const suggestedName = nextAvailableRemoteArchiveName(
-      suggestedBase || "archive",
-      "tarGz",
-      new Set((browser?.entries ?? []).map((entry) => entry.name)),
-    );
-    setArchiveFormat("tarGz");
-    setArchiveBaseName(remoteArchiveBaseName(suggestedName));
-    setArchiveDialog({ entries, mode });
-  }
-
-  function closeArchiveDialog() {
-    setArchiveDialog(null);
-    setArchiveBaseName("");
-    setArchiveFormat("tarGz");
-  }
-
-  async function submitArchiveDialog() {
-    if (!archiveDialog || !session || !browser) return;
-    const archiveName = remoteArchiveFileName(
-      archiveBaseName.trim(),
-      archiveFormat,
-    );
-    if (!isValidRemoteName(archiveName)) {
-      Message.warning("请输入有效的归档文件名称");
-      return;
-    }
-    const sourcePaths = archiveDialog.entries.map((entry) => entry.path);
-
-    if (archiveDialog.mode === "download") {
-      const target = await save({
-        defaultPath: archiveName,
-        title: `打包下载 ${archiveDialog.entries.length} 个项目`,
-      });
-      if (!target) return;
-      runArchiveDownload(target, sourcePaths, archiveFormat, archiveName);
-      closeArchiveDialog();
-      setSelectedEntryKeys([]);
-      Message.info("已加入打包下载任务");
-      return;
-    }
-
-    const targetPath = remoteJoinPath(browser.path, archiveName);
-    const overwrite = browser.entries.some(
-      (entry) => entry.path === targetPath,
-    );
-    if (
-      overwrite &&
-      !(await confirmBatchOverwrite(
-        "覆盖已有归档？",
-        `当前目录已经存在“${archiveName}”，继续后将覆盖该文件。`,
-      ))
-    ) {
-      return;
-    }
-
-    setOperationLoading(true);
-    try {
-      await invoke("sftp_create_archive", {
-        sessionId: session.id,
-        sourcePaths,
-        targetPath,
-        format: archiveFormat,
-        overwrite,
-      });
-      closeArchiveDialog();
-      setSelectedEntryKeys([]);
-      Message.success(`已创建 ${archiveName}`);
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  async function extractRemoteArchive(
-    entry: SftpEntry,
-    createDirectory: boolean,
-  ) {
-    if (!session || !browser) return;
-    const format = remoteArchiveFormatFromName(entry.name);
-    if (!format) {
-      Message.warning("当前文件不是支持的归档格式");
-      return;
-    }
-    const targetName = remoteArchiveBaseName(entry.name);
-    const targetDirectory = createDirectory
-      ? remoteJoinPath(browser.path, targetName)
-      : browser.path;
-    if (
-      createDirectory &&
-      browser.entries.some((candidate) => candidate.path === targetDirectory)
-    ) {
-      Message.warning(`目标目录“${targetName}”已存在`);
-      return;
-    }
-    if (
-      !createDirectory &&
-      !(await confirmBatchOverwrite(
-        "解压到当前目录？",
-        "归档中的同名文件将被覆盖，该操作无法自动撤销。",
-      ))
-    ) {
-      return;
-    }
-
-    setOperationLoading(true);
-    try {
-      await invoke("sftp_extract_archive", {
-        sessionId: session.id,
-        archivePath: entry.path,
-        targetDirectory,
-        format,
-        createDirectory,
-      });
-      Message.success(
-        createDirectory
-          ? `已解压到 ${targetName}`
-          : `已将 ${entry.name} 解压到当前目录`,
-      );
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  function openPermissionsDialog(entries: SftpEntry[]) {
-    const firstPermissions = entries[0]?.permissions;
-    const samePermissions = entries.every(
-      (entry) => entry.permissions === firstPermissions,
-    );
-    setPermissionEntries(entries);
-    setPermissionValue(
-      samePermissions && firstPermissions !== undefined
-        ? formatPermissions(firstPermissions)
-        : "",
-    );
-    setPermissionOwner(
-      entries.every((entry) => entry.owner === entries[0]?.owner)
-        ? (entries[0]?.owner ?? "")
-        : "",
-    );
-    setPermissionGroup(
-      entries.every((entry) => entry.group === entries[0]?.group)
-        ? (entries[0]?.group ?? "")
-        : "",
-    );
-  }
-
-  async function updatePermissions() {
-    if (!session || !browser || permissionEntries.length === 0) return;
-    const permissions = permissionValue.trim()
-      ? parsePermissions(permissionValue)
-      : null;
-    if (permissionValue.trim() && permissions === null) {
-      Message.warning("请输入 3 到 4 位八进制权限");
-      return;
-    }
-    const owner = permissionOwner.trim();
-    const group = permissionGroup.trim();
-    const hasChanges = permissionEntries.some(
-      (entry) =>
-        (permissions !== null && entry.permissions !== permissions) ||
-        (owner && entry.owner !== owner) ||
-        (group && entry.group !== group),
-    );
-    if (!hasChanges) {
-      Message.info("没有需要保存的更改");
-      return;
-    }
-
-    setOperationLoading(true);
-    let didUpdate = false;
-    try {
-      for (const entry of permissionEntries) {
-        if (permissions !== null && entry.permissions !== permissions) {
-          await invoke("sftp_set_permissions", {
-            sessionId: session.id,
-            path: entry.path,
-            permissions,
-          });
-          didUpdate = true;
-        }
-        const nextOwner = owner && entry.owner !== owner ? owner : null;
-        const nextGroup = group && entry.group !== group ? group : null;
-        if (nextOwner || nextGroup) {
-          await invoke("sftp_set_owner", {
-            sessionId: session.id,
-            path: entry.path,
-            owner: nextOwner,
-            group: nextGroup,
-          });
-          didUpdate = true;
-        }
-      }
-      Message.success(
-        permissionEntries.length === 1
-          ? `已保存 ${permissionEntries[0].name} 的属性`
-          : `已保存 ${permissionEntries.length} 个项目的属性`,
-      );
-      setPermissionEntries([]);
-      setPermissionValue("");
-      setPermissionOwner("");
-      setPermissionGroup("");
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      if (didUpdate) {
-        await loadDirectory(session.id, browser.path);
-      }
-      setOperationLoading(false);
-    }
   }
 
   async function sendFilesToAi(entries: SftpEntry[]) {
@@ -1854,7 +1100,7 @@ function SftpPanel({
             pasteConflictPolicy,
           ).then(() => setPendingPaste(null));
         }}
-        onPolicyChange={setPasteConflictPolicy}
+        onPolicyChange={selectPasteConflictPolicy}
         policy={pasteConflictPolicy}
         visible={Boolean(pendingPaste)}
       />
@@ -1872,10 +1118,7 @@ function SftpPanel({
         kind={creatingEntryKind}
         loading={operationLoading}
         name={newEntryName}
-        onCancel={() => {
-          setCreatingEntryKind(null);
-          setNewEntryName("");
-        }}
+        onCancel={closeCreateDialog}
         onConfirm={() => void createEntry()}
         onNameChange={setNewEntryName}
       />
@@ -1883,12 +1126,7 @@ function SftpPanel({
         entries={permissionEntries}
         group={permissionGroup}
         loading={operationLoading}
-        onCancel={() => {
-          setPermissionEntries([]);
-          setPermissionValue("");
-          setPermissionOwner("");
-          setPermissionGroup("");
-        }}
+        onCancel={closePermissionsDialog}
         onConfirm={() => void updatePermissions()}
         onGroupChange={setPermissionGroup}
         onOwnerChange={setPermissionOwner}
@@ -1901,10 +1139,7 @@ function SftpPanel({
         entry={renamingEntry}
         loading={operationLoading}
         name={renameName}
-        onCancel={() => {
-          setRenamingEntry(null);
-          setRenameName("");
-        }}
+        onCancel={closeRenameDialog}
         onConfirm={() => void renameEntry()}
         onNameChange={setRenameName}
       />
