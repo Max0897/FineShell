@@ -6,21 +6,12 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
-import {
-  Alert,
-  Message,
-  Modal,
-  ResizeBox,
-  Typography,
-} from "@arco-design/web-react";
+import { Message, Typography } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
 import {
   IconClose,
   IconCloseCircle,
-  IconDragDot,
-  IconDragDotVertical,
   IconPoweroff,
   IconRefresh,
 } from "@arco-design/web-react/icon";
@@ -37,16 +28,14 @@ import type { ContextMenuItem } from "./components/ContextMenu";
 import HostManagerPanel from "./components/HostManagerPanel";
 import AiAssistantPanel from "./components/AiAssistantPanel";
 import QuickCommandDrawer from "./components/QuickCommandDrawer";
-import ReleaseNotesMarkdown from "./components/ReleaseNotesMarkdown";
 import SftpPanel from "./components/SftpPanel";
 import TerminalView from "./components/TerminalView";
 import SessionTabs from "./components/SessionTabs";
+import AppWorkspaceLayout from "./components/AppWorkspaceLayout";
+export { default as CollapsibleSplitTrigger } from "./components/CollapsibleSplitTrigger";
 import { withHostDefaults } from "./host-storage";
 import { knownHostTargetKey } from "./known-hosts";
-import {
-  loadConfiguration,
-  updateStoredHostFingerprint,
-} from "./config-database";
+import { loadConfiguration } from "./config-database";
 import {
   DEFAULT_APP_SETTINGS,
   sanitizeAppSettings,
@@ -64,18 +53,13 @@ import {
   createSftpSelectionAiHandoff,
   type AiHandoffRequest,
 } from "./ai-handoff";
-import {
-  AI_SIDEBAR_DEFAULT_WIDTH,
-  clampAiSidebarWidth,
-} from "./ai-sidebar";
+import { AI_SIDEBAR_DEFAULT_WIDTH } from "./ai-sidebar";
 import { useAiSidebarController } from "./hooks/useAiSidebarController";
 import {
   applicationUpdater,
   checkForApplicationUpdateOnStartup,
-  markApplicationUpdateRelaunchFocus,
   restoreApplicationFocusAfterUpdateRelaunch,
   setApplicationUpdateNotice,
-  type ApplicationUpdate,
 } from "./app-updater";
 import {
   jumpHostRequest,
@@ -91,216 +75,26 @@ import {
 } from "./diagnostics";
 import {
   commandErrorMessage,
-  emitProtocolEventTo,
   FineShellCommandError,
   listenProtocolEvent,
   type AgentActionExecutionResult,
   type SshConnectResult,
   verifyProtocolVersion,
 } from "./tauri-protocol";
-import { auxiliaryWindowHref } from "./window-view";
+import {
+  confirmHostFingerprint,
+  openAuxiliaryWindow,
+  persistHostFingerprint,
+  promptStartupApplicationUpdate,
+} from "./app-window-actions";
 import "./App.css";
 
 const ServerMonitorPanel = lazy(
   () => import("./components/ServerMonitorPanel"),
 );
 
-let startupUpdatePromptShown = false;
-
-function promptStartupApplicationUpdate(update: ApplicationUpdate) {
-  if (startupUpdatePromptShown) return;
-  startupUpdatePromptShown = true;
-
-  Modal.confirm({
-    autoFocus: false,
-    cancelText: "稍后",
-    className: "startup-update-modal",
-    content: (
-      <div className="startup-update-content">
-        <Typography.Text>
-          当前版本 v{update.currentVersion}，发现新版本 v{update.version}。
-        </Typography.Text>
-        {update.body && (
-          <ReleaseNotesMarkdown className="startup-update-notes">
-            {update.body}
-          </ReleaseNotesMarkdown>
-        )}
-      </div>
-    ),
-    maskClosable: false,
-    okText: "立即更新",
-    onCancel: () => {
-      void update.close();
-    },
-    onOk: async () => {
-      try {
-        await update.downloadAndInstall();
-        markApplicationUpdateRelaunchFocus(update.version);
-        setApplicationUpdateNotice(null);
-        await applicationUpdater.relaunch();
-      } catch (error) {
-        const message = commandErrorMessage(error);
-        recordDiagnostic("error", "application.update", "应用更新失败", {
-          error: message,
-          version: update.version,
-        });
-        Message.error(`更新失败：${message}`);
-        throw error;
-      }
-    },
-    title: "发现新版本",
-  });
-}
-
-type AuxiliaryWindow = "settings" | "shortcuts";
-
-function openAuxiliaryWindow(view: AuxiliaryWindow) {
-  if (!isTauri()) {
-    window.open(auxiliaryWindowHref(view), `fineshell-${view}`);
-    return;
-  }
-
-  const command =
-    view === "settings" ? "open_settings_window" : "open_shortcut_guide_window";
-  void invoke(command).catch((error) => {
-    const title = view === "settings" ? "设置" : "快捷键说明";
-    Message.error(`无法打开${title}：${commandErrorMessage(error)}`);
-  });
-}
-
-async function persistHostFingerprint(host: HostRecord, fingerprint: string) {
-  try {
-    await updateStoredHostFingerprint(host, fingerprint);
-    if (isTauri()) {
-      await Promise.all([
-        emitProtocolEventTo("main", "configuration:changed").catch(
-          () => undefined,
-        ),
-        emitProtocolEventTo("settings", "configuration:changed").catch(
-          () => undefined,
-        ),
-      ]);
-    }
-  } catch {
-    // Configuration persistence must not interrupt an active SSH connection.
-  }
-}
-
-function confirmHostFingerprint(host: HostRecord, result: SshConnectResult) {
-  const changed = Boolean(result.expectedFingerprint);
-  return new Promise<boolean>((resolve) => {
-    let settled = false;
-    const settle = (accepted: boolean) => {
-      if (settled) return;
-      settled = true;
-      resolve(accepted);
-    };
-
-    Modal.confirm({
-      cancelText: "取消连接",
-      className: "fingerprint-confirm-modal",
-      content: (
-        <div className="fingerprint-confirm-content">
-          <Alert
-            content={
-              changed
-                ? "服务器返回的指纹与已保存记录不同。确认服务器密钥确实已更换后再继续。"
-                : "首次连接该服务器，请先通过可信渠道核对指纹。"
-            }
-            showIcon
-            type={changed ? "error" : "warning"}
-          />
-          <div className="fingerprint-row">
-            <Typography.Text type="secondary">服务器</Typography.Text>
-            <Typography.Text className="fingerprint-value">
-              {host.address.includes(":")
-                ? `[${host.address}]:${host.port}`
-                : `${host.address}:${host.port}`}
-            </Typography.Text>
-          </div>
-          {result.expectedFingerprint && (
-            <div className="fingerprint-row">
-              <Typography.Text type="secondary">原指纹</Typography.Text>
-              <Typography.Text className="fingerprint-value">
-                {result.expectedFingerprint}
-              </Typography.Text>
-            </div>
-          )}
-          <div className="fingerprint-row">
-            <Typography.Text type="secondary">
-              {changed ? "新指纹" : "SHA256"}
-            </Typography.Text>
-            <Typography.Text className="fingerprint-value">
-              {result.fingerprint}
-            </Typography.Text>
-          </div>
-        </div>
-      ),
-      maskClosable: false,
-      okButtonProps: changed ? { status: "danger" } : undefined,
-      okText: changed ? "接受新指纹" : "信任并连接",
-      onCancel: () => settle(false),
-      onOk: () => settle(true),
-      title: changed ? "主机指纹已变更" : "确认主机指纹",
-    });
-  });
-}
-
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-interface CollapsibleSplitTriggerProps {
-  collapsed: boolean;
-  direction: "horizontal" | "vertical";
-  label: string;
-  nextNode: ReactNode;
-  onToggle: () => void;
-  prevNode: ReactNode;
-}
-
-export function CollapsibleSplitTrigger({
-  collapsed,
-  direction,
-  label,
-  nextNode,
-  onToggle,
-  prevNode,
-}: CollapsibleSplitTriggerProps) {
-  const lastPressAtRef = useRef(0);
-
-  return (
-    <div
-      aria-label={`双击${collapsed ? "显示" : "隐藏"}${label}`}
-      aria-orientation={direction === "horizontal" ? "vertical" : "horizontal"}
-      className="arco-resizebox-trigger-icon-wrapper collapsible-split-trigger"
-      data-collapsed={collapsed}
-      onMouseDownCapture={(event) => {
-        if (event.button !== 0) return;
-        const now = performance.now();
-        const doublePress =
-          lastPressAtRef.current > 0 && now - lastPressAtRef.current <= 400;
-        lastPressAtRef.current = doublePress ? 0 : now;
-        if (doublePress) {
-          event.preventDefault();
-          event.stopPropagation();
-          onToggle();
-        }
-      }}
-      role="separator"
-      title={`双击${collapsed ? "显示" : "隐藏"}${label}`}
-    >
-      {prevNode}
-      <span className="arco-resizebox-trigger-icon">
-        {direction === "horizontal" ? (
-          <IconDragDotVertical />
-        ) : (
-          <IconDragDot />
-        )}
-      </span>
-      {nextNode}
-    </div>
-  );
 }
 
 function App() {
@@ -351,8 +145,6 @@ function App() {
   >({});
   const [terminalFocusRequest, setTerminalFocusRequest] = useState(0);
   const mainSplitRef = useRef<HTMLElement | null>(null);
-  const serverMonitorWidthRef = useRef("220px");
-  const rightPanelRatiosRef = useRef({ terminal: 0.64, sftp: 0.36 });
   const sessionsRef = useRef<TerminalSession[]>([]);
   const reconnectTimersRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
@@ -1443,155 +1235,57 @@ function App() {
     />
   );
 
-  const rightPanels = (
-    <ResizeBox.SplitGroup
-      className={`right-split${sftpCollapsed ? " right-split-sftp-collapsed" : ""}`}
-      direction="vertical"
-      onMoving={(_, sizes) => {
-        if (sftpCollapsed) return;
-        const terminalSize = Number.parseFloat(sizes[0]);
-        const sftpSize = Number.parseFloat(sizes[1]);
-        const totalSize = terminalSize + sftpSize;
-        if (Number.isFinite(totalSize) && totalSize > 0) {
-          rightPanelRatiosRef.current = {
-            terminal: terminalSize / totalSize,
-            sftp: sftpSize / totalSize,
-          };
-        }
-      }}
-      panes={[
-        {
-          content: terminalPanel,
-          size: sftpCollapsed ? 1 : rightPanelRatiosRef.current.terminal,
-          min: "240px",
-          resizable: !sftpCollapsed,
-          trigger: (prevNode, _resizeNode, nextNode) => (
-            <CollapsibleSplitTrigger
-              collapsed={sftpCollapsed}
-              direction="vertical"
-              label="文件管理栏"
-              nextNode={nextNode}
-              onToggle={() => setSftpCollapsed((current) => !current)}
-              prevNode={prevNode}
-            />
-          ),
-        },
-        {
-          content: sftpPanel,
-          size: sftpCollapsed ? 0 : rightPanelRatiosRef.current.sftp,
-          min: sftpCollapsed ? 0 : "180px",
-        },
-      ]}
+  const aiAssistantPanel = (
+    <AiAssistantPanel
+      canInsertCommand={activeSession?.status === "connected"}
+      commandSubmission={terminalCommandSubmission}
+      contextSources={aiContextSources}
+      hostId={activeSession?.host.id ?? null}
+      hostName={activeSession?.host.name ?? ""}
+      initialPrompt={aiInitialPrompt}
+      initialContextIds={aiInitialContextIds}
+      initialPromptRequest={aiInitialPromptRequest}
+      onClose={closeAiAssistant}
+      onAgentActionExecuted={handleAiAgentActionExecuted}
+      onCommandPrepared={handleAiCommandPrepared}
+      onRemoveRemoteFile={(sessionId, path) =>
+        setAiRemoteFileContexts((current) => {
+          const remaining = (current[sessionId] ?? []).filter(
+            (file) => file.path !== path,
+          );
+          if (remaining.length) {
+            return { ...current, [sessionId]: remaining };
+          }
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        })
+      }
+      remoteFiles={
+        activeSessionId ? (aiRemoteFileContexts[activeSessionId] ?? []) : []
+      }
+      sessionId={activeSessionId}
+      settings={settings}
+      visible={aiAssistantVisible}
     />
   );
 
   return (
-    <main className="app-shell">
-      <div className="app-workspace">
-        <ResizeBox.SplitGroup
-          className={`main-split${serverMonitorCollapsed ? " main-split-left-collapsed" : ""}`}
-          direction="horizontal"
-          onMoving={(_, sizes) => {
-            if (serverMonitorCollapsed) return;
-            const width = Number.parseFloat(sizes[0]);
-            if (Number.isFinite(width)) {
-              serverMonitorWidthRef.current = `${width}px`;
-            }
-          }}
-          panes={[
-            {
-              content: serverMonitorPanel,
-              size: serverMonitorCollapsed
-                ? 0
-                : serverMonitorWidthRef.current,
-              min: serverMonitorCollapsed ? 0 : "220px",
-              max: "400px",
-              resizable: !serverMonitorCollapsed,
-              trigger: (prevNode, _resizeNode, nextNode) => (
-                <CollapsibleSplitTrigger
-                  collapsed={serverMonitorCollapsed}
-                  direction="horizontal"
-                  label="服务器监控栏"
-                  nextNode={nextNode}
-                  onToggle={() =>
-                    setServerMonitorCollapsed((current) => !current)
-                  }
-                  prevNode={prevNode}
-                />
-              ),
-            },
-            {
-              content: rightPanels,
-              min: "480px",
-              size: serverMonitorCollapsed ? 1 : undefined,
-            },
-          ]}
-          ref={mainSplitRef}
-          style={
-            mainWorkspaceFrozenWidth === null
-              ? undefined
-              : {
-                  flex: `0 0 ${mainWorkspaceFrozenWidth}px`,
-                  width: mainWorkspaceFrozenWidth,
-                }
-          }
-        />
-        <ResizeBox
-          className={`ai-assistant-sidebar${
-            aiAssistantVisible ? "" : " ai-assistant-sidebar-hidden"
-          }`}
-          directions={["left"]}
-          onMoving={(_, size) => {
-            const workspaceWidth =
-              mainSplitRef.current?.parentElement?.getBoundingClientRect()
-                .width ?? window.innerWidth;
-            setAiSidebarWidth(clampAiSidebarWidth(size.width, workspaceWidth));
-          }}
-          onMovingEnd={() =>
-            document.body.classList.remove("ai-sidebar-resizing")
-          }
-          onMovingStart={() =>
-            document.body.classList.add("ai-sidebar-resizing")
-          }
-          width={aiSidebarWidth}
-        >
-          <AiAssistantPanel
-            canInsertCommand={activeSession?.status === "connected"}
-            commandSubmission={terminalCommandSubmission}
-            contextSources={aiContextSources}
-            hostId={activeSession?.host.id ?? null}
-            hostName={activeSession?.host.name ?? ""}
-            initialPrompt={aiInitialPrompt}
-            initialContextIds={aiInitialContextIds}
-            initialPromptRequest={aiInitialPromptRequest}
-            onClose={closeAiAssistant}
-            onAgentActionExecuted={handleAiAgentActionExecuted}
-            onCommandPrepared={handleAiCommandPrepared}
-            onRemoveRemoteFile={(sessionId, path) =>
-              setAiRemoteFileContexts((current) => {
-                const remaining = (current[sessionId] ?? []).filter(
-                  (file) => file.path !== path,
-                );
-                if (remaining.length) {
-                  return { ...current, [sessionId]: remaining };
-                }
-                const next = { ...current };
-                delete next[sessionId];
-                return next;
-              })
-            }
-            remoteFiles={
-              activeSessionId
-                ? (aiRemoteFileContexts[activeSessionId] ?? [])
-                : []
-            }
-            sessionId={activeSessionId}
-            settings={settings}
-            visible={aiAssistantVisible}
-          />
-        </ResizeBox>
-      </div>
-    </main>
+    <AppWorkspaceLayout
+      aiAssistantPanel={aiAssistantPanel}
+      aiAssistantVisible={aiAssistantVisible}
+      aiSidebarWidth={aiSidebarWidth}
+      frozenWorkspaceWidth={mainWorkspaceFrozenWidth}
+      mainSplitRef={mainSplitRef}
+      onAiSidebarWidthChange={setAiSidebarWidth}
+      onServerMonitorCollapsedChange={setServerMonitorCollapsed}
+      onSftpCollapsedChange={setSftpCollapsed}
+      serverMonitorCollapsed={serverMonitorCollapsed}
+      serverMonitorPanel={serverMonitorPanel}
+      sftpCollapsed={sftpCollapsed}
+      sftpPanel={sftpPanel}
+      terminalPanel={terminalPanel}
+    />
   );
 }
 
