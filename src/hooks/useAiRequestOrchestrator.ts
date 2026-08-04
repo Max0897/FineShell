@@ -59,6 +59,7 @@ import {
 } from "./ai-agent-plan-presentation";
 import { createAiRequestId } from "./ai-request-id";
 import { useAiConversationSummaryQueue } from "./useAiConversationSummaryQueue";
+import { useAiProposalApprovals } from "./useAiProposalApprovals";
 
 export type AiRequestInvoke = <T>(
   command: TauriCommand,
@@ -134,18 +135,6 @@ interface ActiveDiagnosticPlanLocation {
   messageId: string;
 }
 
-interface PendingCommandApproval {
-  reject: (error: Error) => void;
-  requestId: string;
-  resolve: (decision: AiCommandApprovalDecision) => void;
-}
-
-interface PendingFileApproval {
-  reject: (error: Error) => void;
-  requestId: string;
-  resolve: (decision: AiFileApprovalDecision) => void;
-}
-
 const defaultInvoke: AiRequestInvoke = (command, args) =>
   diagnosticInvoke(command, args);
 
@@ -181,12 +170,6 @@ export function useAiRequestOrchestrator({
   );
   const backendDiagnosticPlanTasksRef = useRef(new Map<string, string>());
   const stoppedDiagnosticPlansRef = useRef(new Set<string>());
-  const pendingCommandApprovalsRef = useRef(
-    new Map<string, PendingCommandApproval>(),
-  );
-  const pendingFileApprovalsRef = useRef(
-    new Map<string, PendingFileApproval>(),
-  );
   const callbacksRef = useRef({
     onCancelError,
     onMissingModel,
@@ -207,50 +190,14 @@ export function useAiRequestOrchestrator({
       settings,
       updateConversation,
     });
-
-  const decideCommandProposal = useCallback(
-    (proposalId: string, decision: AiCommandApprovalDecision) => {
-      const pending = pendingCommandApprovalsRef.current.get(proposalId);
-      if (!pending) return false;
-      pendingCommandApprovalsRef.current.delete(proposalId);
-      pending.resolve(decision);
-      return true;
-    },
-    [],
-  );
-
-  const decideFileProposal = useCallback(
-    (proposalId: string, decision: AiFileApprovalDecision) => {
-      const pending = pendingFileApprovalsRef.current.get(proposalId);
-      if (!pending) return false;
-      pendingFileApprovalsRef.current.delete(proposalId);
-      pending.resolve(decision);
-      return true;
-    },
-    [],
-  );
-
-  const rejectPendingCommandApprovals = useCallback(
-    (requestId: string, message = "AI 请求已取消") => {
-      for (const [proposalId, pending] of pendingCommandApprovalsRef.current) {
-        if (pending.requestId !== requestId) continue;
-        pendingCommandApprovalsRef.current.delete(proposalId);
-        pending.reject(new Error(message));
-      }
-    },
-    [],
-  );
-
-  const rejectPendingFileApprovals = useCallback(
-    (requestId: string, message = "AI 请求已取消") => {
-      for (const [proposalId, pending] of pendingFileApprovalsRef.current) {
-        if (pending.requestId !== requestId) continue;
-        pendingFileApprovalsRef.current.delete(proposalId);
-        pending.reject(new Error(message));
-      }
-    },
-    [],
-  );
+  const {
+    decideCommandProposal,
+    decideFileProposal,
+    rejectPendingCommandApprovals,
+    rejectPendingFileApprovals,
+    waitForCommandApproval,
+    waitForFileApproval,
+  } = useAiProposalApprovals();
 
   const cancelRequest = useCallback(async () => {
     const requestId = activeRequestRef.current?.requestId;
@@ -689,13 +636,7 @@ export function useAiRequestOrchestrator({
               nextProposals.push(proposal);
               fileApprovalDecisions.set(
                 call.id,
-                new Promise<AiFileApprovalDecision>((resolve, reject) => {
-                  pendingFileApprovalsRef.current.set(call.id, {
-                    reject,
-                    requestId,
-                    resolve,
-                  });
-                }),
+                waitForFileApproval(call.id, requestId),
               );
             } catch (error) {
               proposalError = commandErrorMessage(error);
@@ -727,13 +668,7 @@ export function useAiRequestOrchestrator({
               nextOperationProposals.push(proposal);
               fileApprovalDecisions.set(
                 call.id,
-                new Promise<AiFileApprovalDecision>((resolve, reject) => {
-                  pendingFileApprovalsRef.current.set(call.id, {
-                    reject,
-                    requestId,
-                    resolve,
-                  });
-                }),
+                waitForFileApproval(call.id, requestId),
               );
             } catch (error) {
               proposalError = commandErrorMessage(error);
@@ -761,13 +696,7 @@ export function useAiRequestOrchestrator({
               nextCommandProposals.push(proposal);
               commandApprovalDecisions.set(
                 call.id,
-                new Promise<AiCommandApprovalDecision>((resolve, reject) => {
-                  pendingCommandApprovalsRef.current.set(call.id, {
-                    reject,
-                    requestId,
-                    resolve,
-                  });
-                }),
+                waitForCommandApproval(call.id, requestId),
               );
             } catch (error) {
               proposalError = commandErrorMessage(error);
@@ -968,6 +897,8 @@ export function useAiRequestOrchestrator({
       settings.aiReadOnlyTools,
       updateConversation,
       updateMessages,
+      waitForCommandApproval,
+      waitForFileApproval,
     ],
   );
 
