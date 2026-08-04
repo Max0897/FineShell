@@ -27,13 +27,14 @@ describe("migrateLegacyConfiguration", () => {
       "2026-07-22T00:00:00.000Z",
     );
 
-    expect(configuration.schemaVersion).toBe(17);
+    expect(configuration.schemaVersion).toBe(18);
     expect(configuration.proxies).toEqual([]);
     expect(configuration.sshKeys).toEqual([]);
     expect(configuration.quickCommands).toEqual([]);
     expect(configuration.hostSort).toBe("manual");
     expect(configuration.sftpLocations).toEqual([]);
     expect(configuration.knownHosts).toEqual([]);
+    expect(configuration.terminalCommandHistory).toEqual([]);
     expect(configuration.credentialReferences).toEqual([]);
     expect(configuration.settings).toEqual(DEFAULT_APP_SETTINGS);
     expect(configuration.updatedAt).toBe("2026-07-22T00:00:00.000Z");
@@ -240,6 +241,7 @@ describe("configuration import and export", () => {
     expect(contents).toContain('"quickCommands"');
     expect(contents).toContain('"sftpLocations"');
     expect(contents).toContain('"knownHosts"');
+    expect(contents).not.toContain("terminalCommandHistory");
     expect(contents).not.toContain("credentialReferences");
     expect(contents).not.toContain("must-not-be-exported");
     expect(contents).not.toContain("key-passphrase-must-not-be-exported");

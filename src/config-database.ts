@@ -16,6 +16,7 @@ import type {
   RemotePortForwardRule,
   SftpLocationRecord,
   SshKeyRecord,
+  TerminalCommandHistoryRecord,
 } from "./models";
 import {
   deriveKnownHostRecords,
@@ -31,6 +32,10 @@ import {
 } from "./ssh-keys";
 import { applyConnectionHistoryPolicy } from "./connection-history";
 import {
+  applyTerminalCommandHistoryPolicy,
+  sanitizeTerminalCommandHistoryRecord,
+} from "./terminal-command-history";
+import {
   sanitizeCredentialReference,
   type CredentialReferenceRecord,
 } from "./credential-registry";
@@ -42,7 +47,7 @@ const CONFIGURATION_ID = "primary";
 const HOSTS_STORAGE_KEY = "fineshell.hosts";
 const HISTORY_STORAGE_KEY = "fineshell.connection-history";
 
-export const CONFIGURATION_SCHEMA_VERSION = 17;
+export const CONFIGURATION_SCHEMA_VERSION = 18;
 export const CONFIGURATION_EXPORT_VERSION = 15;
 export const MAX_CONFIGURATION_BACKUPS = 10;
 export const TRASH_RETENTION_DAYS = 30;
@@ -82,6 +87,7 @@ export interface FineShellConfiguration {
   hostSort: HostSortMode;
   sftpLocations: SftpLocationRecord[];
   knownHosts: KnownHostRecord[];
+  terminalCommandHistory: TerminalCommandHistoryRecord[];
   settings: AppSettings;
   credentialReferences: CredentialReferenceRecord[];
   backups: ConfigurationBackup[];
@@ -584,6 +590,7 @@ export function migrateLegacyConfiguration(
     hostSort: "manual",
     sftpLocations: [],
     knownHosts: deriveKnownHostRecords(hosts, history, now),
+    terminalCommandHistory: [],
     settings: { ...DEFAULT_APP_SETTINGS },
     credentialReferences: [],
     backups: [],
@@ -622,6 +629,12 @@ function normalizeConfiguration(value: unknown): FineShellConfiguration {
     knownHosts: Array.isArray(value.knownHosts)
       ? sanitizeKnownHosts(value.knownHosts)
       : deriveKnownHostRecords(hosts, history, updatedAt),
+    terminalCommandHistory: applyTerminalCommandHistoryPolicy(
+      sanitizeList(
+        value.terminalCommandHistory,
+        sanitizeTerminalCommandHistoryRecord,
+      ),
+    ),
     settings,
     credentialReferences: sanitizeList(
       value.credentialReferences,

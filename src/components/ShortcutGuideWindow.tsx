@@ -62,6 +62,22 @@ export const SHORTCUT_GUIDE_ITEMS: ShortcutGuideItem[] = [
     description: "返回当前终端",
   },
   {
+    key: "terminal-font-zoom",
+    category: "终端",
+    action: "调整终端字号",
+    mac: "Command + +/- 或滚轮",
+    other: "Ctrl + +/- 或滚轮",
+    description: "仅临时调整当前窗口中的终端字号",
+  },
+  {
+    key: "terminal-font-reset",
+    category: "终端",
+    action: "恢复终端字号",
+    mac: "Command + 0",
+    other: "Ctrl + 0",
+    description: "恢复设置中配置的终端字号",
+  },
+  {
     key: "files-select-all",
     category: "文件管理",
     action: "选中全部文件",

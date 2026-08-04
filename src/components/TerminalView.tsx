@@ -31,9 +31,13 @@ import {
 } from "@xterm/addon-search";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import type { TerminalSession } from "../models";
+import type {
+  TerminalCommandHistoryRecord,
+  TerminalSession,
+} from "../models";
 import { TERMINAL_FONT_FAMILIES, type AppSettings } from "../app-settings";
 import {
+  appendInjectedTerminalInput,
   consumeTerminalCommandCandidate,
   decodeSshOutput,
   EMPTY_TERMINAL_INPUT_STATE,
@@ -46,6 +50,9 @@ import {
   trackTerminalInput,
   type TerminalInjectedInput,
 } from "../terminal-utils";
+import { loadConfiguration } from "../config-database";
+import { recordTerminalCommandHistory } from "../configuration-mutations";
+import { TerminalHistoryCompletionAddon } from "../terminal-history-completion";
 import {
   FINESHELL_OSC_ID,
   boundedShellCommandOutput,
@@ -58,6 +65,11 @@ import {
   type ShellIntegrationEchoFilter,
 } from "../shell-integration";
 import { TERMINAL_THEMES } from "../terminal-themes";
+import {
+  terminalFontZoomKeyboardAction,
+  terminalFontZoomWheelAction,
+  type TerminalFontZoomAction,
+} from "../terminal-font-zoom";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import { listenProtocolEvent } from "../tauri-protocol";
 import ConnectionStatusOverlay from "./ConnectionStatusOverlay";
@@ -68,8 +80,10 @@ interface TerminalViewProps {
   commandTrackingEnabled: boolean;
   focusRequest: number;
   injectedInput?: TerminalInjectedInput;
+  onFontZoom: (action: TerminalFontZoomAction) => void;
   settings: AppSettings;
   session: TerminalSession;
+  terminalFontSize: number;
   onAskAi: (selection: string) => void;
   onCommandLifecycle: (event: TerminalCommandSubmission) => void;
   onCurrentDirectoryChange: (sessionId: string, path: string) => void;
@@ -131,8 +145,10 @@ function TerminalView({
   commandTrackingEnabled,
   focusRequest,
   injectedInput,
+  onFontZoom,
   settings,
   session,
+  terminalFontSize,
   onAskAi,
   onCommandLifecycle,
   onCurrentDirectoryChange,
@@ -144,6 +160,9 @@ function TerminalView({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
+  const historyCompletionRef = useRef<TerminalHistoryCompletionAddon | null>(
+    null,
+  );
   const searchInputRef = useRef<RefInputType>(null);
   const connectedRef = useRef(isTerminalSessionOperational(session.status));
   const commandLifecycleRef = useRef(onCommandLifecycle);
@@ -165,8 +184,14 @@ function TerminalView({
   >(() => undefined);
   const pendingShellCommandsRef = useRef<PendingShellCommand[]>([]);
   const aiCommandCandidatesRef = useRef<string[]>([]);
+  const terminalCommandHistoryRef = useRef<TerminalCommandHistoryRecord[]>([]);
+  const terminalHistoryWriteRef = useRef<Promise<void>>(Promise.resolve());
+  const currentDirectoryRef = useRef("");
   const inputStateRef = useRef({ ...EMPTY_TERMINAL_INPUT_STATE });
   const trackSubmittedCommandRef = useRef<(command: string) => void>(
+    () => undefined,
+  );
+  const recordTerminalHistoryRef = useRef<(command: string) => void>(
     () => undefined,
   );
   const lastInjectedInputIdRef = useRef<string>();
@@ -174,6 +199,8 @@ function TerminalView({
   const selectionChangeRef = useRef(onSelectionChange);
   const currentDirectoryChangeRef = useRef(onCurrentDirectoryChange);
   const settingsRef = useRef(settings);
+  const fontZoomRef = useRef(onFontZoom);
+  const lastWheelZoomAtRef = useRef(Number.NEGATIVE_INFINITY);
   const searchVisibleRef = useRef(false);
   const lastStatusNoticeRef = useRef<string>();
   const [searchVisible, setSearchVisible] = useState(false);
@@ -185,12 +212,33 @@ function TerminalView({
 
   searchVisibleRef.current = searchVisible;
   settingsRef.current = settings;
+  fontZoomRef.current = onFontZoom;
   commandLifecycleRef.current = onCommandLifecycle;
   commandTrackingEnabledRef.current = commandTrackingEnabled;
   shellCommandResultsEnabledRef.current = commandTrackingEnabled;
   currentDirectoryChangeRef.current = onCurrentDirectoryChange;
   recentOutputChangeRef.current = onRecentOutputChange;
   selectionChangeRef.current = onSelectionChange;
+
+  recordTerminalHistoryRef.current = (command) => {
+    const hostId = session.host.id;
+    const cwd = currentDirectoryRef.current || undefined;
+    terminalHistoryWriteRef.current = terminalHistoryWriteRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const configuration = await recordTerminalCommandHistory(
+          hostId,
+          command,
+          cwd,
+        );
+        terminalCommandHistoryRef.current =
+          configuration.terminalCommandHistory;
+        historyCompletionRef.current?.setHistory(
+          configuration.terminalCommandHistory,
+        );
+      })
+      .catch(() => undefined);
+  };
 
   trackSubmittedCommandRef.current = (command) => {
     const candidate = consumeTerminalCommandCandidate(
@@ -262,6 +310,7 @@ function TerminalView({
     ) {
       return;
     }
+    historyCompletionRef.current?.setPromptReady(false);
     shellIntegrationMutationRef.current = mutation;
     if (mutation === "install") {
       shellIntegrationInstalledRef.current = true;
@@ -293,6 +342,7 @@ function TerminalView({
   useEffect(() => {
     connectedRef.current = isTerminalSessionOperational(session.status);
     if (!isTerminalSessionOperational(session.status)) {
+      currentDirectoryRef.current = "";
       currentDirectoryChangeRef.current(session.id, "");
       const completedAt = new Date().toISOString();
       for (const pending of pendingShellCommandsRef.current) {
@@ -312,6 +362,8 @@ function TerminalView({
       clearShellIntegrationTimeout();
       aiCommandCandidatesRef.current = [];
       inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
+      historyCompletionRef.current?.setPromptReady(false);
+      historyCompletionRef.current?.synchronizeInput("", true);
     }
   }, [session.status]);
 
@@ -320,6 +372,7 @@ function TerminalView({
     pendingShellCommandsRef.current = [];
     aiCommandCandidatesRef.current = [];
     inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
+    historyCompletionRef.current?.synchronizeInput("", true);
   }, [commandTrackingEnabled]);
 
   useEffect(() => {
@@ -348,15 +401,25 @@ function TerminalView({
         ),
         injectedInput.value,
       ].slice(-8);
-      const tracked = trackInjectedTerminalInput(
-        inputStateRef.current,
-        injectedInput,
-      );
-      inputStateRef.current = tracked.state;
-      tracked.submissions.forEach((command) =>
-        trackSubmittedCommandRef.current(command),
-      );
     }
+    const tracked = trackInjectedTerminalInput(
+      inputStateRef.current,
+      injectedInput,
+    );
+    inputStateRef.current = tracked.state;
+    historyCompletionRef.current?.synchronizeInput(
+      tracked.state.value,
+      tracked.state.reliable,
+    );
+    if (injectedInput.submit) {
+      historyCompletionRef.current?.setPromptReady(false);
+    }
+    tracked.submissions.forEach((command) => {
+      recordTerminalHistoryRef.current(command);
+      if (commandTrackingEnabled || injectedInput.submit) {
+        trackSubmittedCommandRef.current(command);
+      }
+    });
     const data = terminalInjectedInputData(injectedInput);
     void invoke("ssh_write", {
       sessionId: session.id,
@@ -375,7 +438,7 @@ function TerminalView({
       cursorStyle: settings.terminalCursorStyle,
       cursorWidth: 1,
       fontFamily: TERMINAL_FONT_FAMILIES[settings.terminalFontFamily],
-      fontSize: settings.terminalFontSize,
+      fontSize: terminalFontSize,
       lineHeight: settings.terminalLineHeight,
       overviewRuler: {
         width: 6,
@@ -385,17 +448,47 @@ function TerminalView({
     });
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon({ highlightLimit: 1000 });
+    const historyCompletionAddon = new TerminalHistoryCompletionAddon({
+      hostId: session.host.id,
+      getCurrentDirectory: () => currentDirectoryRef.current || undefined,
+      onAccept: (suffix) => {
+        inputStateRef.current = appendInjectedTerminalInput(
+          inputStateRef.current,
+          suffix,
+        );
+        historyCompletionAddon.synchronizeInput(
+          inputStateRef.current.value,
+          inputStateRef.current.reliable,
+        );
+        if (!connectedRef.current) return;
+        void invoke("ssh_write", {
+          sessionId: session.id,
+          data: Array.from(new TextEncoder().encode(suffix)),
+        }).catch(() => undefined);
+      },
+    });
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
+    terminal.loadAddon(historyCompletionAddon);
     terminal.open(container);
     terminal.attachCustomKeyEventHandler((event) => {
-      if (!isWindowsTerminalPasteShortcut(event)) return true;
-      event.preventDefault();
-      event.stopPropagation();
-      if (!event.repeat) void pasteTerminalClipboard();
-      return false;
+      const zoomAction = terminalFontZoomKeyboardAction(event);
+      if (zoomAction) {
+        event.preventDefault();
+        event.stopPropagation();
+        fontZoomRef.current(zoomAction);
+        return false;
+      }
+      if (isWindowsTerminalPasteShortcut(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) void pasteTerminalClipboard();
+        return false;
+      }
+      return historyCompletionAddon.handleKeyEvent(event);
     });
     terminalRef.current = terminal;
+    historyCompletionRef.current = historyCompletionAddon;
     lastStatusNoticeRef.current = undefined;
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
@@ -403,6 +496,15 @@ function TerminalView({
     aiCommandCandidatesRef.current = [];
     pendingShellCommandsRef.current = [];
     lastInjectedInputIdRef.current = undefined;
+    currentDirectoryRef.current = "";
+
+    const loadTerminalHistory = () =>
+      loadConfiguration().then((configuration) => {
+        terminalCommandHistoryRef.current =
+          configuration.terminalCommandHistory;
+        historyCompletionAddon.setHistory(configuration.terminalCommandHistory);
+      });
+    void loadTerminalHistory().catch(() => undefined);
 
     const fit = () => {
       if (container.clientWidth === 0 || container.clientHeight === 0) return;
@@ -426,13 +528,21 @@ function TerminalView({
 
     const dataDisposable = terminal.onData((data) => {
       if (!connectedRef.current || shellIntegrationMutationRef.current) return;
-      if (commandTrackingEnabledRef.current) {
-        const tracked = trackTerminalInput(inputStateRef.current, data);
-        inputStateRef.current = tracked.state;
-        tracked.submissions.forEach((command) =>
-          trackSubmittedCommandRef.current(command),
-        );
+      const tracked = trackTerminalInput(inputStateRef.current, data);
+      inputStateRef.current = tracked.state;
+      historyCompletionAddon.synchronizeInput(
+        tracked.state.value,
+        tracked.state.reliable,
+      );
+      if (data.includes("\r") || data.includes("\n")) {
+        historyCompletionAddon.setPromptReady(false);
       }
+      tracked.submissions.forEach((command) => {
+        recordTerminalHistoryRef.current(command);
+        if (commandTrackingEnabledRef.current) {
+          trackSubmittedCommandRef.current(command);
+        }
+      });
       void invoke("ssh_write", {
         sessionId: session.id,
         data: Array.from(new TextEncoder().encode(data)),
@@ -467,10 +577,13 @@ function TerminalView({
         if (!message) return false;
         if (message.kind === "ready") {
           settleShellIntegrationMutationRef.current("ready");
+          historyCompletionAddon.setPromptReady(true);
           return true;
         }
         if (message.kind === "disabled") {
           settleShellIntegrationMutationRef.current("disabled");
+          historyCompletionAddon.setPromptReady(false);
+          currentDirectoryRef.current = "";
           currentDirectoryChangeRef.current(session.id, "");
           queueMicrotask(() =>
             startShellIntegrationMutationRef.current("install"),
@@ -478,11 +591,15 @@ function TerminalView({
           return true;
         }
         if (message.kind === "cwd") {
+          currentDirectoryRef.current = message.path;
           currentDirectoryChangeRef.current(session.id, message.path);
+          historyCompletionAddon.setHistory(terminalCommandHistoryRef.current);
           return true;
         }
         if (message.kind === "unavailable") {
           settleShellIntegrationMutationRef.current("unavailable");
+          historyCompletionAddon.setPromptReady(false);
+          currentDirectoryRef.current = "";
           currentDirectoryChangeRef.current(session.id, "");
           const completedAt = new Date().toISOString();
           for (const pending of pendingShellCommandsRef.current) {
@@ -498,6 +615,7 @@ function TerminalView({
           return true;
         }
 
+        historyCompletionAddon.setPromptReady(true);
         const pending = pendingShellCommandsRef.current.shift();
         if (!pending) return true;
         window.setTimeout(() => {
@@ -533,6 +651,7 @@ function TerminalView({
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    let unlistenConfiguration: (() => void) | undefined;
     let recentOutputTimer: ReturnType<typeof setTimeout> | undefined;
     const emitRecentOutput = () => {
       recentOutputTimer = undefined;
@@ -575,6 +694,12 @@ function TerminalView({
         setTerminalReady(true);
       }
     });
+    void listenProtocolEvent("configuration:changed", () => {
+      void loadTerminalHistory().catch(() => undefined);
+    }).then((stopListening) => {
+      if (disposed) stopListening();
+      else unlistenConfiguration = stopListening;
+    });
 
     return () => {
       disposed = true;
@@ -583,6 +708,7 @@ function TerminalView({
       shellIntegrationMutationRef.current = undefined;
       shellIntegrationEchoFilterRef.current = undefined;
       unlisten?.();
+      unlistenConfiguration?.();
       if (recentOutputTimer) clearTimeout(recentOutputTimer);
       resizeObserver.disconnect();
       if (fitFrame !== undefined) cancelAnimationFrame(fitFrame);
@@ -593,10 +719,33 @@ function TerminalView({
       shellIntegrationDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
+      historyCompletionRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
     };
   }, [session.id]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      const zoomAction = terminalFontZoomWheelAction(event);
+      if (!zoomAction) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const now = performance.now();
+      if (now - lastWheelZoomAtRef.current < 80) return;
+      lastWheelZoomAtRef.current = now;
+      fontZoomRef.current(zoomAction);
+    };
+
+    container.addEventListener("wheel", handleWheel, {
+      capture: true,
+      passive: false,
+    });
+    return () => container.removeEventListener("wheel", handleWheel, true);
+  }, []);
 
   useEffect(() => {
     const searchAddon = searchAddonRef.current;
@@ -637,7 +786,7 @@ function TerminalView({
     terminal.options.cursorWidth = 1;
     terminal.options.fontFamily =
       TERMINAL_FONT_FAMILIES[settings.terminalFontFamily];
-    terminal.options.fontSize = settings.terminalFontSize;
+    terminal.options.fontSize = terminalFontSize;
     terminal.options.lineHeight = settings.terminalLineHeight;
     terminal.options.scrollback = settings.terminalScrollback;
     terminal.options.theme =
@@ -645,6 +794,7 @@ function TerminalView({
     requestAnimationFrame(() => {
       try {
         fitAddon.fit();
+        historyCompletionRef.current?.refresh();
       } catch {
         // The terminal can be hidden while another tab is active.
       }
@@ -654,7 +804,7 @@ function TerminalView({
     settings.terminalCursorStyle,
     settings.terminalColorScheme,
     settings.terminalFontFamily,
-    settings.terminalFontSize,
+    terminalFontSize,
     settings.terminalLineHeight,
     settings.terminalScrollback,
   ]);

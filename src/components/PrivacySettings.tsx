@@ -20,6 +20,7 @@ import {
 } from "../config-database";
 import {
   clearConnectionHistory,
+  clearTerminalCommandHistory,
   removeCredentialReference,
   replaceCredentialReferences,
 } from "../configuration-mutations";
@@ -73,6 +74,7 @@ function PrivacySettings({
   updateSetting,
 }: PrivacySettingsProps) {
   const [historyCount, setHistoryCount] = useState(0);
+  const [terminalHistoryCount, setTerminalHistoryCount] = useState(0);
   const [orphaned, setOrphaned] = useState<CredentialReferenceRecord[]>([]);
   const [hasScanned, setHasScanned] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -81,6 +83,7 @@ function PrivacySettings({
   const scanCredentials = useCallback(async () => {
     const configuration = await loadConfiguration();
     setHistoryCount(configuration.history.length);
+    setTerminalHistoryCount(configuration.terminalCommandHistory.length);
     if (!isTauri()) {
       setOrphaned([]);
       return;
@@ -118,7 +121,10 @@ function PrivacySettings({
 
   useEffect(() => {
     void loadConfiguration()
-      .then((configuration) => setHistoryCount(configuration.history.length))
+      .then((configuration) => {
+        setHistoryCount(configuration.history.length);
+        setTerminalHistoryCount(configuration.terminalCommandHistory.length);
+      })
       .catch((error) => Message.error(String(error)));
   }, [
     savedSettings.connectionHistoryLimit,
@@ -137,6 +143,22 @@ function PrivacySettings({
       Message.success("连接历史已清空");
       setHasScanned(false);
       setOrphaned([]);
+    } catch (error) {
+      Message.error(String(error));
+      throw error;
+    }
+  };
+
+  const clearTerminalHistory = async () => {
+    try {
+      await clearTerminalCommandHistory();
+      setTerminalHistoryCount(0);
+      if (isTauri()) {
+        await emitProtocolEventTo("main", "configuration:changed").catch(
+          () => undefined,
+        );
+      }
+      Message.success("终端命令历史已清空");
     } catch (error) {
       Message.error(String(error));
       throw error;
@@ -277,6 +299,26 @@ function PrivacySettings({
               />
             </div>
           </div>
+        </div>
+      </section>
+
+      <section className="privacy-section">
+        <div className="privacy-section-heading">
+          <div>
+            <Typography.Title heading={6}>终端命令历史</Typography.Title>
+            <Typography.Text type="secondary">
+              当前保存 {terminalHistoryCount} 条，仅保存在本机且不会随配置导出
+            </Typography.Text>
+          </div>
+          <Popconfirm
+            content="确定清空全部终端命令历史？清空后将无法继续使用历史自动补全。"
+            disabled={terminalHistoryCount === 0}
+            onOk={clearTerminalHistory}
+          >
+            <Button disabled={terminalHistoryCount === 0} status="danger">
+              清空历史
+            </Button>
+          </Popconfirm>
         </div>
       </section>
 
