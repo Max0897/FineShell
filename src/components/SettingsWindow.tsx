@@ -33,7 +33,8 @@ import {
   appSettingsEqual,
   type AppSettings,
 } from "../app-settings";
-import { loadConfiguration, updateAppSettings } from "../config-database";
+import { loadConfiguration } from "../config-database";
+import { updateAppSettings } from "../configuration-mutations";
 import {
   configureDiagnosticLogging,
   recordDiagnostic,

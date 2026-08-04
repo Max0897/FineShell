@@ -3,8 +3,8 @@ import { Message } from "@arco-design/web-react";
 import {
   loadConfiguration,
   MAX_SFTP_PATH_HISTORY,
-  upsertSftpLocation,
 } from "../../config-database";
+import { upsertSftpLocation } from "../../configuration-mutations";
 import type { SftpLocationRecord } from "../../models";
 import { addRemotePathHistory } from "../../sftp-utils";
 

@@ -2,7 +2,7 @@ import { Alert, Message, Modal, Typography } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
 import type { HostRecord } from "./models";
 import ReleaseNotesMarkdown from "./components/ReleaseNotesMarkdown";
-import { updateStoredHostFingerprint } from "./config-database";
+import { updateStoredHostFingerprint } from "./configuration-mutations";
 import {
   applicationUpdater,
   markApplicationUpdateRelaunchFocus,

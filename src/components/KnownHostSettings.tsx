@@ -16,8 +16,8 @@ import { isTauri } from "@tauri-apps/api/core";
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   loadConfiguration,
-  removeKnownHostFingerprints,
 } from "../config-database";
+import { removeKnownHostFingerprints } from "../configuration-mutations";
 import { knownHostTargetKey } from "../known-hosts";
 import type { HostRecord, KnownHostRecord } from "../models";
 import {

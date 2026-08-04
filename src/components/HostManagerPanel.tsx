@@ -55,13 +55,15 @@ import {
 } from "../host-organization";
 import {
   loadConfiguration,
+} from "../config-database";
+import {
   moveHostToTrash,
   purgeExpiredDeletedHosts,
   removeCredentialReference,
   replaceConfigurationContent,
   upsertCredentialReference,
   updateHostSortMode,
-} from "../config-database";
+} from "../configuration-mutations";
 import type { AppSettings } from "../app-settings";
 import { applyConnectionHistoryPolicy } from "../connection-history";
 import {

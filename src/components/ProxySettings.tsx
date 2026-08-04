@@ -22,12 +22,14 @@ import {
 import { isTauri } from "@tauri-apps/api/core";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
-  deleteProxy,
   loadConfiguration,
+} from "../config-database";
+import {
+  deleteProxy,
   removeCredentialReference,
   upsertCredentialReference,
   upsertProxy,
-} from "../config-database";
+} from "../configuration-mutations";
 import { createCredentialReference } from "../credential-registry";
 import type {
   ProxyFormValues,
