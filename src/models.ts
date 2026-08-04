@@ -165,6 +165,15 @@ export interface ConnectionHistoryRecord extends QuickTarget {
   connectedAt: string;
 }
 
+export interface TerminalCommandHistoryRecord {
+  id: string;
+  hostId: string;
+  command: string;
+  cwd?: string;
+  lastUsedAt: string;
+  useCount: number;
+}
+
 export interface JumpHostConnection {
   host: HostRecord;
   proxy?: ProxyRecord;

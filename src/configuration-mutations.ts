@@ -31,6 +31,7 @@ import type {
   SftpLocationRecord,
   SshKeyRecord,
 } from "./models";
+import { recordTerminalCommand as recordTerminalCommandInHistory } from "./terminal-command-history";
 
 export function replaceConfigurationContent(
   hosts: HostRecord[],
@@ -232,6 +233,11 @@ export function permanentlyDeleteHost(deletedHostId: string) {
       sftpLocations: hostId
         ? current.sftpLocations.filter((item) => item.hostId !== hostId)
         : current.sftpLocations,
+      terminalCommandHistory: hostId
+        ? current.terminalCommandHistory.filter(
+            (item) => item.hostId !== hostId,
+          )
+        : current.terminalCommandHistory,
       trash: current.trash.filter((item) => item.id !== deletedHostId),
     };
   });
@@ -250,6 +256,9 @@ export async function purgeExpiredDeletedHosts(now = new Date()) {
     return {
       ...current,
       sftpLocations: current.sftpLocations.filter(
+        (item) => !expiredHostIds.includes(item.hostId),
+      ),
+      terminalCommandHistory: current.terminalCommandHistory.filter(
         (item) => !expiredHostIds.includes(item.hostId),
       ),
       trash,
@@ -376,6 +385,27 @@ export function updateAppSettings(settings: AppSettings) {
 
 export function clearConnectionHistory() {
   return updateConfiguration((current) => ({ ...current, history: [] }));
+}
+
+export function recordTerminalCommandHistory(
+  hostId: string,
+  command: string,
+  cwd?: string,
+) {
+  return updateConfiguration((current) => ({
+    ...current,
+    terminalCommandHistory: recordTerminalCommandInHistory(
+      current.terminalCommandHistory,
+      { hostId, command, cwd },
+    ),
+  }));
+}
+
+export function clearTerminalCommandHistory() {
+  return updateConfiguration((current) => ({
+    ...current,
+    terminalCommandHistory: [],
+  }));
 }
 
 export function upsertCredentialReference(
