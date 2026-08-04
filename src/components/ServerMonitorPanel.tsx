@@ -54,10 +54,12 @@ import {
   createNetworkAiHandoff,
   type AiHandoffRequest,
 } from "../ai-handoff";
+import ConnectionStatusOverlay from "./ConnectionStatusOverlay";
 
 interface ServerMonitorPanelProps {
   refreshIntervalSeconds: number;
   session: TerminalSession | null;
+  onReconnect: () => void;
   onSnapshotChange: (
     sessionId: string | null,
     snapshot: ServerMonitorSnapshot | null,
@@ -128,6 +130,7 @@ function tooltipRate(datum?: Record<string, unknown>) {
 function ServerMonitorPanel({
   refreshIntervalSeconds,
   session,
+  onReconnect,
   onSnapshotChange,
   onPortForwardStatusChange,
   onSendToAi,
@@ -402,6 +405,16 @@ function ServerMonitorPanel({
   );
 
   const connected = session?.status === "connected";
+  const reconnecting = session?.status === "reconnecting";
+  const connectionUnavailable = Boolean(
+    session &&
+      (session.status === "failed" ||
+        session.status === "disconnected" ||
+        reconnecting),
+  );
+  const connectionDescription = reconnecting
+    ? "正在重新连接服务器"
+    : session?.error || "服务器连接已断开";
   const sendNetworkToAi = () => {
     if (!session || (!pingResult && !traceResult && !connectionsResult)) return;
     onSendToAi(
@@ -451,7 +464,7 @@ function ServerMonitorPanel({
           </Tooltip>
         </Space>
       </div>
-      {error && <Alert content={error} showIcon type="warning" />}
+      {error && connected && <Alert content={error} showIcon type="warning" />}
       <dl className="monitor-system-facts">
         <div>
           <dt>系统</dt>
@@ -861,6 +874,13 @@ function ServerMonitorPanel({
             visible={portForwardDrawerVisible}
           />
         </>
+      )}
+      {connectionUnavailable && (
+        <ConnectionStatusOverlay
+          description={connectionDescription}
+          onReconnect={onReconnect}
+          reconnecting={reconnecting}
+        />
       )}
     </section>
   );

@@ -59,6 +59,7 @@ import {
 import { TERMINAL_THEMES } from "../terminal-themes";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import { listenProtocolEvent } from "../tauri-protocol";
+import ConnectionStatusOverlay from "./ConnectionStatusOverlay";
 import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 interface TerminalViewProps {
@@ -71,6 +72,7 @@ interface TerminalViewProps {
   onAskAi: (selection: string) => void;
   onCommandLifecycle: (event: TerminalCommandSubmission) => void;
   onCurrentDirectoryChange: (sessionId: string, path: string) => void;
+  onReconnect: () => void;
   onRecentOutputChange: (output: string) => void;
   onSelectionChange: (selection: string) => void;
 }
@@ -133,6 +135,7 @@ function TerminalView({
   onAskAi,
   onCommandLifecycle,
   onCurrentDirectoryChange,
+  onReconnect,
   onRecentOutputChange,
   onSelectionChange,
 }: TerminalViewProps) {
@@ -844,6 +847,14 @@ function TerminalView({
   const currentSearchResult =
     searchResult.resultIndex >= 0 ? searchResult.resultIndex + 1 : 0;
   const terminalTheme = TERMINAL_THEMES[settings.terminalColorScheme].theme;
+  const reconnecting = session.status === "reconnecting";
+  const connectionUnavailable =
+    session.status === "failed" ||
+    session.status === "disconnected" ||
+    reconnecting;
+  const connectionDescription = reconnecting
+    ? "正在重新连接服务器"
+    : session.error || "终端连接已断开";
 
   return (
     <div
@@ -921,6 +932,13 @@ function TerminalView({
             />
           </Tooltip>
         </div>
+      )}
+      {connectionUnavailable && (
+        <ConnectionStatusOverlay
+          description={connectionDescription}
+          onReconnect={onReconnect}
+          reconnecting={reconnecting}
+        />
       )}
     </div>
   );

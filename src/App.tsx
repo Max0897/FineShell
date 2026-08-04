@@ -649,6 +649,9 @@ function App() {
           }
         >
           <ServerMonitorPanel
+            onReconnect={() => {
+              if (activeSession) reconnectSession(activeSession);
+            }}
             onSendToAi={(sessionId, request) =>
               void handoffToAi(sessionId, request)
             }
@@ -698,6 +701,7 @@ function App() {
               }}
               onCommandLifecycle={setTerminalCommandSubmission}
               onCurrentDirectoryChange={updateTerminalCurrentDirectory}
+              onReconnect={() => reconnectSession(session)}
               onRecentOutputChange={(output) =>
                 setTerminalRecentOutputs((current) => {
                   const next = output.slice(-settings.aiContextMaxChars);
@@ -743,6 +747,9 @@ function App() {
       externalEditorName={settings.externalEditorName}
       externalEditorPath={settings.externalEditorPath}
       onCurrentPathChange={updateSftpCurrentPath}
+      onReconnect={() => {
+        if (activeSession) reconnectSession(activeSession);
+      }}
       onSendFilesToAi={async (sessionId, files) => {
         if (sessionId !== activeSessionId) {
           throw new Error("当前会话已切换，请重新选择文件");

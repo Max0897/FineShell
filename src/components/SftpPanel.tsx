@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Button,
   Empty,
   Message,
   Modal,
@@ -15,7 +14,6 @@ import {
   IconExclamationCircle,
   IconFile,
   IconFolder,
-  IconRefresh,
   IconSync,
   IconUpload,
 } from "@arco-design/web-react/icon";
@@ -64,6 +62,7 @@ import {
   type RemoteTextFile,
 } from "./sftp/SftpDialogs";
 import SftpTransferDrawer from "./sftp/SftpTransferDrawer";
+import ConnectionStatusOverlay from "./ConnectionStatusOverlay";
 import buildSftpContextMenu from "./sftp/buildSftpContextMenu";
 import SftpToolbar from "./sftp/SftpToolbar";
 import useSftpArchives from "./sftp/useSftpArchives";
@@ -97,6 +96,7 @@ interface SftpPanelProps {
   externalEditorName: string;
   externalEditorPath: string;
   onCurrentPathChange: (sessionId: string | null, path: string) => void;
+  onReconnect: () => void;
   onSendFilesToAi: (
     sessionId: string,
     files: AiRemoteFileContext[],
@@ -143,6 +143,7 @@ function SftpPanel({
   externalEditorName,
   externalEditorPath,
   onCurrentPathChange,
+  onReconnect,
   onSendFilesToAi,
   onSendSelectionToAi,
   refreshRequest,
@@ -153,6 +154,7 @@ function SftpPanel({
   const [browsers, setBrowsers] = useState<Record<string, BrowserState>>({});
   const [transferDrawerVisible, setTransferDrawerVisible] = useState(false);
   const [operationLoading, setOperationLoading] = useState(false);
+  const [retryingSessionId, setRetryingSessionId] = useState<string>();
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
@@ -387,6 +389,23 @@ function SftpPanel({
   const ready = Boolean(connected && browser?.status === "ready");
   const busy =
     browser?.status === "connecting" || browser?.status === "loading";
+  const sftpReconnecting = retryingSessionId === session?.id;
+  const reconnecting = session?.status === "reconnecting" || sftpReconnecting;
+  const sessionUnavailable = Boolean(
+    session &&
+      (session.status === "failed" ||
+        session.status === "disconnected" ||
+        reconnecting),
+  );
+  const sftpUnavailable = Boolean(connected && browser?.status === "failed");
+  const connectionUnavailable = sessionUnavailable || sftpUnavailable;
+  const connectionDescription = sftpReconnecting
+    ? "正在重新连接 SFTP"
+    : reconnecting
+      ? "正在重新连接服务器"
+      : sftpUnavailable
+        ? browser?.error || "SFTP 连接失败"
+        : session?.error || "服务器连接已断开";
   const {
     closeCreateDialog,
     closePermissionsDialog,
@@ -898,12 +917,19 @@ function SftpPanel({
 
   async function retryConnection() {
     if (!session) return;
-    connectedHomesRef.current.delete(session.id);
-    await invoke("sftp_disconnect", { sessionId: session.id }).catch(
-      () => undefined,
-    );
-    updateBrowser(session.id, { status: "idle", error: undefined });
-    await connectAndLoad(session);
+    setRetryingSessionId(session.id);
+    try {
+      connectedHomesRef.current.delete(session.id);
+      await invoke("sftp_disconnect", { sessionId: session.id }).catch(
+        () => undefined,
+      );
+      updateBrowser(session.id, { status: "idle", error: undefined });
+      await connectAndLoad(session);
+    } finally {
+      setRetryingSessionId((current) =>
+        current === session.id ? undefined : current,
+      );
+    }
   }
 
   function openDirectory(entry: SftpEntry) {
@@ -959,19 +985,7 @@ function SftpPanel({
         transferActivityCount={transferActivityCount}
       />
 
-      {connected && browser?.status === "failed" ? (
-        <div className="panel-empty">
-          <div className="empty-action">
-            <Empty description={browser.error || "SFTP 连接失败"} />
-            <Button
-              icon={<IconRefresh />}
-              onClick={() => void retryConnection()}
-            >
-              重试
-            </Button>
-          </div>
-        </div>
-      ) : (
+      <>
         <ContextMenu
           menuClassName="sftp-context-menu"
           resolveItems={resolveEntryContextMenu}
@@ -1058,9 +1072,18 @@ function SftpPanel({
                 )}
               </div>
             )}
+            {connectionUnavailable && (
+              <ConnectionStatusOverlay
+                description={connectionDescription}
+                onReconnect={
+                  sftpUnavailable ? () => void retryConnection() : onReconnect
+                }
+                reconnecting={reconnecting}
+              />
+            )}
           </div>
         </ContextMenu>
-      )}
+      </>
       <SftpTransferDrawer
         externalEdits={currentExternalEdits}
         onCancelTransfer={(transfer) => void cancelTransfer(transfer)}
