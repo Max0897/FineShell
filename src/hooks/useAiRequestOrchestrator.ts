@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppSettings } from "../app-settings";
 import { validateAiActionIntents } from "../ai-action-intents";
-import {
-  completeAiDiagnosticPlan,
-  type AiDiagnosticPlan,
-} from "../ai-diagnostic-plans";
+import { completeAiDiagnosticPlan } from "../ai-diagnostic-plans";
 import {
   aiCommandApprovalToolResult,
   aiCommandProposalToolResult,
@@ -15,13 +12,10 @@ import {
 } from "../ai-command-proposals";
 import {
   aiConversationTitleFromPrompt,
-  sanitizeAiConversation,
   type AiConversationSummaryRecord,
 } from "../ai-conversations";
 import {
   buildAiConversationRequestMessages,
-  completeAiConversationSummary,
-  createAiConversationSummaryPlan,
 } from "../ai-summaries";
 import {
   aiFileEditToolResult,
@@ -42,8 +36,6 @@ import {
 import {
   aiToolLoopFinalizeReason,
   finishAiToolRun,
-  isAiReadOnlyToolName,
-  type AiToolRun,
 } from "../ai-tools";
 import type { AiRemoteFileContext } from "../ai-utils";
 import { diagnosticInvoke } from "../diagnostics";
@@ -52,7 +44,6 @@ import {
   FineShellCommandError,
   listenProtocolEvent,
   type AgentApprovalMode,
-  type AgentPlan,
   type AgentTask,
   type AgentTaskEventPayload,
   type AiChatResult,
@@ -62,6 +53,12 @@ import {
   type TauriCommand,
 } from "../tauri-protocol";
 import type { AiConversation, AiMessage } from "./useAiConversations";
+import {
+  agentTaskIsTerminal,
+  mergeAgentPlanIntoMessage,
+} from "./ai-agent-plan-presentation";
+import { createAiRequestId } from "./ai-request-id";
+import { useAiConversationSummaryQueue } from "./useAiConversationSummaryQueue";
 
 export type AiRequestInvoke = <T>(
   command: TauriCommand,
@@ -158,82 +155,6 @@ const defaultStreamListener: AiStreamListener = (callback) =>
 const defaultTaskListener: AiTaskListener = (callback) =>
   listenProtocolEvent("ai-task", ({ payload }) => callback(payload));
 
-function agentTaskIsTerminal(task: AgentTask) {
-  return ["completed", "failed", "cancelled"].includes(task.status);
-}
-
-function agentPlanPresentation(plan: AgentPlan): {
-  plan: AiDiagnosticPlan;
-  runs: AiToolRun[];
-} {
-  const runs = plan.steps
-    .filter((step) => isAiReadOnlyToolName(step.tool))
-    .map((step): AiToolRun => {
-      const status: AiToolRun["status"] =
-        step.status === "in_progress"
-          ? "running"
-          : step.status === "completed"
-            ? "success"
-            : step.status === "failed"
-              ? "failed"
-              : step.status === "skipped"
-                ? "skipped"
-                : "pending";
-      return {
-        callId: step.id,
-        dependsOn: step.dependsOn.length ? step.dependsOn : undefined,
-        detail: step.detail ?? undefined,
-        durationMs: step.durationMs ?? undefined,
-        error: step.error ?? undefined,
-        label: step.title,
-        name: step.tool as AiToolRun["name"],
-        optional: step.optional || undefined,
-        planId: plan.id,
-        reason: step.reason,
-        startedAt: step.startedAt ?? plan.createdAt,
-        status,
-        summary: step.summary ?? undefined,
-      };
-    });
-  return {
-    plan: {
-      createdAt: new Date(plan.createdAt).toISOString(),
-      description: plan.description ?? undefined,
-      id: plan.id,
-      status: plan.status,
-      stepCallIds: plan.steps.map((step) => step.id),
-    },
-    runs,
-  };
-}
-
-function mergeAgentPlanIntoMessage(message: AiMessage, plan: AgentPlan): AiMessage {
-  const presentation = agentPlanPresentation(plan);
-  const diagnosticPlans = message.diagnosticPlans ?? [];
-  const toolRuns = message.toolRuns ?? [];
-  const planExists = diagnosticPlans.some((item) => item.id === plan.id);
-  const nextPlanCallIds = new Set(presentation.runs.map((run) => run.callId));
-  return {
-    ...message,
-    diagnosticPlans: planExists
-      ? diagnosticPlans.map((item) =>
-          item.id === plan.id ? presentation.plan : item,
-        )
-      : [...diagnosticPlans, presentation.plan],
-    toolRuns: [
-      ...toolRuns.filter((run) => !nextPlanCallIds.has(run.callId)),
-      ...presentation.runs,
-    ],
-  };
-}
-
-function createId(prefix: string) {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 export function useAiRequestOrchestrator({
   approvalMode = "on_request",
   invoke = defaultInvoke,
@@ -252,9 +173,6 @@ export function useAiRequestOrchestrator({
 }: UseAiRequestOrchestratorOptions) {
   const [sending, setSending] = useState(false);
   const [activeTask, setActiveTask] = useState<AgentTask>();
-  const [summarizingConversationIds, setSummarizingConversationIds] = useState<
-    Set<string>
-  >(() => new Set());
   const activeRequestRef = useRef<ActiveAiRequest>();
   const trackedTaskIdRef = useRef<string>();
   const cancelledRequestsRef = useRef(new Set<string>());
@@ -263,7 +181,6 @@ export function useAiRequestOrchestrator({
   );
   const backendDiagnosticPlanTasksRef = useRef(new Map<string, string>());
   const stoppedDiagnosticPlansRef = useRef(new Set<string>());
-  const summaryRequestsRef = useRef(new Set<string>());
   const pendingCommandApprovalsRef = useRef(
     new Map<string, PendingCommandApproval>(),
   );
@@ -282,6 +199,14 @@ export function useAiRequestOrchestrator({
     onSummaryError,
     updateMessages,
   };
+  const { queueConversationSummary, summarizingConversationIds } =
+    useAiConversationSummaryQueue({
+      invoke,
+      onSummaryError,
+      persistConversation,
+      settings,
+      updateConversation,
+    });
 
   const decideCommandProposal = useCallback(
     (proposalId: string, decision: AiCommandApprovalDecision) => {
@@ -567,77 +492,6 @@ export function useAiRequestOrchestrator({
     };
   }, [invoke, restoreTaskId]);
 
-  const queueConversationSummary = useCallback(
-    (conversation?: AiConversation) => {
-      if (!conversation || summaryRequestsRef.current.has(conversation.id)) {
-        return;
-      }
-      const sanitized = sanitizeAiConversation(conversation);
-      if (!sanitized) return;
-      const plan = createAiConversationSummaryPlan(sanitized);
-      if (!plan) return;
-
-      summaryRequestsRef.current.add(conversation.id);
-      setSummarizingConversationIds((current) => {
-        const next = new Set(current);
-        next.add(conversation.id);
-        return next;
-      });
-      void (async () => {
-        try {
-          const result = await invoke<AiChatResult>("ai_chat_start", {
-            request: {
-              requestId: createId("ai-summary"),
-              baseUrl: settings.aiBaseUrl,
-              model: settings.aiModel,
-              messages: [{ role: "user", content: plan.prompt }],
-              context: null,
-              enabledTools: [],
-              fileEditEnabled: false,
-              commandProposalEnabled: false,
-              toolRounds: [],
-            },
-          });
-          if (result.toolCalls.length) {
-            throw new Error("对话摘要请求返回了不支持的工具调用");
-          }
-          const summary = completeAiConversationSummary(plan, result.content);
-          let applied = false;
-          const updated = updateConversation(
-            conversation.hostId,
-            conversation.id,
-            (current) => {
-              if (
-                current.summary?.throughMessageId !==
-                plan.previousSummary?.throughMessageId
-              ) {
-                return current;
-              }
-              applied = true;
-              return { ...current, summary };
-            },
-          );
-          if (applied) await persistConversation(updated);
-        } catch (error) {
-          callbacksRef.current.onSummaryError?.(error);
-        } finally {
-          summaryRequestsRef.current.delete(conversation.id);
-          setSummarizingConversationIds((current) => {
-            const next = new Set(current);
-            next.delete(conversation.id);
-            return next;
-          });
-        }
-      })();
-    }, [
-      invoke,
-      persistConversation,
-      settings.aiBaseUrl,
-      settings.aiModel,
-      updateConversation,
-    ],
-  );
-
   const sendMessage = useCallback(
     async ({
       commandProposalEnabled,
@@ -660,16 +514,16 @@ export function useAiRequestOrchestrator({
         return undefined;
       }
 
-      const requestId = createId("ai-request");
+      const requestId = createAiRequestId("ai-request");
       const userMessage: AiMessage = {
-        id: createId("ai-user"),
+        id: createAiRequestId("ai-user"),
         role: "user",
         content: value.trim(),
         context: context || undefined,
         contextLabels,
       };
       const assistantMessage: AiMessage = {
-        id: createId("ai-assistant"),
+        id: createAiRequestId("ai-assistant"),
         role: "assistant",
         content: "",
         taskId: requestId,
