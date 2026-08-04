@@ -3,36 +3,12 @@ import type { AppSettings } from "../app-settings";
 import { validateAiActionIntents } from "../ai-action-intents";
 import { completeAiDiagnosticPlan } from "../ai-diagnostic-plans";
 import {
-  aiCommandApprovalToolResult,
-  aiCommandProposalToolResult,
-  createAiCommandProposal,
-  isAiCommandProposalToolCall,
-  type AiCommandApprovalDecision,
-  type AiCommandProposal,
-} from "../ai-command-proposals";
-import {
   aiConversationTitleFromPrompt,
   type AiConversationSummaryRecord,
 } from "../ai-conversations";
 import {
   buildAiConversationRequestMessages,
 } from "../ai-summaries";
-import {
-  aiFileEditToolResult,
-  createAiFileEditProposal,
-  isAiFileEditToolCall,
-  type AiFileEditProposal,
-} from "../ai-file-edits";
-import {
-  aiFileApprovalToolResult,
-  type AiFileApprovalDecision,
-} from "../ai-file-approvals";
-import {
-  aiFileOperationToolResult,
-  createAiFileOperationProposal,
-  isAiFileOperationToolCall,
-  type AiFileOperationProposal,
-} from "../ai-file-operations";
 import {
   aiToolLoopFinalizeReason,
   finishAiToolRun,
@@ -48,7 +24,6 @@ import {
   type AgentTaskEventPayload,
   type AiChatResult,
   type AiFinalizeReason,
-  type AiToolResult,
   type AiToolRound,
   type TauriCommand,
 } from "../tauri-protocol";
@@ -57,6 +32,11 @@ import {
   agentTaskIsTerminal,
   mergeAgentPlanIntoMessage,
 } from "./ai-agent-plan-presentation";
+import {
+  aiProposalRoundHasPendingApprovals,
+  prepareAiProposalRound,
+  resolveAiProposalRound,
+} from "./ai-proposal-round";
 import { createAiRequestId } from "./ai-request-id";
 import { useAiConversationSummaryQueue } from "./useAiConversationSummaryQueue";
 import { useAiProposalApprovals } from "./useAiProposalApprovals";
@@ -561,17 +541,6 @@ export function useAiRequestOrchestrator({
             result.toolCalls,
             result.actionIntents ?? [],
           );
-          const unsupportedCalls = result.toolCalls.filter(
-            (call) =>
-              !isAiFileEditToolCall(call) &&
-              !isAiFileOperationToolCall(call) &&
-              !isAiCommandProposalToolCall(call),
-          );
-          if (unsupportedCalls.length) {
-            throw new Error(
-              `AI 后端返回了未处理的工具调用：${unsupportedCalls[0]!.name}`,
-            );
-          }
           if (!result.toolCalls.length) {
             if (result.content.trim()) {
               responseParts.push(result.content.trim());
@@ -605,109 +574,20 @@ export function useAiRequestOrchestrator({
             continue;
           }
 
-          const nextProposals: AiFileEditProposal[] = [];
-          const nextOperationProposals: AiFileOperationProposal[] = [];
-          const nextCommandProposals: AiCommandProposal[] = [];
-          const proposalResults = new Map<string, AiToolResult>();
-          const commandApprovalDecisions = new Map<
-            string,
-            Promise<AiCommandApprovalDecision>
-          >();
-          const fileApprovalDecisions = new Map<
-            string,
-            Promise<AiFileApprovalDecision>
-          >();
-
-          for (const call of result.toolCalls.filter(isAiFileEditToolCall)) {
-            let proposalError: string | undefined;
-            try {
-              if (!fileProposalEnabled || !editableFiles.length) {
-                throw new Error("当前文件上下文不允许生成可应用的修改");
-              }
-              const proposal = createAiFileEditProposal(
-                call,
-                editableFiles,
-                targetSessionId,
-              );
-              if (proposedFilePaths.has(proposal.originalFile.path)) {
-                throw new Error("AI 重复返回了同一文件的修改建议");
-              }
-              proposedFilePaths.add(proposal.originalFile.path);
-              nextProposals.push(proposal);
-              fileApprovalDecisions.set(
-                call.id,
-                waitForFileApproval(call.id, requestId),
-              );
-            } catch (error) {
-              proposalError = commandErrorMessage(error);
-            }
-            proposalResults.set(
-              call.id,
-              aiFileEditToolResult(call, proposalError),
-            );
-          }
-          for (const call of result.toolCalls.filter(isAiFileOperationToolCall)) {
-            let proposalError: string | undefined;
-            try {
-              if (!fileProposalEnabled) {
-                throw new Error("文件变更提案权限已关闭");
-              }
-              const proposal = createAiFileOperationProposal(
-                call,
-                editableFiles,
-                currentOperationDirectory,
-                targetSessionId,
-              );
-              const touchedPaths = [proposal.path, proposal.targetPath].filter(
-                (path): path is string => Boolean(path),
-              );
-              if (touchedPaths.some((path) => proposedFilePaths.has(path))) {
-                throw new Error("AI 返回了相互冲突的文件变更建议");
-              }
-              touchedPaths.forEach((path) => proposedFilePaths.add(path));
-              nextOperationProposals.push(proposal);
-              fileApprovalDecisions.set(
-                call.id,
-                waitForFileApproval(call.id, requestId),
-              );
-            } catch (error) {
-              proposalError = commandErrorMessage(error);
-            }
-            proposalResults.set(
-              call.id,
-              aiFileOperationToolResult(call, proposalError),
-            );
-          }
-          for (const call of result.toolCalls.filter(isAiCommandProposalToolCall)) {
-            let proposalError: string | undefined;
-            try {
-              if (!terminalProposalEnabled) {
-                throw new Error("当前终端会话不允许提交命令");
-              }
-              const proposal = createAiCommandProposal(
-                call,
-                targetSessionId,
-                targetDirectory,
-              );
-              if (proposedCommands.has(proposal.command)) {
-                throw new Error("AI 重复返回了同一条终端命令");
-              }
-              proposedCommands.add(proposal.command);
-              nextCommandProposals.push(proposal);
-              commandApprovalDecisions.set(
-                call.id,
-                waitForCommandApproval(call.id, requestId),
-              );
-            } catch (error) {
-              proposalError = commandErrorMessage(error);
-            }
-            if (proposalError) {
-              proposalResults.set(
-                call.id,
-                aiCommandProposalToolResult(call, proposalError),
-              );
-            }
-          }
+          const proposalRound = prepareAiProposalRound({
+            calls: result.toolCalls,
+            currentOperationDirectory,
+            editableFiles,
+            fileProposalEnabled,
+            proposedCommands,
+            proposedFilePaths,
+            requestId,
+            targetDirectory,
+            targetSessionId,
+            terminalProposalEnabled,
+            waitForCommandApproval,
+            waitForFileApproval,
+          });
           const proposalConversation = updateMessages(
             targetHostId,
             targetConversationId,
@@ -719,79 +599,28 @@ export function useAiRequestOrchestrator({
                       content: "",
                       fileEditProposals: [
                         ...(message.fileEditProposals ?? []),
-                        ...nextProposals,
+                        ...proposalRound.fileEditProposals,
                       ],
                       fileOperationProposals: [
                         ...(message.fileOperationProposals ?? []),
-                        ...nextOperationProposals,
+                        ...proposalRound.fileOperationProposals,
                       ],
                       commandProposals: [
                         ...(message.commandProposals ?? []),
-                        ...nextCommandProposals,
+                        ...proposalRound.commandProposals,
                       ],
                     }
                   : message,
               ),
           );
-          if (commandApprovalDecisions.size || fileApprovalDecisions.size) {
+          if (aiProposalRoundHasPendingApprovals(proposalRound)) {
             await persistConversation(proposalConversation);
           }
-
-          const toolResults: AiToolResult[] = [];
-          for (const call of result.toolCalls) {
-            if (cancelledRequestsRef.current.has(requestId)) {
-              throw new Error("AI 请求已取消");
-            }
-            if (isAiFileEditToolCall(call)) {
-              const decision = fileApprovalDecisions.get(call.id);
-              if (decision) {
-                toolResults.push(
-                  aiFileApprovalToolResult(call, await decision),
-                );
-                continue;
-              }
-              toolResults.push(
-                proposalResults.get(call.id) ??
-                  aiFileEditToolResult(call, "文件修改建议未通过本地校验"),
-              );
-              continue;
-            }
-            if (isAiFileOperationToolCall(call)) {
-              const decision = fileApprovalDecisions.get(call.id);
-              if (decision) {
-                toolResults.push(
-                  aiFileApprovalToolResult(call, await decision),
-                );
-                continue;
-              }
-              toolResults.push(
-                proposalResults.get(call.id) ??
-                  aiFileOperationToolResult(
-                    call,
-                    "文件操作建议未通过本地校验",
-                  ),
-              );
-              continue;
-            }
-            if (isAiCommandProposalToolCall(call)) {
-              const decision = commandApprovalDecisions.get(call.id);
-              if (decision) {
-                toolResults.push(
-                  aiCommandApprovalToolResult(call, await decision),
-                );
-                continue;
-              }
-              toolResults.push(
-                proposalResults.get(call.id) ??
-                  aiCommandProposalToolResult(
-                    call,
-                    "终端命令建议未通过本地校验",
-                  ),
-              );
-              continue;
-            }
-            throw new Error(`AI 请求了不支持的工具：${call.name}`);
-          }
+          const toolResults = await resolveAiProposalRound(
+            result.toolCalls,
+            proposalRound,
+            () => cancelledRequestsRef.current.has(requestId),
+          );
           toolRounds.push({
             calls: result.toolCalls,
             content: result.content.trim() || undefined,
