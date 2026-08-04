@@ -6,8 +6,8 @@ import {
   Bot,
   CircleHelp,
   Command,
-  Maximize2,
-  Minimize2,
+  Maximize,
+  Minimize,
   Minus,
   PanelBottomClose,
   PanelBottomOpen,
@@ -245,9 +245,9 @@ export default function ApplicationTitleBar({
             type="button"
           >
             {maximized ? (
-              <Minimize2 aria-hidden="true" />
+              <Minimize aria-hidden="true" />
             ) : (
-              <Maximize2 aria-hidden="true" />
+              <Maximize aria-hidden="true" />
             )}
           </button>
           <button
