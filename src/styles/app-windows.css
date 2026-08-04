@@ -51,8 +51,13 @@
   min-width: 0;
   padding: 16px 10px;
   overflow: auto;
+  scrollbar-width: none;
   border-right: 1px solid #e5e6eb;
   background: #ffffff;
+}
+
+.settings-sidebar::-webkit-scrollbar {
+  display: none;
 }
 
 .settings-sidebar .arco-menu {
