@@ -8,6 +8,8 @@ describe("ShortcutGuideWindow", () => {
 
     expect(screen.getByText("打开快捷命令")).toBeTruthy();
     expect(screen.getByText("查找终端内容")).toBeTruthy();
+    expect(screen.getByText("调整终端字号")).toBeTruthy();
+    expect(screen.getByText("恢复终端字号")).toBeTruthy();
     expect(screen.getByText("选中全部文件")).toBeTruthy();
     expect(screen.getByText("反选文件")).toBeTruthy();
     const currentShortcut = shortcutGuideRows()[0].shortcut;

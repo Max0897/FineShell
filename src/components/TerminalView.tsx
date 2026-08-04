@@ -65,6 +65,11 @@ import {
   type ShellIntegrationEchoFilter,
 } from "../shell-integration";
 import { TERMINAL_THEMES } from "../terminal-themes";
+import {
+  terminalFontZoomKeyboardAction,
+  terminalFontZoomWheelAction,
+  type TerminalFontZoomAction,
+} from "../terminal-font-zoom";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import { listenProtocolEvent } from "../tauri-protocol";
 import ConnectionStatusOverlay from "./ConnectionStatusOverlay";
@@ -75,8 +80,10 @@ interface TerminalViewProps {
   commandTrackingEnabled: boolean;
   focusRequest: number;
   injectedInput?: TerminalInjectedInput;
+  onFontZoom: (action: TerminalFontZoomAction) => void;
   settings: AppSettings;
   session: TerminalSession;
+  terminalFontSize: number;
   onAskAi: (selection: string) => void;
   onCommandLifecycle: (event: TerminalCommandSubmission) => void;
   onCurrentDirectoryChange: (sessionId: string, path: string) => void;
@@ -138,8 +145,10 @@ function TerminalView({
   commandTrackingEnabled,
   focusRequest,
   injectedInput,
+  onFontZoom,
   settings,
   session,
+  terminalFontSize,
   onAskAi,
   onCommandLifecycle,
   onCurrentDirectoryChange,
@@ -190,6 +199,8 @@ function TerminalView({
   const selectionChangeRef = useRef(onSelectionChange);
   const currentDirectoryChangeRef = useRef(onCurrentDirectoryChange);
   const settingsRef = useRef(settings);
+  const fontZoomRef = useRef(onFontZoom);
+  const lastWheelZoomAtRef = useRef(Number.NEGATIVE_INFINITY);
   const searchVisibleRef = useRef(false);
   const lastStatusNoticeRef = useRef<string>();
   const [searchVisible, setSearchVisible] = useState(false);
@@ -201,6 +212,7 @@ function TerminalView({
 
   searchVisibleRef.current = searchVisible;
   settingsRef.current = settings;
+  fontZoomRef.current = onFontZoom;
   commandLifecycleRef.current = onCommandLifecycle;
   commandTrackingEnabledRef.current = commandTrackingEnabled;
   shellCommandResultsEnabledRef.current = commandTrackingEnabled;
@@ -426,7 +438,7 @@ function TerminalView({
       cursorStyle: settings.terminalCursorStyle,
       cursorWidth: 1,
       fontFamily: TERMINAL_FONT_FAMILIES[settings.terminalFontFamily],
-      fontSize: settings.terminalFontSize,
+      fontSize: terminalFontSize,
       lineHeight: settings.terminalLineHeight,
       overviewRuler: {
         width: 6,
@@ -460,6 +472,13 @@ function TerminalView({
     terminal.loadAddon(historyCompletionAddon);
     terminal.open(container);
     terminal.attachCustomKeyEventHandler((event) => {
+      const zoomAction = terminalFontZoomKeyboardAction(event);
+      if (zoomAction) {
+        event.preventDefault();
+        event.stopPropagation();
+        fontZoomRef.current(zoomAction);
+        return false;
+      }
       if (isWindowsTerminalPasteShortcut(event)) {
         event.preventDefault();
         event.stopPropagation();
@@ -707,6 +726,28 @@ function TerminalView({
   }, [session.id]);
 
   useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      const zoomAction = terminalFontZoomWheelAction(event);
+      if (!zoomAction) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const now = performance.now();
+      if (now - lastWheelZoomAtRef.current < 80) return;
+      lastWheelZoomAtRef.current = now;
+      fontZoomRef.current(zoomAction);
+    };
+
+    container.addEventListener("wheel", handleWheel, {
+      capture: true,
+      passive: false,
+    });
+    return () => container.removeEventListener("wheel", handleWheel, true);
+  }, []);
+
+  useEffect(() => {
     const searchAddon = searchAddonRef.current;
     if (!searchAddon || !searchVisible) return;
     if (!searchQuery) {
@@ -745,7 +786,7 @@ function TerminalView({
     terminal.options.cursorWidth = 1;
     terminal.options.fontFamily =
       TERMINAL_FONT_FAMILIES[settings.terminalFontFamily];
-    terminal.options.fontSize = settings.terminalFontSize;
+    terminal.options.fontSize = terminalFontSize;
     terminal.options.lineHeight = settings.terminalLineHeight;
     terminal.options.scrollback = settings.terminalScrollback;
     terminal.options.theme =
@@ -763,7 +804,7 @@ function TerminalView({
     settings.terminalCursorStyle,
     settings.terminalColorScheme,
     settings.terminalFontFamily,
-    settings.terminalFontSize,
+    terminalFontSize,
     settings.terminalLineHeight,
     settings.terminalScrollback,
   ]);

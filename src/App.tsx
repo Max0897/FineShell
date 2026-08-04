@@ -60,6 +60,11 @@ import {
   type TerminalInjectedInput,
 } from "./terminal-utils";
 import {
+  nextTerminalFontSizeOffset,
+  terminalFontSize,
+  type TerminalFontZoomAction,
+} from "./terminal-font-zoom";
+import {
   configureDiagnosticLogging,
   diagnosticInvoke as invoke,
   recordDiagnostic,
@@ -133,6 +138,7 @@ function App() {
     Record<string, number>
   >({});
   const [terminalFocusRequest, setTerminalFocusRequest] = useState(0);
+  const [terminalFontSizeOffset, setTerminalFontSizeOffset] = useState(0);
   const mainSplitRef = useRef<HTMLElement | null>(null);
   const handleSessionsClosed = useCallback((closingIds: Set<string>) => {
     setAiRemoteFileContexts((currentContexts) =>
@@ -199,6 +205,27 @@ function App() {
     sidebarWidth: aiSidebarWidth,
   });
   const previousAiSidebarPhaseRef = useRef(aiSidebarPhase);
+
+  const runtimeTerminalFontSize = terminalFontSize(
+    settings.terminalFontSize,
+    terminalFontSizeOffset,
+  );
+  const zoomTerminalFont = useCallback(
+    (action: TerminalFontZoomAction) => {
+      setTerminalFontSizeOffset((currentOffset) =>
+        nextTerminalFontSizeOffset(
+          settings.terminalFontSize,
+          currentOffset,
+          action,
+        ),
+      );
+    },
+    [settings.terminalFontSize],
+  );
+
+  useEffect(() => {
+    setTerminalFontSizeOffset(0);
+  }, [settings.terminalFontSize]);
 
   useEffect(() => {
     if (
@@ -688,8 +715,10 @@ function App() {
                 session.id === activeSessionId ? terminalFocusRequest : 0
               }
               injectedInput={terminalInjectedInputs[session.id]}
+              onFontZoom={zoomTerminalFont}
               settings={settings}
               session={session}
+              terminalFontSize={runtimeTerminalFontSize}
               onAskAi={(selection) => {
                 setTerminalSelections((current) => ({
                   ...current,

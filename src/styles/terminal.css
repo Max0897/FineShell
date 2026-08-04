@@ -247,13 +247,17 @@
 .terminal-view .xterm {
   height: 100%;
   padding: 8px 0 4px 8px;
-  background: var(--terminal-background, #191b20);
+  background-color: var(--terminal-background, #191b20) !important;
 }
 
 .terminal-view .xterm-viewport {
   overflow: hidden;
-  background-color: var(--terminal-background, #191b20);
+  background-color: var(--terminal-background, #191b20) !important;
   scrollbar-width: none;
+}
+
+.terminal-view .xterm-screen {
+  background-color: var(--terminal-background, #191b20);
 }
 
 .terminal-view .xterm-viewport::-webkit-scrollbar {
