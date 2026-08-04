@@ -1,0 +1,104 @@
+use super::*;
+
+pub(super) struct AiTurnOptions<'a> {
+    pub(super) app: &'a AppHandle,
+    pub(super) request_id: &'a str,
+    pub(super) client: &'a Client,
+    pub(super) base_url: &'a str,
+    pub(super) api_key: Option<&'a str>,
+    pub(super) model: &'a str,
+    pub(super) messages: Vec<AiChatMessage>,
+    pub(super) fallback_messages: Vec<AiChatMessage>,
+    pub(super) tool_rounds: &'a [AiToolRound],
+    pub(super) any_tools_enabled: bool,
+    pub(super) tools_enabled: bool,
+    pub(super) file_edit_enabled: bool,
+    pub(super) command_proposal_enabled: bool,
+    pub(super) enabled_tools: &'a HashSet<String>,
+    pub(super) allow_tool_fallback: bool,
+    pub(super) finalize_reason: Option<AiFinalizeReason>,
+    pub(super) cancellation: &'a mut watch::Receiver<bool>,
+}
+
+pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult<AiChatResult> {
+    let operation = "ai_chat_start";
+    let definitions = if options.any_tools_enabled {
+        let value = filter_tool_definitions(
+            tool_definitions(
+                options.tools_enabled,
+                options.file_edit_enabled,
+                options.command_proposal_enabled,
+            ),
+            options.enabled_tools,
+        );
+        crate::ai_rig::tool_definitions(value).map_err(|error| structured(operation, error))?
+    } else {
+        Vec::new()
+    };
+    let request = crate::ai_rig::RigTurnRequest {
+        app: options.app,
+        request_id: options.request_id,
+        client: options.client,
+        base_url: options.base_url,
+        api_key: options.api_key,
+        model: options.model,
+        messages: options.messages,
+        tool_rounds: options.tool_rounds,
+        tools: definitions,
+        cancellation: options.cancellation,
+    };
+    let response = match crate::ai_rig::request_turn(request).await {
+        Ok(response) => response,
+        Err(error)
+            if options.any_tools_enabled
+                && options.allow_tool_fallback
+                && error
+                    .status
+                    .is_some_and(|status| is_tool_unsupported_error(status, &error.message)) =>
+        {
+            crate::ai_rig::request_turn(crate::ai_rig::RigTurnRequest {
+                app: options.app,
+                request_id: options.request_id,
+                client: options.client,
+                base_url: options.base_url,
+                api_key: options.api_key,
+                model: options.model,
+                messages: options.fallback_messages,
+                tool_rounds: &[],
+                tools: Vec::new(),
+                cancellation: options.cancellation,
+            })
+            .await
+            .map_err(|error| structured(operation, error.message))?
+        }
+        Err(error) => return Err(structured(operation, error.message)),
+    };
+    let content = response.content;
+    let tool_calls = response.tool_calls;
+    if content.chars().count() > MAX_RESPONSE_CHARS {
+        return Err(structured(operation, "AI 响应内容过长"));
+    }
+    if options.finalize_reason.is_some() && !tool_calls.is_empty() {
+        return Err(structured(operation, "AI 收尾响应不应包含工具调用"));
+    }
+    if tool_calls.iter().any(|call| {
+        !tool_allowed(
+            &call.name,
+            options.tools_enabled,
+            options.file_edit_enabled,
+            options.command_proposal_enabled,
+        ) || (diagnostic_tool(&call.name) && !options.enabled_tools.contains(&call.name))
+    }) {
+        return Err(structured(operation, "AI 返回了未启用的工具调用"));
+    }
+    if content.trim().is_empty() && tool_calls.is_empty() {
+        return Err(structured(operation, "AI 服务没有返回内容"));
+    }
+    Ok(AiChatResult {
+        content,
+        tool_calls,
+        action_intents: Vec::new(),
+        diagnostic_plans: Vec::new(),
+        diagnostic_tool_rounds: Vec::new(),
+    })
+}
