@@ -16,8 +16,8 @@ import { isTauri } from "@tauri-apps/api/core";
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   loadConfiguration,
-  removeKnownHostFingerprints,
 } from "../config-database";
+import { removeKnownHostFingerprints } from "../configuration-mutations";
 import { knownHostTargetKey } from "../known-hosts";
 import type { HostRecord, KnownHostRecord } from "../models";
 import {
@@ -168,7 +168,6 @@ function KnownHostSettings() {
     () => [
       {
         title: "主机",
-        width: 180,
         render: (_, record) => (
           <div className="known-host-target-cell">
             <Typography.Text
@@ -186,7 +185,9 @@ function KnownHostSettings() {
         ),
       },
       {
+        ellipsis: true,
         title: "SHA256 指纹",
+        width: 300,
         render: (_, record) => (
           <div className="known-host-fingerprint-cell">
             <Typography.Text title={record.fingerprint}>

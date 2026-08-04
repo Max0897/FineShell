@@ -16,11 +16,13 @@ import { isTauri } from "@tauri-apps/api/core";
 import type { AppSettings } from "../app-settings";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
-  clearConnectionHistory,
   loadConfiguration,
+} from "../config-database";
+import {
+  clearConnectionHistory,
   removeCredentialReference,
   replaceCredentialReferences,
-} from "../config-database";
+} from "../configuration-mutations";
 import {
   buildCredentialCandidates,
   credentialKindLabel,

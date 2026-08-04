@@ -24,12 +24,14 @@ import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
-  deleteSshKey,
   loadConfiguration,
+} from "../config-database";
+import {
+  deleteSshKey,
   removeCredentialReference,
   upsertCredentialReference,
   upsertSshKey,
-} from "../config-database";
+} from "../configuration-mutations";
 import { createCredentialReference } from "../credential-registry";
 import type {
   SshKeyFormValues,

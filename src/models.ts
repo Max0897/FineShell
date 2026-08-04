@@ -173,6 +173,7 @@ export interface JumpHostConnection {
 export type TerminalSessionStatus =
   | "connecting"
   | "connected"
+  | "suspect"
   | "failed"
   | "disconnected"
   | "reconnecting";

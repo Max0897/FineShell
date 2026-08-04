@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
-  createDeletedHostRecord,
-  isDeletedHostExpired,
   migrateLegacyConfiguration,
   parseConfigurationExport,
   serializeConfigurationExport,
 } from "./config-database";
+import {
+  createDeletedHostRecord,
+  isDeletedHostExpired,
+} from "./configuration-mutations";
 import { DEFAULT_APP_SETTINGS } from "./app-settings";
 
 describe("migrateLegacyConfiguration", () => {

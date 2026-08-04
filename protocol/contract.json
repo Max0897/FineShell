@@ -1,5 +1,5 @@
 {
-  "version": 26,
+  "version": 27,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,

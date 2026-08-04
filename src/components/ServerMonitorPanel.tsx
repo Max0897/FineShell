@@ -54,10 +54,13 @@ import {
   createNetworkAiHandoff,
   type AiHandoffRequest,
 } from "../ai-handoff";
+import ConnectionStatusOverlay from "./ConnectionStatusOverlay";
+import { isTerminalSessionOperational } from "../terminal-utils";
 
 interface ServerMonitorPanelProps {
   refreshIntervalSeconds: number;
   session: TerminalSession | null;
+  onReconnect: () => void;
   onSnapshotChange: (
     sessionId: string | null,
     snapshot: ServerMonitorSnapshot | null,
@@ -128,6 +131,7 @@ function tooltipRate(datum?: Record<string, unknown>) {
 function ServerMonitorPanel({
   refreshIntervalSeconds,
   session,
+  onReconnect,
   onSnapshotChange,
   onPortForwardStatusChange,
   onSendToAi,
@@ -170,8 +174,11 @@ function ServerMonitorPanel({
     setDiagnosticsVisible(false);
     setProcessDrawerVisible(false);
     setPortForwardDrawerVisible(false);
+  }, [onSnapshotChange, session?.id]);
+
+  useEffect(() => {
     const sessionId = session?.id;
-    if (!sessionId || session.status !== "connected") {
+    if (!sessionId || !isTerminalSessionOperational(session.status)) {
       return;
     }
 
@@ -243,7 +250,7 @@ function ServerMonitorPanel({
   };
 
   const openNetworkDiagnostics = () => {
-    if (session?.status !== "connected") return;
+    if (!session || !isTerminalSessionOperational(session.status)) return;
     setDiagnosticsVisible(true);
     if (!pingResult && !pingLoading) void runPing();
     if (!connectionsResult && !connectionsLoading) {
@@ -401,7 +408,21 @@ function ServerMonitorPanel({
     [],
   );
 
-  const connected = session?.status === "connected";
+  const connected = Boolean(
+    session && isTerminalSessionOperational(session.status),
+  );
+  const reconnecting = session?.status === "reconnecting";
+  const suspect = session?.status === "suspect";
+  const connectionUnavailable = Boolean(
+    session &&
+      (session.status === "failed" ||
+        session.status === "disconnected" ||
+        reconnecting ||
+        Boolean(error && !suspect)),
+  );
+  const connectionDescription = reconnecting
+    ? "正在重新连接服务器"
+    : error || session?.error || "服务器连接已断开";
   const sendNetworkToAi = () => {
     if (!session || (!pingResult && !traceResult && !connectionsResult)) return;
     onSendToAi(
@@ -451,7 +472,6 @@ function ServerMonitorPanel({
           </Tooltip>
         </Space>
       </div>
-      {error && <Alert content={error} showIcon type="warning" />}
       <dl className="monitor-system-facts">
         <div>
           <dt>系统</dt>
@@ -861,6 +881,13 @@ function ServerMonitorPanel({
             visible={portForwardDrawerVisible}
           />
         </>
+      )}
+      {connectionUnavailable && (
+        <ConnectionStatusOverlay
+          description={connectionDescription}
+          onReconnect={onReconnect}
+          reconnecting={reconnecting}
+        />
       )}
     </section>
   );

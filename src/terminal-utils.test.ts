@@ -5,6 +5,7 @@ import {
   decodeSshOutput,
   EMPTY_TERMINAL_INPUT_STATE,
   isWindowsTerminalPasteShortcut,
+  isTerminalSessionOperational,
   jumpHostRequest,
   reconnectDelaySeconds,
   sessionTabName,
@@ -14,6 +15,15 @@ import {
   terminalInjectedInputData,
   terminalStatusNoticeKey,
 } from "./terminal-utils";
+
+describe("terminal session health", () => {
+  test("keeps suspect sessions operational while liveness is confirmed", () => {
+    expect(isTerminalSessionOperational("connected")).toBe(true);
+    expect(isTerminalSessionOperational("suspect")).toBe(true);
+    expect(isTerminalSessionOperational("reconnecting")).toBe(false);
+    expect(isTerminalSessionOperational("disconnected")).toBe(false);
+  });
+});
 
 describe("terminal clipboard shortcuts", () => {
   const pasteEvent = {

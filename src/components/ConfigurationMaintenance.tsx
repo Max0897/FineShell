@@ -23,16 +23,18 @@ import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
   type ConfigurationBackup,
   type DeletedHostRecord,
-  importConfiguration,
   loadConfiguration,
   parseConfigurationExport,
+  serializeConfigurationExport,
+} from "../config-database";
+import {
+  importConfiguration,
   permanentlyDeleteHost,
   purgeExpiredDeletedHosts,
   removeCredentialReference,
   restoreConfigurationBackup,
   restoreDeletedHost,
-  serializeConfigurationExport,
-} from "../config-database";
+} from "../configuration-mutations";
 import {
   emitProtocolEventTo,
   listenProtocolEvent,

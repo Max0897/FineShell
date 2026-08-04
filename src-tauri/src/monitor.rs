@@ -3,7 +3,7 @@ use std::io::Read;
 use serde::Serialize;
 use ssh2::Session;
 
-const MONITOR_COMMAND: &str = r#"
+pub(crate) const MONITOR_COMMAND: &str = r#"
 LC_ALL=C
 printf 'hostname='
 (hostname 2>/dev/null || uname -n 2>/dev/null || printf 'unknown') | tr '\n' ' '
@@ -565,12 +565,14 @@ fn execute_remote_command(
     result
 }
 
-pub(crate) fn collect_server_snapshot(session: &Session) -> Result<ServerMonitorSnapshot, String> {
-    let (output, exit_status) = execute_remote_command(session, MONITOR_COMMAND, "监控")?;
+pub(crate) fn parse_server_snapshot_command(
+    output: &str,
+    exit_status: i32,
+) -> Result<ServerMonitorSnapshot, String> {
     if exit_status != 0 {
         return Err(format!("监控命令异常退出：{exit_status}"));
     }
-    parse_monitor_output(&output)
+    parse_monitor_output(output)
 }
 
 pub(crate) fn collect_ping(session: &Session, target: &str) -> Result<NetworkPingResult, String> {

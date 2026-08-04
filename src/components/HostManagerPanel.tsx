@@ -3,9 +3,7 @@ import {
   Button,
   Empty,
   Input,
-  InputNumber,
   Message,
-  Modal,
   Select,
   Table,
   Tooltip,
@@ -26,23 +24,23 @@ import {
 import {
   IconFolder,
   IconHistory,
-  IconLink,
   IconPlus,
   IconSort,
 } from "@arco-design/web-react/icon";
 import type {
   ConnectionHistoryRecord,
   HostFormValues,
-  HostAuthMethod,
   HostRecord,
   HostSortMode,
   JumpHostConnection,
-  QuickTarget,
   ProxyRecord,
   SshKeyRecord,
 } from "../models";
 import HostEditorModal from "./HostEditorModal";
 import HostActions from "./HostActions";
+import HostConnectionHistoryModal, {
+  type QuickConnectionRequest,
+} from "./HostConnectionHistoryModal";
 import {
   jumpHostSelectionError,
   normalizeHostForm,
@@ -55,13 +53,15 @@ import {
 } from "../host-organization";
 import {
   loadConfiguration,
+} from "../config-database";
+import {
   moveHostToTrash,
   purgeExpiredDeletedHosts,
   removeCredentialReference,
   replaceConfigurationContent,
   upsertCredentialReference,
   updateHostSortMode,
-} from "../config-database";
+} from "../configuration-mutations";
 import type { AppSettings } from "../app-settings";
 import { applyConnectionHistoryPolicy } from "../connection-history";
 import {
@@ -157,16 +157,6 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingHost, setEditingHost] = useState<HostRecord | null>(null);
   const [historyVisible, setHistoryVisible] = useState(false);
-  const [quickTarget, setQuickTarget] = useState<QuickTarget>({
-    address: "",
-    port: 22,
-    username: "root",
-  });
-  const [quickPassword, setQuickPassword] = useState("");
-  const [quickAuthMethod, setQuickAuthMethod] =
-    useState<HostAuthMethod>("password");
-  const [quickSshKeyId, setQuickSshKeyId] = useState<string>();
-  const [quickProxyId, setQuickProxyId] = useState<string>();
 
   useEffect(() => {
     let disposed = false;
@@ -640,14 +630,20 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     );
   }
 
-  async function quickConnect() {
+  async function quickConnect({
+    authMethod: quickAuthMethod,
+    password: quickPassword,
+    proxyId: quickProxyId,
+    sshKeyId: quickSshKeyId,
+    target: quickTarget,
+  }: QuickConnectionRequest) {
     const credentialReady =
       quickAuthMethod === "password"
         ? Boolean(quickPassword)
         : quickAuthMethod === "privateKey"
           ? Boolean(quickSshKeyId)
           : true;
-    if (!quickTarget.address.trim() || !credentialReady) return;
+    if (!quickTarget.address.trim() || !credentialReady) return false;
 
     const normalized = {
       ...quickTarget,
@@ -683,13 +679,14 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
           Message.warning("凭据索引更新失败，可在隐私与清理中重新扫描");
         });
       }
-      setQuickPassword("");
       await sendConnection(host);
+      return true;
     } catch {
       if (quickPasswordStored) {
         await removeHostPassword(host.id).catch(() => undefined);
       }
       Message.error("认证凭据保存失败，请检查系统凭据库权限");
+      return false;
     }
   }
 
@@ -762,42 +759,6 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
             onEdit={openHostEditor}
           />
         ) : null,
-    },
-  ];
-
-  const historyColumns: TableColumnProps<ConnectionHistoryRecord>[] = [
-    {
-      title: "连接目标",
-      dataIndex: "name",
-      render: (_, record) => (
-        <div className="host-name-cell">
-          <Typography.Text bold>{record.name}</Typography.Text>
-          <Typography.Text type="secondary">
-            {record.username}@{record.address}:{record.port}
-          </Typography.Text>
-        </div>
-      ),
-    },
-    {
-      title: "连接时间",
-      dataIndex: "connectedAt",
-      width: 160,
-      render: (value) => formatTime(value),
-    },
-    {
-      title: "操作",
-      width: 100,
-      render: (_, record) => (
-        <Button
-          disabled={configurationAction}
-          icon={<IconLink />}
-          onClick={() => reconnectFromHistory(record)}
-          size="mini"
-          type="primary"
-        >
-          重连
-        </Button>
-      ),
     },
   ];
 
@@ -887,110 +848,17 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         </div>
       </section>
 
-      <Modal
-        className="connection-history-modal"
-        footer={null}
+      <HostConnectionHistoryModal
+        actionPending={configurationAction}
+        history={history}
+        loading={configurationLoading}
         onCancel={() => setHistoryVisible(false)}
-        title="连接历史"
+        onQuickConnect={quickConnect}
+        onReconnect={reconnectFromHistory}
+        proxies={proxies}
+        sshKeys={sshKeys}
         visible={historyVisible}
-      >
-        <div className="connection-history-content">
-          <div className="quick-connect">
-            <Typography.Text bold>快速连接</Typography.Text>
-            <div className="quick-connect-fields">
-              <Input
-                onChange={(address) =>
-                  setQuickTarget((current) => ({ ...current, address }))
-                }
-                placeholder="主机地址"
-                value={quickTarget.address}
-              />
-              <Input
-                onChange={(username) =>
-                  setQuickTarget((current) => ({ ...current, username }))
-                }
-                placeholder="用户名"
-                value={quickTarget.username}
-              />
-              <Select
-                onChange={setQuickAuthMethod}
-                options={[
-                  { label: "密码认证", value: "password" },
-                  { label: "私钥认证", value: "privateKey" },
-                  { label: "SSH Agent", value: "agent" },
-                ]}
-                value={quickAuthMethod}
-              />
-              {quickAuthMethod === "password" ? (
-                <Input.Password
-                  onChange={setQuickPassword}
-                  placeholder="密码"
-                  value={quickPassword}
-                />
-              ) : quickAuthMethod === "privateKey" ? (
-                <Select
-                  onChange={setQuickSshKeyId}
-                  options={sshKeys.map((sshKey) => ({
-                    label: sshKey.name,
-                    value: sshKey.id,
-                  }))}
-                  placeholder="选择私钥"
-                  value={quickSshKeyId}
-                />
-              ) : null}
-              <InputNumber
-                max={65535}
-                min={1}
-                onChange={(port) =>
-                  setQuickTarget((current) => ({ ...current, port }))
-                }
-                placeholder="端口"
-                value={quickTarget.port}
-              />
-              <Select
-                allowClear
-                onChange={setQuickProxyId}
-                options={proxies.map((proxy) => ({
-                  label: proxy.name,
-                  value: proxy.id,
-                }))}
-                placeholder="直连"
-                value={quickProxyId}
-              />
-              <Button
-                disabled={
-                  configurationLoading ||
-                  configurationAction ||
-                  !quickTarget.address.trim() ||
-                  (quickAuthMethod === "password"
-                    ? !quickPassword
-                    : quickAuthMethod === "privateKey"
-                      ? !quickSshKeyId
-                      : false)
-                }
-                icon={<IconLink />}
-                onClick={() => void quickConnect()}
-                type="primary"
-              >
-                连接
-              </Button>
-            </div>
-          </div>
-          <div className="history-heading">
-            <Typography.Text bold>最近连接</Typography.Text>
-          </div>
-          <Table
-            border={false}
-            columns={historyColumns}
-            data={history}
-            loading={configurationLoading}
-            noDataElement={<Empty description="暂无连接历史" />}
-            pagination={false}
-            rowKey="id"
-            size="small"
-          />
-        </div>
-      </Modal>
+      />
 
       {editorVisible && (
         <HostEditorModal

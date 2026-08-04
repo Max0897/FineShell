@@ -1,75 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AutoComplete,
-  Badge,
-  Button,
-  Checkbox,
-  Drawer,
-  Dropdown,
   Empty,
-  Input,
-  Menu,
   Message,
   Modal,
-  Radio,
-  Select,
-  Space,
-  Spin,
   Table,
   Tooltip,
   Typography,
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
-import { join } from "@tauri-apps/api/path";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open, save } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
-import { diagnosticInvoke as invoke, recordDiagnostic } from "../diagnostics";
-import { isApplePlatform } from "../platform-utils";
+import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
-  IconApps,
-  IconArchive,
-  IconArrowUp,
-  IconBook,
-  IconCode,
-  IconClose,
-  IconCopy,
-  IconDelete,
-  IconDown,
-  IconDownload,
-  IconDesktop,
-  IconEdit,
   IconExclamationCircle,
   IconFile,
   IconFolder,
-  IconFolderAdd,
-  IconHistory,
-  IconLock,
-  IconLaunch,
-  IconPaste,
-  IconRefresh,
-  IconRobot,
-  IconScissor,
-  IconStar,
-  IconStarFill,
   IconSync,
-  IconThunderbolt,
   IconUpload,
 } from "@arco-design/web-react/icon";
 import type {
   SftpConnectResult,
   SftpEntry,
   SftpListResult,
-  SftpLocationRecord,
   TerminalSession,
 } from "../models";
-import {
-  loadConfiguration,
-  MAX_SFTP_BOOKMARKS,
-  MAX_SFTP_PATH_HISTORY,
-  upsertSftpLocation,
-} from "../config-database";
+import { MAX_SFTP_BOOKMARKS } from "../config-database";
 import ContextMenu from "./ContextMenu";
 import type { ContextMenuItem } from "./ContextMenu";
 import {
@@ -82,41 +36,50 @@ import {
   formatFileSize,
   formatPermissions,
   formatRemoteTime,
-  addRemotePathHistory,
-  isRemotePathDescendant,
-  isActiveSftpTransfer,
-  isValidRemoteName,
   invertSftpEntryKeys,
   localFileName,
   matchRemoteDirectoryPaths,
-  nextAvailableRemoteName,
-  nextAvailableRemoteArchiveName,
-  parsePermissions,
-  permissionFlagsFromValue,
-  permissionValueFromFlags,
-  remoteArchiveBaseName,
-  remoteArchiveExtension,
-  remoteArchiveFileName,
-  remoteArchiveFormatFromName,
-  remoteJoinPath,
   remoteParentPath,
-  resolveNativeDropPoint,
   selectAllSftpEntryKeys,
   setRemotePathBookmark,
-  summarizeSftpTransferBatch,
 } from "../sftp-utils";
-import type { PermissionFlag, RemoteArchiveFormat } from "../sftp-utils";
-import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
+import {
+  isTerminalSessionOperational,
+  jumpHostRequest,
+  sshCredentialId,
+} from "../terminal-utils";
 import {
   commandErrorMessage,
-  listenProtocolEvent,
   type ExternalEditPayload,
-  type ExternalEditResult,
 } from "../tauri-protocol";
-import TransferActivityList, {
+import {
   externalEditStatusMeta,
-  type TransferActivityRecord,
 } from "./TransferActivityList";
+import {
+  ArchiveDialog,
+  CreateEntryDialog,
+  ExternalEditConflictDialog,
+  PasteConflictDialog,
+  PermissionsDialog,
+  RenameDialog,
+  TextEditorDialog,
+  type RemoteTextFile,
+} from "./sftp/SftpDialogs";
+import SftpTransferDrawer from "./sftp/SftpTransferDrawer";
+import ConnectionStatusOverlay from "./ConnectionStatusOverlay";
+import buildSftpContextMenu from "./sftp/buildSftpContextMenu";
+import SftpToolbar from "./sftp/SftpToolbar";
+import useSftpArchives from "./sftp/useSftpArchives";
+import useSftpClipboard from "./sftp/useSftpClipboard";
+import useSftpEntryOperations from "./sftp/useSftpEntryOperations";
+import useSftpFileTransfers from "./sftp/useSftpFileTransfers";
+import { isSftpSessionFailure } from "./sftp/sftpErrors";
+import useSftpLocations from "./sftp/useSftpLocations";
+import useSftpRemoteDrag from "./sftp/useSftpRemoteDrag";
+import useSftpTextEditing, {
+  REMOTE_TEXT_MAX_BYTES,
+} from "./sftp/useSftpTextEditing";
+import useSftpTransfers from "./sftp/useSftpTransfers";
 import {
   isEditableSelectAllTarget,
   SELECT_ALL_REQUEST_EVENT,
@@ -124,10 +87,6 @@ import {
 } from "../select-all-shortcut";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
-type CreateEntryKind = "file" | "directory";
-type SftpClipboardMode = "copy" | "cut";
-type PasteConflictPolicy = "overwrite" | "skip" | "rename";
-
 interface BrowserState {
   status: BrowserStatus;
   path: string;
@@ -136,27 +95,12 @@ interface BrowserState {
   error?: string;
 }
 
-interface SftpClipboard {
-  mode: SftpClipboardMode;
-  entries: SftpEntry[];
-}
-
-interface PendingPaste {
-  targetDirectory: string;
-  clipboard: SftpClipboard;
-  conflictCount: number;
-}
-
-interface ArchiveDialogState {
-  entries: SftpEntry[];
-  mode: "compress" | "download";
-}
-
 interface SftpPanelProps {
   confirmFileDelete: boolean;
   externalEditorName: string;
   externalEditorPath: string;
   onCurrentPathChange: (sessionId: string | null, path: string) => void;
+  onReconnect: () => void;
   onSendFilesToAi: (
     sessionId: string,
     files: AiRemoteFileContext[],
@@ -172,94 +116,12 @@ interface SftpPanelProps {
   terminalDirectory?: { path: string; revision: number };
 }
 
-type TransferRecord = TransferActivityRecord;
-
-interface LocalUploadFile {
-  path: string;
-  relativePath: string;
-  size: number;
-}
-
-interface LocalUploadInspection {
-  files: LocalUploadFile[];
-  directories: string[];
-  skippedPaths: number;
-}
-
-interface RemoteTextFile {
-  path: string;
-  content: string;
-  size: number;
-  modifiedAt?: number;
-  permissions?: number;
-}
-
-interface TextEditorState {
-  entry: SftpEntry;
-  document: RemoteTextFile | null;
-  content: string;
-  loading: boolean;
-  saving: boolean;
-}
-
 const INITIAL_BROWSER: BrowserState = {
   status: "idle",
   path: "/",
   inputPath: "/",
   entries: [],
 };
-
-const MAX_CONCURRENT_TRANSFERS = 2;
-const REMOTE_TEXT_MAX_BYTES = 2 * 1024 * 1024;
-const REMOTE_TEXT_CONFLICT_ERROR = "远程文件已被其他程序修改";
-const EMPTY_SFTP_LOCATION: SftpLocationRecord = {
-  hostId: "",
-  bookmarks: [],
-  history: [],
-};
-
-const PERMISSION_MATRIX_ROWS = [
-  { label: "所有者", scope: "owner" },
-  { label: "用户组", scope: "group" },
-  { label: "其他", scope: "other" },
-] as const;
-
-const PERMISSION_MATRIX_COLUMNS = [
-  { label: "读取", capability: "read" },
-  { label: "写入", capability: "write" },
-  { label: "执行", capability: "execute" },
-] as const;
-
-const ARCHIVE_FORMAT_OPTIONS = [
-  { label: "Tar Gzip (.tar.gz)", value: "tarGz" },
-  { label: "Zip (.zip)", value: "zip" },
-  { label: "Tar (.tar)", value: "tar" },
-];
-
-function samePaths(left: string[], right: string[]) {
-  return (
-    left.length === right.length &&
-    left.every((path, index) => path === right[index])
-  );
-}
-
-function createTransferId() {
-  return `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function createUploadBatchId() {
-  return `upload-batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function isTransferCancellation(message: string) {
-  return /传输已取消|连接已取消|cancel(?:led|ed)/i.test(message);
-}
-
-function isSftpSessionFailure(message: string) {
-  return /会话不存在|会话已停止|连接已关闭|connection|disconnect|socket/i.test(
-    message,
-  );
-}
 
 function ExternalEditStatusIcon({ edit }: { edit: ExternalEditPayload }) {
   const status = externalEditStatusMeta(edit.status);
@@ -285,6 +147,7 @@ function SftpPanel({
   externalEditorName,
   externalEditorPath,
   onCurrentPathChange,
+  onReconnect,
   onSendFilesToAi,
   onSendSelectionToAi,
   refreshRequest,
@@ -293,171 +156,29 @@ function SftpPanel({
   terminalDirectory,
 }: SftpPanelProps) {
   const [browsers, setBrowsers] = useState<Record<string, BrowserState>>({});
-  const [transfers, setTransfers] = useState<Record<string, TransferRecord>>(
-    {},
-  );
   const [transferDrawerVisible, setTransferDrawerVisible] = useState(false);
-  const [creatingEntryKind, setCreatingEntryKind] =
-    useState<CreateEntryKind | null>(null);
-  const [newEntryName, setNewEntryName] = useState("");
-  const [renamingEntry, setRenamingEntry] = useState<SftpEntry | null>(null);
-  const [renameName, setRenameName] = useState("");
-  const [permissionEntries, setPermissionEntries] = useState<SftpEntry[]>([]);
-  const [permissionValue, setPermissionValue] = useState("");
-  const [permissionOwner, setPermissionOwner] = useState("");
-  const [permissionGroup, setPermissionGroup] = useState("");
-  const parsedPermissionValue = parsePermissions(permissionValue);
-  const selectedPermissionFlags =
-    parsedPermissionValue === null
-      ? []
-      : permissionFlagsFromValue(parsedPermissionValue);
   const [operationLoading, setOperationLoading] = useState(false);
-  const [archiveDialog, setArchiveDialog] = useState<ArchiveDialogState | null>(
-    null,
-  );
-  const [archiveBaseName, setArchiveBaseName] = useState("");
-  const [archiveFormat, setArchiveFormat] =
-    useState<RemoteArchiveFormat>("tarGz");
-  const [textEditor, setTextEditor] = useState<TextEditorState | null>(null);
-  const [externalEdits, setExternalEdits] = useState<
-    Record<string, ExternalEditPayload>
-  >({});
-  const [externalEditConflict, setExternalEditConflict] =
-    useState<ExternalEditPayload | null>(null);
-  const [externalEditActionLoading, setExternalEditActionLoading] =
-    useState(false);
+  const [retryingSessionId, setRetryingSessionId] = useState<string>();
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
-  const [remoteDropTargetPath, setRemoteDropTargetPath] = useState<string>();
-  const [remoteDragPreview, setRemoteDragPreview] = useState<{
-    count: number;
-    kind: SftpEntry["kind"];
-    label: string;
-    x: number;
-    y: number;
-  }>();
-  const [clipboards, setClipboards] = useState<Record<string, SftpClipboard>>(
-    {},
-  );
-  const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
-  const [pasteConflictPolicy, setPasteConflictPolicy] =
-    useState<PasteConflictPolicy>("rename");
-  const [fileDropActive, setFileDropActive] = useState(false);
-  const [fileDropTargetPath, setFileDropTargetPath] = useState<string>();
-  const [sftpLocations, setSftpLocations] = useState<
-    Record<string, SftpLocationRecord>
-  >({});
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
-  const startingTransfersRef = useRef(new Set<string>());
-  const finalizedUploadBatchesRef = useRef(new Set<string>());
   const handledRefreshRequestsRef = useRef<Record<string, number>>({});
   const handledTerminalDirectoryRevisionsRef = useRef(
     new Map<string, number>(),
   );
   const browsersRef = useRef(browsers);
-  const transfersRef = useRef(transfers);
   const panelRef = useRef<HTMLElement>(null);
-  const dropZoneRef = useRef<HTMLDivElement>(null);
-  const remotePointerDragRef = useRef<{
-    active: boolean;
-    entries: SftpEntry[];
-    pointerId: number;
-    startX: number;
-    startY: number;
-  }>();
-  const textEditorRequestRef = useRef(0);
-  const sessionIdRef = useRef(session?.id);
   const sessionHostIdsRef = useRef(new Map<string, string>());
-  const sftpLocationsRef = useRef(sftpLocations);
-  const locationPersistenceErrorRef = useRef(false);
-  const readyRef = useRef(false);
-  const queueUploadPathsRef = useRef<
-    (paths: string[], targetDirectory?: string) => Promise<void>
-  >(async () => undefined);
+  const { commitLocation, locationForHost, recordVisitedPath } =
+    useSftpLocations();
 
   useEffect(() => {
     browsersRef.current = browsers;
   }, [browsers]);
 
-  useEffect(() => {
-    transfersRef.current = transfers;
-  }, [transfers]);
-
-  sessionIdRef.current = session?.id;
   if (session) {
     sessionHostIdsRef.current.set(session.id, session.host.id);
   }
-
-  useEffect(() => {
-    let disposed = false;
-    void loadConfiguration()
-      .then((configuration) => {
-        if (disposed) return;
-        const persisted = Object.fromEntries(
-          configuration.sftpLocations.map((location) => [
-            location.hostId,
-            location,
-          ]),
-        );
-        const merged = { ...persisted, ...sftpLocationsRef.current };
-        sftpLocationsRef.current = merged;
-        setSftpLocations(merged);
-      })
-      .catch(() => {
-        if (!disposed) Message.warning("无法读取 SFTP 目录记录");
-      });
-    return () => {
-      disposed = true;
-    };
-  }, []);
-
-  const commitSftpLocation = useCallback(
-    (
-      hostId: string,
-      update: (current: SftpLocationRecord) => SftpLocationRecord,
-    ) => {
-      const current = sftpLocationsRef.current[hostId] ?? {
-        ...EMPTY_SFTP_LOCATION,
-        hostId,
-      };
-      const next = update(current);
-      if (
-        samePaths(current.bookmarks, next.bookmarks) &&
-        samePaths(current.history, next.history)
-      ) {
-        return;
-      }
-      const locations = { ...sftpLocationsRef.current, [hostId]: next };
-      sftpLocationsRef.current = locations;
-      setSftpLocations(locations);
-      void upsertSftpLocation(next)
-        .then(() => {
-          locationPersistenceErrorRef.current = false;
-        })
-        .catch(() => {
-          if (locationPersistenceErrorRef.current) return;
-          locationPersistenceErrorRef.current = true;
-          Message.warning("SFTP 目录记录保存失败");
-        });
-    },
-    [],
-  );
-
-  const recordVisitedPath = useCallback(
-    (sessionId: string, path: string) => {
-      const hostId = sessionHostIdsRef.current.get(sessionId);
-      if (!hostId) return;
-      commitSftpLocation(hostId, (current) => ({
-        ...current,
-        history: addRemotePathHistory(
-          current.history,
-          path,
-          MAX_SFTP_PATH_HISTORY,
-        ),
-      }));
-    },
-    [commitSftpLocation],
-  );
 
   const updateBrowser = useCallback(
     (sessionId: string, values: Partial<BrowserState>) => {
@@ -491,7 +212,8 @@ function SftpPanel({
           entries: result.entries,
           error: undefined,
         });
-        recordVisitedPath(sessionId, result.path);
+        const hostId = sessionHostIdsRef.current.get(sessionId);
+        if (hostId) recordVisitedPath(hostId, result.path);
       } catch (error) {
         const message = commandErrorMessage(error);
         if (initial) {
@@ -567,10 +289,59 @@ function SftpPanel({
     [loadDirectory, updateBrowser],
   );
 
+  const {
+    cancel: cancelTransfer,
+    cancelSessionTransfers,
+    clearFinished: clearFinishedTransfersForSession,
+    currentTransfers,
+    pause: pauseTransfer,
+    queueArchiveDownload,
+    queueTransfer,
+    resume: resumeTransfer,
+    retry: retryTransfer,
+  } = useSftpTransfers({
+    activeSessionId: session?.id,
+    isSessionReady: (sessionId) => connectedHomesRef.current.has(sessionId),
+    onRefreshDirectory: async (sessionId) => {
+      const currentBrowser = browsersRef.current[sessionId];
+      if (currentBrowser?.status === "ready") {
+        await loadDirectory(sessionId, currentBrowser.path);
+      }
+    },
+    onSessionFailure: (sessionId, message) => {
+      connectedHomesRef.current.delete(sessionId);
+      updateBrowser(sessionId, { status: "failed", error: message });
+    },
+  });
+  const {
+    clearClipboard,
+    currentClipboard,
+    cutEntryPaths,
+    pasteClipboard,
+    pasteConflictPolicy,
+    pendingPaste,
+    requestPaste,
+    selectPasteConflictPolicy,
+    setPendingPaste,
+    storeClipboard,
+  } = useSftpClipboard({
+    onClearSelection: () => setSelectedEntryKeys([]),
+    onLoadingChange: setOperationLoading,
+    onOperationError: handleOperationError,
+    onRefreshDirectory: async () => {
+      if (!session) return;
+      const currentBrowser = browsersRef.current[session.id];
+      if (currentBrowser) {
+        await loadDirectory(session.id, currentBrowser.path);
+      }
+    },
+    sessionId: session?.id,
+  });
+
   useEffect(() => {
     if (!session) return;
 
-    if (session.status === "connected") {
+    if (isTerminalSessionOperational(session.status)) {
       const browser = browsers[session.id];
       if (!browser || browser.status === "idle") {
         void connectAndLoad(session);
@@ -587,40 +358,22 @@ function SftpPanel({
       void invoke("sftp_disconnect", { sessionId: session.id }).catch(
         () => undefined,
       );
-      setTransfers((current) =>
-        Object.fromEntries(
-          Object.entries(current).map(([transferId, transfer]) => {
-            if (
-              transfer.sessionId === session.id &&
-              isActiveSftpTransfer(transfer.status)
-            ) {
-              startingTransfersRef.current.delete(transferId);
-              return [
-                transferId,
-                {
-                  ...transfer,
-                  status: "cancelled",
-                  bytesPerSecond: 0,
-                },
-              ];
-            }
-            return [transferId, transfer];
-          }),
-        ),
-      );
+      cancelSessionTransfers(session.id);
       updateBrowser(session.id, {
         status: "idle",
         entries: [],
         error: undefined,
       });
-      setClipboards((current) => {
-        if (!current[session.id]) return current;
-        const next = { ...current };
-        delete next[session.id];
-        return next;
-      });
+      clearClipboard(session.id);
     }
-  }, [browsers, connectAndLoad, session, updateBrowser]);
+  }, [
+    browsers,
+    cancelSessionTransfers,
+    clearClipboard,
+    connectAndLoad,
+    session,
+    updateBrowser,
+  ]);
 
   useEffect(() => {
     if (!session || refreshRequest <= 0) return;
@@ -635,148 +388,97 @@ function SftpPanel({
     void loadDirectory(session.id, browser.path);
   }, [browsers, loadDirectory, refreshRequest, session]);
 
-  useEffect(() => {
-    if (!isTauri()) return;
-
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listenProtocolEvent("sftp-transfer", ({ payload }) => {
-      if (payload.status === "failed") {
-        recordDiagnostic("error", "sftp.transfer", "SFTP 传输失败", {
-          error: payload.error,
-          sessionId: payload.sessionId,
-          transferId: payload.transferId,
-        });
-      }
-      setTransfers((current) => {
-        const previous = current[payload.transferId];
-        if (!previous) return current;
-        if (previous.status === "cancelled" && payload.status !== "cancelled") {
-          return current;
-        }
-        if (previous.status === "paused" && payload.status === "running") {
-          return current;
-        }
-        const now = Date.now();
-        const transferredBytes =
-          (payload.status === "failed" || payload.status === "cancelled") &&
-          payload.transferredBytes === 0
-            ? previous.transferredBytes
-            : payload.transferredBytes;
-        const elapsedSeconds = (now - previous.sampledAt) / 1000;
-        const shouldSample =
-          transferredBytes >= previous.sampledBytes &&
-          (elapsedSeconds >= 0.25 || payload.status !== "running");
-        const currentSpeed = shouldSample
-          ? (transferredBytes - previous.sampledBytes) /
-            Math.max(elapsedSeconds, 0.001)
-          : previous.bytesPerSecond;
-        const bytesPerSecond =
-          payload.status === "paused" || payload.status === "cancelled"
-            ? 0
-            : shouldSample
-              ? previous.bytesPerSecond > 0
-                ? previous.bytesPerSecond * 0.6 + currentSpeed * 0.4
-                : currentSpeed
-              : previous.bytesPerSecond;
-        return {
-          ...current,
-          [payload.transferId]: {
-            ...previous,
-            ...payload,
-            transferredBytes,
-            totalBytes: payload.totalBytes || previous.totalBytes,
-            sampledAt: shouldSample ? now : previous.sampledAt,
-            sampledBytes: shouldSample
-              ? transferredBytes
-              : previous.sampledBytes,
-            bytesPerSecond,
-          },
-        };
-      });
-    }).then((stopListening) => {
-      if (disposed) {
-        stopListening();
-      } else {
-        unlisten = stopListening;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isTauri()) return;
-
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listenProtocolEvent("sftp-external-edit", ({ payload }) => {
-      const record = { ...payload, updatedAt: Date.now() };
-      setExternalEdits((current) => {
-        if (payload.status === "closed") {
-          const next = { ...current };
-          delete next[payload.editId];
-          return next;
-        }
-        const next = Object.fromEntries(
-          Object.entries(current).filter(
-            ([editId, edit]) =>
-              editId === payload.editId ||
-              edit.sessionId !== payload.sessionId ||
-              edit.remotePath !== payload.remotePath,
-          ),
-        );
-        return { ...next, [payload.editId]: record };
-      });
-
-      if (payload.status === "conflict") {
-        if (payload.sessionId === sessionIdRef.current) {
-          setExternalEditConflict(record);
-        }
-      } else if (payload.status === "synced" || payload.status === "closed") {
-        setExternalEditConflict((current) =>
-          current?.editId === payload.editId ? null : current,
-        );
-      } else if (
-        payload.status === "failed" &&
-        payload.sessionId === sessionIdRef.current &&
-        payload.error
-      ) {
-        recordDiagnostic("error", "sftp.externalEdit", "外部编辑同步失败", {
-          error: payload.error,
-          sessionId: payload.sessionId,
-        });
-        Message.error(payload.error);
-      }
-    }).then((stopListening) => {
-      if (disposed) {
-        stopListening();
-      } else {
-        unlisten = stopListening;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
   const browser = session ? (browsers[session.id] ?? INITIAL_BROWSER) : null;
-  const connected = session?.status === "connected";
+  const connected = Boolean(
+    session && isTerminalSessionOperational(session.status),
+  );
   const ready = Boolean(connected && browser?.status === "ready");
-  readyRef.current = ready;
   const busy =
     browser?.status === "connecting" || browser?.status === "loading";
-  const currentLocation = session
-    ? (sftpLocations[session.host.id] ?? {
-        ...EMPTY_SFTP_LOCATION,
-        hostId: session.host.id,
-      })
-    : EMPTY_SFTP_LOCATION;
+  const sftpReconnecting = retryingSessionId === session?.id;
+  const reconnecting = session?.status === "reconnecting" || sftpReconnecting;
+  const sessionUnavailable = Boolean(
+    session &&
+      (session.status === "failed" ||
+        session.status === "disconnected" ||
+        reconnecting),
+  );
+  const sftpUnavailable = Boolean(connected && browser?.status === "failed");
+  const connectionUnavailable = sessionUnavailable || sftpUnavailable;
+  const connectionDescription = sftpReconnecting
+    ? "正在重新连接 SFTP"
+    : reconnecting
+      ? "正在重新连接服务器"
+      : sftpUnavailable
+        ? browser?.error || "SFTP 连接失败"
+        : session?.error || "服务器连接已断开";
+  const {
+    closeCreateDialog,
+    closePermissionsDialog,
+    closeRenameDialog,
+    createEntry,
+    creatingEntryKind,
+    newEntryName,
+    openCreateDialog,
+    openPermissionsDialog,
+    openRenameDialog,
+    parsedPermissionValue,
+    permissionEntries,
+    permissionGroup,
+    permissionOwner,
+    permissionValue,
+    renameEntry,
+    renameName,
+    renamingEntry,
+    requestDeleteEntries,
+    requestFastDelete,
+    setNewEntryName,
+    setPermissionGroup,
+    setPermissionOwner,
+    setPermissionValue,
+    setRenameName,
+    updatePermissions,
+  } = useSftpEntryOperations({
+    confirmFileDelete,
+    currentDirectory: browser?.path,
+    entries: browser?.entries ?? [],
+    onClearSelection: () => setSelectedEntryKeys([]),
+    onLoadingChange: setOperationLoading,
+    onOperationError: handleOperationError,
+    onRefreshDirectory: () => {
+      if (session && browser) {
+        return loadDirectory(session.id, browser.path);
+      }
+    },
+    sessionId: session?.id,
+  });
+  const {
+    chooseExternalEditor,
+    currentExternalEdits,
+    externalEditActionLoading,
+    externalEditConflict,
+    externalEditForEntry,
+    externalEdits,
+    openExternalEditor,
+    openTextEditor,
+    reopenExternalEditLocalFile,
+    requestCloseTextEditor,
+    resolveExternalEdit,
+    selectExternalEditConflict,
+    saveTextEditor,
+    textEditor,
+    textEditorByteLength,
+    updateTextContent,
+  } = useSftpTextEditing({
+    onOperationError: handleOperationError,
+    onRefreshDirectory: () => {
+      if (session && browser) {
+        return loadDirectory(session.id, browser.path);
+      }
+    },
+    sessionId: session?.id,
+  });
+  const currentLocation = locationForHost(session?.host.id);
   const currentPathBookmarked = Boolean(
     browser?.path && currentLocation.bookmarks.includes(browser.path),
   );
@@ -789,43 +491,14 @@ function SftpPanel({
       ),
     [browser?.inputPath, currentLocation.bookmarks, currentLocation.history],
   );
-  const currentTransfers = useMemo(
-    () =>
-      Object.values(transfers)
-        .filter((transfer) => transfer.sessionId === session?.id)
-        .reverse(),
-    [session?.id, transfers],
-  );
-  const currentExternalEdits = useMemo(
-    () =>
-      Object.values(externalEdits)
-        .filter((edit) => edit.sessionId === session?.id)
-        .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
-    [externalEdits, session?.id],
-  );
   const transferActivityCount =
     currentTransfers.length + currentExternalEdits.length;
-  const currentClipboard = session ? clipboards[session.id] : undefined;
-  const cutEntryPaths = useMemo(
-    () =>
-      new Set(
-        currentClipboard?.mode === "cut"
-          ? currentClipboard.entries.map((entry) => entry.path)
-          : [],
-      ),
-    [currentClipboard],
-  );
   const visibleEntries = useMemo(
     () =>
       (browser?.entries ?? []).filter(
         (entry) => showHiddenFiles || !entry.name.startsWith("."),
       ),
     [browser?.entries, showHiddenFiles],
-  );
-  const textEditorByteLength = useMemo(
-    () =>
-      textEditor ? new TextEncoder().encode(textEditor.content).byteLength : 0,
-    [textEditor],
   );
 
   useEffect(() => {
@@ -859,16 +532,7 @@ function SftpPanel({
 
   useEffect(() => {
     setSelectedEntryKeys([]);
-    setRemoteDropTargetPath(undefined);
-    setRemoteDragPreview(undefined);
-    remotePointerDragRef.current = undefined;
-    document.body.classList.remove("sftp-remote-dragging");
   }, [browser?.path, session?.id]);
-
-  useEffect(() => {
-    textEditorRequestRef.current += 1;
-    setTextEditor(null);
-  }, [session?.id]);
 
   useEffect(() => {
     const visibleKeys = new Set(visibleEntries.map((entry) => entry.id));
@@ -925,7 +589,7 @@ function SftpPanel({
 
   function toggleCurrentPathBookmark() {
     if (!session || !browser?.path) return;
-    commitSftpLocation(session.host.id, (current) => ({
+    commitLocation(session.host.id, (current) => ({
       ...current,
       bookmarks: setRemotePathBookmark(
         current.bookmarks,
@@ -938,7 +602,7 @@ function SftpPanel({
 
   function removePathBookmark(path: string) {
     if (!session) return;
-    commitSftpLocation(session.host.id, (current) => ({
+    commitLocation(session.host.id, (current) => ({
       ...current,
       bookmarks: setRemotePathBookmark(
         current.bookmarks,
@@ -951,11 +615,29 @@ function SftpPanel({
 
   function clearPathHistory() {
     if (!session) return;
-    commitSftpLocation(session.host.id, (current) => ({
+    commitLocation(session.host.id, (current) => ({
       ...current,
       history: [],
     }));
   }
+
+  const {
+    cancel: cancelRemotePointerDrag,
+    dropTargetPath: remoteDropTargetPath,
+    finish: finishRemotePointerDrag,
+    move: moveRemotePointerDrag,
+    preview: remoteDragPreview,
+    start: startRemotePointerDrag,
+  } = useSftpRemoteDrag({
+    disabled: !ready || operationLoading,
+    entries: visibleEntries,
+    onMove: (entries, targetDirectory) => {
+      void requestPaste(targetDirectory, { mode: "cut", entries });
+    },
+    resetKey: `${session?.id ?? ""}\0${browser?.path ?? ""}`,
+    selectedEntryKeys,
+    setSelectedEntryKeys,
+  });
 
   const columns = useMemo<TableColumnProps<SftpEntry>[]>(
     () => [
@@ -1022,215 +704,17 @@ function SftpPanel({
     ],
     [
       externalEdits,
+      cancelRemotePointerDrag,
+      finishRemotePointerDrag,
+      moveRemotePointerDrag,
       operationLoading,
       ready,
       selectedEntryKeys,
       session?.id,
+      startRemotePointerDrag,
       visibleEntries,
     ],
   );
-
-  const executeTransfer = useCallback(
-    async (transfer: TransferRecord) => {
-      try {
-        if (transfer.archiveFormat && transfer.archiveSourcePaths?.length) {
-          await invoke("sftp_download_archive", {
-            sessionId: transfer.sessionId,
-            transferId: transfer.transferId,
-            localPath: transfer.localPath,
-            sourcePaths: transfer.archiveSourcePaths,
-            archiveName: transfer.fileName,
-            format: transfer.archiveFormat,
-            overwrite: transfer.overwrite,
-          });
-        } else {
-          await invoke(
-            transfer.direction === "upload" ? "sftp_upload" : "sftp_download",
-            {
-              sessionId: transfer.sessionId,
-              transferId: transfer.transferId,
-              localPath: transfer.localPath,
-              remotePath: transfer.remotePath,
-              overwrite: transfer.overwrite,
-            },
-          );
-        }
-        if (!transfer.batchId) {
-          Message.success(
-            `${transfer.direction === "upload" ? "上传" : "下载"}完成：${transfer.fileName}`,
-          );
-          const currentBrowser = browsersRef.current[transfer.sessionId];
-          if (transfer.direction === "upload" && currentBrowser) {
-            await loadDirectory(transfer.sessionId, currentBrowser.path);
-          }
-        }
-      } catch (error) {
-        const message = commandErrorMessage(error);
-        const cancelled =
-          isTransferCancellation(message) ||
-          transfersRef.current[transfer.transferId]?.status === "cancelled";
-        setTransfers((current) => {
-          const previous = current[transfer.transferId] ?? transfer;
-          return {
-            ...current,
-            [transfer.transferId]: {
-              ...previous,
-              status: cancelled ? "cancelled" : "failed",
-              error: cancelled ? undefined : message,
-              bytesPerSecond: 0,
-            },
-          };
-        });
-        if (!cancelled) {
-          if (isSftpSessionFailure(message)) {
-            connectedHomesRef.current.delete(transfer.sessionId);
-            updateBrowser(transfer.sessionId, {
-              status: "failed",
-              error: message,
-            });
-          }
-          if (!transfer.batchId) Message.error(message);
-        }
-      } finally {
-        startingTransfersRef.current.delete(transfer.transferId);
-      }
-    },
-    [loadDirectory, updateBrowser],
-  );
-
-  useEffect(() => {
-    const batches = new Map<string, TransferRecord[]>();
-    for (const transfer of Object.values(transfers)) {
-      if (transfer.direction !== "upload" || !transfer.batchId) continue;
-      const batch = batches.get(transfer.batchId) ?? [];
-      batch.push(transfer);
-      batches.set(transfer.batchId, batch);
-    }
-
-    for (const batchId of finalizedUploadBatchesRef.current) {
-      if (!batches.has(batchId)) finalizedUploadBatchesRef.current.delete(batchId);
-    }
-
-    for (const [batchId, batch] of batches) {
-      if (finalizedUploadBatchesRef.current.has(batchId)) continue;
-      const summary = summarizeSftpTransferBatch(
-        batch.map((transfer) => transfer.status),
-      );
-      if (!summary.finished) continue;
-
-      finalizedUploadBatchesRef.current.add(batchId);
-      if (summary.failed === 0 && summary.cancelled === 0) {
-        Message.success(`上传完成：共 ${summary.completed} 个文件`);
-      } else {
-        const details = [`成功 ${summary.completed} 个`];
-        if (summary.failed > 0) details.push(`失败 ${summary.failed} 个`);
-        if (summary.cancelled > 0) details.push(`取消 ${summary.cancelled} 个`);
-        const message = `批量上传结束：${details.join("，")}`;
-        if (summary.failed === summary.total) Message.error(message);
-        else Message.warning(message);
-      }
-
-      const currentBrowser = browsersRef.current[batch[0].sessionId];
-      if (currentBrowser?.status === "ready") {
-        void loadDirectory(batch[0].sessionId, currentBrowser.path);
-      }
-    }
-  }, [loadDirectory, transfers]);
-
-  useEffect(() => {
-    if (!isTauri()) return;
-    const activeCounts = new Map<string, number>();
-    for (const transfer of Object.values(transfers)) {
-      if (transfer.status === "running" || transfer.status === "paused") {
-        activeCounts.set(
-          transfer.sessionId,
-          (activeCounts.get(transfer.sessionId) ?? 0) + 1,
-        );
-      }
-    }
-
-    for (const transfer of Object.values(transfers)) {
-      if (
-        transfer.status !== "queued" ||
-        startingTransfersRef.current.has(transfer.transferId) ||
-        !connectedHomesRef.current.has(transfer.sessionId)
-      ) {
-        continue;
-      }
-      const activeCount = activeCounts.get(transfer.sessionId) ?? 0;
-      if (activeCount >= MAX_CONCURRENT_TRANSFERS) continue;
-
-      startingTransfersRef.current.add(transfer.transferId);
-      activeCounts.set(transfer.sessionId, activeCount + 1);
-      const runningTransfer = { ...transfer, status: "running" as const };
-      setTransfers((current) => ({
-        ...current,
-        [transfer.transferId]: runningTransfer,
-      }));
-      void executeTransfer(runningTransfer);
-    }
-  }, [executeTransfer, transfers]);
-
-  function runTransfer(
-    direction: "upload" | "download",
-    localPath: string,
-    remotePath: string,
-    overwrite: boolean,
-    transferId = createTransferId(),
-    totalBytes = 0,
-    batchId?: string,
-  ) {
-    if (!session) return;
-    const fileName =
-      direction === "upload"
-        ? localFileName(localPath)
-        : remotePath.split("/").pop() || remotePath;
-    const record: TransferRecord = {
-      sessionId: session.id,
-      transferId,
-      direction,
-      fileName,
-      transferredBytes: 0,
-      totalBytes,
-      status: "queued",
-      localPath,
-      remotePath,
-      overwrite,
-      sampledAt: Date.now(),
-      sampledBytes: 0,
-      bytesPerSecond: 0,
-      batchId,
-    };
-    setTransfers((current) => ({ ...current, [transferId]: record }));
-  }
-
-  function runArchiveDownload(
-    localPath: string,
-    sourcePaths: string[],
-    format: RemoteArchiveFormat,
-    archiveName: string,
-    transferId = createTransferId(),
-  ) {
-    if (!session) return;
-    const record: TransferRecord = {
-      sessionId: session.id,
-      transferId,
-      direction: "download",
-      fileName: archiveName,
-      transferredBytes: 0,
-      totalBytes: 0,
-      status: "queued",
-      localPath,
-      remotePath: sourcePaths[0] ?? "",
-      overwrite: true,
-      sampledAt: Date.now(),
-      sampledBytes: 0,
-      bytesPerSecond: 0,
-      archiveFormat: format,
-      archiveSourcePaths: [...sourcePaths],
-    };
-    setTransfers((current) => ({ ...current, [transferId]: record }));
-  }
 
   function confirmBatchOverwrite(title: string, content: string) {
     return new Promise<boolean>((resolve) => {
@@ -1251,303 +735,65 @@ function SftpPanel({
     });
   }
 
-  async function queueUploadPaths(paths: string[], targetDirectory?: string) {
-    if (!session || !browser || !ready) return;
-    let inspection: LocalUploadInspection;
-    try {
-      inspection = await invoke<LocalUploadInspection>(
-        "sftp_inspect_upload_paths",
-        { paths },
-      );
-    } catch (error) {
-      Message.error(commandErrorMessage(error));
-      return;
-    }
-    if (inspection.skippedPaths > 0) {
-      Message.warning(`已跳过 ${inspection.skippedPaths} 个无效或不支持的项目`);
-    }
-    if (inspection.files.length === 0 && inspection.directories.length === 0) {
-      Message.warning("没有可上传的文件或文件夹");
-      return;
-    }
-
-    const destination = targetDirectory ?? browser.path;
-    let targetEntries = browser.entries;
-    if (destination !== browser.path) {
-      try {
-        const listing = await invoke<SftpListResult>("sftp_list", {
-          sessionId: session.id,
-          path: destination,
-        });
-        targetEntries = listing.entries;
-      } catch (error) {
-        Message.error(commandErrorMessage(error));
-        return;
-      }
-    }
-
-    const directoryRoots = new Set(
-      inspection.directories.filter((path) => !path.includes("/")),
-    );
-    const rootNames = new Set([
-      ...directoryRoots,
-      ...inspection.files.map((file) => file.relativePath.split("/")[0]),
-    ]);
-    const existingEntries = new Map(
-      targetEntries.map((entry) => [entry.name, entry]),
-    );
-    const incompatibleRoot = [...rootNames].find((name) => {
-      const existing = existingEntries.get(name);
-      return (
-        existing &&
-        (directoryRoots.has(name) !== (existing.kind === "directory"))
-      );
-    });
-    if (incompatibleRoot) {
-      Message.error(`远程目标“${incompatibleRoot}”与本地项目类型不一致`);
-      return;
-    }
-
-    const conflictingRoots = new Set(
-      [...rootNames].filter((name) => existingEntries.has(name)),
-    );
-    if (
-      conflictingRoots.size > 0 &&
-      !(await confirmBatchOverwrite(
-        "合并或覆盖远程项目？",
-        `有 ${conflictingRoots.size} 个同名项目，目录将合并，同名文件将覆盖。`,
-      ))
-    ) {
-      return;
-    }
-
-    try {
-      await invoke("sftp_ensure_upload_directories", {
+  const {
+    archiveBaseName,
+    archiveDialog,
+    archiveFormat,
+    closeArchiveDialog,
+    extractRemoteArchive,
+    openArchiveDialog,
+    setArchiveBaseName,
+    setArchiveFormat,
+    submitArchiveDialog,
+  } = useSftpArchives({
+    confirmOverwrite: confirmBatchOverwrite,
+    currentDirectory: browser?.path,
+    entries: browser?.entries ?? [],
+    onClearSelection: () => setSelectedEntryKeys([]),
+    onLoadingChange: setOperationLoading,
+    onOperationError: handleOperationError,
+    onQueueDownload: ({ archiveName, format, localPath, sourcePaths }) => {
+      if (!session) return;
+      queueArchiveDownload({
+        archiveName,
+        format,
+        localPath,
         sessionId: session.id,
-        basePath: destination,
-        relativePaths: inspection.directories,
+        sourcePaths,
       });
-    } catch (error) {
-      Message.error(commandErrorMessage(error));
-      return;
-    }
-
-    const batchId =
-      inspection.files.length > 1 ? createUploadBatchId() : undefined;
-    for (const file of inspection.files) {
-      const rootName = file.relativePath.split("/")[0];
-      runTransfer(
-        "upload",
-        file.path,
-        remoteJoinPath(destination, file.relativePath),
-        conflictingRoots.has(rootName),
-        undefined,
-        file.size,
-        batchId,
-      );
-    }
-    if (
-      destination === browser.path &&
-      inspection.directories.length > 0 &&
-      inspection.files.length === 0
-    ) {
-      await loadDirectory(session.id, browser.path);
-    }
-    if (inspection.files.length > 0) {
-      Message.info(`已加入 ${inspection.files.length} 个上传任务`);
-    } else {
-      Message.success(`已创建 ${inspection.directories.length} 个目录`);
-    }
-  }
-
-  queueUploadPathsRef.current = queueUploadPaths;
-
-  async function chooseUploadFiles() {
-    if (!session || !browser || !ready) return;
-    const selected = await open({
-      directory: false,
-      multiple: true,
-      title: "选择上传文件（可多选）",
-    });
-    const paths = Array.isArray(selected)
-      ? selected
-      : typeof selected === "string"
-        ? [selected]
-        : [];
-    if (paths.length > 0) {
-      await queueUploadPaths(paths);
-    }
-  }
-
-  async function downloadEntry(entry: SftpEntry) {
-    if (!session || !ready) return;
-    const target = await save({
-      defaultPath: entry.name,
-      title: `下载 ${entry.name}`,
-    });
-    if (!target) return;
-    runTransfer("download", target, entry.path, true, undefined, entry.size);
-  }
-
-  async function downloadEntries(entries: SftpEntry[]) {
-    const files = entries.filter((entry) => entry.kind !== "directory");
-    if (files.length === 0) {
-      Message.warning("请选择需要下载的文件");
-      return;
-    }
-    if (files.length < entries.length) {
-      Message.warning(`已跳过 ${entries.length - files.length} 个目录`);
-    }
-    if (files.length === 1) {
-      await downloadEntry(files[0]);
-      return;
-    }
-    const targetDirectory = await open({
-      directory: true,
-      multiple: false,
-      title: `选择 ${files.length} 个文件的下载目录`,
-    });
-    if (typeof targetDirectory !== "string") return;
-    if (
-      !(await confirmBatchOverwrite(
-        "开始批量下载？",
-        `将下载 ${files.length} 个文件，同名本地文件将统一覆盖。`,
-      ))
-    ) {
-      return;
-    }
-
-    for (const entry of files) {
-      runTransfer(
-        "download",
-        await join(targetDirectory, entry.name),
-        entry.path,
-        true,
-        undefined,
-        entry.size,
-      );
-    }
-    setSelectedEntryKeys([]);
-    Message.info(`已加入 ${files.length} 个下载任务`);
-  }
-
-  async function retryTransfer(transfer: TransferRecord) {
-    if (transfer.archiveFormat && transfer.archiveSourcePaths?.length) {
-      runArchiveDownload(
-        transfer.localPath,
-        transfer.archiveSourcePaths,
-        transfer.archiveFormat,
-        transfer.fileName,
-        transfer.transferId,
-      );
-      return;
-    }
-    runTransfer(
-      transfer.direction,
-      transfer.localPath,
-      transfer.remotePath,
-      transfer.overwrite,
-      transfer.transferId,
-      transfer.totalBytes,
-    );
-  }
-
-  async function pauseTransfer(transfer: TransferRecord) {
-    if (transfer.status !== "running") return;
-    try {
-      await invoke("sftp_pause_transfer", {
-        sessionId: transfer.sessionId,
-        transferId: transfer.transferId,
-      });
-      setTransfers((current) => {
-        const previous = current[transfer.transferId];
-        if (!previous || previous.status !== "running") return current;
-        return {
-          ...current,
-          [transfer.transferId]: {
-            ...previous,
-            status: "paused",
-            bytesPerSecond: 0,
-          },
-        };
-      });
-    } catch (error) {
-      Message.error(commandErrorMessage(error));
-    }
-  }
-
-  async function resumeTransfer(transfer: TransferRecord) {
-    if (transfer.status !== "paused") return;
-    try {
-      await invoke("sftp_resume_transfer", {
-        sessionId: transfer.sessionId,
-        transferId: transfer.transferId,
-      });
-      setTransfers((current) => {
-        const previous = current[transfer.transferId];
-        if (!previous || previous.status !== "paused") return current;
-        return {
-          ...current,
-          [transfer.transferId]: {
-            ...previous,
-            status: "running",
-            sampledAt: Date.now(),
-            sampledBytes: previous.transferredBytes,
-          },
-        };
-      });
-    } catch (error) {
-      Message.error(commandErrorMessage(error));
-    }
-  }
-
-  async function cancelTransfer(transfer: TransferRecord) {
-    if (transfer.status === "queued") {
-      startingTransfersRef.current.delete(transfer.transferId);
-      setTransfers((current) => ({
-        ...current,
-        [transfer.transferId]: {
-          ...transfer,
-          status: "cancelled",
-          bytesPerSecond: 0,
-        },
-      }));
-      return;
-    }
-    if (transfer.status !== "running" && transfer.status !== "paused") return;
-    try {
-      await invoke("sftp_cancel_transfer", {
-        sessionId: transfer.sessionId,
-        transferId: transfer.transferId,
-      });
-      setTransfers((current) => {
-        const previous = current[transfer.transferId];
-        if (!previous || !isActiveSftpTransfer(previous.status)) return current;
-        return {
-          ...current,
-          [transfer.transferId]: {
-            ...previous,
-            status: "cancelled",
-            bytesPerSecond: 0,
-          },
-        };
-      });
-    } catch (error) {
-      Message.error(commandErrorMessage(error));
-    }
-  }
+    },
+    onRefreshDirectory: () => {
+      if (session && browser) {
+        return loadDirectory(session.id, browser.path);
+      }
+    },
+    sessionId: session?.id,
+  });
+  const {
+    chooseUploadFiles,
+    downloadEntries,
+    downloadEntry,
+    dropZoneRef,
+    fileDropActive,
+    fileDropTargetPath,
+  } = useSftpFileTransfers({
+    confirmOverwrite: confirmBatchOverwrite,
+    currentDirectory: browser?.path,
+    entries: browser?.entries ?? [],
+    onClearSelection: () => setSelectedEntryKeys([]),
+    onQueueTransfer: queueTransfer,
+    onRefreshDirectory: () => {
+      if (session && browser) {
+        return loadDirectory(session.id, browser.path);
+      }
+    },
+    ready,
+    sessionId: session?.id,
+  });
 
   function clearFinishedTransfers() {
     if (!session) return;
-    setTransfers((current) =>
-      Object.fromEntries(
-        Object.entries(current).filter(
-          ([, transfer]) =>
-            transfer.sessionId !== session.id ||
-            isActiveSftpTransfer(transfer.status),
-        ),
-      ),
-    );
+    clearFinishedTransfersForSession(session.id);
   }
 
   function handleOperationError(error: unknown) {
@@ -1557,631 +803,6 @@ function SftpPanel({
       updateBrowser(session.id, { status: "failed", error: message });
     }
     Message.error(message);
-  }
-
-  function storeClipboard(entries: SftpEntry[], mode: SftpClipboardMode) {
-    if (!session || entries.length === 0) return;
-    setClipboards((current) => ({
-      ...current,
-      [session.id]: {
-        mode,
-        entries: entries.map((entry) => ({ ...entry })),
-      },
-    }));
-    Message.success(
-      `${mode === "copy" ? "已复制" : "已剪切"} ${entries.length} 个项目`,
-    );
-  }
-
-  async function pasteClipboard(
-    clipboard: SftpClipboard,
-    targetDirectory: string,
-    conflictPolicy: PasteConflictPolicy,
-  ) {
-    if (!session || !browser || clipboard.entries.length === 0) return;
-    const sessionId = session.id;
-    const invalidDirectory = clipboard.entries.find(
-      (entry) =>
-        entry.kind === "directory" &&
-        (entry.path === targetDirectory ||
-          isRemotePathDescendant(entry.path, targetDirectory)),
-    );
-    if (invalidDirectory) {
-      Message.warning(`不能将“${invalidDirectory.name}”放到其自身内部`);
-      return;
-    }
-
-    setOperationLoading(true);
-    let succeeded = 0;
-    let skipped = 0;
-    const completedSourcePaths = new Set<string>();
-    const failures: string[] = [];
-    try {
-      const targetListing = await invoke<SftpListResult>("sftp_list", {
-        sessionId,
-        path: targetDirectory,
-      });
-      const unavailableNames = new Set(
-        targetListing.entries.map((entry) => entry.name),
-      );
-
-      for (const entry of clipboard.entries) {
-        let targetName = entry.name;
-        let targetPath = remoteJoinPath(targetListing.path, targetName);
-        if (clipboard.mode === "cut" && targetPath === entry.path) {
-          skipped += 1;
-          continue;
-        }
-
-        const conflicts = unavailableNames.has(targetName);
-        if (conflicts && conflictPolicy === "skip") {
-          skipped += 1;
-          continue;
-        }
-        if (conflicts && conflictPolicy === "rename") {
-          targetName = nextAvailableRemoteName(targetName, unavailableNames);
-          targetPath = remoteJoinPath(targetListing.path, targetName);
-        }
-
-        try {
-          await invoke(
-            clipboard.mode === "copy" ? "sftp_copy" : "sftp_rename",
-            {
-              sessionId,
-              sourcePath: entry.path,
-              targetPath,
-              overwrite: conflicts && conflictPolicy === "overwrite",
-            },
-          );
-          unavailableNames.add(targetName);
-          completedSourcePaths.add(entry.path);
-          succeeded += 1;
-        } catch (error) {
-          failures.push(`${entry.name}：${commandErrorMessage(error)}`);
-        }
-      }
-
-      if (clipboard.mode === "cut" && completedSourcePaths.size > 0) {
-        setClipboards((current) => {
-          const active = current[sessionId];
-          if (!active || active.mode !== "cut") return current;
-          const remaining = active.entries.filter(
-            (entry) => !completedSourcePaths.has(entry.path),
-          );
-          if (remaining.length > 0) {
-            return {
-              ...current,
-              [sessionId]: { ...active, entries: remaining },
-            };
-          }
-          const next = { ...current };
-          delete next[sessionId];
-          return next;
-        });
-      }
-      setSelectedEntryKeys([]);
-
-      const activeBrowser = browsersRef.current[sessionId];
-      if (activeBrowser) {
-        await loadDirectory(sessionId, activeBrowser.path);
-      }
-      if (succeeded > 0) {
-        Message.success(
-          `${clipboard.mode === "copy" ? "已复制" : "已移动"} ${succeeded} 个项目`,
-        );
-      } else if (skipped > 0 && failures.length === 0) {
-        Message.info("没有需要处理的项目");
-      }
-      if (failures.length > 0) {
-        const remaining =
-          failures.length > 1 ? `，另有 ${failures.length - 1} 项失败` : "";
-        Message.error(`${failures[0]}${remaining}`);
-      }
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  async function requestPaste(
-    targetDirectory: string,
-    clipboard = currentClipboard,
-  ) {
-    if (!session || !clipboard || clipboard.entries.length === 0) return;
-    const invalidDirectory = clipboard.entries.find(
-      (entry) =>
-        entry.kind === "directory" &&
-        (entry.path === targetDirectory ||
-          isRemotePathDescendant(entry.path, targetDirectory)),
-    );
-    if (invalidDirectory) {
-      Message.warning(`不能将“${invalidDirectory.name}”放到其自身内部`);
-      return;
-    }
-
-    setOperationLoading(true);
-    try {
-      const targetListing = await invoke<SftpListResult>("sftp_list", {
-        sessionId: session.id,
-        path: targetDirectory,
-      });
-      const targetNames = new Set(
-        targetListing.entries.map((entry) => entry.name),
-      );
-      const conflictCount = clipboard.entries.filter((entry) => {
-        const targetPath = remoteJoinPath(targetListing.path, entry.name);
-        return (
-          !(clipboard.mode === "cut" && targetPath === entry.path) &&
-          targetNames.has(entry.name)
-        );
-      }).length;
-      if (conflictCount > 0) {
-        setPasteConflictPolicy("rename");
-        setPendingPaste({
-          targetDirectory: targetListing.path,
-          clipboard,
-          conflictCount,
-        });
-      } else {
-        await pasteClipboard(clipboard, targetListing.path, "skip");
-      }
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  function openCreateDialog(kind: CreateEntryKind) {
-    setCreatingEntryKind(kind);
-    setNewEntryName("");
-  }
-
-  async function createEntry() {
-    if (!session || !browser || !creatingEntryKind) return;
-    const name = newEntryName.trim();
-    if (!isValidRemoteName(name)) {
-      Message.warning("名称不能为空，且不能包含路径分隔符");
-      return;
-    }
-
-    setOperationLoading(true);
-    try {
-      await invoke(
-        creatingEntryKind === "directory"
-          ? "sftp_create_directory"
-          : "sftp_create_file",
-        {
-          sessionId: session.id,
-          path: remoteJoinPath(browser.path, name),
-        },
-      );
-      Message.success(
-        `已新建${creatingEntryKind === "directory" ? "目录" : "文件"} ${name}`,
-      );
-      setCreatingEntryKind(null);
-      setNewEntryName("");
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  function openRenameDialog(entry: SftpEntry) {
-    setRenamingEntry(entry);
-    setRenameName(entry.name);
-  }
-
-  async function renameEntry(overwrite = false) {
-    if (!session || !browser || !renamingEntry) return;
-    const name = renameName.trim();
-    if (!isValidRemoteName(name)) {
-      Message.warning("名称不能为空，且不能包含路径分隔符");
-      return;
-    }
-    if (name === renamingEntry.name) {
-      setRenamingEntry(null);
-      return;
-    }
-
-    const targetPath = remoteJoinPath(browser.path, name);
-    const targetExists = browser.entries.some(
-      (entry) => entry.id !== renamingEntry.id && entry.name === name,
-    );
-    if (targetExists && !overwrite) {
-      Modal.confirm({
-        title: "覆盖远程项目？",
-        content: `“${name}”已存在，继续将尝试覆盖目标。`,
-        okText: "覆盖",
-        cancelText: "取消",
-        onOk: () => renameEntry(true),
-      });
-      return;
-    }
-
-    setOperationLoading(true);
-    try {
-      await invoke("sftp_rename", {
-        sessionId: session.id,
-        sourcePath: renamingEntry.path,
-        targetPath,
-        overwrite,
-      });
-      setRenamingEntry(null);
-      setRenameName("");
-      Message.success(`已重命名为 ${name}`);
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  async function deleteEntries(entries: SftpEntry[]) {
-    if (!session || !browser || entries.length === 0) return;
-    let deletedCount = 0;
-    try {
-      for (const entry of entries) {
-        await invoke("sftp_delete", {
-          sessionId: session.id,
-          path: entry.path,
-        });
-        deletedCount += 1;
-      }
-      setSelectedEntryKeys([]);
-      Message.success(
-        entries.length === 1
-          ? `已删除 ${entries[0].name}`
-          : `已删除 ${entries.length} 个项目`,
-      );
-    } catch (error) {
-      handleOperationError(error);
-      throw error;
-    } finally {
-      if (deletedCount > 0) {
-        await loadDirectory(session.id, browser.path);
-      }
-    }
-  }
-
-  function requestDeleteEntries(entries: SftpEntry[]) {
-    const execute = () => deleteEntries(entries).catch(() => undefined);
-    if (!confirmFileDelete) {
-      void execute();
-      return;
-    }
-
-    const containsDirectory = entries.some(
-      (entry) => entry.kind === "directory",
-    );
-    Modal.confirm({
-      cancelText: "取消",
-      content:
-        entries.length === 1
-          ? `删除“${entries[0].name}”？${containsDirectory ? "目录必须为空。" : ""}`
-          : `删除选中的 ${entries.length} 个项目？${containsDirectory ? "目录必须为空。" : ""}`,
-      okButtonProps: { status: "danger" },
-      okText: "删除",
-      onOk: execute,
-      title: "确认删除",
-    });
-  }
-
-  async function fastDeleteEntries(entries: SftpEntry[]) {
-    if (!session || !browser || entries.length === 0) return;
-    setOperationLoading(true);
-    try {
-      await invoke("sftp_fast_delete", {
-        sessionId: session.id,
-        paths: entries.map((entry) => entry.path),
-      });
-      setSelectedEntryKeys([]);
-      Message.success(
-        entries.length === 1
-          ? `已快速删除 ${entries[0].name}`
-          : `已快速删除 ${entries.length} 个项目`,
-      );
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  function requestFastDelete(entries: SftpEntry[]) {
-    Modal.confirm({
-      cancelText: "取消",
-      content:
-        entries.length === 1
-          ? `将通过 rm -rf 永久删除“${entries[0].name}”，目录中的内容也会被删除。`
-          : `将通过 rm -rf 永久删除选中的 ${entries.length} 个项目，目录中的内容也会被删除。`,
-      okButtonProps: { status: "danger" },
-      okText: "快速删除",
-      onOk: () => fastDeleteEntries(entries),
-      title: "确认快速删除",
-    });
-  }
-
-  function openArchiveDialog(
-    entries: SftpEntry[],
-    mode: ArchiveDialogState["mode"],
-  ) {
-    const suggestedBase =
-      entries.length === 1 ? remoteArchiveBaseName(entries[0].name) : "archive";
-    const suggestedName = nextAvailableRemoteArchiveName(
-      suggestedBase || "archive",
-      "tarGz",
-      new Set((browser?.entries ?? []).map((entry) => entry.name)),
-    );
-    setArchiveFormat("tarGz");
-    setArchiveBaseName(remoteArchiveBaseName(suggestedName));
-    setArchiveDialog({ entries, mode });
-  }
-
-  function closeArchiveDialog() {
-    setArchiveDialog(null);
-    setArchiveBaseName("");
-    setArchiveFormat("tarGz");
-  }
-
-  async function submitArchiveDialog() {
-    if (!archiveDialog || !session || !browser) return;
-    const archiveName = remoteArchiveFileName(
-      archiveBaseName.trim(),
-      archiveFormat,
-    );
-    if (!isValidRemoteName(archiveName)) {
-      Message.warning("请输入有效的归档文件名称");
-      return;
-    }
-    const sourcePaths = archiveDialog.entries.map((entry) => entry.path);
-
-    if (archiveDialog.mode === "download") {
-      const target = await save({
-        defaultPath: archiveName,
-        title: `打包下载 ${archiveDialog.entries.length} 个项目`,
-      });
-      if (!target) return;
-      runArchiveDownload(target, sourcePaths, archiveFormat, archiveName);
-      closeArchiveDialog();
-      setSelectedEntryKeys([]);
-      Message.info("已加入打包下载任务");
-      return;
-    }
-
-    const targetPath = remoteJoinPath(browser.path, archiveName);
-    const overwrite = browser.entries.some(
-      (entry) => entry.path === targetPath,
-    );
-    if (
-      overwrite &&
-      !(await confirmBatchOverwrite(
-        "覆盖已有归档？",
-        `当前目录已经存在“${archiveName}”，继续后将覆盖该文件。`,
-      ))
-    ) {
-      return;
-    }
-
-    setOperationLoading(true);
-    try {
-      await invoke("sftp_create_archive", {
-        sessionId: session.id,
-        sourcePaths,
-        targetPath,
-        format: archiveFormat,
-        overwrite,
-      });
-      closeArchiveDialog();
-      setSelectedEntryKeys([]);
-      Message.success(`已创建 ${archiveName}`);
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  async function extractRemoteArchive(
-    entry: SftpEntry,
-    createDirectory: boolean,
-  ) {
-    if (!session || !browser) return;
-    const format = remoteArchiveFormatFromName(entry.name);
-    if (!format) {
-      Message.warning("当前文件不是支持的归档格式");
-      return;
-    }
-    const targetName = remoteArchiveBaseName(entry.name);
-    const targetDirectory = createDirectory
-      ? remoteJoinPath(browser.path, targetName)
-      : browser.path;
-    if (
-      createDirectory &&
-      browser.entries.some((candidate) => candidate.path === targetDirectory)
-    ) {
-      Message.warning(`目标目录“${targetName}”已存在`);
-      return;
-    }
-    if (
-      !createDirectory &&
-      !(await confirmBatchOverwrite(
-        "解压到当前目录？",
-        "归档中的同名文件将被覆盖，该操作无法自动撤销。",
-      ))
-    ) {
-      return;
-    }
-
-    setOperationLoading(true);
-    try {
-      await invoke("sftp_extract_archive", {
-        sessionId: session.id,
-        archivePath: entry.path,
-        targetDirectory,
-        format,
-        createDirectory,
-      });
-      Message.success(
-        createDirectory
-          ? `已解压到 ${targetName}`
-          : `已将 ${entry.name} 解压到当前目录`,
-      );
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setOperationLoading(false);
-    }
-  }
-
-  function openPermissionsDialog(entries: SftpEntry[]) {
-    const firstPermissions = entries[0]?.permissions;
-    const samePermissions = entries.every(
-      (entry) => entry.permissions === firstPermissions,
-    );
-    setPermissionEntries(entries);
-    setPermissionValue(
-      samePermissions && firstPermissions !== undefined
-        ? formatPermissions(firstPermissions)
-        : "",
-    );
-    setPermissionOwner(
-      entries.every((entry) => entry.owner === entries[0]?.owner)
-        ? (entries[0]?.owner ?? "")
-        : "",
-    );
-    setPermissionGroup(
-      entries.every((entry) => entry.group === entries[0]?.group)
-        ? (entries[0]?.group ?? "")
-        : "",
-    );
-  }
-
-  async function updatePermissions() {
-    if (!session || !browser || permissionEntries.length === 0) return;
-    const permissions = permissionValue.trim()
-      ? parsePermissions(permissionValue)
-      : null;
-    if (permissionValue.trim() && permissions === null) {
-      Message.warning("请输入 3 到 4 位八进制权限");
-      return;
-    }
-    const owner = permissionOwner.trim();
-    const group = permissionGroup.trim();
-    const hasChanges = permissionEntries.some(
-      (entry) =>
-        (permissions !== null && entry.permissions !== permissions) ||
-        (owner && entry.owner !== owner) ||
-        (group && entry.group !== group),
-    );
-    if (!hasChanges) {
-      Message.info("没有需要保存的更改");
-      return;
-    }
-
-    setOperationLoading(true);
-    let didUpdate = false;
-    try {
-      for (const entry of permissionEntries) {
-        if (permissions !== null && entry.permissions !== permissions) {
-          await invoke("sftp_set_permissions", {
-            sessionId: session.id,
-            path: entry.path,
-            permissions,
-          });
-          didUpdate = true;
-        }
-        const nextOwner = owner && entry.owner !== owner ? owner : null;
-        const nextGroup = group && entry.group !== group ? group : null;
-        if (nextOwner || nextGroup) {
-          await invoke("sftp_set_owner", {
-            sessionId: session.id,
-            path: entry.path,
-            owner: nextOwner,
-            group: nextGroup,
-          });
-          didUpdate = true;
-        }
-      }
-      Message.success(
-        permissionEntries.length === 1
-          ? `已保存 ${permissionEntries[0].name} 的属性`
-          : `已保存 ${permissionEntries.length} 个项目的属性`,
-      );
-      setPermissionEntries([]);
-      setPermissionValue("");
-      setPermissionOwner("");
-      setPermissionGroup("");
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      if (didUpdate) {
-        await loadDirectory(session.id, browser.path);
-      }
-      setOperationLoading(false);
-    }
-  }
-
-  function resetTextEditor() {
-    textEditorRequestRef.current += 1;
-    setTextEditor(null);
-  }
-
-  function requestCloseTextEditor() {
-    if (!textEditor || textEditor.saving) return;
-    if (
-      textEditor.document &&
-      textEditor.content !== textEditor.document.content
-    ) {
-      Modal.confirm({
-        cancelText: "继续编辑",
-        content: "当前修改尚未保存，关闭后将丢失这些内容。",
-        okButtonProps: { status: "danger" },
-        okText: "放弃修改",
-        onOk: resetTextEditor,
-        title: "放弃未保存的修改？",
-      });
-      return;
-    }
-    resetTextEditor();
-  }
-
-  async function openTextEditor(entry: SftpEntry) {
-    if (!session || entry.kind !== "file") return;
-    const requestId = textEditorRequestRef.current + 1;
-    textEditorRequestRef.current = requestId;
-    setTextEditor({
-      entry,
-      document: null,
-      content: "",
-      loading: true,
-      saving: false,
-    });
-    try {
-      const document = await invoke<RemoteTextFile>("sftp_read_text_file", {
-        sessionId: session.id,
-        path: entry.path,
-      });
-      if (textEditorRequestRef.current !== requestId) return;
-      setTextEditor({
-        entry,
-        document,
-        content: document.content,
-        loading: false,
-        saving: false,
-      });
-    } catch (error) {
-      if (textEditorRequestRef.current !== requestId) return;
-      setTextEditor(null);
-      handleOperationError(error);
-    }
   }
 
   async function sendFilesToAi(entries: SftpEntry[]) {
@@ -2235,422 +856,45 @@ function SftpPanel({
     }
   }
 
-  async function saveTextEditor(overwrite = false) {
-    if (
-      !session ||
-      !browser ||
-      !textEditor ||
-      textEditor.loading ||
-      textEditor.saving
-    ) {
-      return;
-    }
-    const document = textEditor.document;
-    if (!document) return;
-    if (textEditorByteLength > REMOTE_TEXT_MAX_BYTES) {
-      Message.error("编辑后的文本超过 2 MiB，无法保存");
-      return;
-    }
-    if (textEditor.content === document.content) {
-      return;
-    }
-
-    const editor = textEditor;
-    setTextEditor((current) =>
-      current
-        ? {
-            ...current,
-            saving: true,
-          }
-        : current,
-    );
-    try {
-      await invoke<RemoteTextFile>("sftp_write_text_file", {
-        sessionId: session.id,
-        path: editor.entry.path,
-        content: editor.content,
-        originalContent: document.content,
-        overwrite,
-      });
-      resetTextEditor();
-      Message.success(`已保存 ${editor.entry.name}`);
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      const message = commandErrorMessage(error);
-      setTextEditor((current) =>
-        current
-          ? {
-              ...current,
-              saving: false,
-            }
-          : current,
-      );
-      if (!overwrite && message.includes(REMOTE_TEXT_CONFLICT_ERROR)) {
-        Modal.confirm({
-          cancelText: "取消",
-          content: "远程内容已发生变化。强制保存会覆盖其他程序写入的内容。",
-          okButtonProps: { status: "danger" },
-          okText: "覆盖保存",
-          onOk: () => saveTextEditor(true),
-          title: "远程文件已修改",
-        });
-      } else {
-        handleOperationError(error);
-      }
-    }
-  }
-
-  function externalEditForEntry(entry: SftpEntry) {
-    return Object.values(externalEdits).find(
-      (edit) =>
-        edit.sessionId === session?.id &&
-        edit.remotePath === entry.path &&
-        edit.status !== "closed",
-    );
-  }
-
-  async function openExternalEditor(entry: SftpEntry, editorPath?: string) {
-    if (!session || entry.kind !== "file") return;
-    try {
-      const edit = await invoke<ExternalEditResult>(
-        "sftp_start_external_edit",
-        {
-          sessionId: session.id,
-          path: entry.path,
-        },
-      );
-      if (editorPath) {
-        await invoke("sftp_launch_external_editor", {
-          editId: edit.editId,
-          editorPath,
-        });
-      } else {
-        await openPath(edit.localPath);
-      }
-      Message.success(`已打开 ${entry.name}，保存后将自动同步`);
-    } catch (error) {
-      handleOperationError(error);
-    }
-  }
-
-  async function chooseExternalEditor(entry: SftpEntry) {
-    try {
-      const selected = await open({
-        directory: false,
-        multiple: false,
-        title: "选择外部编辑器",
-      });
-      if (typeof selected === "string") {
-        await openExternalEditor(entry, selected);
-      }
-    } catch (error) {
-      handleOperationError(error);
-    }
-  }
-
-  async function resolveExternalEdit(action: "overwrite" | "reload") {
-    if (!externalEditConflict || !session || !browser) return;
-    setExternalEditActionLoading(true);
-    try {
-      await invoke("sftp_external_edit_action", {
-        editId: externalEditConflict.editId,
-        action,
-      });
-      Message.success(
-        action === "overwrite"
-          ? "本地内容已覆盖远端文件"
-          : "已用远端内容更新本地文件",
-      );
-      setExternalEditConflict(null);
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setExternalEditActionLoading(false);
-    }
-  }
-
-  async function reopenExternalEditLocalFile(edit: ExternalEditPayload) {
-    try {
-      await openPath(edit.localPath);
-    } catch (error) {
-      Message.error(`无法打开本地编辑副本：${commandErrorMessage(error)}`);
-    }
-  }
-
   function entryContextMenuItems(entries: SftpEntry[]): ContextMenuItem[] {
-    const singleEntry = entries.length === 1 ? entries[0] : null;
-    const aiFileEntries = entries.filter((entry) => entry.kind === "file");
-    const menuItems: ContextMenuItem[] = [];
-
-    if (singleEntry?.kind === "directory") {
-      menuItems.push({
-        key: "open",
-        label: "打开",
-        icon: <IconFolder />,
-        disabled: operationLoading,
-        onClick: () => openDirectory(singleEntry),
-      });
-    } else if (singleEntry) {
-      if (singleEntry.kind === "file") {
-        const activeEdit = externalEditForEntry(singleEntry);
-        const openItems: ContextMenuItem[] = [
-          {
-            key: "open-internal",
-            label: "内置编辑器",
-            icon: <IconCode />,
-            disabled: operationLoading,
-            onClick: () => openTextEditor(singleEntry),
-          },
-          {
-            key: "open-default",
-            label: "系统默认应用",
-            icon: <IconDesktop />,
-            disabled: operationLoading,
-            onClick: () => openExternalEditor(singleEntry),
-          },
-        ];
-        if (externalEditorPath) {
-          openItems.push({
-            key: "open-configured",
-            label: externalEditorName || "已配置编辑器",
-            icon: <IconLaunch />,
-            disabled: operationLoading,
-            onClick: () => openExternalEditor(singleEntry, externalEditorPath),
-          });
-        }
-        openItems.push({
-          key: "open-other",
-          label: "选择其他应用...",
-          icon: <IconApps />,
-          disabled: operationLoading,
-          onClick: () => chooseExternalEditor(singleEntry),
-        });
-        if (
-          activeEdit?.status === "conflict" ||
-          activeEdit?.status === "failed"
-        ) {
-          openItems.push({
-            key: "resolve-external-edit",
-            label: "处理同步问题",
-            icon: <IconExclamationCircle />,
-            dividerBefore: true,
-            onClick: () => setExternalEditConflict(activeEdit),
-          });
-        }
-        menuItems.push({
-          key: "open-file",
-          label: "打开",
-          icon: <IconLaunch />,
-          children: openItems,
-          disabled: operationLoading,
-        });
-      }
-      menuItems.push({
-        key: "download",
-        label: "下载",
-        icon: <IconDownload />,
-        disabled: operationLoading,
-        onClick: () => downloadEntry(singleEntry),
-      });
-    } else if (entries.some((entry) => entry.kind !== "directory")) {
-      const fileCount = entries.filter(
-        (entry) => entry.kind !== "directory",
-      ).length;
-      menuItems.push({
-        key: "download-selected",
-        label: `下载所选（${fileCount}）`,
-        icon: <IconDownload />,
-        disabled: operationLoading,
-        onClick: () => downloadEntries(entries),
-      });
-    }
-
-    if (entries.length > 0 && aiFileEntries.length === entries.length) {
-      menuItems.push({
-        key: "send-files-to-ai",
-        label:
-          aiFileEntries.length === 1
-            ? "发送给 AI"
-            : `发送所选文件给 AI（${aiFileEntries.length}）`,
-        icon: <IconRobot />,
-        disabled: operationLoading,
-        onClick: () => sendFilesToAi(aiFileEntries),
-      });
-    } else if (entries.length > 0) {
-      menuItems.push({
-        key: "send-selection-to-ai",
-        label:
-          entries.length === 1
-            ? "发送给 AI"
-            : `发送所选项目给 AI（${entries.length}）`,
-        icon: <IconRobot />,
-        disabled: operationLoading,
-        onClick: () => {
-          if (!session || !browser) return;
-          return onSendSelectionToAi(session.id, browser.path, entries);
-        },
-      });
-    }
-
-    const selectedArchiveFormat =
-      singleEntry?.kind === "file"
-        ? remoteArchiveFormatFromName(singleEntry.name)
-        : null;
-    if (singleEntry && selectedArchiveFormat) {
-      menuItems.push({
-        key: "extract",
-        label: "解压",
-        icon: <IconArchive />,
-        dividerBefore: true,
-        disabled: operationLoading,
-        children: [
-          {
-            key: "extract-here",
-            label: "解压到当前目录",
-            icon: <IconArchive />,
-            onClick: () => extractRemoteArchive(singleEntry, false),
-          },
-          {
-            key: "extract-directory",
-            label: "解压到同名目录",
-            icon: <IconFolderAdd />,
-            onClick: () => extractRemoteArchive(singleEntry, true),
-          },
-        ],
-      });
-    }
-
-    if (entries.length > 0) {
-      menuItems.push({
-        key: "compress",
-        label:
-          entries.length === 1 ? "压缩..." : `压缩所选（${entries.length}）...`,
-        icon: <IconArchive />,
-        dividerBefore: !selectedArchiveFormat,
-        disabled: operationLoading,
-        onClick: () => openArchiveDialog(entries, "compress"),
-      });
-    }
-    if (
-      entries.length > 1 ||
-      entries.some((entry) => entry.kind === "directory")
-    ) {
-      menuItems.push({
-        key: "archive-download",
-        label:
-          entries.length === 1
-            ? "打包下载..."
-            : `打包下载所选（${entries.length}）...`,
-        icon: <IconDownload />,
-        disabled: operationLoading,
-        onClick: () => openArchiveDialog(entries, "download"),
-      });
-    }
-
-    if (entries.length > 0) {
-      menuItems.push(
-        {
-          key: "copy",
-          label:
-            entries.length === 1 ? "复制" : `复制所选（${entries.length}）`,
-          icon: <IconCopy />,
-          disabled: operationLoading,
-          dividerBefore: true,
-          onClick: () => storeClipboard(entries, "copy"),
-        },
-        {
-          key: "cut",
-          label:
-            entries.length === 1 ? "剪切" : `剪切所选（${entries.length}）`,
-          icon: <IconScissor />,
-          disabled: operationLoading,
-          onClick: () => storeClipboard(entries, "cut"),
-        },
-      );
-    }
-
-    const pasteTarget =
-      singleEntry?.kind === "directory"
-        ? singleEntry.path
-        : entries.length === 0
-          ? browser?.path
-          : undefined;
-    if (currentClipboard && pasteTarget) {
-      menuItems.push({
-        key: "paste",
-        label:
-          singleEntry?.kind === "directory"
-            ? `粘贴到“${singleEntry.name}”`
-            : `粘贴（${currentClipboard.entries.length}）`,
-        icon: <IconPaste />,
-        disabled: operationLoading,
-        onClick: () => requestPaste(pasteTarget, currentClipboard),
-      });
-    }
-
-    if (singleEntry) {
-      menuItems.push({
-        key: "rename",
-        label: "重命名",
-        icon: <IconEdit />,
-        disabled: operationLoading,
-        onClick: () => openRenameDialog(singleEntry),
-      });
-    }
-
-    menuItems.push({
-      key: "refresh",
-      label: "刷新",
-      icon: <IconRefresh />,
-      disabled: operationLoading,
-      onClick: () => {
+    return buildSftpContextMenu({
+      clipboardEntryCount: currentClipboard?.entries.length ?? 0,
+      entries,
+      externalEditorName,
+      externalEditorPath,
+      operationLoading,
+      onArchive: openArchiveDialog,
+      onChooseExternalEditor: chooseExternalEditor,
+      onCopy: (selected) => storeClipboard(selected, "copy"),
+      onCut: (selected) => storeClipboard(selected, "cut"),
+      onDelete: requestDeleteEntries,
+      onDownload: downloadEntry,
+      onDownloadMany: downloadEntries,
+      onEditText: openTextEditor,
+      onExtract: extractRemoteArchive,
+      onFastDelete: requestFastDelete,
+      onOpenDirectory: openDirectory,
+      onOpenExternal: openExternalEditor,
+      onPaste: (targetDirectory) =>
+        currentClipboard
+          ? requestPaste(targetDirectory, currentClipboard)
+          : undefined,
+      onPermissions: openPermissionsDialog,
+      onRefresh: () => {
         if (session && browser) {
           return loadDirectory(session.id, browser.path);
         }
       },
+      onRename: openRenameDialog,
+      onResolveExternalEdit: selectExternalEditConflict,
+      onSendFilesToAi: sendFilesToAi,
+      onSendSelectionToAi: (selected) => {
+        if (!session || !browser) return;
+        return onSendSelectionToAi(session.id, browser.path, selected);
+      },
+      resolveExternalEdit: externalEditForEntry,
+      rootDirectory: browser?.path,
     });
-
-    if (entries.length > 0) {
-      menuItems.push({
-        key: "permissions",
-        label:
-          entries.length === 1
-            ? "文件权限"
-            : `修改所选权限（${entries.length}）`,
-        icon: <IconLock />,
-        disabled: operationLoading,
-        onClick: () => openPermissionsDialog(entries),
-      });
-    }
-
-    if (entries.length > 0) {
-      menuItems.push(
-        {
-          key: "delete",
-          label:
-            entries.length === 1 ? "删除" : `删除所选（${entries.length}）`,
-          icon: <IconDelete />,
-          disabled: operationLoading,
-          danger: true,
-          dividerBefore: true,
-          onClick: () => requestDeleteEntries(entries),
-        },
-        {
-          key: "fast-delete",
-          label:
-            entries.length === 1
-              ? "删除(rm)"
-              : `删除所选(rm)（${entries.length}）`,
-          icon: <IconThunderbolt />,
-          disabled: operationLoading,
-          danger: true,
-          onClick: () => requestFastDelete(entries),
-        },
-      );
-    }
-
-    return menuItems;
   }
 
   function resolveEntryContextMenu(
@@ -2679,220 +923,25 @@ function SftpPanel({
 
   async function retryConnection() {
     if (!session) return;
-    connectedHomesRef.current.delete(session.id);
-    await invoke("sftp_disconnect", { sessionId: session.id }).catch(
-      () => undefined,
-    );
-    updateBrowser(session.id, { status: "idle", error: undefined });
-    await connectAndLoad(session);
+    setRetryingSessionId(session.id);
+    try {
+      connectedHomesRef.current.delete(session.id);
+      await invoke("sftp_disconnect", { sessionId: session.id }).catch(
+        () => undefined,
+      );
+      updateBrowser(session.id, { status: "idle", error: undefined });
+      await connectAndLoad(session);
+    } finally {
+      setRetryingSessionId((current) =>
+        current === session.id ? undefined : current,
+      );
+    }
   }
 
   function openDirectory(entry: SftpEntry) {
     if (!session || entry.kind !== "directory") return;
     void loadDirectory(session.id, entry.path);
   }
-
-  function remoteDragEntries(entry: SftpEntry) {
-    return selectedEntryKeys.includes(entry.id)
-      ? visibleEntries.filter((candidate) =>
-          selectedEntryKeys.includes(candidate.id),
-        )
-      : [entry];
-  }
-
-  function canDropRemoteEntries(entries: SftpEntry[], targetDirectory: string) {
-    return !entries.some(
-      (entry) =>
-        entry.kind === "directory" &&
-        (entry.path === targetDirectory ||
-          isRemotePathDescendant(entry.path, targetDirectory)),
-    );
-  }
-
-  function startRemotePointerDrag(
-    event: React.PointerEvent<HTMLElement>,
-    entry: SftpEntry,
-  ) {
-    if (event.button !== 0 || !ready || operationLoading) return;
-    const entries = remoteDragEntries(entry);
-    remotePointerDragRef.current = {
-      active: false,
-      entries: entries.map((item) => ({ ...item })),
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function remoteDirectoryAtPoint(clientX: number, clientY: number) {
-    const target = document.elementFromPoint(clientX, clientY);
-    const row = target?.closest<HTMLElement>("[data-sftp-entry-id]");
-    const entry = visibleEntries.find(
-      (candidate) => candidate.id === row?.dataset.sftpEntryId,
-    );
-    return entry?.kind === "directory" ? entry : undefined;
-  }
-
-  function clearRemotePointerDrag() {
-    remotePointerDragRef.current = undefined;
-    setRemoteDropTargetPath(undefined);
-    setRemoteDragPreview(undefined);
-    document.body.classList.remove("sftp-remote-dragging");
-  }
-
-  function moveRemotePointerDrag(event: React.PointerEvent<HTMLElement>) {
-    const drag = remotePointerDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-
-    if (!drag.active) {
-      const distance = Math.hypot(
-        event.clientX - drag.startX,
-        event.clientY - drag.startY,
-      );
-      if (distance < 5) return;
-      drag.active = true;
-      const firstEntry = drag.entries[0];
-      setRemoteDragPreview({
-        count: drag.entries.length,
-        kind: firstEntry?.kind ?? "file",
-        label: firstEntry?.name ?? "远程项目",
-        x: event.clientX,
-        y: event.clientY,
-      });
-      if (firstEntry && !selectedEntryKeys.includes(firstEntry.id)) {
-        setSelectedEntryKeys([firstEntry.id]);
-      }
-      document.body.classList.add("sftp-remote-dragging");
-    }
-
-    event.preventDefault();
-    const target = remoteDirectoryAtPoint(event.clientX, event.clientY);
-    const targetPath =
-      target && canDropRemoteEntries(drag.entries, target.path)
-        ? target.path
-        : undefined;
-    setRemoteDropTargetPath((current) =>
-      current === targetPath ? current : targetPath,
-    );
-    setRemoteDragPreview({
-      count: drag.entries.length,
-      kind: drag.entries[0]?.kind ?? "file",
-      label: drag.entries[0]?.name ?? "远程项目",
-      x: event.clientX,
-      y: event.clientY,
-    });
-  }
-
-  function finishRemotePointerDrag(event: React.PointerEvent<HTMLElement>) {
-    const drag = remotePointerDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    const target = drag.active
-      ? remoteDirectoryAtPoint(event.clientX, event.clientY)
-      : undefined;
-    const shouldMove =
-      target && canDropRemoteEntries(drag.entries, target.path);
-    if (drag.active) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
-    clearRemotePointerDrag();
-    if (shouldMove && target) {
-      void requestPaste(target.path, { mode: "cut", entries: drag.entries });
-    }
-  }
-
-  function cancelRemotePointerDrag(event: React.PointerEvent<HTMLElement>) {
-    const drag = remotePointerDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    clearRemotePointerDrag();
-  }
-
-  useEffect(
-    () => () => {
-      document.body.classList.remove("sftp-remote-dragging");
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (!isTauri()) return;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    let scaleFactor = 1;
-    const currentWindow = getCurrentWindow();
-
-    const handleDragDrop: Parameters<
-      typeof currentWindow.onDragDropEvent
-    >[0] = ({ payload }) => {
-      if (payload.type === "leave") {
-        setFileDropActive(false);
-        setFileDropTargetPath(undefined);
-        return;
-      }
-      const rect = dropZoneRef.current?.getBoundingClientRect();
-      const point = rect
-        ? resolveNativeDropPoint(
-            payload.position,
-            scaleFactor,
-            rect,
-            isApplePlatform(),
-          )
-        : undefined;
-      const x = point?.x ?? 0;
-      const y = point?.y ?? 0;
-      const inside = Boolean(readyRef.current && point?.inside);
-      const row = inside
-        ? document
-            .elementFromPoint(x, y)
-            ?.closest<HTMLElement>("[data-sftp-entry-id]")
-        : undefined;
-      const targetDirectory =
-        row?.dataset.sftpEntryKind === "directory"
-          ? row.dataset.sftpEntryPath
-          : undefined;
-      if (payload.type === "drop") {
-        setFileDropActive(false);
-        setFileDropTargetPath(undefined);
-        recordDiagnostic("info", "sftp.drag-drop", "收到本地文件拖放事件", {
-          accepted: inside,
-          coordinateMode: point?.coordinateMode ?? "unknown",
-          itemCount: payload.paths.length,
-          ready: readyRef.current,
-        });
-        if (inside) {
-          void queueUploadPathsRef.current(payload.paths, targetDirectory);
-        }
-        return;
-      }
-      setFileDropActive(inside);
-      setFileDropTargetPath(targetDirectory);
-    };
-
-    void (async () => {
-      try {
-        scaleFactor = await currentWindow.scaleFactor();
-        const stopListening = await currentWindow.onDragDropEvent(handleDragDrop);
-        if (disposed) {
-          stopListening();
-        } else {
-          unlisten = stopListening;
-        }
-      } catch (error) {
-        recordDiagnostic("error", "sftp.drag-drop", "注册文件拖放监听失败", {
-          error: commandErrorMessage(error),
-        });
-      }
-    })();
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
 
   return (
     <section
@@ -2902,231 +951,47 @@ function SftpPanel({
       ref={panelRef}
       tabIndex={-1}
     >
-      <div className="panel-toolbar sftp-toolbar">
-        <Space size="mini">
-          <Tooltip content="返回上级目录">
-            <Button
-              aria-label="返回上级目录"
-              disabled={!ready || browser?.path === "/"}
-              icon={<IconArrowUp />}
-              onClick={() =>
-                session &&
-                browser &&
-                void loadDirectory(session.id, remoteParentPath(browser.path))
-              }
-              size="mini"
-            />
-          </Tooltip>
-          <Tooltip content="刷新">
-            <Button
-              aria-label="刷新目录"
-              disabled={!ready}
-              icon={<IconRefresh />}
-              loading={browser?.status === "loading"}
-              onClick={() =>
-                session &&
-                browser &&
-                void loadDirectory(session.id, browser.path)
-              }
-              size="mini"
-            />
-          </Tooltip>
-        </Space>
-        <div className="sftp-path-controls">
-          <AutoComplete
-            className="sftp-path-autocomplete"
-            data={pathSuggestions}
-            disabled={!ready}
-            inputProps={{
-              "aria-label": "远程目录路径",
-              size: "mini",
-            }}
-            onChange={(value) =>
-              session && updateBrowser(session.id, { inputPath: value })
-            }
-            onPressEnter={(_, activeOption) => {
-              if (!activeOption && browser?.inputPath) {
-                navigateToPath(browser.inputPath);
-              }
-            }}
-            onSelect={navigateToPath}
-            value={connected ? (browser?.inputPath ?? "/") : ""}
-          />
-          <Tooltip
-            content={
-              currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"
-            }
-          >
-            <Button
-              aria-label={
-                currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"
-              }
-              className={currentPathBookmarked ? "is-active" : undefined}
-              disabled={!ready}
-              icon={currentPathBookmarked ? <IconStarFill /> : <IconStar />}
-              onClick={toggleCurrentPathBookmark}
-              size="mini"
-            />
-          </Tooltip>
-          <Dropdown
-            disabled={!ready}
-            droplist={
-              <Menu className="sftp-location-menu" selectable={false}>
-                <Menu.ItemGroup title="快速目录">
-                  {currentLocation.bookmarks.length ? (
-                    currentLocation.bookmarks.map((path) => (
-                      <Menu.Item
-                        key={`bookmark:${path}`}
-                        onClick={() => navigateToPath(path)}
-                      >
-                        <span className="sftp-location-menu-item">
-                          <IconStarFill />
-                          <span className="sftp-location-path">{path}</span>
-                          <Button
-                            aria-label={`取消收藏 ${path}`}
-                            icon={<IconClose />}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              removePathBookmark(path);
-                            }}
-                            size="mini"
-                            type="text"
-                          />
-                        </span>
-                      </Menu.Item>
-                    ))
-                  ) : (
-                    <Menu.Item disabled key="empty-bookmarks">
-                      暂无收藏目录
-                    </Menu.Item>
-                  )}
-                </Menu.ItemGroup>
-                <Menu.ItemGroup title="最近访问">
-                  {currentLocation.history.length ? (
-                    currentLocation.history.map((path) => (
-                      <Menu.Item
-                        key={`history:${path}`}
-                        onClick={() => navigateToPath(path)}
-                      >
-                        <span className="sftp-location-menu-item">
-                          <IconHistory />
-                          <span className="sftp-location-path">{path}</span>
-                        </span>
-                      </Menu.Item>
-                    ))
-                  ) : (
-                    <Menu.Item disabled key="empty-history">
-                      暂无访问记录
-                    </Menu.Item>
-                  )}
-                </Menu.ItemGroup>
-                {currentLocation.history.length > 0 && (
-                  <Menu.Item key="clear-history" onClick={clearPathHistory}>
-                    <span className="sftp-location-menu-item sftp-location-menu-action">
-                      <IconDelete />
-                      <span>清空最近访问</span>
-                    </span>
-                  </Menu.Item>
-                )}
-              </Menu>
-            }
-            position="bl"
-            trigger="click"
-          >
-            <Tooltip content="快速目录和最近访问">
-              <Button
-                aria-label="打开快速目录和最近访问"
-                disabled={!ready}
-                icon={<IconBook />}
-                size="mini"
-              />
-            </Tooltip>
-          </Dropdown>
-        </div>
-        <Space size="mini">
-          <Dropdown.Button
-            buttonProps={{ icon: <IconFolderAdd /> }}
-            disabled={!ready}
-            droplist={
-              <Menu
-                className="sftp-create-menu"
-                onClickMenuItem={(key) =>
-                  openCreateDialog(key === "file" ? "file" : "directory")
-                }
-                selectable={false}
-              >
-                <Menu.Item key="file">
-                  <span className="sftp-create-menu-label">
-                    <IconFile />
-                    新建文件
-                  </span>
-                </Menu.Item>
-                <Menu.Item key="directory">
-                  <span className="sftp-create-menu-label">
-                    <IconFolderAdd />
-                    新建目录
-                  </span>
-                </Menu.Item>
-              </Menu>
-            }
-            icon={<IconDown />}
-            onClick={() => openCreateDialog("directory")}
-            size="mini"
-            trigger="click"
-          >
-            新建
-          </Dropdown.Button>
-          <Tooltip
-            content={
-              currentClipboard
-                ? `粘贴 ${currentClipboard.entries.length} 个项目`
-                : "剪贴板为空"
-            }
-          >
-            <Button
-              aria-label="粘贴远程项目"
-              disabled={!ready || !currentClipboard || operationLoading}
-              icon={<IconPaste />}
-              onClick={() =>
-                browser && void requestPaste(browser.path, currentClipboard)
-              }
-              size="mini"
-            />
-          </Tooltip>
-          <Button
-            disabled={!ready}
-            icon={<IconUpload />}
-            onClick={() => void chooseUploadFiles()}
-            size="mini"
-            type="primary"
-          >
-            上传
-          </Button>
-          <Tooltip content="传输记录">
-            <Badge count={transferActivityCount} maxCount={99}>
-              <Button
-                aria-label="打开传输记录"
-                icon={<IconHistory />}
-                onClick={() => setTransferDrawerVisible(true)}
-                size="mini"
-              />
-            </Badge>
-          </Tooltip>
-        </Space>
-      </div>
-      {connected && browser?.status === "failed" ? (
-        <div className="panel-empty">
-          <div className="empty-action">
-            <Empty description={browser.error || "SFTP 连接失败"} />
-            <Button
-              icon={<IconRefresh />}
-              onClick={() => void retryConnection()}
-            >
-              重试
-            </Button>
-          </div>
-        </div>
-      ) : (
+      <SftpToolbar
+        bookmarks={currentLocation.bookmarks}
+        clipboardEntryCount={currentClipboard?.entries.length ?? 0}
+        connected={Boolean(connected)}
+        currentPath={browser?.path ?? "/"}
+        currentPathBookmarked={currentPathBookmarked}
+        history={currentLocation.history}
+        inputPath={browser?.inputPath ?? "/"}
+        loading={browser?.status === "loading"}
+        onClearHistory={clearPathHistory}
+        onCreate={openCreateDialog}
+        onInputPathChange={(value) =>
+          session && updateBrowser(session.id, { inputPath: value })
+        }
+        onNavigate={navigateToPath}
+        onOpenTransfers={() => setTransferDrawerVisible(true)}
+        onPaste={() => {
+          if (browser && currentClipboard) {
+            void requestPaste(browser.path, currentClipboard);
+          }
+        }}
+        onRefresh={() => {
+          if (session && browser) {
+            void loadDirectory(session.id, browser.path);
+          }
+        }}
+        onRemoveBookmark={removePathBookmark}
+        onToggleBookmark={toggleCurrentPathBookmark}
+        onUp={() => {
+          if (session && browser) {
+            void loadDirectory(session.id, remoteParentPath(browser.path));
+          }
+        }}
+        onUpload={() => void chooseUploadFiles()}
+        operationLoading={operationLoading}
+        pathSuggestions={pathSuggestions}
+        ready={ready}
+        transferActivityCount={transferActivityCount}
+      />
+
+      <>
         <ContextMenu
           menuClassName="sftp-context-menu"
           resolveItems={resolveEntryContextMenu}
@@ -3213,365 +1078,100 @@ function SftpPanel({
                 )}
               </div>
             )}
+            {connectionUnavailable && (
+              <ConnectionStatusOverlay
+                description={connectionDescription}
+                onReconnect={
+                  sftpUnavailable ? () => void retryConnection() : onReconnect
+                }
+                reconnecting={reconnecting}
+              />
+            )}
           </div>
         </ContextMenu>
-      )}
-      <Drawer
-        bodyStyle={{ padding: 0 }}
-        className="sftp-transfer-drawer"
-        footer={null}
-        getChildrenPopupContainer={() => document.body}
-        onCancel={() => setTransferDrawerVisible(false)}
-        title={
-          <div className="sftp-transfer-drawer-title">
-            <span>传输记录</span>
-            {currentTransfers.some(
-              (item) => !isActiveSftpTransfer(item.status),
-            ) && (
-              <Tooltip content="清除已结束记录">
-                <Button
-                  aria-label="清除已结束传输和同步记录"
-                  icon={<IconDelete />}
-                  onClick={clearFinishedTransfers}
-                  size="mini"
-                  type="text"
-                />
-              </Tooltip>
-            )}
-          </div>
-        }
+      </>
+      <SftpTransferDrawer
+        externalEdits={currentExternalEdits}
+        onCancelTransfer={(transfer) => void cancelTransfer(transfer)}
+        onClearFinished={clearFinishedTransfers}
+        onClose={() => setTransferDrawerVisible(false)}
+        onOpenExternalEdit={(edit) => void reopenExternalEditLocalFile(edit)}
+        onPauseTransfer={(transfer) => void pauseTransfer(transfer)}
+        onResolveExternalEdit={selectExternalEditConflict}
+        onResumeTransfer={(transfer) => void resumeTransfer(transfer)}
+        onRetryTransfer={(transfer) => void retryTransfer(transfer)}
+        transfers={currentTransfers}
         visible={transferDrawerVisible}
-        width={440}
-      >
-        <TransferActivityList
-          externalEdits={currentExternalEdits}
-          onCancel={(transfer) => void cancelTransfer(transfer)}
-          onOpenExternalEdit={(edit) => void reopenExternalEditLocalFile(edit)}
-          onPause={(transfer) => void pauseTransfer(transfer)}
-          onResolveExternalEdit={setExternalEditConflict}
-          onResume={(transfer) => void resumeTransfer(transfer)}
-          onRetry={(transfer) => void retryTransfer(transfer)}
-          transfers={currentTransfers}
-        />
-      </Drawer>
-      <Modal
-        cancelButtonProps={{ disabled: Boolean(textEditor?.saving) }}
-        className="sftp-text-editor-modal"
-        confirmLoading={Boolean(textEditor?.saving)}
-        maskClosable={false}
-        okButtonProps={{
-          disabled: Boolean(
-            textEditor?.loading ||
-            !textEditor?.document ||
-            textEditor.content === textEditor.document.content ||
-            textEditorByteLength > REMOTE_TEXT_MAX_BYTES,
-          ),
-        }}
-        okText="保存"
+      />
+      <TextEditorDialog
+        byteLength={textEditorByteLength}
+        maxBytes={REMOTE_TEXT_MAX_BYTES}
         onCancel={requestCloseTextEditor}
-        onOk={() => void saveTextEditor()}
-        title={textEditor ? `编辑文本 - ${textEditor.entry.name}` : "编辑文本"}
-        visible={Boolean(textEditor)}
-      >
-        <div className="sftp-text-editor-body">
-          <div className="sftp-text-editor-meta">
-            <Typography.Text ellipsis={{ showTooltip: true }} type="secondary">
-              {textEditor?.entry.path ?? ""}
-            </Typography.Text>
-            <Typography.Text
-              type={
-                textEditorByteLength > REMOTE_TEXT_MAX_BYTES
-                  ? "error"
-                  : "secondary"
-              }
-            >
-              {formatFileSize(textEditorByteLength)} / 2 MiB
-            </Typography.Text>
-          </div>
-          <div className="sftp-text-editor-field">
-            <Input.TextArea
-              aria-label="远程文本内容"
-              className="sftp-text-editor-input"
-              disabled={Boolean(textEditor?.loading || textEditor?.saving)}
-              onChange={(content) =>
-                setTextEditor((current) =>
-                  current
-                    ? {
-                        ...current,
-                        content,
-                      }
-                    : current,
-                )
-              }
-              onKeyDown={(event) => {
-                if (
-                  (event.metaKey || event.ctrlKey) &&
-                  event.key.toLowerCase() === "s"
-                ) {
-                  event.preventDefault();
-                  void saveTextEditor();
-                }
-              }}
-              placeholder={textEditor?.loading ? "正在读取远程文件..." : ""}
-              spellCheck={false}
-              value={textEditor?.content ?? ""}
-            />
-            {textEditor?.loading && (
-              <div className="sftp-text-editor-loading">
-                <Spin />
-              </div>
-            )}
-          </div>
-        </div>
-      </Modal>
-      <Modal
-        footer={
-          <Space>
-            <Button
-              disabled={externalEditActionLoading}
-              onClick={() => setExternalEditConflict(null)}
-            >
-              保留本地
-            </Button>
-            <Button
-              disabled={externalEditActionLoading}
-              onClick={() => void resolveExternalEdit("reload")}
-            >
-              重新加载远端
-            </Button>
-            <Button
-              loading={externalEditActionLoading}
-              onClick={() => void resolveExternalEdit("overwrite")}
-              status="danger"
-              type="primary"
-            >
-              覆盖远端
-            </Button>
-          </Space>
-        }
-        maskClosable={false}
-        onCancel={() => setExternalEditConflict(null)}
-        title={
-          externalEditConflict?.status === "failed"
-            ? "自动同步失败"
-            : "远程文件已修改"
-        }
-        visible={Boolean(externalEditConflict)}
-      >
-        <div className="sftp-external-edit-conflict">
-          <Typography.Paragraph>
-            {externalEditConflict?.error ||
-              "远端文件在本地编辑期间发生了变化。"}
-          </Typography.Paragraph>
-          <Typography.Text ellipsis={{ showTooltip: true }} type="secondary">
-            {externalEditConflict?.remotePath ?? ""}
-          </Typography.Text>
-        </div>
-      </Modal>
-      <Modal
-        confirmLoading={operationLoading}
-        maskClosable={false}
+        onChange={updateTextContent}
+        onSave={() => void saveTextEditor()}
+        state={textEditor}
+      />
+      <ExternalEditConflictDialog
+        edit={externalEditConflict}
+        loading={externalEditActionLoading}
+        onCancel={() => selectExternalEditConflict(null)}
+        onResolve={(action) => void resolveExternalEdit(action)}
+      />
+      <PasteConflictDialog
+        conflictCount={pendingPaste?.conflictCount ?? 0}
+        loading={operationLoading}
         onCancel={() => setPendingPaste(null)}
-        onOk={async () => {
+        onConfirm={() => {
           if (!pendingPaste) return;
-          await pasteClipboard(
+          void pasteClipboard(
             pendingPaste.clipboard,
             pendingPaste.targetDirectory,
             pasteConflictPolicy,
-          );
-          setPendingPaste(null);
+          ).then(() => setPendingPaste(null));
         }}
-        title="发现同名项目"
+        onPolicyChange={selectPasteConflictPolicy}
+        policy={pasteConflictPolicy}
         visible={Boolean(pendingPaste)}
-      >
-        <div className="sftp-paste-conflict">
-          <Typography.Paragraph>
-            目标目录中有 {pendingPaste?.conflictCount ?? 0}{" "}
-            个同名项目，请选择处理方式。
-          </Typography.Paragraph>
-          <Radio.Group
-            direction="vertical"
-            onChange={(value) =>
-              setPasteConflictPolicy(value as PasteConflictPolicy)
-            }
-            options={[
-              { label: "自动重命名并保留两者", value: "rename" },
-              { label: "覆盖同名项目", value: "overwrite" },
-              { label: "跳过同名项目", value: "skip" },
-            ]}
-            value={pasteConflictPolicy}
-          />
-        </div>
-      </Modal>
-      <Modal
-        confirmLoading={operationLoading}
-        maskClosable={false}
+      />
+      <ArchiveDialog
+        baseName={archiveBaseName}
+        format={archiveFormat}
+        loading={operationLoading}
+        onBaseNameChange={setArchiveBaseName}
         onCancel={closeArchiveDialog}
-        onOk={() => void submitArchiveDialog()}
-        okText={archiveDialog?.mode === "download" ? "选择保存位置" : "压缩"}
-        title={
-          archiveDialog?.mode === "download"
-            ? `打包下载 ${archiveDialog.entries.length} 个项目`
-            : `压缩 ${archiveDialog?.entries.length ?? 0} 个项目`
-        }
-        visible={Boolean(archiveDialog)}
-      >
-        <div className="sftp-archive-editor">
-          <Input
-            addAfter={remoteArchiveExtension(archiveFormat)}
-            addBefore="名称"
-            autoFocus
-            maxLength={200}
-            onChange={setArchiveBaseName}
-            onPressEnter={() => void submitArchiveDialog()}
-            placeholder="archive"
-            value={archiveBaseName}
-          />
-          <Select
-            onChange={(value) => setArchiveFormat(value as RemoteArchiveFormat)}
-            options={ARCHIVE_FORMAT_OPTIONS}
-            value={archiveFormat}
-          />
-        </div>
-      </Modal>
-      <Modal
-        confirmLoading={operationLoading}
-        maskClosable={false}
-        onCancel={() => {
-          setCreatingEntryKind(null);
-          setNewEntryName("");
-        }}
-        onOk={() => void createEntry()}
-        title={creatingEntryKind === "directory" ? "新建文件夹" : "新建文件"}
-        visible={Boolean(creatingEntryKind)}
-      >
-        <Input
-          autoFocus
-          onChange={setNewEntryName}
-          onPressEnter={() => void createEntry()}
-          placeholder={
-            creatingEntryKind === "directory" ? "文件夹名称" : "文件名称"
-          }
-          value={newEntryName}
-        />
-      </Modal>
-      <Modal
-        confirmLoading={operationLoading}
-        maskClosable={false}
-        onCancel={() => {
-          setPermissionEntries([]);
-          setPermissionValue("");
-          setPermissionOwner("");
-          setPermissionGroup("");
-        }}
-        onOk={() => void updatePermissions()}
-        title={
-          permissionEntries.length === 1
-            ? `权限与所有者 - ${permissionEntries[0].name}`
-            : `修改 ${permissionEntries.length} 个项目的属性`
-        }
-        visible={permissionEntries.length > 0}
-      >
-        <div className="sftp-permission-editor">
-          <div className="sftp-owner-fields">
-            <Input
-              addBefore="用户"
-              maxLength={128}
-              onChange={setPermissionOwner}
-              placeholder={
-                permissionEntries.length > 1 ? "留空保持不变" : "用户名或 UID"
-              }
-              value={permissionOwner}
-            />
-            <Input
-              addBefore="用户组"
-              maxLength={128}
-              onChange={setPermissionGroup}
-              placeholder={
-                permissionEntries.length > 1
-                  ? "留空保持不变"
-                  : "用户组名称或 GID"
-              }
-              value={permissionGroup}
-            />
-          </div>
-          <Input
-            addBefore="权限"
-            autoFocus
-            maxLength={4}
-            onChange={(value) =>
-              setPermissionValue(value.replace(/[^0-7]/g, "").slice(0, 4))
-            }
-            onPressEnter={() => void updatePermissions()}
-            placeholder={permissionEntries.length > 1 ? "留空保持不变" : "755"}
-            status={
-              permissionValue && parsedPermissionValue === null
-                ? "error"
-                : undefined
-            }
-            value={permissionValue}
-          />
-          <Checkbox.Group
-            onChange={(values) => {
-              setPermissionValue(
-                formatPermissions(
-                  permissionValueFromFlags(
-                    values as PermissionFlag[],
-                    parsedPermissionValue ?? 0,
-                  ),
-                ),
-              );
-            }}
-            value={selectedPermissionFlags}
-          >
-            <div className="sftp-permission-matrix">
-              <div className="sftp-permission-matrix-header">
-                <span />
-                {PERMISSION_MATRIX_COLUMNS.map(({ capability, label }) => (
-                  <span key={capability}>{label}</span>
-                ))}
-              </div>
-              {PERMISSION_MATRIX_ROWS.map(({ label, scope }) => (
-                <div className="sftp-permission-matrix-row" key={scope}>
-                  <span>{label}</span>
-                  {PERMISSION_MATRIX_COLUMNS.map(
-                    ({ capability, label: action }) => {
-                      const value = `${scope}-${capability}` as PermissionFlag;
-                      return (
-                        <span className="sftp-permission-checkbox" key={value}>
-                          <Checkbox
-                            aria-label={`${label}${action}权限`}
-                            value={value}
-                          />
-                        </span>
-                      );
-                    },
-                  )}
-                </div>
-              ))}
-            </div>
-          </Checkbox.Group>
-        </div>
-      </Modal>
-      <Modal
-        confirmLoading={operationLoading}
-        maskClosable={false}
-        onCancel={() => {
-          setRenamingEntry(null);
-          setRenameName("");
-        }}
-        onOk={() => void renameEntry()}
-        title="重命名"
-        visible={Boolean(renamingEntry)}
-      >
-        <Input
-          autoFocus
-          onChange={setRenameName}
-          onPressEnter={() => void renameEntry()}
-          placeholder="新名称"
-          value={renameName}
-        />
-      </Modal>
+        onConfirm={() => void submitArchiveDialog()}
+        onFormatChange={setArchiveFormat}
+        state={archiveDialog}
+      />
+      <CreateEntryDialog
+        kind={creatingEntryKind}
+        loading={operationLoading}
+        name={newEntryName}
+        onCancel={closeCreateDialog}
+        onConfirm={() => void createEntry()}
+        onNameChange={setNewEntryName}
+      />
+      <PermissionsDialog
+        entries={permissionEntries}
+        group={permissionGroup}
+        loading={operationLoading}
+        onCancel={closePermissionsDialog}
+        onConfirm={() => void updatePermissions()}
+        onGroupChange={setPermissionGroup}
+        onOwnerChange={setPermissionOwner}
+        onPermissionChange={setPermissionValue}
+        owner={permissionOwner}
+        parsedPermission={parsedPermissionValue}
+        permission={permissionValue}
+      />
+      <RenameDialog
+        entry={renamingEntry}
+        loading={operationLoading}
+        name={renameName}
+        onCancel={closeRenameDialog}
+        onConfirm={() => void renameEntry()}
+        onNameChange={setRenameName}
+      />
     </section>
   );
 }

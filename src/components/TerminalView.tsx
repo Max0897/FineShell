@@ -37,6 +37,7 @@ import {
   consumeTerminalCommandCandidate,
   decodeSshOutput,
   EMPTY_TERMINAL_INPUT_STATE,
+  isTerminalSessionOperational,
   isWindowsTerminalPasteShortcut,
   terminalStatusNoticeKey,
   terminalInjectedInputData,
@@ -59,6 +60,7 @@ import {
 import { TERMINAL_THEMES } from "../terminal-themes";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import { listenProtocolEvent } from "../tauri-protocol";
+import ConnectionStatusOverlay from "./ConnectionStatusOverlay";
 import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 interface TerminalViewProps {
@@ -71,6 +73,7 @@ interface TerminalViewProps {
   onAskAi: (selection: string) => void;
   onCommandLifecycle: (event: TerminalCommandSubmission) => void;
   onCurrentDirectoryChange: (sessionId: string, path: string) => void;
+  onReconnect: () => void;
   onRecentOutputChange: (output: string) => void;
   onSelectionChange: (selection: string) => void;
 }
@@ -133,6 +136,7 @@ function TerminalView({
   onAskAi,
   onCommandLifecycle,
   onCurrentDirectoryChange,
+  onReconnect,
   onRecentOutputChange,
   onSelectionChange,
 }: TerminalViewProps) {
@@ -141,7 +145,7 @@ function TerminalView({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<RefInputType>(null);
-  const connectedRef = useRef(session.status === "connected");
+  const connectedRef = useRef(isTerminalSessionOperational(session.status));
   const commandLifecycleRef = useRef(onCommandLifecycle);
   const commandTrackingEnabledRef = useRef(commandTrackingEnabled);
   const shellCommandResultsEnabledRef = useRef(commandTrackingEnabled);
@@ -252,7 +256,10 @@ function TerminalView({
   };
 
   startShellIntegrationMutationRef.current = (mutation) => {
-    if (session.status !== "connected" || shellIntegrationMutationRef.current) {
+    if (
+      !isTerminalSessionOperational(session.status) ||
+      shellIntegrationMutationRef.current
+    ) {
       return;
     }
     shellIntegrationMutationRef.current = mutation;
@@ -284,8 +291,8 @@ function TerminalView({
   };
 
   useEffect(() => {
-    connectedRef.current = session.status === "connected";
-    if (session.status !== "connected") {
+    connectedRef.current = isTerminalSessionOperational(session.status);
+    if (!isTerminalSessionOperational(session.status)) {
       currentDirectoryChangeRef.current(session.id, "");
       const completedAt = new Date().toISOString();
       for (const pending of pendingShellCommandsRef.current) {
@@ -316,7 +323,7 @@ function TerminalView({
   }, [commandTrackingEnabled]);
 
   useEffect(() => {
-    if (session.status !== "connected" || !terminalReady) return;
+    if (!isTerminalSessionOperational(session.status) || !terminalReady) return;
     if (!shellIntegrationInstalledRef.current) {
       if (!inputStateRef.current.reliable || inputStateRef.current.value) {
         shellIntegrationStateRef.current = "unavailable";
@@ -670,7 +677,7 @@ function TerminalView({
       } else {
         terminal.focus();
       }
-      if (session.status === "connected") {
+      if (isTerminalSessionOperational(session.status)) {
         void invoke("ssh_resize", {
           sessionId: session.id,
           cols: terminal.cols,
@@ -844,6 +851,14 @@ function TerminalView({
   const currentSearchResult =
     searchResult.resultIndex >= 0 ? searchResult.resultIndex + 1 : 0;
   const terminalTheme = TERMINAL_THEMES[settings.terminalColorScheme].theme;
+  const reconnecting = session.status === "reconnecting";
+  const connectionUnavailable =
+    session.status === "failed" ||
+    session.status === "disconnected" ||
+    reconnecting;
+  const connectionDescription = reconnecting
+    ? "正在重新连接服务器"
+    : session.error || "终端连接已断开";
 
   return (
     <div
@@ -921,6 +936,13 @@ function TerminalView({
             />
           </Tooltip>
         </div>
+      )}
+      {connectionUnavailable && (
+        <ConnectionStatusOverlay
+          description={connectionDescription}
+          onReconnect={onReconnect}
+          reconnecting={reconnecting}
+        />
       )}
     </div>
   );

@@ -1,0 +1,1377 @@
+.ai-assistant-sidebar {
+  min-width: 360px;
+  max-width: 640px;
+  flex: 0 0 auto;
+  background: #ffffff;
+}
+
+.ai-assistant-sidebar-hidden {
+  display: none;
+}
+
+.ai-assistant-sidebar-panel {
+  border-left: 1px solid #e5e6eb;
+}
+
+.ai-assistant-title {
+  gap: 12px;
+}
+
+.ai-assistant-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-assistant-heading > span:first-child {
+  flex: 0 0 auto;
+}
+
+.ai-assistant-heading > .arco-typography {
+  min-width: 0;
+  max-width: 150px;
+  margin: 0;
+  color: #86909c;
+  font-size: 12px;
+}
+
+.ai-assistant-heading > .arco-tag {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.ai-approval-mode {
+  flex: 0 0 auto;
+  width: 88px;
+}
+
+.ai-approval-mode .arco-select-view {
+  border: 0;
+}
+
+.ai-approval-mode-auto_safe .arco-select-view {
+  color: #165dff;
+}
+
+.ai-approval-mode-full_access .arco-select-view {
+  color: #f53f3f;
+  background: #fff2f0;
+}
+
+.ai-conversation-history {
+  height: 100%;
+}
+
+.ai-conversation-history-drawer-title {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ai-conversation-history-drawer-title .arco-typography {
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-conversation-history-list {
+  height: 100%;
+  overflow: auto;
+}
+
+.ai-conversation-history-list > .arco-spin,
+.ai-conversation-history-list > .arco-empty {
+  min-height: 160px;
+  display: grid;
+  place-content: center;
+}
+
+.ai-conversation-history-item {
+  min-height: 50px;
+  padding: 6px 5px 6px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  border-bottom: 1px solid #f2f3f5;
+}
+
+.ai-conversation-history-item:hover,
+.ai-conversation-history-item:focus-visible {
+  background: #f7f8fa;
+  outline: none;
+}
+
+.ai-conversation-history-item.is-active {
+  color: #165dff;
+  background: #e8f3ff;
+}
+
+.ai-conversation-history-meta {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ai-conversation-history-meta .arco-typography {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-conversation-history-item.is-active
+  .ai-conversation-history-meta
+  > .arco-typography:first-child {
+  color: #165dff;
+}
+
+.ai-conversation-history-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.ai-assistant-layout {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ai-assistant-messages {
+  min-height: 0;
+  flex: 1;
+  padding: 16px 20px;
+  overflow: auto;
+}
+
+.ai-assistant-messages > .arco-empty,
+.ai-assistant-messages > .ai-assistant-empty {
+  height: 100%;
+  display: grid;
+  place-content: center;
+}
+
+.ai-assistant-empty {
+  justify-items: center;
+  gap: 12px;
+}
+
+.ai-assistant-empty > .arco-typography {
+  margin: 0;
+}
+
+.ai-assistant-empty-icon {
+  color: #c9cdd4;
+  font-size: 32px;
+}
+
+.ai-prompt-presets {
+  width: min(320px, 100%);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ai-prompt-presets .arco-btn {
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+.ai-message {
+  padding: 12px 0;
+}
+
+.ai-message + .ai-message {
+  border-top: 1px solid #f2f3f5;
+}
+
+.ai-message-role {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.ai-message-role > svg {
+  color: #165dff;
+}
+
+.ai-tool-runs {
+  margin: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ai-tool-run {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #e5e6eb;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.ai-tool-run-heading {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 8px;
+}
+
+.ai-tool-run-heading > .arco-typography {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tool-run-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #00b42a;
+}
+
+.ai-tool-run-failed .ai-tool-run-icon {
+  color: #f53f3f;
+}
+
+.ai-tool-run-cancelled .ai-tool-run-icon {
+  color: #ff7d00;
+}
+
+.ai-tool-run-skipped .ai-tool-run-icon,
+.ai-tool-run-unavailable .ai-tool-run-icon {
+  color: #86909c;
+}
+
+.ai-tool-run-actions {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ai-tool-run-actions .arco-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+
+.ai-tool-run-summary {
+  max-height: 160px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px 10px;
+  border-top: 1px solid #f2f3f5;
+  background: #f7f8fa;
+  color: #4e5969;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-tool-confirmation .arco-typography {
+  margin-top: 0;
+}
+
+.ai-diagnostic-plans {
+  margin: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-diagnostic-plan {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #c9cdd4;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.ai-diagnostic-plan-heading {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid #f2f3f5;
+}
+
+.ai-diagnostic-plan-heading > span {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-diagnostic-plan-heading .arco-typography {
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-diagnostic-plan-heading > span > .arco-typography:first-child {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.ai-diagnostic-plan-description {
+  margin: 0;
+  padding: 8px 10px;
+  color: #4e5969;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-diagnostic-plan-preview {
+  border-top: 1px solid #f2f3f5;
+}
+
+.ai-diagnostic-plan-step {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.ai-diagnostic-plan-step + .ai-diagnostic-plan-step {
+  border-top: 1px solid #f7f8fa;
+}
+
+.ai-diagnostic-plan-step-index {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #f2f3f5;
+  color: #4e5969;
+  font-size: 11px;
+}
+
+.ai-diagnostic-plan-step-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ai-diagnostic-plan-step-content > .arco-typography {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ai-diagnostic-plan-step-title {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.ai-diagnostic-plan-step-title > .arco-typography {
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-diagnostic-plan-actions {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid #f2f3f5;
+  background: #f7f8fa;
+}
+
+.ai-diagnostic-plan > .ai-tool-runs {
+  margin: 0;
+  padding: 8px;
+}
+
+.ai-command-proposals {
+  margin: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ai-approval-dock {
+  max-height: min(42%, 360px);
+  flex: 0 0 auto;
+  overflow: auto;
+  padding: 10px 16px;
+  border-top: 1px solid #e5e6eb;
+  background: #f7f8fa;
+}
+
+.ai-approval-dock .ai-command-proposals {
+  margin: 0;
+}
+
+.ai-approval-dock .ai-diagnostic-plans {
+  margin: 0;
+}
+
+.ai-file-approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #c9cdd4;
+  background: #fff;
+}
+
+.ai-file-approval-heading,
+.ai-file-approval-title,
+.ai-file-approval-actions {
+  display: flex;
+  align-items: center;
+}
+
+.ai-file-approval-heading,
+.ai-file-approval-actions {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-file-approval-title {
+  min-width: 0;
+  gap: 8px;
+}
+
+.ai-file-approval-title > svg {
+  flex: 0 0 auto;
+  color: rgb(var(--primary-6));
+}
+
+.ai-file-approval-path.arco-typography,
+.ai-file-approval-summary.arco-typography {
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-approval-feedback {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid #f2f3f5;
+}
+
+.ai-command-proposals-approval .ai-command-proposal {
+  border-color: #c9cdd4;
+}
+
+.ai-command-proposals-approval .ai-command-proposals-heading {
+  min-height: 24px;
+}
+
+.ai-command-proposals-heading,
+.ai-command-proposals-heading > span,
+.ai-command-proposal-heading,
+.ai-command-proposal-title,
+.ai-command-proposal-tags,
+.ai-command-proposal-footer {
+  display: flex;
+  align-items: center;
+}
+
+.ai-command-proposals-heading,
+.ai-command-proposal-heading,
+.ai-command-proposal-footer {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-command-proposal-footer {
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-command-proposal-footer > .arco-space:last-child {
+  margin-left: auto;
+}
+
+.ai-command-proposals-heading > span {
+  min-width: 0;
+  gap: 8px;
+}
+
+.ai-command-proposals-heading .arco-typography,
+.ai-command-proposal .arco-typography {
+  margin: 0;
+}
+
+.ai-command-proposal {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #e5e6eb;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.ai-command-proposal-title {
+  min-width: 0;
+  gap: 7px;
+}
+
+.ai-command-proposal-title > .arco-typography {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-command-proposal-index {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #c9cdd4;
+  border-radius: 50%;
+  color: #4e5969;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.ai-command-proposal-tags {
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.ai-command-proposal-command {
+  max-height: 120px;
+  margin: 8px 0;
+  overflow: auto;
+  padding: 8px 10px;
+  background: #1d2129;
+  color: #f2f3f5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-command-proposal-footer > .arco-typography {
+  min-width: 0;
+  font-size: 11px;
+}
+
+.ai-command-proposal-details {
+  display: grid;
+  gap: 4px;
+}
+
+.ai-command-proposal-details > .arco-typography {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 7px;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ai-command-proposal-details > .arco-typography > span {
+  color: #86909c;
+}
+
+.ai-command-proposal-revision {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #f2f3f5;
+}
+
+.ai-command-proposal-revision .arco-textarea {
+  font-size: 12px;
+}
+
+.ai-command-proposal-revision-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.ai-command-proposal-warning.arco-typography {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.ai-command-proposal-result.arco-typography {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.ai-command-records {
+  margin: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ai-command-record {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid #e5e6eb;
+  background: #fff;
+}
+
+.ai-command-record > svg {
+  color: #86909c;
+}
+
+.ai-command-record > .arco-typography {
+  min-width: 0;
+  margin: 0;
+}
+
+.ai-file-edit-proposals {
+  margin: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ai-file-edit-proposals-heading {
+  min-height: 26px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-file-edit-proposals-heading .arco-typography {
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-file-edit-proposals-summary {
+  min-width: 0;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ai-file-change-history {
+  margin: 0 0 8px;
+  overflow: hidden;
+  border: 1px solid #e5e6eb;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.ai-file-change-history-heading {
+  min-height: 36px;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid #f2f3f5;
+}
+
+.ai-file-change-history-heading .arco-typography,
+.ai-file-change-history-item .arco-typography {
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-file-change-history-item {
+  min-height: 34px;
+  padding: 5px 8px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-file-change-history-item + .ai-file-change-history-item {
+  border-top: 1px solid #f2f3f5;
+}
+
+.ai-file-change-history-item > svg {
+  color: #165dff;
+}
+
+.ai-file-lines-added {
+  color: #00b42a;
+}
+
+.ai-file-lines-removed {
+  color: #f53f3f;
+}
+
+.ai-file-edit-card {
+  min-width: 0;
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #e5e6eb;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.ai-file-edit-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #165dff;
+  font-size: 17px;
+}
+
+.ai-file-edit-card-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ai-file-edit-card-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ai-file-edit-card-heading .arco-typography,
+.ai-file-edit-card-path.arco-typography,
+.ai-file-edit-card-error.arco-typography {
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-file-edit-card-path.arco-typography {
+  display: block;
+  max-width: 100%;
+}
+
+.ai-file-edit-card-error.arco-typography {
+  overflow-wrap: anywhere;
+}
+
+.ai-file-edit-card-actions {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ai-file-review-layout {
+  min-width: 0;
+  height: min(610px, calc(100vh - 190px));
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  border: 1px solid #e5e6eb;
+}
+
+.ai-file-review-navigation {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid #e5e6eb;
+  background: #f7f8fa;
+}
+
+.ai-file-review-navigation-heading {
+  min-height: 48px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid #e5e6eb;
+}
+
+.ai-file-review-navigation-heading > span:first-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ai-file-review-navigation-heading .arco-typography {
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-file-review-navigation-list {
+  min-height: 0;
+  overflow: auto;
+}
+
+.ai-file-review-navigation-item {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border: 0;
+  border-bottom: 1px solid #e5e6eb;
+  border-radius: 0;
+  background: transparent;
+  color: #1d2129;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-file-review-navigation-item:hover {
+  background: #f2f3f5;
+}
+
+.ai-file-review-navigation-item[aria-current="true"] {
+  box-shadow: inset 3px 0 #165dff;
+  background: #e8f3ff;
+}
+
+.ai-file-review-navigation-item:disabled {
+  cursor: default;
+}
+
+.ai-file-review-navigation-name,
+.ai-file-review-navigation-detail {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.ai-file-review-navigation-name strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-file-review-navigation-detail,
+.ai-file-review-navigation-error {
+  font-size: 11px;
+}
+
+.ai-file-review-navigation-detail {
+  color: #86909c;
+}
+
+.ai-file-review-navigation-error {
+  overflow: hidden;
+  color: #f53f3f;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-file-edit-review {
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.ai-file-edit-review-heading {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.ai-file-edit-review-heading > .arco-typography:first-child {
+  flex: 0 0 auto;
+  margin: 0;
+  font-size: 13px;
+}
+
+.ai-file-edit-review-path.arco-typography {
+  display: block;
+  max-width: 100%;
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.ai-file-edit-review .arco-alert {
+  margin: 0;
+}
+
+.ai-file-edit-review .arco-tabs-header {
+  justify-content: flex-start;
+}
+
+.ai-file-edit-review .arco-tabs-content {
+  padding-top: 12px;
+}
+
+.ai-file-diff-view {
+  min-width: 0;
+}
+
+.ai-file-diff-toolbar {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-file-diff-toolbar .arco-typography {
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-file-edit-diff {
+  height: min(438px, calc(100vh - 350px));
+  min-height: 220px;
+  overflow: auto;
+  border: 1px solid #e5e6eb;
+  background: #f7f8fa;
+  color: #1d2129;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.ai-file-diff-lines {
+  width: max-content;
+  min-width: 100%;
+}
+
+.ai-file-diff-line {
+  min-width: 100%;
+  min-height: 18px;
+  display: grid;
+  grid-template-columns: 46px 46px 20px minmax(360px, 1fr);
+}
+
+.ai-file-diff-line > code,
+.ai-file-diff-cell > code {
+  display: block;
+  min-width: 0;
+  padding: 0 10px;
+  font: inherit;
+  white-space: pre;
+}
+
+.ai-file-diff-line-number,
+.ai-file-diff-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 7px;
+  border-right: 1px solid rgb(229 230 235 / 75%);
+  color: #86909c;
+  user-select: none;
+}
+
+.ai-file-diff-marker {
+  justify-content: center;
+  padding: 0;
+  color: #4e5969;
+}
+
+.ai-file-diff-line-added {
+  background: #e8ffea;
+}
+
+.ai-file-diff-line-removed {
+  background: #ffece8;
+}
+
+.ai-file-diff-line-empty {
+  background: #f2f3f5;
+}
+
+.ai-file-diff-omitted {
+  min-height: 24px;
+  padding: 3px 10px;
+  border-top: 1px solid #e5e6eb;
+  border-bottom: 1px solid #e5e6eb;
+  background: #f2f3f5;
+  color: #86909c;
+  font-size: 11px;
+  text-align: center;
+}
+
+.ai-file-diff-split-heading,
+.ai-file-diff-split-row {
+  min-width: 720px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(360px, 1fr));
+}
+
+.ai-file-diff-split-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 28px;
+  background: #f2f3f5;
+  color: #4e5969;
+  font-family: var(--font-family);
+  font-size: 11px;
+}
+
+.ai-file-diff-split-heading > span {
+  padding: 5px 10px;
+}
+
+.ai-file-diff-split-heading > span + span,
+.ai-file-diff-split-row > .ai-file-diff-cell + .ai-file-diff-cell {
+  border-left: 1px solid #c9cdd4;
+}
+
+.ai-file-diff-cell {
+  min-width: 0;
+  min-height: 18px;
+  display: grid;
+  grid-template-columns: 46px 20px minmax(294px, 1fr);
+}
+
+.ai-file-edit-editor.arco-textarea-wrapper {
+  height: min(468px, calc(100vh - 320px));
+  min-height: 250px;
+}
+
+.ai-file-edit-editor .arco-textarea {
+  height: 100%;
+  resize: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.ai-file-operation-rename-preview {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 10px 16px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid var(--color-border-2);
+  background: var(--color-fill-1);
+}
+
+.ai-file-operation-rename-preview .arco-typography {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .ai-file-review-layout {
+    height: min(650px, calc(100vh - 150px));
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(104px, 24vh) minmax(0, 1fr);
+  }
+
+  .ai-file-review-navigation {
+    border-right: 0;
+    border-bottom: 1px solid #e5e6eb;
+  }
+
+  .ai-file-review-navigation-heading {
+    min-height: 40px;
+  }
+
+  .ai-file-edit-review {
+    padding: 10px;
+  }
+}
+
+.ai-message-content {
+  overflow-wrap: anywhere;
+  color: #1d2129;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: normal;
+}
+
+.ai-message-user .ai-message-content {
+  padding: 9px 12px;
+  background: #f7f8fa;
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.ai-message-content > :first-child {
+  margin-top: 0;
+}
+
+.ai-message-content > :last-child {
+  margin-bottom: 0;
+}
+
+.ai-message-failure {
+  min-height: 28px;
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ai-message-failure > .arco-typography {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-message-content p,
+.ai-message-content ul,
+.ai-message-content ol,
+.ai-message-content blockquote,
+.ai-message-content table {
+  margin: 7px 0;
+}
+
+.ai-message-content ul,
+.ai-message-content ol {
+  padding-left: 20px;
+}
+
+.ai-message-content li {
+  margin: 4px 0;
+  padding-left: 2px;
+}
+
+.ai-message-content li > p {
+  margin: 3px 0;
+}
+
+.ai-message-content li > p:first-child {
+  margin-top: 0;
+}
+
+.ai-message-content li > p:last-child {
+  margin-bottom: 0;
+}
+
+.ai-message-content :not(pre) > code {
+  padding: 1px 4px;
+  background: #f2f3f5;
+  border-radius: 2px;
+  color: #4e5969;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.ai-code-block {
+  margin: 9px 0;
+  overflow: hidden;
+  background: #17191f;
+  border: 1px solid #272a31;
+  border-radius: 4px;
+}
+
+.ai-code-block-header {
+  height: 32px;
+  padding: 0 8px 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #c9cdd4;
+  font-size: 12px;
+  background: #23262d;
+}
+
+.ai-code-block-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ai-code-block-label .arco-tag {
+  margin: 0;
+}
+
+.ai-code-block-header .arco-btn {
+  color: #c9cdd4;
+}
+
+.ai-code-block > pre {
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: #f2f3f5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.ai-code-block > pre code {
+  font: inherit;
+}
+
+.ai-assistant-composer {
+  flex: 0 0 auto;
+  padding: 12px 16px 16px;
+  border-top: 1px solid #e5e6eb;
+}
+
+.ai-remote-file-contexts {
+  margin-bottom: 9px;
+}
+
+.ai-remote-file-contexts-heading {
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-remote-file-contexts-heading .arco-typography {
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-remote-file-context-list {
+  max-height: 56px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  overflow: auto;
+}
+
+.ai-remote-file-context-list .arco-tag {
+  max-width: 150px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.ai-remote-file-context-list .arco-tag-content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-context-mention-option {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ai-context-mention-option > .arco-typography {
+  flex: 0 0 auto;
+  margin: 0;
+  font-size: 12px;
+}
+
+.ai-context-mentions-popup .arco-select-option-empty {
+  height: 48px;
+  display: flex;
+  align-items: center;
+}
+
+.ai-context-mentions-empty {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--color-text-3);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.ai-context-mentions-empty svg {
+  flex: 0 0 auto;
+  font-size: 14px;
+}
+
+.ai-assistant-composer .arco-textarea-wrapper {
+  width: 100%;
+}
+
+.ai-assistant-composer .arco-textarea:focus-visible {
+  outline: none;
+}
+
+.ai-assistant-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 9px;
+}
+
+.ai-assistant-composer-meta {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ai-assistant-composer-meta > .arco-typography {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-assistant-composer-submit {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-token-budget {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  display: inline-flex;
+  cursor: default;
+}
+
+.ai-token-budget-tooltip {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 18px;
+}

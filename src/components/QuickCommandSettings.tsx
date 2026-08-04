@@ -21,10 +21,12 @@ import {
 } from "@arco-design/web-react/icon";
 import { isTauri } from "@tauri-apps/api/core";
 import {
-  deleteQuickCommand,
   loadConfiguration,
-  upsertQuickCommand,
 } from "../config-database";
+import {
+  deleteQuickCommand,
+  upsertQuickCommand,
+} from "../configuration-mutations";
 import type {
   QuickCommandFormValues,
   QuickCommandRecord,

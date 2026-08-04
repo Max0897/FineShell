@@ -6,47 +6,29 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
-import {
-  Alert,
-  Message,
-  Modal,
-  ResizeBox,
-  Typography,
-} from "@arco-design/web-react";
+import { Message, Typography } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
 import {
   IconClose,
   IconCloseCircle,
-  IconDragDot,
-  IconDragDotVertical,
   IconPoweroff,
   IconRefresh,
 } from "@arco-design/web-react/icon";
 import type {
-  HostRecord,
-  JumpHostConnection,
-  PortForwardStatus,
-  ProxyRecord,
   QuickCommandRecord,
   ServerMonitorSnapshot,
   TerminalSession,
 } from "./models";
 import type { ContextMenuItem } from "./components/ContextMenu";
 import HostManagerPanel from "./components/HostManagerPanel";
-import AiAssistantPanel from "./components/AiAssistantPanel";
 import QuickCommandDrawer from "./components/QuickCommandDrawer";
-import ReleaseNotesMarkdown from "./components/ReleaseNotesMarkdown";
 import SftpPanel from "./components/SftpPanel";
-import TerminalView from "./components/TerminalView";
 import SessionTabs from "./components/SessionTabs";
-import { withHostDefaults } from "./host-storage";
-import { knownHostTargetKey } from "./known-hosts";
-import {
-  loadConfiguration,
-  updateStoredHostFingerprint,
-} from "./config-database";
+import AppWorkspaceLayout from "./components/AppWorkspaceLayout";
+import ApplicationTitleBar from "./components/ApplicationTitleBar";
+export { default as CollapsibleSplitTrigger } from "./components/CollapsibleSplitTrigger";
+import { loadConfiguration } from "./config-database";
 import {
   DEFAULT_APP_SETTINGS,
   sanitizeAppSettings,
@@ -64,23 +46,16 @@ import {
   createSftpSelectionAiHandoff,
   type AiHandoffRequest,
 } from "./ai-handoff";
-import {
-  AI_SIDEBAR_DEFAULT_WIDTH,
-  clampAiSidebarWidth,
-} from "./ai-sidebar";
+import { AI_SIDEBAR_DEFAULT_WIDTH } from "./ai-sidebar";
 import { useAiSidebarController } from "./hooks/useAiSidebarController";
 import {
   applicationUpdater,
   checkForApplicationUpdateOnStartup,
-  markApplicationUpdateRelaunchFocus,
   restoreApplicationFocusAfterUpdateRelaunch,
   setApplicationUpdateNotice,
-  type ApplicationUpdate,
 } from "./app-updater";
 import {
-  jumpHostRequest,
-  reconnectDelaySeconds,
-  sshCredentialId,
+  isTerminalSessionOperational,
   type TerminalCommandSubmission,
   type TerminalInjectedInput,
 } from "./terminal-utils";
@@ -91,221 +66,29 @@ import {
 } from "./diagnostics";
 import {
   commandErrorMessage,
-  emitProtocolEventTo,
   FineShellCommandError,
   listenProtocolEvent,
   type AgentActionExecutionResult,
-  type SshConnectResult,
   verifyProtocolVersion,
 } from "./tauri-protocol";
-import { auxiliaryWindowHref } from "./window-view";
-import "./App.css";
-
+import {
+  openAuxiliaryWindow,
+  promptStartupApplicationUpdate,
+} from "./app-window-actions";
+import { useTerminalSessions } from "./hooks/useTerminalSessions";
 const ServerMonitorPanel = lazy(
   () => import("./components/ServerMonitorPanel"),
 );
-
-let startupUpdatePromptShown = false;
-
-function promptStartupApplicationUpdate(update: ApplicationUpdate) {
-  if (startupUpdatePromptShown) return;
-  startupUpdatePromptShown = true;
-
-  Modal.confirm({
-    autoFocus: false,
-    cancelText: "稍后",
-    className: "startup-update-modal",
-    content: (
-      <div className="startup-update-content">
-        <Typography.Text>
-          当前版本 v{update.currentVersion}，发现新版本 v{update.version}。
-        </Typography.Text>
-        {update.body && (
-          <ReleaseNotesMarkdown className="startup-update-notes">
-            {update.body}
-          </ReleaseNotesMarkdown>
-        )}
-      </div>
-    ),
-    maskClosable: false,
-    okText: "立即更新",
-    onCancel: () => {
-      void update.close();
-    },
-    onOk: async () => {
-      try {
-        await update.downloadAndInstall();
-        markApplicationUpdateRelaunchFocus(update.version);
-        setApplicationUpdateNotice(null);
-        await applicationUpdater.relaunch();
-      } catch (error) {
-        const message = commandErrorMessage(error);
-        recordDiagnostic("error", "application.update", "应用更新失败", {
-          error: message,
-          version: update.version,
-        });
-        Message.error(`更新失败：${message}`);
-        throw error;
-      }
-    },
-    title: "发现新版本",
-  });
-}
-
-type AuxiliaryWindow = "settings" | "shortcuts";
-
-function openAuxiliaryWindow(view: AuxiliaryWindow) {
-  if (!isTauri()) {
-    window.open(auxiliaryWindowHref(view), `fineshell-${view}`);
-    return;
-  }
-
-  const command =
-    view === "settings" ? "open_settings_window" : "open_shortcut_guide_window";
-  void invoke(command).catch((error) => {
-    const title = view === "settings" ? "设置" : "快捷键说明";
-    Message.error(`无法打开${title}：${commandErrorMessage(error)}`);
-  });
-}
-
-async function persistHostFingerprint(host: HostRecord, fingerprint: string) {
-  try {
-    await updateStoredHostFingerprint(host, fingerprint);
-    if (isTauri()) {
-      await Promise.all([
-        emitProtocolEventTo("main", "configuration:changed").catch(
-          () => undefined,
-        ),
-        emitProtocolEventTo("settings", "configuration:changed").catch(
-          () => undefined,
-        ),
-      ]);
-    }
-  } catch {
-    // Configuration persistence must not interrupt an active SSH connection.
-  }
-}
-
-function confirmHostFingerprint(host: HostRecord, result: SshConnectResult) {
-  const changed = Boolean(result.expectedFingerprint);
-  return new Promise<boolean>((resolve) => {
-    let settled = false;
-    const settle = (accepted: boolean) => {
-      if (settled) return;
-      settled = true;
-      resolve(accepted);
-    };
-
-    Modal.confirm({
-      cancelText: "取消连接",
-      className: "fingerprint-confirm-modal",
-      content: (
-        <div className="fingerprint-confirm-content">
-          <Alert
-            content={
-              changed
-                ? "服务器返回的指纹与已保存记录不同。确认服务器密钥确实已更换后再继续。"
-                : "首次连接该服务器，请先通过可信渠道核对指纹。"
-            }
-            showIcon
-            type={changed ? "error" : "warning"}
-          />
-          <div className="fingerprint-row">
-            <Typography.Text type="secondary">服务器</Typography.Text>
-            <Typography.Text className="fingerprint-value">
-              {host.address.includes(":")
-                ? `[${host.address}]:${host.port}`
-                : `${host.address}:${host.port}`}
-            </Typography.Text>
-          </div>
-          {result.expectedFingerprint && (
-            <div className="fingerprint-row">
-              <Typography.Text type="secondary">原指纹</Typography.Text>
-              <Typography.Text className="fingerprint-value">
-                {result.expectedFingerprint}
-              </Typography.Text>
-            </div>
-          )}
-          <div className="fingerprint-row">
-            <Typography.Text type="secondary">
-              {changed ? "新指纹" : "SHA256"}
-            </Typography.Text>
-            <Typography.Text className="fingerprint-value">
-              {result.fingerprint}
-            </Typography.Text>
-          </div>
-        </div>
-      ),
-      maskClosable: false,
-      okButtonProps: changed ? { status: "danger" } : undefined,
-      okText: changed ? "接受新指纹" : "信任并连接",
-      onCancel: () => settle(false),
-      onOk: () => settle(true),
-      title: changed ? "主机指纹已变更" : "确认主机指纹",
-    });
-  });
-}
+const AiAssistantPanel = lazy(
+  () => import("./components/AiAssistantPanel"),
+);
+const TerminalView = lazy(() => import("./components/TerminalView"));
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-interface CollapsibleSplitTriggerProps {
-  collapsed: boolean;
-  direction: "horizontal" | "vertical";
-  label: string;
-  nextNode: ReactNode;
-  onToggle: () => void;
-  prevNode: ReactNode;
-}
-
-export function CollapsibleSplitTrigger({
-  collapsed,
-  direction,
-  label,
-  nextNode,
-  onToggle,
-  prevNode,
-}: CollapsibleSplitTriggerProps) {
-  const lastPressAtRef = useRef(0);
-
-  return (
-    <div
-      aria-label={`双击${collapsed ? "显示" : "隐藏"}${label}`}
-      aria-orientation={direction === "horizontal" ? "vertical" : "horizontal"}
-      className="arco-resizebox-trigger-icon-wrapper collapsible-split-trigger"
-      data-collapsed={collapsed}
-      onMouseDownCapture={(event) => {
-        if (event.button !== 0) return;
-        const now = performance.now();
-        const doublePress =
-          lastPressAtRef.current > 0 && now - lastPressAtRef.current <= 400;
-        lastPressAtRef.current = doublePress ? 0 : now;
-        if (doublePress) {
-          event.preventDefault();
-          event.stopPropagation();
-          onToggle();
-        }
-      }}
-      role="separator"
-      title={`双击${collapsed ? "显示" : "隐藏"}${label}`}
-    >
-      {prevNode}
-      <span className="arco-resizebox-trigger-icon">
-        {direction === "horizontal" ? (
-          <IconDragDotVertical />
-        ) : (
-          <IconDragDot />
-        )}
-      </span>
-      {nextNode}
-    </div>
-  );
-}
-
 function App() {
-  const [sessions, setSessions] = useState<TerminalSession[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [quickCommands, setQuickCommands] = useState<QuickCommandRecord[]>([]);
   const [quickCommandDrawerVisible, setQuickCommandDrawerVisible] =
@@ -351,14 +134,42 @@ function App() {
   >({});
   const [terminalFocusRequest, setTerminalFocusRequest] = useState(0);
   const mainSplitRef = useRef<HTMLElement | null>(null);
-  const serverMonitorWidthRef = useRef("220px");
-  const rightPanelRatiosRef = useRef({ terminal: 0.64, sftp: 0.36 });
-  const sessionsRef = useRef<TerminalSession[]>([]);
-  const reconnectTimersRef = useRef(
-    new Map<string, ReturnType<typeof setTimeout>>(),
-  );
-  const manualReconnectsRef = useRef(new Set<string>());
-  const intentionallyDisconnectedRef = useRef(new Set<string>());
+  const handleSessionsClosed = useCallback((closingIds: Set<string>) => {
+    setAiRemoteFileContexts((currentContexts) =>
+      Object.fromEntries(
+        Object.entries(currentContexts).filter(
+          ([sessionId]) => !closingIds.has(sessionId),
+        ),
+      ),
+    );
+    setTerminalCurrentDirectories((currentDirectories) =>
+      Object.fromEntries(
+        Object.entries(currentDirectories).filter(
+          ([sessionId]) => !closingIds.has(sessionId),
+        ),
+      ),
+    );
+    setAiBusinessContexts((currentContexts) =>
+      Object.fromEntries(
+        Object.entries(currentContexts).filter(
+          ([sessionId]) => !closingIds.has(sessionId),
+        ),
+      ),
+    );
+  }, []);
+  const {
+    activeSession,
+    activeSessionId,
+    closeSession,
+    closeSessions,
+    disconnectSession,
+    openSession,
+    reconnectSession,
+    sessions,
+    setActiveSessionId,
+    syncKnownHostFingerprints,
+    updatePortForwardStatus,
+  } = useTerminalSessions({ onSessionsClosed: handleSessionsClosed });
   const {
     active: aiAssistantActive,
     close: closeAiSidebar,
@@ -398,47 +209,6 @@ function App() {
     }
     previousAiSidebarPhaseRef.current = aiSidebarPhase;
   }, [aiSidebarPhase]);
-
-  const updateSession = useCallback(
-    (sessionId: string, values: Partial<TerminalSession>) => {
-      setSessions((current) => {
-        const next = current.map((session) =>
-          session.id === sessionId ? { ...session, ...values } : session,
-        );
-        sessionsRef.current = next;
-        return next;
-      });
-    },
-    [],
-  );
-
-  const updatePortForwardStatus = useCallback(
-    (sessionId: string, status: PortForwardStatus) => {
-      setSessions((current) => {
-        const next = current.map((session) => {
-          if (session.id !== sessionId) return session;
-          const statuses = session.portForwardStatuses ?? [];
-          const exists = statuses.some(
-            (item) =>
-              item.ruleId === status.ruleId && item.kind === status.kind,
-          );
-          return {
-            ...session,
-            portForwardStatuses: exists
-              ? statuses.map((item) =>
-                  item.ruleId === status.ruleId && item.kind === status.kind
-                    ? status
-                    : item,
-                )
-              : [...statuses, status],
-          };
-        });
-        sessionsRef.current = next;
-        return next;
-      });
-    },
-    [],
-  );
 
   const updateMonitorSnapshot = useCallback(
     (sessionId: string | null, snapshot: ServerMonitorSnapshot | null) => {
@@ -490,340 +260,6 @@ function App() {
             revision: (current[sessionId]?.revision ?? 0) + 1,
           },
         };
-      });
-    },
-    [],
-  );
-
-  const clearReconnectTimer = useCallback((sessionId: string) => {
-    const timer = reconnectTimersRef.current.get(sessionId);
-    if (timer) clearTimeout(timer);
-    reconnectTimersRef.current.delete(sessionId);
-  }, []);
-
-  const connectSession = useCallback(
-    async function connect(session: TerminalSession, reconnectAttempt = 0) {
-      recordDiagnostic("info", "ssh.session", "开始建立 SSH 会话", {
-        authentication: session.host.authMethod,
-        reconnectAttempt,
-        sessionId: session.id,
-      });
-      try {
-        const result = await invoke<SshConnectResult>("ssh_connect", {
-          request: {
-            sessionId: session.id,
-            hostId: sshCredentialId(session.host),
-            address: session.host.address,
-            port: session.host.port,
-            username: session.host.username,
-            authMethod: session.host.authMethod,
-            privateKeyPath: session.host.privateKeyPath,
-            connectTimeoutSeconds: session.host.connectTimeoutSeconds,
-            keepAliveIntervalSeconds: session.host.keepAliveIntervalSeconds,
-            expectedFingerprint: session.host.hostFingerprint,
-            proxy: session.proxy,
-            jumpHost: jumpHostRequest(session.jumpHost),
-            localPortForwards: session.host.localPortForwards ?? [],
-            remotePortForwards: session.host.remotePortForwards ?? [],
-            dynamicPortForwards: session.host.dynamicPortForwards ?? [],
-            cols: 80,
-            rows: 24,
-          },
-        });
-        if (intentionallyDisconnectedRef.current.has(session.id)) {
-          void invoke("ssh_disconnect", { sessionId: session.id }).catch(
-            () => undefined,
-          );
-          return;
-        }
-        if (result.status === "hostKeyVerificationRequired") {
-          updateSession(session.id, {
-            status: "connecting",
-            error: "等待确认主机指纹",
-          });
-          const accepted = await confirmHostFingerprint(session.host, result);
-          if (!sessionsRef.current.some((item) => item.id === session.id)) {
-            return;
-          }
-          if (!accepted) {
-            updateSession(session.id, {
-              status: "failed",
-              error: result.expectedFingerprint
-                ? "主机指纹已变更，连接已取消"
-                : "未信任主机指纹，连接已取消",
-            });
-            return;
-          }
-
-          const trustedHost = {
-            ...session.host,
-            hostFingerprint: result.fingerprint,
-          };
-          await persistHostFingerprint(trustedHost, result.fingerprint);
-          updateSession(session.id, {
-            status: "connecting",
-            error: undefined,
-            host: trustedHost,
-          });
-          await connect({ ...session, host: trustedHost }, reconnectAttempt);
-          return;
-        }
-        clearReconnectTimer(session.id);
-        updateSession(session.id, {
-          status: "connected",
-          fingerprint: result.fingerprint,
-          error: undefined,
-          host: {
-            ...session.host,
-            hostFingerprint: result.fingerprint,
-          },
-          reconnectAttempt: 0,
-          portForwardStatuses: result.portForwards,
-        });
-        await persistHostFingerprint(session.host, result.fingerprint);
-        recordDiagnostic("info", "ssh.session", "SSH 会话连接成功", {
-          sessionId: session.id,
-        });
-      } catch (error) {
-        if (intentionallyDisconnectedRef.current.has(session.id)) return;
-        if (!sessionsRef.current.some((item) => item.id === session.id)) {
-          return;
-        }
-        const message = commandErrorMessage(error);
-        recordDiagnostic("error", "ssh.session", "SSH 会话连接失败", {
-          error: message,
-          reconnectAttempt,
-          sessionId: session.id,
-        });
-        if (
-          reconnectAttempt > 0 &&
-          session.host.autoReconnect &&
-          reconnectAttempt < session.host.maxReconnectAttempts
-        ) {
-          const nextAttempt = reconnectAttempt + 1;
-          const delaySeconds = reconnectDelaySeconds(nextAttempt);
-          updateSession(session.id, {
-            status: "reconnecting",
-            error: `第 ${reconnectAttempt} 次重连失败，${delaySeconds} 秒后重试：${message}`,
-            reconnectAttempt,
-          });
-          clearReconnectTimer(session.id);
-          const timer = setTimeout(() => {
-            reconnectTimersRef.current.delete(session.id);
-            const latest = sessionsRef.current.find(
-              (item) => item.id === session.id,
-            );
-            if (latest) void connect(latest, nextAttempt);
-          }, delaySeconds * 1000);
-          reconnectTimersRef.current.set(session.id, timer);
-          return;
-        }
-        updateSession(session.id, {
-          status: "failed",
-          error:
-            reconnectAttempt > 0
-              ? `自动重连失败（已尝试 ${reconnectAttempt} 次）：${message}`
-              : message,
-          reconnectAttempt,
-        });
-      }
-    },
-    [clearReconnectTimer, updateSession],
-  );
-
-  const openSession = useCallback(
-    (host: HostRecord, proxy?: ProxyRecord, jumpHost?: JumpHostConnection) => {
-      const normalizedHost = withHostDefaults(host);
-      const session: TerminalSession = {
-        id: createId("session"),
-        host: normalizedHost,
-        proxy,
-        jumpHost,
-        openedAt: new Date().toISOString(),
-        status: "connecting",
-      };
-      const next = [...sessionsRef.current, session];
-      sessionsRef.current = next;
-      setSessions(next);
-      setActiveSessionId(session.id);
-      void connectSession(session);
-    },
-    [connectSession],
-  );
-
-  const reconnectSession = useCallback(
-    (requestedSession: TerminalSession) => {
-      const session =
-        sessionsRef.current.find((item) => item.id === requestedSession.id) ??
-        requestedSession;
-      if (
-        session.status === "connecting" ||
-        session.status === "reconnecting"
-      ) {
-        return;
-      }
-
-      clearReconnectTimer(session.id);
-      intentionallyDisconnectedRef.current.delete(session.id);
-      updateSession(session.id, {
-        status: "reconnecting",
-        error: undefined,
-        reconnectAttempt: 0,
-      });
-
-      if (session.status === "connected") {
-        manualReconnectsRef.current.add(session.id);
-        void invoke("ssh_disconnect", { sessionId: session.id }).catch(() => {
-          if (!manualReconnectsRef.current.delete(session.id)) return;
-          const latest = sessionsRef.current.find(
-            (item) => item.id === session.id,
-          );
-          if (latest) void connectSession(latest, 0);
-        });
-        void invoke("sftp_disconnect", { sessionId: session.id }).catch(
-          () => undefined,
-        );
-        return;
-      }
-
-      void connectSession(
-        {
-          ...session,
-          status: "reconnecting",
-          error: undefined,
-          reconnectAttempt: 0,
-        },
-        0,
-      );
-    },
-    [clearReconnectTimer, connectSession, updateSession],
-  );
-
-  useEffect(() => {
-    if (!isTauri()) return;
-
-    let disposed = false;
-    let unlistenStatus: (() => void) | undefined;
-    let unlistenPortForward: (() => void) | undefined;
-    void listenProtocolEvent("ssh-status", ({ payload }) => {
-      const session = sessionsRef.current.find(
-        (item) => item.id === payload.sessionId,
-      );
-      if (!session) return;
-      if (payload.error) {
-        recordDiagnostic(
-          payload.recoverable ? "warn" : "error",
-          "ssh.session",
-          "SSH 会话状态异常",
-          {
-            error: payload.error,
-            recoverable: payload.recoverable,
-            sessionId: payload.sessionId,
-            status: payload.status,
-          },
-        );
-      }
-      if (manualReconnectsRef.current.delete(session.id)) {
-        const reconnectingSession = {
-          ...session,
-          status: "reconnecting" as const,
-          error: undefined,
-          reconnectAttempt: 0,
-        };
-        updateSession(session.id, reconnectingSession);
-        void connectSession(reconnectingSession, 0);
-        return;
-      }
-      if (intentionallyDisconnectedRef.current.has(session.id)) {
-        updateSession(session.id, {
-          status: "disconnected",
-          error: undefined,
-          reconnectAttempt: 0,
-          portForwardStatuses: (session.portForwardStatuses ?? []).map(
-            (status) => ({
-              ...status,
-              status: "stopped" as const,
-              error: undefined,
-            }),
-          ),
-        });
-        return;
-      }
-      if (payload.recoverable && session.host.autoReconnect) {
-        const attempt = 1;
-        const delaySeconds = reconnectDelaySeconds(attempt);
-        clearReconnectTimer(session.id);
-        updateSession(session.id, {
-          status: "reconnecting",
-          error: `${payload.error || "SSH 连接中断"}，${delaySeconds} 秒后自动重连`,
-          reconnectAttempt: attempt,
-        });
-        const timer = setTimeout(() => {
-          reconnectTimersRef.current.delete(session.id);
-          const latest = sessionsRef.current.find(
-            (item) => item.id === session.id,
-          );
-          if (latest) void connectSession(latest, attempt);
-        }, delaySeconds * 1000);
-        reconnectTimersRef.current.set(session.id, timer);
-        return;
-      }
-      updateSession(payload.sessionId, {
-        status: payload.status,
-        error: payload.error,
-        reconnectAttempt: 0,
-        portForwardStatuses: (session.portForwardStatuses ?? []).map(
-          (status) => ({
-            ...status,
-            status: "stopped" as const,
-            error: undefined,
-          }),
-        ),
-      });
-    }).then((stopListening) => {
-      if (disposed) {
-        stopListening();
-      } else {
-        unlistenStatus = stopListening;
-      }
-    });
-
-    void listenProtocolEvent("port-forward-status", ({ payload }) => {
-      const { sessionId, ...status } = payload;
-      updatePortForwardStatus(sessionId, status);
-    }).then((stopListening) => {
-      if (disposed) {
-        stopListening();
-      } else {
-        unlistenPortForward = stopListening;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlistenStatus?.();
-      unlistenPortForward?.();
-    };
-  }, [
-    clearReconnectTimer,
-    connectSession,
-    updatePortForwardStatus,
-    updateSession,
-  ]);
-
-  useEffect(
-    () => () => {
-      reconnectTimersRef.current.forEach((timer) => clearTimeout(timer));
-      reconnectTimersRef.current.clear();
-      manualReconnectsRef.current.clear();
-      intentionallyDisconnectedRef.current.clear();
-      sessionsRef.current.forEach((session) => {
-        void invoke("ssh_disconnect", { sessionId: session.id }).catch(
-          () => undefined,
-        );
-        void invoke("sftp_disconnect", { sessionId: session.id }).catch(
-          () => undefined,
-        );
       });
     },
     [],
@@ -938,27 +374,7 @@ function App() {
         .then((configuration) => {
           if (disposed) return;
           setQuickCommands(configuration.quickCommands);
-          setSessions((current) => {
-            const next = current.map((session) => {
-              const targetKey = knownHostTargetKey(
-                session.host.address,
-                session.host.port,
-              );
-              const knownHost = configuration.knownHosts.find(
-                (record) =>
-                  knownHostTargetKey(record.address, record.port) === targetKey,
-              );
-              return {
-                ...session,
-                host: {
-                  ...session.host,
-                  hostFingerprint: knownHost?.fingerprint,
-                },
-              };
-            });
-            sessionsRef.current = next;
-            return next;
-          });
+          syncKnownHostFingerprints(configuration.knownHosts);
         })
         .catch((error) => {
           if (!disposed) {
@@ -976,7 +392,7 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [syncKnownHostFingerprints]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -996,9 +412,6 @@ function App() {
       unlisten?.();
     };
   }, []);
-
-  const activeSession =
-    sessions.find((session) => session.id === activeSessionId) ?? null;
 
   const aiContextSources = useMemo<AiContextSource[]>(() => {
     if (!activeSessionId) return [];
@@ -1063,7 +476,10 @@ function App() {
   }, [activeSessionId]);
 
   async function sendQuickCommand(command: string, execute: boolean) {
-    if (!activeSession || activeSession.status !== "connected") {
+    if (
+      !activeSession ||
+      !isTerminalSessionOperational(activeSession.status)
+    ) {
       throw new Error("当前终端未连接");
     }
     const input = execute ? `${command}\r` : command;
@@ -1172,91 +588,12 @@ function App() {
     toggleAiSidebar();
   }
 
-  function disconnectSession(sessionId: string) {
-    clearReconnectTimer(sessionId);
-    manualReconnectsRef.current.delete(sessionId);
-    intentionallyDisconnectedRef.current.add(sessionId);
-    updateSession(sessionId, {
-      status: "disconnected",
-      error: undefined,
-      reconnectAttempt: 0,
-      portForwardStatuses: (
-        sessionsRef.current.find((session) => session.id === sessionId)
-          ?.portForwardStatuses ?? []
-      ).map((status) => ({
-        ...status,
-        status: "stopped" as const,
-        error: undefined,
-      })),
-    });
-    void invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
-    void invoke("sftp_disconnect", { sessionId }).catch(() => undefined);
-  }
-
-  function closeSessions(sessionIds: string[]) {
-    const closingIds = new Set(sessionIds);
-    if (closingIds.size === 0) return;
-
-    const current = sessionsRef.current;
-    closingIds.forEach((sessionId) => {
-      clearReconnectTimer(sessionId);
-      manualReconnectsRef.current.delete(sessionId);
-      intentionallyDisconnectedRef.current.delete(sessionId);
-      void invoke("sftp_close_external_edits", { sessionId }).catch(
-        () => undefined,
-      );
-      void invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
-      void invoke("sftp_disconnect", { sessionId }).catch(() => undefined);
-    });
-    const remaining = current.filter((session) => !closingIds.has(session.id));
-    sessionsRef.current = remaining;
-    setSessions(remaining);
-    setAiRemoteFileContexts((currentContexts) =>
-      Object.fromEntries(
-        Object.entries(currentContexts).filter(
-          ([sessionId]) => !closingIds.has(sessionId),
-        ),
-      ),
-    );
-    setTerminalCurrentDirectories((currentDirectories) =>
-      Object.fromEntries(
-        Object.entries(currentDirectories).filter(
-          ([sessionId]) => !closingIds.has(sessionId),
-        ),
-      ),
-    );
-    setAiBusinessContexts((currentContexts) =>
-      Object.fromEntries(
-        Object.entries(currentContexts).filter(
-          ([sessionId]) => !closingIds.has(sessionId),
-        ),
-      ),
-    );
-
-    setActiveSessionId((currentActiveId) => {
-      if (!currentActiveId || !closingIds.has(currentActiveId)) {
-        return currentActiveId;
-      }
-      const currentIndex = current.findIndex(
-        (session) => session.id === currentActiveId,
-      );
-      const nextIndex = Math.max(0, currentIndex - 1);
-      return (
-        remaining[nextIndex]?.id ?? remaining[remaining.length - 1]?.id ?? null
-      );
-    });
-  }
-
-  function closeSession(sessionId: string) {
-    closeSessions([sessionId]);
-  }
-
   function sessionContextMenuItems(
     session: TerminalSession,
   ): ContextMenuItem[] {
     const canDisconnect =
       session.status === "connecting" ||
-      session.status === "connected" ||
+      isTerminalSessionOperational(session.status) ||
       session.status === "reconnecting";
     const canReconnect =
       session.status !== "connecting" && session.status !== "reconnecting";
@@ -1315,6 +652,9 @@ function App() {
           }
         >
           <ServerMonitorPanel
+            onReconnect={() => {
+              if (activeSession) reconnectSession(activeSession);
+            }}
             onSendToAi={(sessionId, request) =>
               void handoffToAi(sessionId, request)
             }
@@ -1334,64 +674,64 @@ function App() {
     <section className="panel terminal-panel">
       <SessionTabs
         activeSessionId={activeSessionId}
-        aiAssistantVisible={aiAssistantActive}
         homeContent={
           <HostManagerPanel onConnect={openSession} settings={settings} />
         }
         onActiveSessionChange={setActiveSessionId}
         onCloseSession={closeSession}
-        onOpenQuickCommands={() => setQuickCommandDrawerVisible(true)}
-        onToggleAiAssistant={toggleAiAssistant}
-        onOpenSettings={() => openAuxiliaryWindow("settings")}
-        onOpenShortcutGuide={() => openAuxiliaryWindow("shortcuts")}
         renderSession={(session) => (
-          <TerminalView
-            active={session.id === activeSessionId}
-            commandTrackingEnabled={settings.aiCommandTrackingEnabled}
-            focusRequest={
-              session.id === activeSessionId ? terminalFocusRequest : 0
-            }
-            injectedInput={terminalInjectedInputs[session.id]}
-            settings={settings}
-            session={session}
-            onAskAi={(selection) => {
-              setTerminalSelections((current) => ({
-                ...current,
-                [session.id]: selection,
-              }));
-              openAiAssistant("请解释这段终端输出，并给出排查建议。");
-            }}
-            onCommandLifecycle={setTerminalCommandSubmission}
-            onCurrentDirectoryChange={updateTerminalCurrentDirectory}
-            onRecentOutputChange={(output) =>
-              setTerminalRecentOutputs((current) => {
-                const next = output.slice(-settings.aiContextMaxChars);
-                return current[session.id] === next
-                  ? current
-                  : { ...current, [session.id]: next };
-              })
-            }
-            onSelectionChange={(selection) =>
-              setTerminalSelections((current) =>
-                current[session.id] ===
-                selection.slice(0, settings.aiContextMaxChars)
-                  ? current
-                  : {
-                      ...current,
-                      [session.id]: selection.slice(
-                        0,
-                        settings.aiContextMaxChars,
-                      ),
-                    },
-              )
-            }
-          />
+          <Suspense fallback={null}>
+            <TerminalView
+              active={session.id === activeSessionId}
+              commandTrackingEnabled={settings.aiCommandTrackingEnabled}
+              focusRequest={
+                session.id === activeSessionId ? terminalFocusRequest : 0
+              }
+              injectedInput={terminalInjectedInputs[session.id]}
+              settings={settings}
+              session={session}
+              onAskAi={(selection) => {
+                setTerminalSelections((current) => ({
+                  ...current,
+                  [session.id]: selection,
+                }));
+                openAiAssistant("请解释这段终端输出，并给出排查建议。");
+              }}
+              onCommandLifecycle={setTerminalCommandSubmission}
+              onCurrentDirectoryChange={updateTerminalCurrentDirectory}
+              onReconnect={() => reconnectSession(session)}
+              onRecentOutputChange={(output) =>
+                setTerminalRecentOutputs((current) => {
+                  const next = output.slice(-settings.aiContextMaxChars);
+                  return current[session.id] === next
+                    ? current
+                    : { ...current, [session.id]: next };
+                })
+              }
+              onSelectionChange={(selection) =>
+                setTerminalSelections((current) =>
+                  current[session.id] ===
+                  selection.slice(0, settings.aiContextMaxChars)
+                    ? current
+                    : {
+                        ...current,
+                        [session.id]: selection.slice(
+                          0,
+                          settings.aiContextMaxChars,
+                        ),
+                      },
+                )
+              }
+            />
+          </Suspense>
         )}
         sessionContextMenuItems={sessionContextMenuItems}
         sessions={sessions}
       />
       <QuickCommandDrawer
-        canSend={activeSession?.status === "connected"}
+        canSend={Boolean(
+          activeSession && isTerminalSessionOperational(activeSession.status),
+        )}
         commands={quickCommands}
         onAfterClose={() => setTerminalFocusRequest((current) => current + 1)}
         onCancel={() => setQuickCommandDrawerVisible(false)}
@@ -1407,6 +747,9 @@ function App() {
       externalEditorName={settings.externalEditorName}
       externalEditorPath={settings.externalEditorPath}
       onCurrentPathChange={updateSftpCurrentPath}
+      onReconnect={() => {
+        if (activeSession) reconnectSession(activeSession);
+      }}
       onSendFilesToAi={async (sessionId, files) => {
         if (sessionId !== activeSessionId) {
           throw new Error("当前会话已切换，请重新选择文件");
@@ -1443,155 +786,75 @@ function App() {
     />
   );
 
-  const rightPanels = (
-    <ResizeBox.SplitGroup
-      className={`right-split${sftpCollapsed ? " right-split-sftp-collapsed" : ""}`}
-      direction="vertical"
-      onMoving={(_, sizes) => {
-        if (sftpCollapsed) return;
-        const terminalSize = Number.parseFloat(sizes[0]);
-        const sftpSize = Number.parseFloat(sizes[1]);
-        const totalSize = terminalSize + sftpSize;
-        if (Number.isFinite(totalSize) && totalSize > 0) {
-          rightPanelRatiosRef.current = {
-            terminal: terminalSize / totalSize,
-            sftp: sftpSize / totalSize,
-          };
+  const aiAssistantPanel = aiAssistantVisible ? (
+    <Suspense fallback={<div className="ai-assistant-sidebar-panel" />}>
+      <AiAssistantPanel
+        canInsertCommand={Boolean(
+          activeSession && isTerminalSessionOperational(activeSession.status),
+        )}
+        commandSubmission={terminalCommandSubmission}
+        contextSources={aiContextSources}
+        hostId={activeSession?.host.id ?? null}
+        hostName={activeSession?.host.name ?? ""}
+        initialPrompt={aiInitialPrompt}
+        initialContextIds={aiInitialContextIds}
+        initialPromptRequest={aiInitialPromptRequest}
+        onClose={closeAiAssistant}
+        onAgentActionExecuted={handleAiAgentActionExecuted}
+        onCommandPrepared={handleAiCommandPrepared}
+        onRemoveRemoteFile={(sessionId, path) =>
+          setAiRemoteFileContexts((current) => {
+            const remaining = (current[sessionId] ?? []).filter(
+              (file) => file.path !== path,
+            );
+            if (remaining.length) {
+              return { ...current, [sessionId]: remaining };
+            }
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+          })
         }
-      }}
-      panes={[
-        {
-          content: terminalPanel,
-          size: sftpCollapsed ? 1 : rightPanelRatiosRef.current.terminal,
-          min: "240px",
-          resizable: !sftpCollapsed,
-          trigger: (prevNode, _resizeNode, nextNode) => (
-            <CollapsibleSplitTrigger
-              collapsed={sftpCollapsed}
-              direction="vertical"
-              label="文件管理栏"
-              nextNode={nextNode}
-              onToggle={() => setSftpCollapsed((current) => !current)}
-              prevNode={prevNode}
-            />
-          ),
-        },
-        {
-          content: sftpPanel,
-          size: sftpCollapsed ? 0 : rightPanelRatiosRef.current.sftp,
-          min: sftpCollapsed ? 0 : "180px",
-        },
-      ]}
-    />
-  );
+        remoteFiles={
+          activeSessionId ? (aiRemoteFileContexts[activeSessionId] ?? []) : []
+        }
+        sessionId={activeSessionId}
+        settings={settings}
+        visible={aiAssistantVisible}
+      />
+    </Suspense>
+  ) : null;
 
   return (
-    <main className="app-shell">
-      <div className="app-workspace">
-        <ResizeBox.SplitGroup
-          className={`main-split${serverMonitorCollapsed ? " main-split-left-collapsed" : ""}`}
-          direction="horizontal"
-          onMoving={(_, sizes) => {
-            if (serverMonitorCollapsed) return;
-            const width = Number.parseFloat(sizes[0]);
-            if (Number.isFinite(width)) {
-              serverMonitorWidthRef.current = `${width}px`;
-            }
-          }}
-          panes={[
-            {
-              content: serverMonitorPanel,
-              size: serverMonitorCollapsed
-                ? 0
-                : serverMonitorWidthRef.current,
-              min: serverMonitorCollapsed ? 0 : "220px",
-              max: "400px",
-              resizable: !serverMonitorCollapsed,
-              trigger: (prevNode, _resizeNode, nextNode) => (
-                <CollapsibleSplitTrigger
-                  collapsed={serverMonitorCollapsed}
-                  direction="horizontal"
-                  label="服务器监控栏"
-                  nextNode={nextNode}
-                  onToggle={() =>
-                    setServerMonitorCollapsed((current) => !current)
-                  }
-                  prevNode={prevNode}
-                />
-              ),
-            },
-            {
-              content: rightPanels,
-              min: "480px",
-              size: serverMonitorCollapsed ? 1 : undefined,
-            },
-          ]}
-          ref={mainSplitRef}
-          style={
-            mainWorkspaceFrozenWidth === null
-              ? undefined
-              : {
-                  flex: `0 0 ${mainWorkspaceFrozenWidth}px`,
-                  width: mainWorkspaceFrozenWidth,
-                }
+    <AppWorkspaceLayout
+      applicationTitleBar={
+        <ApplicationTitleBar
+          aiAssistantVisible={aiAssistantActive}
+          hasActiveSession={Boolean(activeSession)}
+          onOpenQuickCommands={() => setQuickCommandDrawerVisible(true)}
+          onOpenSettings={() => openAuxiliaryWindow("settings")}
+          onOpenShortcutGuide={() => openAuxiliaryWindow("shortcuts")}
+          onToggleServerMonitor={() =>
+            setServerMonitorCollapsed((collapsed) => !collapsed)
           }
+          onToggleSftp={() => setSftpCollapsed((collapsed) => !collapsed)}
+          onToggleAiAssistant={toggleAiAssistant}
+          serverMonitorCollapsed={serverMonitorCollapsed}
+          sftpCollapsed={sftpCollapsed}
         />
-        <ResizeBox
-          className={`ai-assistant-sidebar${
-            aiAssistantVisible ? "" : " ai-assistant-sidebar-hidden"
-          }`}
-          directions={["left"]}
-          onMoving={(_, size) => {
-            const workspaceWidth =
-              mainSplitRef.current?.parentElement?.getBoundingClientRect()
-                .width ?? window.innerWidth;
-            setAiSidebarWidth(clampAiSidebarWidth(size.width, workspaceWidth));
-          }}
-          onMovingEnd={() =>
-            document.body.classList.remove("ai-sidebar-resizing")
-          }
-          onMovingStart={() =>
-            document.body.classList.add("ai-sidebar-resizing")
-          }
-          width={aiSidebarWidth}
-        >
-          <AiAssistantPanel
-            canInsertCommand={activeSession?.status === "connected"}
-            commandSubmission={terminalCommandSubmission}
-            contextSources={aiContextSources}
-            hostId={activeSession?.host.id ?? null}
-            hostName={activeSession?.host.name ?? ""}
-            initialPrompt={aiInitialPrompt}
-            initialContextIds={aiInitialContextIds}
-            initialPromptRequest={aiInitialPromptRequest}
-            onClose={closeAiAssistant}
-            onAgentActionExecuted={handleAiAgentActionExecuted}
-            onCommandPrepared={handleAiCommandPrepared}
-            onRemoveRemoteFile={(sessionId, path) =>
-              setAiRemoteFileContexts((current) => {
-                const remaining = (current[sessionId] ?? []).filter(
-                  (file) => file.path !== path,
-                );
-                if (remaining.length) {
-                  return { ...current, [sessionId]: remaining };
-                }
-                const next = { ...current };
-                delete next[sessionId];
-                return next;
-              })
-            }
-            remoteFiles={
-              activeSessionId
-                ? (aiRemoteFileContexts[activeSessionId] ?? [])
-                : []
-            }
-            sessionId={activeSessionId}
-            settings={settings}
-            visible={aiAssistantVisible}
-          />
-        </ResizeBox>
-      </div>
-    </main>
+      }
+      aiAssistantPanel={aiAssistantPanel}
+      aiAssistantVisible={aiAssistantVisible}
+      aiSidebarWidth={aiSidebarWidth}
+      frozenWorkspaceWidth={mainWorkspaceFrozenWidth}
+      mainSplitRef={mainSplitRef}
+      onAiSidebarWidthChange={setAiSidebarWidth}
+      serverMonitorCollapsed={serverMonitorCollapsed}
+      serverMonitorPanel={serverMonitorPanel}
+      sftpCollapsed={sftpCollapsed}
+      sftpPanel={sftpPanel}
+      terminalPanel={terminalPanel}
+    />
   );
 }
 
