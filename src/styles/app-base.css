@@ -163,14 +163,133 @@ code *,
 
 .app-shell {
   height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: #f2f3f5;
+}
+
+.application-titlebar {
+  position: relative;
+  z-index: 20;
+  width: 100%;
+  height: 38px;
+  flex: 0 0 38px;
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid #e5e6eb;
+  background: #ffffff;
+}
+
+.application-titlebar-drag-region {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.application-titlebar-macos .application-titlebar-drag-region {
+  margin-left: 78px;
+}
+
+.application-titlebar-brand {
+  min-width: 0;
+  padding-left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #4e5969;
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+.application-titlebar-brand img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.application-titlebar-toolbar,
+.application-titlebar-action-wrapper,
+.application-window-controls {
+  height: 100%;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.application-titlebar-toolbar,
+.application-window-controls {
+  flex: 0 0 auto;
+}
+
+.application-titlebar-action-wrapper {
+  width: 38px;
+  align-items: center;
+  justify-content: center;
+}
+
+.application-titlebar-action-button.arco-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 4px;
+  color: #4e5969;
+}
+
+.application-titlebar-action-button .lucide {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.75;
+}
+
+.application-titlebar-action-button.arco-btn:not(.arco-btn-disabled):hover {
+  color: #1d2129;
+  background: #f2f3f5;
+}
+
+.application-titlebar-action-button.arco-btn.is-active {
+  color: #165dff;
+  background: #e8f3ff;
+}
+
+.application-window-control {
+  width: 46px;
+  height: 100%;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  color: #4e5969;
+  background: transparent;
+  cursor: default;
+}
+
+.application-window-control svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.75;
+}
+
+.application-window-control:hover {
+  color: #1d2129;
+  background: #e5e6eb;
+}
+
+.application-window-control-close:hover {
+  color: #ffffff;
+  background: #e81123;
 }
 
 .app-workspace {
   width: 100%;
-  height: 100%;
+  height: auto;
   min-width: 0;
   min-height: 0;
+  flex: 1;
   display: flex;
   overflow: hidden;
 }
@@ -208,7 +327,7 @@ code *,
 
 .main-split-left-collapsed
   > .arco-resizebox-split-group-pane:last-child {
-  flex-basis: calc(100% - 6px) !important;
+  flex-basis: 100% !important;
 }
 
 .main-split > .arco-resizebox-split-group-pane:last-child {
@@ -221,7 +340,7 @@ code *,
 
 .right-split-sftp-collapsed
   > .arco-resizebox-split-group-pane:first-child {
-  flex-basis: calc(100% - 6px) !important;
+  flex-basis: 100% !important;
 }
 
 .right-split-sftp-collapsed

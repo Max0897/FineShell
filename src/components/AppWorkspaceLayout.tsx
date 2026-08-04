@@ -4,14 +4,13 @@ import { clampAiSidebarWidth } from "../ai-sidebar";
 import CollapsibleSplitTrigger from "./CollapsibleSplitTrigger";
 
 interface AppWorkspaceLayoutProps {
+  applicationTitleBar: ReactNode;
   aiAssistantPanel: ReactNode;
   aiAssistantVisible: boolean;
   aiSidebarWidth: number;
   frozenWorkspaceWidth: number | null;
   mainSplitRef: RefObject<HTMLElement | null>;
   onAiSidebarWidthChange: (width: number) => void;
-  onServerMonitorCollapsedChange: (collapsed: boolean) => void;
-  onSftpCollapsedChange: (collapsed: boolean) => void;
   serverMonitorCollapsed: boolean;
   serverMonitorPanel: ReactNode;
   sftpCollapsed: boolean;
@@ -20,14 +19,13 @@ interface AppWorkspaceLayoutProps {
 }
 
 export default function AppWorkspaceLayout({
+  applicationTitleBar,
   aiAssistantPanel,
   aiAssistantVisible,
   aiSidebarWidth,
   frozenWorkspaceWidth,
   mainSplitRef,
   onAiSidebarWidthChange,
-  onServerMonitorCollapsedChange,
-  onSftpCollapsedChange,
   serverMonitorCollapsed,
   serverMonitorPanel,
   sftpCollapsed,
@@ -55,16 +53,15 @@ export default function AppWorkspaceLayout({
       panes={[
         {
           content: terminalPanel,
+          disabled: sftpCollapsed,
           size: sftpCollapsed ? 1 : rightPanelRatiosRef.current.terminal,
           min: "240px",
           resizable: !sftpCollapsed,
           trigger: (prevNode, _resizeNode, nextNode) => (
             <CollapsibleSplitTrigger
-              collapsed={sftpCollapsed}
               direction="vertical"
               label="文件管理栏"
               nextNode={nextNode}
-              onToggle={() => onSftpCollapsedChange(!sftpCollapsed)}
               prevNode={prevNode}
             />
           ),
@@ -80,6 +77,7 @@ export default function AppWorkspaceLayout({
 
   return (
     <main className="app-shell">
+      {applicationTitleBar}
       <div className="app-workspace">
         <ResizeBox.SplitGroup
           className={`main-split${serverMonitorCollapsed ? " main-split-left-collapsed" : ""}`}
@@ -94,19 +92,16 @@ export default function AppWorkspaceLayout({
           panes={[
             {
               content: serverMonitorPanel,
+              disabled: serverMonitorCollapsed,
               size: serverMonitorCollapsed ? 0 : serverMonitorWidthRef.current,
               min: serverMonitorCollapsed ? 0 : "220px",
               max: "400px",
               resizable: !serverMonitorCollapsed,
               trigger: (prevNode, _resizeNode, nextNode) => (
                 <CollapsibleSplitTrigger
-                  collapsed={serverMonitorCollapsed}
                   direction="horizontal"
                   label="服务器监控栏"
                   nextNode={nextNode}
-                  onToggle={() =>
-                    onServerMonitorCollapsedChange(!serverMonitorCollapsed)
-                  }
                   prevNode={prevNode}
                 />
               ),

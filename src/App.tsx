@@ -26,6 +26,7 @@ import QuickCommandDrawer from "./components/QuickCommandDrawer";
 import SftpPanel from "./components/SftpPanel";
 import SessionTabs from "./components/SessionTabs";
 import AppWorkspaceLayout from "./components/AppWorkspaceLayout";
+import ApplicationTitleBar from "./components/ApplicationTitleBar";
 export { default as CollapsibleSplitTrigger } from "./components/CollapsibleSplitTrigger";
 import { loadConfiguration } from "./config-database";
 import {
@@ -673,16 +674,11 @@ function App() {
     <section className="panel terminal-panel">
       <SessionTabs
         activeSessionId={activeSessionId}
-        aiAssistantVisible={aiAssistantActive}
         homeContent={
           <HostManagerPanel onConnect={openSession} settings={settings} />
         }
         onActiveSessionChange={setActiveSessionId}
         onCloseSession={closeSession}
-        onOpenQuickCommands={() => setQuickCommandDrawerVisible(true)}
-        onToggleAiAssistant={toggleAiAssistant}
-        onOpenSettings={() => openAuxiliaryWindow("settings")}
-        onOpenShortcutGuide={() => openAuxiliaryWindow("shortcuts")}
         renderSession={(session) => (
           <Suspense fallback={null}>
             <TerminalView
@@ -831,14 +827,28 @@ function App() {
 
   return (
     <AppWorkspaceLayout
+      applicationTitleBar={
+        <ApplicationTitleBar
+          aiAssistantVisible={aiAssistantActive}
+          hasActiveSession={Boolean(activeSession)}
+          onOpenQuickCommands={() => setQuickCommandDrawerVisible(true)}
+          onOpenSettings={() => openAuxiliaryWindow("settings")}
+          onOpenShortcutGuide={() => openAuxiliaryWindow("shortcuts")}
+          onToggleServerMonitor={() =>
+            setServerMonitorCollapsed((collapsed) => !collapsed)
+          }
+          onToggleSftp={() => setSftpCollapsed((collapsed) => !collapsed)}
+          onToggleAiAssistant={toggleAiAssistant}
+          serverMonitorCollapsed={serverMonitorCollapsed}
+          sftpCollapsed={sftpCollapsed}
+        />
+      }
       aiAssistantPanel={aiAssistantPanel}
       aiAssistantVisible={aiAssistantVisible}
       aiSidebarWidth={aiSidebarWidth}
       frozenWorkspaceWidth={mainWorkspaceFrozenWidth}
       mainSplitRef={mainSplitRef}
       onAiSidebarWidthChange={setAiSidebarWidth}
-      onServerMonitorCollapsedChange={setServerMonitorCollapsed}
-      onSftpCollapsedChange={setSftpCollapsed}
       serverMonitorCollapsed={serverMonitorCollapsed}
       serverMonitorPanel={serverMonitorPanel}
       sftpCollapsed={sftpCollapsed}

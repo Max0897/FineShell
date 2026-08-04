@@ -175,41 +175,6 @@
   background: #f2f3f5;
 }
 
-.terminal-tabs > .arco-tabs-header-nav .arco-tabs-header-extra {
-  height: var(--terminal-tab-height);
-  margin-left: 0;
-  display: flex;
-  align-items: stretch;
-}
-
-.terminal-tab-actions,
-.terminal-tab-action-wrapper {
-  height: var(--terminal-tab-height);
-  display: inline-flex;
-}
-
-.terminal-tab-action-wrapper {
-  border-left: 1px solid #e5e6eb;
-}
-
-.terminal-tab-action-button.arco-btn {
-  width: var(--terminal-tab-height);
-  height: var(--terminal-tab-height);
-  padding: 0;
-  border-radius: 0;
-  color: #4e5969;
-}
-
-.terminal-tab-action-button.arco-btn:not(.arco-btn-disabled):hover {
-  color: #165dff;
-  background: #e8f3ff;
-}
-
-.terminal-tab-action-button.arco-btn.is-active {
-  color: #165dff;
-  background: #e8f3ff;
-}
-
 .terminal-tab-label {
   height: var(--terminal-tab-height);
   min-width: 0;

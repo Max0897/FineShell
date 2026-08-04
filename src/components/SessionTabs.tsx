@@ -1,14 +1,7 @@
 import type { ReactNode } from "react";
-import { Button, Tabs, Tooltip } from "@arco-design/web-react";
-import {
-  IconCommand,
-  IconHome,
-  IconQuestionCircle,
-  IconRobot,
-  IconSettings,
-} from "@arco-design/web-react/icon";
+import { Tabs, Tooltip } from "@arco-design/web-react";
+import { IconHome } from "@arco-design/web-react/icon";
 import type { TerminalSession } from "../models";
-import { primaryShortcutModifier } from "../platform-utils";
 import { sessionTabName } from "../terminal-utils";
 import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
@@ -16,14 +9,9 @@ const HOME_TAB_ID = "home";
 
 interface SessionTabsProps {
   activeSessionId: string | null;
-  aiAssistantVisible: boolean;
   homeContent: ReactNode;
   onActiveSessionChange: (sessionId: string | null) => void;
   onCloseSession: (sessionId: string) => void;
-  onOpenQuickCommands: () => void;
-  onToggleAiAssistant: () => void;
-  onOpenSettings: () => void;
-  onOpenShortcutGuide: () => void;
   renderSession: (session: TerminalSession) => ReactNode;
   sessionContextMenuItems: (session: TerminalSession) => ContextMenuItem[];
   sessions: TerminalSession[];
@@ -45,23 +33,13 @@ function sessionStatusLabel(session: TerminalSession) {
 
 function SessionTabs({
   activeSessionId,
-  aiAssistantVisible,
   homeContent,
   onActiveSessionChange,
   onCloseSession,
-  onOpenQuickCommands,
-  onToggleAiAssistant,
-  onOpenSettings,
-  onOpenShortcutGuide,
   renderSession,
   sessionContextMenuItems,
   sessions,
 }: SessionTabsProps) {
-  const activeSession = sessions.find((item) => item.id === activeSessionId);
-  const primaryModifier = primaryShortcutModifier();
-  const quickCommandShortcut = `${primaryModifier} + Shift + P`;
-  const settingsShortcut = `${primaryModifier} + ,`;
-
   return (
     <>
       <button
@@ -80,75 +58,6 @@ function SessionTabs({
         activeTab={activeSessionId ?? HOME_TAB_ID}
         className="terminal-tabs"
         editable
-        extra={
-          <div className="terminal-tab-actions">
-            <Tooltip
-              content={
-                activeSession
-                  ? aiAssistantVisible
-                    ? "关闭 AI 助手"
-                    : "打开 AI 助手"
-                  : "请先打开终端会话"
-              }
-            >
-              <span className="terminal-tab-action-wrapper">
-                <Button
-                  aria-label={
-                    aiAssistantVisible ? "关闭 AI 助手" : "打开 AI 助手"
-                  }
-                  aria-pressed={aiAssistantVisible}
-                  className={`terminal-tab-action-button${
-                    aiAssistantVisible ? " is-active" : ""
-                  }`}
-                  disabled={!activeSession}
-                  icon={<IconRobot />}
-                  onClick={onToggleAiAssistant}
-                  type="text"
-                />
-              </span>
-            </Tooltip>
-            <Tooltip
-              content={
-                activeSession
-                  ? `快捷命令（${quickCommandShortcut}）`
-                  : "请先打开终端会话"
-              }
-            >
-              <span className="terminal-tab-action-wrapper">
-                <Button
-                  aria-label="打开快捷命令"
-                  className="terminal-tab-action-button"
-                  disabled={!activeSession}
-                  icon={<IconCommand />}
-                  onClick={onOpenQuickCommands}
-                  type="text"
-                />
-              </span>
-            </Tooltip>
-            <Tooltip content="快捷键与操作">
-              <span className="terminal-tab-action-wrapper">
-                <Button
-                  aria-label="打开快捷键与操作"
-                  className="terminal-tab-action-button"
-                  icon={<IconQuestionCircle />}
-                  onClick={onOpenShortcutGuide}
-                  type="text"
-                />
-              </span>
-            </Tooltip>
-            <Tooltip content={`设置（${settingsShortcut}）`}>
-              <span className="terminal-tab-action-wrapper">
-                <Button
-                  aria-label="打开设置"
-                  className="terminal-tab-action-button"
-                  icon={<IconSettings />}
-                  onClick={onOpenSettings}
-                  type="text"
-                />
-              </span>
-            </Tooltip>
-          </div>
-        }
         onAddTab={() => onActiveSessionChange(null)}
         onChange={(tabId) =>
           onActiveSessionChange(tabId === HOME_TAB_ID ? null : tabId)
