@@ -3,16 +3,21 @@ import ReactDOM from "react-dom/client";
 import "@arco-design/web-react/dist/css/arco.css";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import App from "./App";
 import ApplicationErrorBoundary from "./components/ApplicationErrorBoundary";
-import ShortcutGuideWindow from "./components/ShortcutGuideWindow";
-import SettingsWindow from "./components/SettingsWindow";
 import { installGlobalDiagnostics } from "./diagnostics";
 import { installSelectAllShortcuts } from "./select-all-shortcut";
 import { windowViewFromContext } from "./window-view";
 
 installGlobalDiagnostics();
 installSelectAllShortcuts();
+
+const App = React.lazy(() => import("./App"));
+const SettingsWindow = React.lazy(
+  () => import("./components/SettingsWindow"),
+);
+const ShortcutGuideWindow = React.lazy(
+  () => import("./components/ShortcutGuideWindow"),
+);
 
 if (isTauri()) {
   document.addEventListener("contextmenu", (event) => event.preventDefault());
@@ -31,7 +36,9 @@ const RootView =
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ApplicationErrorBoundary>
-      <RootView />
+      <React.Suspense fallback={null}>
+        <RootView />
+      </React.Suspense>
     </ApplicationErrorBoundary>
   </React.StrictMode>,
 );

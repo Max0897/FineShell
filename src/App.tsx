@@ -22,10 +22,8 @@ import type {
 } from "./models";
 import type { ContextMenuItem } from "./components/ContextMenu";
 import HostManagerPanel from "./components/HostManagerPanel";
-import AiAssistantPanel from "./components/AiAssistantPanel";
 import QuickCommandDrawer from "./components/QuickCommandDrawer";
 import SftpPanel from "./components/SftpPanel";
-import TerminalView from "./components/TerminalView";
 import SessionTabs from "./components/SessionTabs";
 import AppWorkspaceLayout from "./components/AppWorkspaceLayout";
 export { default as CollapsibleSplitTrigger } from "./components/CollapsibleSplitTrigger";
@@ -81,6 +79,10 @@ import "./App.css";
 const ServerMonitorPanel = lazy(
   () => import("./components/ServerMonitorPanel"),
 );
+const AiAssistantPanel = lazy(
+  () => import("./components/AiAssistantPanel"),
+);
+const TerminalView = lazy(() => import("./components/TerminalView"));
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -677,47 +679,49 @@ function App() {
         onOpenSettings={() => openAuxiliaryWindow("settings")}
         onOpenShortcutGuide={() => openAuxiliaryWindow("shortcuts")}
         renderSession={(session) => (
-          <TerminalView
-            active={session.id === activeSessionId}
-            commandTrackingEnabled={settings.aiCommandTrackingEnabled}
-            focusRequest={
-              session.id === activeSessionId ? terminalFocusRequest : 0
-            }
-            injectedInput={terminalInjectedInputs[session.id]}
-            settings={settings}
-            session={session}
-            onAskAi={(selection) => {
-              setTerminalSelections((current) => ({
-                ...current,
-                [session.id]: selection,
-              }));
-              openAiAssistant("请解释这段终端输出，并给出排查建议。");
-            }}
-            onCommandLifecycle={setTerminalCommandSubmission}
-            onCurrentDirectoryChange={updateTerminalCurrentDirectory}
-            onRecentOutputChange={(output) =>
-              setTerminalRecentOutputs((current) => {
-                const next = output.slice(-settings.aiContextMaxChars);
-                return current[session.id] === next
-                  ? current
-                  : { ...current, [session.id]: next };
-              })
-            }
-            onSelectionChange={(selection) =>
-              setTerminalSelections((current) =>
-                current[session.id] ===
-                selection.slice(0, settings.aiContextMaxChars)
-                  ? current
-                  : {
-                      ...current,
-                      [session.id]: selection.slice(
-                        0,
-                        settings.aiContextMaxChars,
-                      ),
-                    },
-              )
-            }
-          />
+          <Suspense fallback={null}>
+            <TerminalView
+              active={session.id === activeSessionId}
+              commandTrackingEnabled={settings.aiCommandTrackingEnabled}
+              focusRequest={
+                session.id === activeSessionId ? terminalFocusRequest : 0
+              }
+              injectedInput={terminalInjectedInputs[session.id]}
+              settings={settings}
+              session={session}
+              onAskAi={(selection) => {
+                setTerminalSelections((current) => ({
+                  ...current,
+                  [session.id]: selection,
+                }));
+                openAiAssistant("请解释这段终端输出，并给出排查建议。");
+              }}
+              onCommandLifecycle={setTerminalCommandSubmission}
+              onCurrentDirectoryChange={updateTerminalCurrentDirectory}
+              onRecentOutputChange={(output) =>
+                setTerminalRecentOutputs((current) => {
+                  const next = output.slice(-settings.aiContextMaxChars);
+                  return current[session.id] === next
+                    ? current
+                    : { ...current, [session.id]: next };
+                })
+              }
+              onSelectionChange={(selection) =>
+                setTerminalSelections((current) =>
+                  current[session.id] ===
+                  selection.slice(0, settings.aiContextMaxChars)
+                    ? current
+                    : {
+                        ...current,
+                        [session.id]: selection.slice(
+                          0,
+                          settings.aiContextMaxChars,
+                        ),
+                      },
+                )
+              }
+            />
+          </Suspense>
         )}
         sessionContextMenuItems={sessionContextMenuItems}
         sessions={sessions}
@@ -775,40 +779,42 @@ function App() {
     />
   );
 
-  const aiAssistantPanel = (
-    <AiAssistantPanel
-      canInsertCommand={activeSession?.status === "connected"}
-      commandSubmission={terminalCommandSubmission}
-      contextSources={aiContextSources}
-      hostId={activeSession?.host.id ?? null}
-      hostName={activeSession?.host.name ?? ""}
-      initialPrompt={aiInitialPrompt}
-      initialContextIds={aiInitialContextIds}
-      initialPromptRequest={aiInitialPromptRequest}
-      onClose={closeAiAssistant}
-      onAgentActionExecuted={handleAiAgentActionExecuted}
-      onCommandPrepared={handleAiCommandPrepared}
-      onRemoveRemoteFile={(sessionId, path) =>
-        setAiRemoteFileContexts((current) => {
-          const remaining = (current[sessionId] ?? []).filter(
-            (file) => file.path !== path,
-          );
-          if (remaining.length) {
-            return { ...current, [sessionId]: remaining };
-          }
-          const next = { ...current };
-          delete next[sessionId];
-          return next;
-        })
-      }
-      remoteFiles={
-        activeSessionId ? (aiRemoteFileContexts[activeSessionId] ?? []) : []
-      }
-      sessionId={activeSessionId}
-      settings={settings}
-      visible={aiAssistantVisible}
-    />
-  );
+  const aiAssistantPanel = aiAssistantVisible ? (
+    <Suspense fallback={<div className="ai-assistant-sidebar-panel" />}>
+      <AiAssistantPanel
+        canInsertCommand={activeSession?.status === "connected"}
+        commandSubmission={terminalCommandSubmission}
+        contextSources={aiContextSources}
+        hostId={activeSession?.host.id ?? null}
+        hostName={activeSession?.host.name ?? ""}
+        initialPrompt={aiInitialPrompt}
+        initialContextIds={aiInitialContextIds}
+        initialPromptRequest={aiInitialPromptRequest}
+        onClose={closeAiAssistant}
+        onAgentActionExecuted={handleAiAgentActionExecuted}
+        onCommandPrepared={handleAiCommandPrepared}
+        onRemoveRemoteFile={(sessionId, path) =>
+          setAiRemoteFileContexts((current) => {
+            const remaining = (current[sessionId] ?? []).filter(
+              (file) => file.path !== path,
+            );
+            if (remaining.length) {
+              return { ...current, [sessionId]: remaining };
+            }
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+          })
+        }
+        remoteFiles={
+          activeSessionId ? (aiRemoteFileContexts[activeSessionId] ?? []) : []
+        }
+        sessionId={activeSessionId}
+        settings={settings}
+        visible={aiAssistantVisible}
+      />
+    </Suspense>
+  ) : null;
 
   return (
     <AppWorkspaceLayout
