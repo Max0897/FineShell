@@ -11,11 +11,8 @@ import {
 import type { TableColumnProps } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
 import { join } from "@tauri-apps/api/path";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
-import { diagnosticInvoke as invoke, recordDiagnostic } from "../diagnostics";
-import { isApplePlatform } from "../platform-utils";
+import { diagnosticInvoke as invoke } from "../diagnostics";
 import {
   IconExclamationCircle,
   IconFile,
@@ -28,15 +25,9 @@ import type {
   SftpConnectResult,
   SftpEntry,
   SftpListResult,
-  SftpLocationRecord,
   TerminalSession,
 } from "../models";
-import {
-  loadConfiguration,
-  MAX_SFTP_BOOKMARKS,
-  MAX_SFTP_PATH_HISTORY,
-  upsertSftpLocation,
-} from "../config-database";
+import { MAX_SFTP_BOOKMARKS } from "../config-database";
 import ContextMenu from "./ContextMenu";
 import type { ContextMenuItem } from "./ContextMenu";
 import {
@@ -49,9 +40,7 @@ import {
   formatFileSize,
   formatPermissions,
   formatRemoteTime,
-  addRemotePathHistory,
   isRemotePathDescendant,
-  isActiveSftpTransfer,
   isValidRemoteName,
   invertSftpEntryKeys,
   localFileName,
@@ -64,22 +53,17 @@ import {
   remoteArchiveFormatFromName,
   remoteJoinPath,
   remoteParentPath,
-  resolveNativeDropPoint,
   selectAllSftpEntryKeys,
   setRemotePathBookmark,
-  summarizeSftpTransferBatch,
 } from "../sftp-utils";
 import type { RemoteArchiveFormat } from "../sftp-utils";
 import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
 import {
   commandErrorMessage,
-  listenProtocolEvent,
   type ExternalEditPayload,
-  type ExternalEditResult,
 } from "../tauri-protocol";
 import {
   externalEditStatusMeta,
-  type TransferActivityRecord,
 } from "./TransferActivityList";
 import {
   ArchiveDialog,
@@ -93,11 +77,18 @@ import {
   type CreateEntryKind,
   type PasteConflictPolicy,
   type RemoteTextFile,
-  type TextEditorState,
 } from "./sftp/SftpDialogs";
 import SftpTransferDrawer from "./sftp/SftpTransferDrawer";
 import buildSftpContextMenu from "./sftp/buildSftpContextMenu";
 import SftpToolbar from "./sftp/SftpToolbar";
+import useNativeSftpDrop from "./sftp/useNativeSftpDrop";
+import { isSftpSessionFailure } from "./sftp/sftpErrors";
+import useSftpLocations from "./sftp/useSftpLocations";
+import useSftpRemoteDrag from "./sftp/useSftpRemoteDrag";
+import useSftpTextEditing, {
+  REMOTE_TEXT_MAX_BYTES,
+} from "./sftp/useSftpTextEditing";
+import useSftpTransfers from "./sftp/useSftpTransfers";
 import {
   isEditableSelectAllTarget,
   SELECT_ALL_REQUEST_EVENT,
@@ -146,8 +137,6 @@ interface SftpPanelProps {
   terminalDirectory?: { path: string; revision: number };
 }
 
-type TransferRecord = TransferActivityRecord;
-
 interface LocalUploadFile {
   path: string;
   relativePath: string;
@@ -167,38 +156,8 @@ const INITIAL_BROWSER: BrowserState = {
   entries: [],
 };
 
-const MAX_CONCURRENT_TRANSFERS = 2;
-const REMOTE_TEXT_MAX_BYTES = 2 * 1024 * 1024;
-const REMOTE_TEXT_CONFLICT_ERROR = "远程文件已被其他程序修改";
-const EMPTY_SFTP_LOCATION: SftpLocationRecord = {
-  hostId: "",
-  bookmarks: [],
-  history: [],
-};
-
-function samePaths(left: string[], right: string[]) {
-  return (
-    left.length === right.length &&
-    left.every((path, index) => path === right[index])
-  );
-}
-
-function createTransferId() {
-  return `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function createUploadBatchId() {
   return `upload-batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function isTransferCancellation(message: string) {
-  return /传输已取消|连接已取消|cancel(?:led|ed)/i.test(message);
-}
-
-function isSftpSessionFailure(message: string) {
-  return /会话不存在|会话已停止|连接已关闭|connection|disconnect|socket/i.test(
-    message,
-  );
 }
 
 function ExternalEditStatusIcon({ edit }: { edit: ExternalEditPayload }) {
@@ -233,9 +192,6 @@ function SftpPanel({
   terminalDirectory,
 }: SftpPanelProps) {
   const [browsers, setBrowsers] = useState<Record<string, BrowserState>>({});
-  const [transfers, setTransfers] = useState<Record<string, TransferRecord>>(
-    {},
-  );
   const [transferDrawerVisible, setTransferDrawerVisible] = useState(false);
   const [creatingEntryKind, setCreatingEntryKind] =
     useState<CreateEntryKind | null>(null);
@@ -254,146 +210,32 @@ function SftpPanel({
   const [archiveBaseName, setArchiveBaseName] = useState("");
   const [archiveFormat, setArchiveFormat] =
     useState<RemoteArchiveFormat>("tarGz");
-  const [textEditor, setTextEditor] = useState<TextEditorState | null>(null);
-  const [externalEdits, setExternalEdits] = useState<
-    Record<string, ExternalEditPayload>
-  >({});
-  const [externalEditConflict, setExternalEditConflict] =
-    useState<ExternalEditPayload | null>(null);
-  const [externalEditActionLoading, setExternalEditActionLoading] =
-    useState(false);
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
-  const [remoteDropTargetPath, setRemoteDropTargetPath] = useState<string>();
-  const [remoteDragPreview, setRemoteDragPreview] = useState<{
-    count: number;
-    kind: SftpEntry["kind"];
-    label: string;
-    x: number;
-    y: number;
-  }>();
   const [clipboards, setClipboards] = useState<Record<string, SftpClipboard>>(
     {},
   );
   const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
   const [pasteConflictPolicy, setPasteConflictPolicy] =
     useState<PasteConflictPolicy>("rename");
-  const [fileDropActive, setFileDropActive] = useState(false);
-  const [fileDropTargetPath, setFileDropTargetPath] = useState<string>();
-  const [sftpLocations, setSftpLocations] = useState<
-    Record<string, SftpLocationRecord>
-  >({});
   const connectingRef = useRef(new Set<string>());
   const connectedHomesRef = useRef(new Map<string, string>());
-  const startingTransfersRef = useRef(new Set<string>());
-  const finalizedUploadBatchesRef = useRef(new Set<string>());
   const handledRefreshRequestsRef = useRef<Record<string, number>>({});
   const handledTerminalDirectoryRevisionsRef = useRef(
     new Map<string, number>(),
   );
   const browsersRef = useRef(browsers);
-  const transfersRef = useRef(transfers);
   const panelRef = useRef<HTMLElement>(null);
-  const dropZoneRef = useRef<HTMLDivElement>(null);
-  const remotePointerDragRef = useRef<{
-    active: boolean;
-    entries: SftpEntry[];
-    pointerId: number;
-    startX: number;
-    startY: number;
-  }>();
-  const textEditorRequestRef = useRef(0);
-  const sessionIdRef = useRef(session?.id);
   const sessionHostIdsRef = useRef(new Map<string, string>());
-  const sftpLocationsRef = useRef(sftpLocations);
-  const locationPersistenceErrorRef = useRef(false);
-  const readyRef = useRef(false);
-  const queueUploadPathsRef = useRef<
-    (paths: string[], targetDirectory?: string) => Promise<void>
-  >(async () => undefined);
+  const { commitLocation, locationForHost, recordVisitedPath } =
+    useSftpLocations();
 
   useEffect(() => {
     browsersRef.current = browsers;
   }, [browsers]);
 
-  useEffect(() => {
-    transfersRef.current = transfers;
-  }, [transfers]);
-
-  sessionIdRef.current = session?.id;
   if (session) {
     sessionHostIdsRef.current.set(session.id, session.host.id);
   }
-
-  useEffect(() => {
-    let disposed = false;
-    void loadConfiguration()
-      .then((configuration) => {
-        if (disposed) return;
-        const persisted = Object.fromEntries(
-          configuration.sftpLocations.map((location) => [
-            location.hostId,
-            location,
-          ]),
-        );
-        const merged = { ...persisted, ...sftpLocationsRef.current };
-        sftpLocationsRef.current = merged;
-        setSftpLocations(merged);
-      })
-      .catch(() => {
-        if (!disposed) Message.warning("无法读取 SFTP 目录记录");
-      });
-    return () => {
-      disposed = true;
-    };
-  }, []);
-
-  const commitSftpLocation = useCallback(
-    (
-      hostId: string,
-      update: (current: SftpLocationRecord) => SftpLocationRecord,
-    ) => {
-      const current = sftpLocationsRef.current[hostId] ?? {
-        ...EMPTY_SFTP_LOCATION,
-        hostId,
-      };
-      const next = update(current);
-      if (
-        samePaths(current.bookmarks, next.bookmarks) &&
-        samePaths(current.history, next.history)
-      ) {
-        return;
-      }
-      const locations = { ...sftpLocationsRef.current, [hostId]: next };
-      sftpLocationsRef.current = locations;
-      setSftpLocations(locations);
-      void upsertSftpLocation(next)
-        .then(() => {
-          locationPersistenceErrorRef.current = false;
-        })
-        .catch(() => {
-          if (locationPersistenceErrorRef.current) return;
-          locationPersistenceErrorRef.current = true;
-          Message.warning("SFTP 目录记录保存失败");
-        });
-    },
-    [],
-  );
-
-  const recordVisitedPath = useCallback(
-    (sessionId: string, path: string) => {
-      const hostId = sessionHostIdsRef.current.get(sessionId);
-      if (!hostId) return;
-      commitSftpLocation(hostId, (current) => ({
-        ...current,
-        history: addRemotePathHistory(
-          current.history,
-          path,
-          MAX_SFTP_PATH_HISTORY,
-        ),
-      }));
-    },
-    [commitSftpLocation],
-  );
 
   const updateBrowser = useCallback(
     (sessionId: string, values: Partial<BrowserState>) => {
@@ -427,7 +269,8 @@ function SftpPanel({
           entries: result.entries,
           error: undefined,
         });
-        recordVisitedPath(sessionId, result.path);
+        const hostId = sessionHostIdsRef.current.get(sessionId);
+        if (hostId) recordVisitedPath(hostId, result.path);
       } catch (error) {
         const message = commandErrorMessage(error);
         if (initial) {
@@ -503,6 +346,31 @@ function SftpPanel({
     [loadDirectory, updateBrowser],
   );
 
+  const {
+    cancel: cancelTransfer,
+    cancelSessionTransfers,
+    clearFinished: clearFinishedTransfersForSession,
+    currentTransfers,
+    pause: pauseTransfer,
+    queueArchiveDownload,
+    queueTransfer,
+    resume: resumeTransfer,
+    retry: retryTransfer,
+  } = useSftpTransfers({
+    activeSessionId: session?.id,
+    isSessionReady: (sessionId) => connectedHomesRef.current.has(sessionId),
+    onRefreshDirectory: async (sessionId) => {
+      const currentBrowser = browsersRef.current[sessionId];
+      if (currentBrowser?.status === "ready") {
+        await loadDirectory(sessionId, currentBrowser.path);
+      }
+    },
+    onSessionFailure: (sessionId, message) => {
+      connectedHomesRef.current.delete(sessionId);
+      updateBrowser(sessionId, { status: "failed", error: message });
+    },
+  });
+
   useEffect(() => {
     if (!session) return;
 
@@ -523,27 +391,7 @@ function SftpPanel({
       void invoke("sftp_disconnect", { sessionId: session.id }).catch(
         () => undefined,
       );
-      setTransfers((current) =>
-        Object.fromEntries(
-          Object.entries(current).map(([transferId, transfer]) => {
-            if (
-              transfer.sessionId === session.id &&
-              isActiveSftpTransfer(transfer.status)
-            ) {
-              startingTransfersRef.current.delete(transferId);
-              return [
-                transferId,
-                {
-                  ...transfer,
-                  status: "cancelled",
-                  bytesPerSecond: 0,
-                },
-              ];
-            }
-            return [transferId, transfer];
-          }),
-        ),
-      );
+      cancelSessionTransfers(session.id);
       updateBrowser(session.id, {
         status: "idle",
         entries: [],
@@ -556,7 +404,13 @@ function SftpPanel({
         return next;
       });
     }
-  }, [browsers, connectAndLoad, session, updateBrowser]);
+  }, [
+    browsers,
+    cancelSessionTransfers,
+    connectAndLoad,
+    session,
+    updateBrowser,
+  ]);
 
   useEffect(() => {
     if (!session || refreshRequest <= 0) return;
@@ -571,148 +425,38 @@ function SftpPanel({
     void loadDirectory(session.id, browser.path);
   }, [browsers, loadDirectory, refreshRequest, session]);
 
-  useEffect(() => {
-    if (!isTauri()) return;
-
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listenProtocolEvent("sftp-transfer", ({ payload }) => {
-      if (payload.status === "failed") {
-        recordDiagnostic("error", "sftp.transfer", "SFTP 传输失败", {
-          error: payload.error,
-          sessionId: payload.sessionId,
-          transferId: payload.transferId,
-        });
-      }
-      setTransfers((current) => {
-        const previous = current[payload.transferId];
-        if (!previous) return current;
-        if (previous.status === "cancelled" && payload.status !== "cancelled") {
-          return current;
-        }
-        if (previous.status === "paused" && payload.status === "running") {
-          return current;
-        }
-        const now = Date.now();
-        const transferredBytes =
-          (payload.status === "failed" || payload.status === "cancelled") &&
-          payload.transferredBytes === 0
-            ? previous.transferredBytes
-            : payload.transferredBytes;
-        const elapsedSeconds = (now - previous.sampledAt) / 1000;
-        const shouldSample =
-          transferredBytes >= previous.sampledBytes &&
-          (elapsedSeconds >= 0.25 || payload.status !== "running");
-        const currentSpeed = shouldSample
-          ? (transferredBytes - previous.sampledBytes) /
-            Math.max(elapsedSeconds, 0.001)
-          : previous.bytesPerSecond;
-        const bytesPerSecond =
-          payload.status === "paused" || payload.status === "cancelled"
-            ? 0
-            : shouldSample
-              ? previous.bytesPerSecond > 0
-                ? previous.bytesPerSecond * 0.6 + currentSpeed * 0.4
-                : currentSpeed
-              : previous.bytesPerSecond;
-        return {
-          ...current,
-          [payload.transferId]: {
-            ...previous,
-            ...payload,
-            transferredBytes,
-            totalBytes: payload.totalBytes || previous.totalBytes,
-            sampledAt: shouldSample ? now : previous.sampledAt,
-            sampledBytes: shouldSample
-              ? transferredBytes
-              : previous.sampledBytes,
-            bytesPerSecond,
-          },
-        };
-      });
-    }).then((stopListening) => {
-      if (disposed) {
-        stopListening();
-      } else {
-        unlisten = stopListening;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isTauri()) return;
-
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listenProtocolEvent("sftp-external-edit", ({ payload }) => {
-      const record = { ...payload, updatedAt: Date.now() };
-      setExternalEdits((current) => {
-        if (payload.status === "closed") {
-          const next = { ...current };
-          delete next[payload.editId];
-          return next;
-        }
-        const next = Object.fromEntries(
-          Object.entries(current).filter(
-            ([editId, edit]) =>
-              editId === payload.editId ||
-              edit.sessionId !== payload.sessionId ||
-              edit.remotePath !== payload.remotePath,
-          ),
-        );
-        return { ...next, [payload.editId]: record };
-      });
-
-      if (payload.status === "conflict") {
-        if (payload.sessionId === sessionIdRef.current) {
-          setExternalEditConflict(record);
-        }
-      } else if (payload.status === "synced" || payload.status === "closed") {
-        setExternalEditConflict((current) =>
-          current?.editId === payload.editId ? null : current,
-        );
-      } else if (
-        payload.status === "failed" &&
-        payload.sessionId === sessionIdRef.current &&
-        payload.error
-      ) {
-        recordDiagnostic("error", "sftp.externalEdit", "外部编辑同步失败", {
-          error: payload.error,
-          sessionId: payload.sessionId,
-        });
-        Message.error(payload.error);
-      }
-    }).then((stopListening) => {
-      if (disposed) {
-        stopListening();
-      } else {
-        unlisten = stopListening;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
   const browser = session ? (browsers[session.id] ?? INITIAL_BROWSER) : null;
   const connected = session?.status === "connected";
   const ready = Boolean(connected && browser?.status === "ready");
-  readyRef.current = ready;
   const busy =
     browser?.status === "connecting" || browser?.status === "loading";
-  const currentLocation = session
-    ? (sftpLocations[session.host.id] ?? {
-        ...EMPTY_SFTP_LOCATION,
-        hostId: session.host.id,
-      })
-    : EMPTY_SFTP_LOCATION;
+  const {
+    chooseExternalEditor,
+    currentExternalEdits,
+    externalEditActionLoading,
+    externalEditConflict,
+    externalEditForEntry,
+    externalEdits,
+    openExternalEditor,
+    openTextEditor,
+    reopenExternalEditLocalFile,
+    requestCloseTextEditor,
+    resolveExternalEdit,
+    selectExternalEditConflict,
+    saveTextEditor,
+    textEditor,
+    textEditorByteLength,
+    updateTextContent,
+  } = useSftpTextEditing({
+    onOperationError: handleOperationError,
+    onRefreshDirectory: () => {
+      if (session && browser) {
+        return loadDirectory(session.id, browser.path);
+      }
+    },
+    sessionId: session?.id,
+  });
+  const currentLocation = locationForHost(session?.host.id);
   const currentPathBookmarked = Boolean(
     browser?.path && currentLocation.bookmarks.includes(browser.path),
   );
@@ -724,20 +468,6 @@ function SftpPanel({
         browser?.inputPath ?? "",
       ),
     [browser?.inputPath, currentLocation.bookmarks, currentLocation.history],
-  );
-  const currentTransfers = useMemo(
-    () =>
-      Object.values(transfers)
-        .filter((transfer) => transfer.sessionId === session?.id)
-        .reverse(),
-    [session?.id, transfers],
-  );
-  const currentExternalEdits = useMemo(
-    () =>
-      Object.values(externalEdits)
-        .filter((edit) => edit.sessionId === session?.id)
-        .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
-    [externalEdits, session?.id],
   );
   const transferActivityCount =
     currentTransfers.length + currentExternalEdits.length;
@@ -757,11 +487,6 @@ function SftpPanel({
         (entry) => showHiddenFiles || !entry.name.startsWith("."),
       ),
     [browser?.entries, showHiddenFiles],
-  );
-  const textEditorByteLength = useMemo(
-    () =>
-      textEditor ? new TextEncoder().encode(textEditor.content).byteLength : 0,
-    [textEditor],
   );
 
   useEffect(() => {
@@ -795,16 +520,7 @@ function SftpPanel({
 
   useEffect(() => {
     setSelectedEntryKeys([]);
-    setRemoteDropTargetPath(undefined);
-    setRemoteDragPreview(undefined);
-    remotePointerDragRef.current = undefined;
-    document.body.classList.remove("sftp-remote-dragging");
   }, [browser?.path, session?.id]);
-
-  useEffect(() => {
-    textEditorRequestRef.current += 1;
-    setTextEditor(null);
-  }, [session?.id]);
 
   useEffect(() => {
     const visibleKeys = new Set(visibleEntries.map((entry) => entry.id));
@@ -861,7 +577,7 @@ function SftpPanel({
 
   function toggleCurrentPathBookmark() {
     if (!session || !browser?.path) return;
-    commitSftpLocation(session.host.id, (current) => ({
+    commitLocation(session.host.id, (current) => ({
       ...current,
       bookmarks: setRemotePathBookmark(
         current.bookmarks,
@@ -874,7 +590,7 @@ function SftpPanel({
 
   function removePathBookmark(path: string) {
     if (!session) return;
-    commitSftpLocation(session.host.id, (current) => ({
+    commitLocation(session.host.id, (current) => ({
       ...current,
       bookmarks: setRemotePathBookmark(
         current.bookmarks,
@@ -887,11 +603,29 @@ function SftpPanel({
 
   function clearPathHistory() {
     if (!session) return;
-    commitSftpLocation(session.host.id, (current) => ({
+    commitLocation(session.host.id, (current) => ({
       ...current,
       history: [],
     }));
   }
+
+  const {
+    cancel: cancelRemotePointerDrag,
+    dropTargetPath: remoteDropTargetPath,
+    finish: finishRemotePointerDrag,
+    move: moveRemotePointerDrag,
+    preview: remoteDragPreview,
+    start: startRemotePointerDrag,
+  } = useSftpRemoteDrag({
+    disabled: !ready || operationLoading,
+    entries: visibleEntries,
+    onMove: (entries, targetDirectory) => {
+      void requestPaste(targetDirectory, { mode: "cut", entries });
+    },
+    resetKey: `${session?.id ?? ""}\0${browser?.path ?? ""}`,
+    selectedEntryKeys,
+    setSelectedEntryKeys,
+  });
 
   const columns = useMemo<TableColumnProps<SftpEntry>[]>(
     () => [
@@ -958,186 +692,38 @@ function SftpPanel({
     ],
     [
       externalEdits,
+      cancelRemotePointerDrag,
+      finishRemotePointerDrag,
+      moveRemotePointerDrag,
       operationLoading,
       ready,
       selectedEntryKeys,
       session?.id,
+      startRemotePointerDrag,
       visibleEntries,
     ],
   );
-
-  const executeTransfer = useCallback(
-    async (transfer: TransferRecord) => {
-      try {
-        if (transfer.archiveFormat && transfer.archiveSourcePaths?.length) {
-          await invoke("sftp_download_archive", {
-            sessionId: transfer.sessionId,
-            transferId: transfer.transferId,
-            localPath: transfer.localPath,
-            sourcePaths: transfer.archiveSourcePaths,
-            archiveName: transfer.fileName,
-            format: transfer.archiveFormat,
-            overwrite: transfer.overwrite,
-          });
-        } else {
-          await invoke(
-            transfer.direction === "upload" ? "sftp_upload" : "sftp_download",
-            {
-              sessionId: transfer.sessionId,
-              transferId: transfer.transferId,
-              localPath: transfer.localPath,
-              remotePath: transfer.remotePath,
-              overwrite: transfer.overwrite,
-            },
-          );
-        }
-        if (!transfer.batchId) {
-          Message.success(
-            `${transfer.direction === "upload" ? "上传" : "下载"}完成：${transfer.fileName}`,
-          );
-          const currentBrowser = browsersRef.current[transfer.sessionId];
-          if (transfer.direction === "upload" && currentBrowser) {
-            await loadDirectory(transfer.sessionId, currentBrowser.path);
-          }
-        }
-      } catch (error) {
-        const message = commandErrorMessage(error);
-        const cancelled =
-          isTransferCancellation(message) ||
-          transfersRef.current[transfer.transferId]?.status === "cancelled";
-        setTransfers((current) => {
-          const previous = current[transfer.transferId] ?? transfer;
-          return {
-            ...current,
-            [transfer.transferId]: {
-              ...previous,
-              status: cancelled ? "cancelled" : "failed",
-              error: cancelled ? undefined : message,
-              bytesPerSecond: 0,
-            },
-          };
-        });
-        if (!cancelled) {
-          if (isSftpSessionFailure(message)) {
-            connectedHomesRef.current.delete(transfer.sessionId);
-            updateBrowser(transfer.sessionId, {
-              status: "failed",
-              error: message,
-            });
-          }
-          if (!transfer.batchId) Message.error(message);
-        }
-      } finally {
-        startingTransfersRef.current.delete(transfer.transferId);
-      }
-    },
-    [loadDirectory, updateBrowser],
-  );
-
-  useEffect(() => {
-    const batches = new Map<string, TransferRecord[]>();
-    for (const transfer of Object.values(transfers)) {
-      if (transfer.direction !== "upload" || !transfer.batchId) continue;
-      const batch = batches.get(transfer.batchId) ?? [];
-      batch.push(transfer);
-      batches.set(transfer.batchId, batch);
-    }
-
-    for (const batchId of finalizedUploadBatchesRef.current) {
-      if (!batches.has(batchId)) finalizedUploadBatchesRef.current.delete(batchId);
-    }
-
-    for (const [batchId, batch] of batches) {
-      if (finalizedUploadBatchesRef.current.has(batchId)) continue;
-      const summary = summarizeSftpTransferBatch(
-        batch.map((transfer) => transfer.status),
-      );
-      if (!summary.finished) continue;
-
-      finalizedUploadBatchesRef.current.add(batchId);
-      if (summary.failed === 0 && summary.cancelled === 0) {
-        Message.success(`上传完成：共 ${summary.completed} 个文件`);
-      } else {
-        const details = [`成功 ${summary.completed} 个`];
-        if (summary.failed > 0) details.push(`失败 ${summary.failed} 个`);
-        if (summary.cancelled > 0) details.push(`取消 ${summary.cancelled} 个`);
-        const message = `批量上传结束：${details.join("，")}`;
-        if (summary.failed === summary.total) Message.error(message);
-        else Message.warning(message);
-      }
-
-      const currentBrowser = browsersRef.current[batch[0].sessionId];
-      if (currentBrowser?.status === "ready") {
-        void loadDirectory(batch[0].sessionId, currentBrowser.path);
-      }
-    }
-  }, [loadDirectory, transfers]);
-
-  useEffect(() => {
-    if (!isTauri()) return;
-    const activeCounts = new Map<string, number>();
-    for (const transfer of Object.values(transfers)) {
-      if (transfer.status === "running" || transfer.status === "paused") {
-        activeCounts.set(
-          transfer.sessionId,
-          (activeCounts.get(transfer.sessionId) ?? 0) + 1,
-        );
-      }
-    }
-
-    for (const transfer of Object.values(transfers)) {
-      if (
-        transfer.status !== "queued" ||
-        startingTransfersRef.current.has(transfer.transferId) ||
-        !connectedHomesRef.current.has(transfer.sessionId)
-      ) {
-        continue;
-      }
-      const activeCount = activeCounts.get(transfer.sessionId) ?? 0;
-      if (activeCount >= MAX_CONCURRENT_TRANSFERS) continue;
-
-      startingTransfersRef.current.add(transfer.transferId);
-      activeCounts.set(transfer.sessionId, activeCount + 1);
-      const runningTransfer = { ...transfer, status: "running" as const };
-      setTransfers((current) => ({
-        ...current,
-        [transfer.transferId]: runningTransfer,
-      }));
-      void executeTransfer(runningTransfer);
-    }
-  }, [executeTransfer, transfers]);
 
   function runTransfer(
     direction: "upload" | "download",
     localPath: string,
     remotePath: string,
     overwrite: boolean,
-    transferId = createTransferId(),
+    transferId?: string,
     totalBytes = 0,
     batchId?: string,
   ) {
     if (!session) return;
-    const fileName =
-      direction === "upload"
-        ? localFileName(localPath)
-        : remotePath.split("/").pop() || remotePath;
-    const record: TransferRecord = {
+    queueTransfer({
+      batchId,
+      direction,
+      localPath,
+      overwrite,
+      remotePath,
       sessionId: session.id,
       transferId,
-      direction,
-      fileName,
-      transferredBytes: 0,
       totalBytes,
-      status: "queued",
-      localPath,
-      remotePath,
-      overwrite,
-      sampledAt: Date.now(),
-      sampledBytes: 0,
-      bytesPerSecond: 0,
-      batchId,
-    };
-    setTransfers((current) => ({ ...current, [transferId]: record }));
+    });
   }
 
   function runArchiveDownload(
@@ -1145,27 +731,17 @@ function SftpPanel({
     sourcePaths: string[],
     format: RemoteArchiveFormat,
     archiveName: string,
-    transferId = createTransferId(),
+    transferId?: string,
   ) {
     if (!session) return;
-    const record: TransferRecord = {
-      sessionId: session.id,
-      transferId,
-      direction: "download",
-      fileName: archiveName,
-      transferredBytes: 0,
-      totalBytes: 0,
-      status: "queued",
+    queueArchiveDownload({
+      archiveName,
+      format,
       localPath,
-      remotePath: sourcePaths[0] ?? "",
-      overwrite: true,
-      sampledAt: Date.now(),
-      sampledBytes: 0,
-      bytesPerSecond: 0,
-      archiveFormat: format,
-      archiveSourcePaths: [...sourcePaths],
-    };
-    setTransfers((current) => ({ ...current, [transferId]: record }));
+      sessionId: session.id,
+      sourcePaths,
+      transferId,
+    });
   }
 
   function confirmBatchOverwrite(title: string, content: string) {
@@ -1296,7 +872,14 @@ function SftpPanel({
     }
   }
 
-  queueUploadPathsRef.current = queueUploadPaths;
+  const {
+    active: fileDropActive,
+    dropZoneRef,
+    targetPath: fileDropTargetPath,
+  } = useNativeSftpDrop({
+    onUploadPaths: queueUploadPaths,
+    ready,
+  });
 
   async function chooseUploadFiles() {
     if (!session || !browser || !ready) return;
@@ -1367,123 +950,9 @@ function SftpPanel({
     Message.info(`已加入 ${files.length} 个下载任务`);
   }
 
-  async function retryTransfer(transfer: TransferRecord) {
-    if (transfer.archiveFormat && transfer.archiveSourcePaths?.length) {
-      runArchiveDownload(
-        transfer.localPath,
-        transfer.archiveSourcePaths,
-        transfer.archiveFormat,
-        transfer.fileName,
-        transfer.transferId,
-      );
-      return;
-    }
-    runTransfer(
-      transfer.direction,
-      transfer.localPath,
-      transfer.remotePath,
-      transfer.overwrite,
-      transfer.transferId,
-      transfer.totalBytes,
-    );
-  }
-
-  async function pauseTransfer(transfer: TransferRecord) {
-    if (transfer.status !== "running") return;
-    try {
-      await invoke("sftp_pause_transfer", {
-        sessionId: transfer.sessionId,
-        transferId: transfer.transferId,
-      });
-      setTransfers((current) => {
-        const previous = current[transfer.transferId];
-        if (!previous || previous.status !== "running") return current;
-        return {
-          ...current,
-          [transfer.transferId]: {
-            ...previous,
-            status: "paused",
-            bytesPerSecond: 0,
-          },
-        };
-      });
-    } catch (error) {
-      Message.error(commandErrorMessage(error));
-    }
-  }
-
-  async function resumeTransfer(transfer: TransferRecord) {
-    if (transfer.status !== "paused") return;
-    try {
-      await invoke("sftp_resume_transfer", {
-        sessionId: transfer.sessionId,
-        transferId: transfer.transferId,
-      });
-      setTransfers((current) => {
-        const previous = current[transfer.transferId];
-        if (!previous || previous.status !== "paused") return current;
-        return {
-          ...current,
-          [transfer.transferId]: {
-            ...previous,
-            status: "running",
-            sampledAt: Date.now(),
-            sampledBytes: previous.transferredBytes,
-          },
-        };
-      });
-    } catch (error) {
-      Message.error(commandErrorMessage(error));
-    }
-  }
-
-  async function cancelTransfer(transfer: TransferRecord) {
-    if (transfer.status === "queued") {
-      startingTransfersRef.current.delete(transfer.transferId);
-      setTransfers((current) => ({
-        ...current,
-        [transfer.transferId]: {
-          ...transfer,
-          status: "cancelled",
-          bytesPerSecond: 0,
-        },
-      }));
-      return;
-    }
-    if (transfer.status !== "running" && transfer.status !== "paused") return;
-    try {
-      await invoke("sftp_cancel_transfer", {
-        sessionId: transfer.sessionId,
-        transferId: transfer.transferId,
-      });
-      setTransfers((current) => {
-        const previous = current[transfer.transferId];
-        if (!previous || !isActiveSftpTransfer(previous.status)) return current;
-        return {
-          ...current,
-          [transfer.transferId]: {
-            ...previous,
-            status: "cancelled",
-            bytesPerSecond: 0,
-          },
-        };
-      });
-    } catch (error) {
-      Message.error(commandErrorMessage(error));
-    }
-  }
-
   function clearFinishedTransfers() {
     if (!session) return;
-    setTransfers((current) =>
-      Object.fromEntries(
-        Object.entries(current).filter(
-          ([, transfer]) =>
-            transfer.sessionId !== session.id ||
-            isActiveSftpTransfer(transfer.status),
-        ),
-      ),
-    );
+    clearFinishedTransfersForSession(session.id);
   }
 
   function handleOperationError(error: unknown) {
@@ -2065,61 +1534,6 @@ function SftpPanel({
     }
   }
 
-  function resetTextEditor() {
-    textEditorRequestRef.current += 1;
-    setTextEditor(null);
-  }
-
-  function requestCloseTextEditor() {
-    if (!textEditor || textEditor.saving) return;
-    if (
-      textEditor.document &&
-      textEditor.content !== textEditor.document.content
-    ) {
-      Modal.confirm({
-        cancelText: "继续编辑",
-        content: "当前修改尚未保存，关闭后将丢失这些内容。",
-        okButtonProps: { status: "danger" },
-        okText: "放弃修改",
-        onOk: resetTextEditor,
-        title: "放弃未保存的修改？",
-      });
-      return;
-    }
-    resetTextEditor();
-  }
-
-  async function openTextEditor(entry: SftpEntry) {
-    if (!session || entry.kind !== "file") return;
-    const requestId = textEditorRequestRef.current + 1;
-    textEditorRequestRef.current = requestId;
-    setTextEditor({
-      entry,
-      document: null,
-      content: "",
-      loading: true,
-      saving: false,
-    });
-    try {
-      const document = await invoke<RemoteTextFile>("sftp_read_text_file", {
-        sessionId: session.id,
-        path: entry.path,
-      });
-      if (textEditorRequestRef.current !== requestId) return;
-      setTextEditor({
-        entry,
-        document,
-        content: document.content,
-        loading: false,
-        saving: false,
-      });
-    } catch (error) {
-      if (textEditorRequestRef.current !== requestId) return;
-      setTextEditor(null);
-      handleOperationError(error);
-    }
-  }
-
   async function sendFilesToAi(entries: SftpEntry[]) {
     if (!session || operationLoading) return;
     const files = entries.filter((entry) => entry.kind === "file");
@@ -2171,149 +1585,6 @@ function SftpPanel({
     }
   }
 
-  async function saveTextEditor(overwrite = false) {
-    if (
-      !session ||
-      !browser ||
-      !textEditor ||
-      textEditor.loading ||
-      textEditor.saving
-    ) {
-      return;
-    }
-    const document = textEditor.document;
-    if (!document) return;
-    if (textEditorByteLength > REMOTE_TEXT_MAX_BYTES) {
-      Message.error("编辑后的文本超过 2 MiB，无法保存");
-      return;
-    }
-    if (textEditor.content === document.content) {
-      return;
-    }
-
-    const editor = textEditor;
-    setTextEditor((current) =>
-      current
-        ? {
-            ...current,
-            saving: true,
-          }
-        : current,
-    );
-    try {
-      await invoke<RemoteTextFile>("sftp_write_text_file", {
-        sessionId: session.id,
-        path: editor.entry.path,
-        content: editor.content,
-        originalContent: document.content,
-        overwrite,
-      });
-      resetTextEditor();
-      Message.success(`已保存 ${editor.entry.name}`);
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      const message = commandErrorMessage(error);
-      setTextEditor((current) =>
-        current
-          ? {
-              ...current,
-              saving: false,
-            }
-          : current,
-      );
-      if (!overwrite && message.includes(REMOTE_TEXT_CONFLICT_ERROR)) {
-        Modal.confirm({
-          cancelText: "取消",
-          content: "远程内容已发生变化。强制保存会覆盖其他程序写入的内容。",
-          okButtonProps: { status: "danger" },
-          okText: "覆盖保存",
-          onOk: () => saveTextEditor(true),
-          title: "远程文件已修改",
-        });
-      } else {
-        handleOperationError(error);
-      }
-    }
-  }
-
-  function externalEditForEntry(entry: SftpEntry) {
-    return Object.values(externalEdits).find(
-      (edit) =>
-        edit.sessionId === session?.id &&
-        edit.remotePath === entry.path &&
-        edit.status !== "closed",
-    );
-  }
-
-  async function openExternalEditor(entry: SftpEntry, editorPath?: string) {
-    if (!session || entry.kind !== "file") return;
-    try {
-      const edit = await invoke<ExternalEditResult>(
-        "sftp_start_external_edit",
-        {
-          sessionId: session.id,
-          path: entry.path,
-        },
-      );
-      if (editorPath) {
-        await invoke("sftp_launch_external_editor", {
-          editId: edit.editId,
-          editorPath,
-        });
-      } else {
-        await openPath(edit.localPath);
-      }
-      Message.success(`已打开 ${entry.name}，保存后将自动同步`);
-    } catch (error) {
-      handleOperationError(error);
-    }
-  }
-
-  async function chooseExternalEditor(entry: SftpEntry) {
-    try {
-      const selected = await open({
-        directory: false,
-        multiple: false,
-        title: "选择外部编辑器",
-      });
-      if (typeof selected === "string") {
-        await openExternalEditor(entry, selected);
-      }
-    } catch (error) {
-      handleOperationError(error);
-    }
-  }
-
-  async function resolveExternalEdit(action: "overwrite" | "reload") {
-    if (!externalEditConflict || !session || !browser) return;
-    setExternalEditActionLoading(true);
-    try {
-      await invoke("sftp_external_edit_action", {
-        editId: externalEditConflict.editId,
-        action,
-      });
-      Message.success(
-        action === "overwrite"
-          ? "本地内容已覆盖远端文件"
-          : "已用远端内容更新本地文件",
-      );
-      setExternalEditConflict(null);
-      await loadDirectory(session.id, browser.path);
-    } catch (error) {
-      handleOperationError(error);
-    } finally {
-      setExternalEditActionLoading(false);
-    }
-  }
-
-  async function reopenExternalEditLocalFile(edit: ExternalEditPayload) {
-    try {
-      await openPath(edit.localPath);
-    } catch (error) {
-      Message.error(`无法打开本地编辑副本：${commandErrorMessage(error)}`);
-    }
-  }
-
   function entryContextMenuItems(entries: SftpEntry[]): ContextMenuItem[] {
     return buildSftpContextMenu({
       clipboardEntryCount: currentClipboard?.entries.length ?? 0,
@@ -2344,7 +1615,7 @@ function SftpPanel({
         }
       },
       onRename: openRenameDialog,
-      onResolveExternalEdit: setExternalEditConflict,
+      onResolveExternalEdit: selectExternalEditConflict,
       onSendFilesToAi: sendFilesToAi,
       onSendSelectionToAi: (selected) => {
         if (!session || !browser) return;
@@ -2393,208 +1664,6 @@ function SftpPanel({
     if (!session || entry.kind !== "directory") return;
     void loadDirectory(session.id, entry.path);
   }
-
-  function remoteDragEntries(entry: SftpEntry) {
-    return selectedEntryKeys.includes(entry.id)
-      ? visibleEntries.filter((candidate) =>
-          selectedEntryKeys.includes(candidate.id),
-        )
-      : [entry];
-  }
-
-  function canDropRemoteEntries(entries: SftpEntry[], targetDirectory: string) {
-    return !entries.some(
-      (entry) =>
-        entry.kind === "directory" &&
-        (entry.path === targetDirectory ||
-          isRemotePathDescendant(entry.path, targetDirectory)),
-    );
-  }
-
-  function startRemotePointerDrag(
-    event: React.PointerEvent<HTMLElement>,
-    entry: SftpEntry,
-  ) {
-    if (event.button !== 0 || !ready || operationLoading) return;
-    const entries = remoteDragEntries(entry);
-    remotePointerDragRef.current = {
-      active: false,
-      entries: entries.map((item) => ({ ...item })),
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function remoteDirectoryAtPoint(clientX: number, clientY: number) {
-    const target = document.elementFromPoint(clientX, clientY);
-    const row = target?.closest<HTMLElement>("[data-sftp-entry-id]");
-    const entry = visibleEntries.find(
-      (candidate) => candidate.id === row?.dataset.sftpEntryId,
-    );
-    return entry?.kind === "directory" ? entry : undefined;
-  }
-
-  function clearRemotePointerDrag() {
-    remotePointerDragRef.current = undefined;
-    setRemoteDropTargetPath(undefined);
-    setRemoteDragPreview(undefined);
-    document.body.classList.remove("sftp-remote-dragging");
-  }
-
-  function moveRemotePointerDrag(event: React.PointerEvent<HTMLElement>) {
-    const drag = remotePointerDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-
-    if (!drag.active) {
-      const distance = Math.hypot(
-        event.clientX - drag.startX,
-        event.clientY - drag.startY,
-      );
-      if (distance < 5) return;
-      drag.active = true;
-      const firstEntry = drag.entries[0];
-      setRemoteDragPreview({
-        count: drag.entries.length,
-        kind: firstEntry?.kind ?? "file",
-        label: firstEntry?.name ?? "远程项目",
-        x: event.clientX,
-        y: event.clientY,
-      });
-      if (firstEntry && !selectedEntryKeys.includes(firstEntry.id)) {
-        setSelectedEntryKeys([firstEntry.id]);
-      }
-      document.body.classList.add("sftp-remote-dragging");
-    }
-
-    event.preventDefault();
-    const target = remoteDirectoryAtPoint(event.clientX, event.clientY);
-    const targetPath =
-      target && canDropRemoteEntries(drag.entries, target.path)
-        ? target.path
-        : undefined;
-    setRemoteDropTargetPath((current) =>
-      current === targetPath ? current : targetPath,
-    );
-    setRemoteDragPreview({
-      count: drag.entries.length,
-      kind: drag.entries[0]?.kind ?? "file",
-      label: drag.entries[0]?.name ?? "远程项目",
-      x: event.clientX,
-      y: event.clientY,
-    });
-  }
-
-  function finishRemotePointerDrag(event: React.PointerEvent<HTMLElement>) {
-    const drag = remotePointerDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    const target = drag.active
-      ? remoteDirectoryAtPoint(event.clientX, event.clientY)
-      : undefined;
-    const shouldMove =
-      target && canDropRemoteEntries(drag.entries, target.path);
-    if (drag.active) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
-    clearRemotePointerDrag();
-    if (shouldMove && target) {
-      void requestPaste(target.path, { mode: "cut", entries: drag.entries });
-    }
-  }
-
-  function cancelRemotePointerDrag(event: React.PointerEvent<HTMLElement>) {
-    const drag = remotePointerDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    clearRemotePointerDrag();
-  }
-
-  useEffect(
-    () => () => {
-      document.body.classList.remove("sftp-remote-dragging");
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (!isTauri()) return;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    let scaleFactor = 1;
-    const currentWindow = getCurrentWindow();
-
-    const handleDragDrop: Parameters<
-      typeof currentWindow.onDragDropEvent
-    >[0] = ({ payload }) => {
-      if (payload.type === "leave") {
-        setFileDropActive(false);
-        setFileDropTargetPath(undefined);
-        return;
-      }
-      const rect = dropZoneRef.current?.getBoundingClientRect();
-      const point = rect
-        ? resolveNativeDropPoint(
-            payload.position,
-            scaleFactor,
-            rect,
-            isApplePlatform(),
-          )
-        : undefined;
-      const x = point?.x ?? 0;
-      const y = point?.y ?? 0;
-      const inside = Boolean(readyRef.current && point?.inside);
-      const row = inside
-        ? document
-            .elementFromPoint(x, y)
-            ?.closest<HTMLElement>("[data-sftp-entry-id]")
-        : undefined;
-      const targetDirectory =
-        row?.dataset.sftpEntryKind === "directory"
-          ? row.dataset.sftpEntryPath
-          : undefined;
-      if (payload.type === "drop") {
-        setFileDropActive(false);
-        setFileDropTargetPath(undefined);
-        recordDiagnostic("info", "sftp.drag-drop", "收到本地文件拖放事件", {
-          accepted: inside,
-          coordinateMode: point?.coordinateMode ?? "unknown",
-          itemCount: payload.paths.length,
-          ready: readyRef.current,
-        });
-        if (inside) {
-          void queueUploadPathsRef.current(payload.paths, targetDirectory);
-        }
-        return;
-      }
-      setFileDropActive(inside);
-      setFileDropTargetPath(targetDirectory);
-    };
-
-    void (async () => {
-      try {
-        scaleFactor = await currentWindow.scaleFactor();
-        const stopListening = await currentWindow.onDragDropEvent(handleDragDrop);
-        if (disposed) {
-          stopListening();
-        } else {
-          unlisten = stopListening;
-        }
-      } catch (error) {
-        recordDiagnostic("error", "sftp.drag-drop", "注册文件拖放监听失败", {
-          error: commandErrorMessage(error),
-        });
-      }
-    })();
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
 
   return (
     <section
@@ -2753,7 +1822,7 @@ function SftpPanel({
         onClose={() => setTransferDrawerVisible(false)}
         onOpenExternalEdit={(edit) => void reopenExternalEditLocalFile(edit)}
         onPauseTransfer={(transfer) => void pauseTransfer(transfer)}
-        onResolveExternalEdit={setExternalEditConflict}
+        onResolveExternalEdit={selectExternalEditConflict}
         onResumeTransfer={(transfer) => void resumeTransfer(transfer)}
         onRetryTransfer={(transfer) => void retryTransfer(transfer)}
         transfers={currentTransfers}
@@ -2763,23 +1832,14 @@ function SftpPanel({
         byteLength={textEditorByteLength}
         maxBytes={REMOTE_TEXT_MAX_BYTES}
         onCancel={requestCloseTextEditor}
-        onChange={(content) =>
-          setTextEditor((current) =>
-            current
-              ? {
-                  ...current,
-                  content,
-                }
-              : current,
-          )
-        }
+        onChange={updateTextContent}
         onSave={() => void saveTextEditor()}
         state={textEditor}
       />
       <ExternalEditConflictDialog
         edit={externalEditConflict}
         loading={externalEditActionLoading}
-        onCancel={() => setExternalEditConflict(null)}
+        onCancel={() => selectExternalEditConflict(null)}
         onResolve={(action) => void resolveExternalEdit(action)}
       />
       <PasteConflictDialog
