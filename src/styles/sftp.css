@@ -23,6 +23,62 @@
   width: 100%;
 }
 
+.sftp-path-breadcrumb {
+  min-width: 0;
+  height: 24px;
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  background: #f2f3f5;
+  border: 1px solid transparent;
+  border-radius: 2px;
+}
+
+.sftp-path-breadcrumb-scroll {
+  min-width: 0;
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-left: 8px;
+  scrollbar-width: none;
+}
+
+.sftp-path-breadcrumb-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.sftp-path-breadcrumb .arco-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex: none;
+  white-space: nowrap;
+}
+
+.sftp-path-breadcrumb-item {
+  cursor: pointer;
+}
+
+.sftp-path-breadcrumb-item:hover {
+  color: #165dff;
+}
+
+.sftp-path-edit-target {
+  min-width: 24px;
+  flex: 1 0 24px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: text;
+}
+
+.sftp-path-edit-target:focus-visible {
+  outline: 1px solid #165dff;
+  outline-offset: -1px;
+}
+
 .sftp-path-controls > .arco-btn.is-active {
   color: #165dff;
 }

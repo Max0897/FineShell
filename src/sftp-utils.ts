@@ -11,6 +11,23 @@ export function normalizeRemoteDirectoryPath(path: string) {
   return trimmed === "/" ? "/" : trimmed.replace(/\/+$/, "");
 }
 
+export interface RemotePathBreadcrumb {
+  label: string;
+  path: string;
+}
+
+export function remotePathBreadcrumbs(path: string): RemotePathBreadcrumb[] {
+  const normalized = normalizeRemoteDirectoryPath(path) ?? "/";
+  const segments = normalized.split("/").filter(Boolean);
+  return [
+    { label: "/", path: "/" },
+    ...segments.map((label, index) => ({
+      label,
+      path: `/${segments.slice(0, index + 1).join("/")}`,
+    })),
+  ];
+}
+
 export function addRemotePathHistory(
   history: string[],
   path: string,

@@ -19,6 +19,7 @@ import {
   remoteArchiveFormatFromName,
   remoteJoinPath,
   remoteParentPath,
+  remotePathBreadcrumbs,
   resolveNativeDropPoint,
   selectAllSftpEntryKeys,
   invertSftpEntryKeys,
@@ -36,6 +37,16 @@ describe("SFTP path helpers", () => {
   test("joins names without duplicating separators", () => {
     expect(remoteJoinPath("/", "tmp")).toBe("/tmp");
     expect(remoteJoinPath("/var/", "log")).toBe("/var/log");
+  });
+
+  test("builds clickable breadcrumb paths for every directory level", () => {
+    expect(remotePathBreadcrumbs("/home/max/projects/")).toEqual([
+      { label: "/", path: "/" },
+      { label: "home", path: "/home" },
+      { label: "max", path: "/home/max" },
+      { label: "projects", path: "/home/max/projects" },
+    ]);
+    expect(remotePathBreadcrumbs("/")).toEqual([{ label: "/", path: "/" }]);
   });
 
   test("detects descendants without matching sibling prefixes", () => {

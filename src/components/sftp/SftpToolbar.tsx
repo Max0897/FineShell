@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import {
   AutoComplete,
   Badge,
+  Breadcrumb,
   Button,
   Dropdown,
   Menu,
@@ -18,10 +20,12 @@ import {
   IconHistory,
   IconPaste,
   IconRefresh,
+  IconRight,
   IconStar,
   IconStarFill,
   IconUpload,
 } from "@arco-design/web-react/icon";
+import { remotePathBreadcrumbs } from "../../sftp-utils";
 import type { CreateEntryKind } from "./SftpDialogs";
 
 interface SftpToolbarProps {
@@ -75,6 +79,30 @@ export default function SftpToolbar({
   onUpload,
   onUp,
 }: SftpToolbarProps) {
+  const [editingPath, setEditingPath] = useState(false);
+  const breadcrumbs = remotePathBreadcrumbs(currentPath);
+
+  useEffect(() => {
+    setEditingPath(false);
+  }, [currentPath, ready]);
+
+  const beginPathEditing = () => {
+    if (!ready) return;
+    onInputPathChange(currentPath);
+    setEditingPath(true);
+  };
+
+  const cancelPathEditing = () => {
+    onInputPathChange(currentPath);
+    setEditingPath(false);
+  };
+
+  const navigateFromEditor = (path: string) => {
+    if (!path.trim()) return;
+    setEditingPath(false);
+    onNavigate(path);
+  };
+
   return (
     <div className="panel-toolbar sftp-toolbar">
       <Space size="mini">
@@ -99,21 +127,55 @@ export default function SftpToolbar({
         </Tooltip>
       </Space>
       <div className="sftp-path-controls">
-        <AutoComplete
-          className="sftp-path-autocomplete"
-          data={pathSuggestions}
-          disabled={!ready}
-          inputProps={{
-            "aria-label": "远程目录路径",
-            size: "mini",
-          }}
-          onChange={onInputPathChange}
-          onPressEnter={(_, activeOption) => {
-            if (!activeOption && inputPath) onNavigate(inputPath);
-          }}
-          onSelect={onNavigate}
-          value={connected ? inputPath : ""}
-        />
+        {editingPath ? (
+          <AutoComplete
+            className="sftp-path-autocomplete"
+            data={pathSuggestions}
+            disabled={!ready}
+            inputProps={{
+              "aria-label": "远程目录路径",
+              autoFocus: true,
+              onKeyDown: (event) => {
+                if (event.key === "Escape") cancelPathEditing();
+              },
+              size: "mini",
+            }}
+            onBlur={cancelPathEditing}
+            onChange={onInputPathChange}
+            onPressEnter={(_, activeOption) => {
+              if (!activeOption) navigateFromEditor(inputPath);
+            }}
+            onSelect={navigateFromEditor}
+            value={connected ? inputPath : ""}
+          />
+        ) : (
+          <div
+            aria-label={`当前远程目录：${currentPath}`}
+            className="sftp-path-breadcrumb"
+            title={currentPath}
+          >
+            <div className="sftp-path-breadcrumb-scroll">
+              <Breadcrumb separator={<IconRight />}>
+                {breadcrumbs.map((item) => (
+                  <Breadcrumb.Item
+                    className="sftp-path-breadcrumb-item"
+                    key={item.path}
+                    onClick={() => onNavigate(item.path)}
+                  >
+                    {item.label}
+                  </Breadcrumb.Item>
+                ))}
+              </Breadcrumb>
+            </div>
+            <button
+              aria-label="编辑远程目录路径"
+              className="sftp-path-edit-target"
+              disabled={!ready}
+              onClick={beginPathEditing}
+              type="button"
+            />
+          </div>
+        )}
         <Tooltip content={currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"}>
           <Button
             aria-label={currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"}
