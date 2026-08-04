@@ -1,20 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AutoComplete,
-  Badge,
   Button,
-  Checkbox,
-  Drawer,
-  Dropdown,
   Empty,
-  Input,
-  Menu,
   Message,
   Modal,
-  Radio,
-  Select,
-  Space,
-  Spin,
   Table,
   Tooltip,
   Typography,
@@ -28,33 +17,11 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { diagnosticInvoke as invoke, recordDiagnostic } from "../diagnostics";
 import { isApplePlatform } from "../platform-utils";
 import {
-  IconApps,
-  IconArchive,
-  IconArrowUp,
-  IconBook,
-  IconCode,
-  IconClose,
-  IconCopy,
-  IconDelete,
-  IconDown,
-  IconDownload,
-  IconDesktop,
-  IconEdit,
   IconExclamationCircle,
   IconFile,
   IconFolder,
-  IconFolderAdd,
-  IconHistory,
-  IconLock,
-  IconLaunch,
-  IconPaste,
   IconRefresh,
-  IconRobot,
-  IconScissor,
-  IconStar,
-  IconStarFill,
   IconSync,
-  IconThunderbolt,
   IconUpload,
 } from "@arco-design/web-react/icon";
 import type {
@@ -92,10 +59,7 @@ import {
   nextAvailableRemoteName,
   nextAvailableRemoteArchiveName,
   parsePermissions,
-  permissionFlagsFromValue,
-  permissionValueFromFlags,
   remoteArchiveBaseName,
-  remoteArchiveExtension,
   remoteArchiveFileName,
   remoteArchiveFormatFromName,
   remoteJoinPath,
@@ -105,7 +69,7 @@ import {
   setRemotePathBookmark,
   summarizeSftpTransferBatch,
 } from "../sftp-utils";
-import type { PermissionFlag, RemoteArchiveFormat } from "../sftp-utils";
+import type { RemoteArchiveFormat } from "../sftp-utils";
 import { jumpHostRequest, sshCredentialId } from "../terminal-utils";
 import {
   commandErrorMessage,
@@ -113,10 +77,27 @@ import {
   type ExternalEditPayload,
   type ExternalEditResult,
 } from "../tauri-protocol";
-import TransferActivityList, {
+import {
   externalEditStatusMeta,
   type TransferActivityRecord,
 } from "./TransferActivityList";
+import {
+  ArchiveDialog,
+  CreateEntryDialog,
+  ExternalEditConflictDialog,
+  PasteConflictDialog,
+  PermissionsDialog,
+  RenameDialog,
+  TextEditorDialog,
+  type ArchiveDialogState,
+  type CreateEntryKind,
+  type PasteConflictPolicy,
+  type RemoteTextFile,
+  type TextEditorState,
+} from "./sftp/SftpDialogs";
+import SftpTransferDrawer from "./sftp/SftpTransferDrawer";
+import buildSftpContextMenu from "./sftp/buildSftpContextMenu";
+import SftpToolbar from "./sftp/SftpToolbar";
 import {
   isEditableSelectAllTarget,
   SELECT_ALL_REQUEST_EVENT,
@@ -124,9 +105,7 @@ import {
 } from "../select-all-shortcut";
 
 type BrowserStatus = "idle" | "connecting" | "loading" | "ready" | "failed";
-type CreateEntryKind = "file" | "directory";
 type SftpClipboardMode = "copy" | "cut";
-type PasteConflictPolicy = "overwrite" | "skip" | "rename";
 
 interface BrowserState {
   status: BrowserStatus;
@@ -145,11 +124,6 @@ interface PendingPaste {
   targetDirectory: string;
   clipboard: SftpClipboard;
   conflictCount: number;
-}
-
-interface ArchiveDialogState {
-  entries: SftpEntry[];
-  mode: "compress" | "download";
 }
 
 interface SftpPanelProps {
@@ -186,22 +160,6 @@ interface LocalUploadInspection {
   skippedPaths: number;
 }
 
-interface RemoteTextFile {
-  path: string;
-  content: string;
-  size: number;
-  modifiedAt?: number;
-  permissions?: number;
-}
-
-interface TextEditorState {
-  entry: SftpEntry;
-  document: RemoteTextFile | null;
-  content: string;
-  loading: boolean;
-  saving: boolean;
-}
-
 const INITIAL_BROWSER: BrowserState = {
   status: "idle",
   path: "/",
@@ -217,24 +175,6 @@ const EMPTY_SFTP_LOCATION: SftpLocationRecord = {
   bookmarks: [],
   history: [],
 };
-
-const PERMISSION_MATRIX_ROWS = [
-  { label: "所有者", scope: "owner" },
-  { label: "用户组", scope: "group" },
-  { label: "其他", scope: "other" },
-] as const;
-
-const PERMISSION_MATRIX_COLUMNS = [
-  { label: "读取", capability: "read" },
-  { label: "写入", capability: "write" },
-  { label: "执行", capability: "execute" },
-] as const;
-
-const ARCHIVE_FORMAT_OPTIONS = [
-  { label: "Tar Gzip (.tar.gz)", value: "tarGz" },
-  { label: "Zip (.zip)", value: "zip" },
-  { label: "Tar (.tar)", value: "tar" },
-];
 
 function samePaths(left: string[], right: string[]) {
   return (
@@ -307,10 +247,6 @@ function SftpPanel({
   const [permissionOwner, setPermissionOwner] = useState("");
   const [permissionGroup, setPermissionGroup] = useState("");
   const parsedPermissionValue = parsePermissions(permissionValue);
-  const selectedPermissionFlags =
-    parsedPermissionValue === null
-      ? []
-      : permissionFlagsFromValue(parsedPermissionValue);
   const [operationLoading, setOperationLoading] = useState(false);
   const [archiveDialog, setArchiveDialog] = useState<ArchiveDialogState | null>(
     null,
@@ -2379,278 +2315,44 @@ function SftpPanel({
   }
 
   function entryContextMenuItems(entries: SftpEntry[]): ContextMenuItem[] {
-    const singleEntry = entries.length === 1 ? entries[0] : null;
-    const aiFileEntries = entries.filter((entry) => entry.kind === "file");
-    const menuItems: ContextMenuItem[] = [];
-
-    if (singleEntry?.kind === "directory") {
-      menuItems.push({
-        key: "open",
-        label: "打开",
-        icon: <IconFolder />,
-        disabled: operationLoading,
-        onClick: () => openDirectory(singleEntry),
-      });
-    } else if (singleEntry) {
-      if (singleEntry.kind === "file") {
-        const activeEdit = externalEditForEntry(singleEntry);
-        const openItems: ContextMenuItem[] = [
-          {
-            key: "open-internal",
-            label: "内置编辑器",
-            icon: <IconCode />,
-            disabled: operationLoading,
-            onClick: () => openTextEditor(singleEntry),
-          },
-          {
-            key: "open-default",
-            label: "系统默认应用",
-            icon: <IconDesktop />,
-            disabled: operationLoading,
-            onClick: () => openExternalEditor(singleEntry),
-          },
-        ];
-        if (externalEditorPath) {
-          openItems.push({
-            key: "open-configured",
-            label: externalEditorName || "已配置编辑器",
-            icon: <IconLaunch />,
-            disabled: operationLoading,
-            onClick: () => openExternalEditor(singleEntry, externalEditorPath),
-          });
-        }
-        openItems.push({
-          key: "open-other",
-          label: "选择其他应用...",
-          icon: <IconApps />,
-          disabled: operationLoading,
-          onClick: () => chooseExternalEditor(singleEntry),
-        });
-        if (
-          activeEdit?.status === "conflict" ||
-          activeEdit?.status === "failed"
-        ) {
-          openItems.push({
-            key: "resolve-external-edit",
-            label: "处理同步问题",
-            icon: <IconExclamationCircle />,
-            dividerBefore: true,
-            onClick: () => setExternalEditConflict(activeEdit),
-          });
-        }
-        menuItems.push({
-          key: "open-file",
-          label: "打开",
-          icon: <IconLaunch />,
-          children: openItems,
-          disabled: operationLoading,
-        });
-      }
-      menuItems.push({
-        key: "download",
-        label: "下载",
-        icon: <IconDownload />,
-        disabled: operationLoading,
-        onClick: () => downloadEntry(singleEntry),
-      });
-    } else if (entries.some((entry) => entry.kind !== "directory")) {
-      const fileCount = entries.filter(
-        (entry) => entry.kind !== "directory",
-      ).length;
-      menuItems.push({
-        key: "download-selected",
-        label: `下载所选（${fileCount}）`,
-        icon: <IconDownload />,
-        disabled: operationLoading,
-        onClick: () => downloadEntries(entries),
-      });
-    }
-
-    if (entries.length > 0 && aiFileEntries.length === entries.length) {
-      menuItems.push({
-        key: "send-files-to-ai",
-        label:
-          aiFileEntries.length === 1
-            ? "发送给 AI"
-            : `发送所选文件给 AI（${aiFileEntries.length}）`,
-        icon: <IconRobot />,
-        disabled: operationLoading,
-        onClick: () => sendFilesToAi(aiFileEntries),
-      });
-    } else if (entries.length > 0) {
-      menuItems.push({
-        key: "send-selection-to-ai",
-        label:
-          entries.length === 1
-            ? "发送给 AI"
-            : `发送所选项目给 AI（${entries.length}）`,
-        icon: <IconRobot />,
-        disabled: operationLoading,
-        onClick: () => {
-          if (!session || !browser) return;
-          return onSendSelectionToAi(session.id, browser.path, entries);
-        },
-      });
-    }
-
-    const selectedArchiveFormat =
-      singleEntry?.kind === "file"
-        ? remoteArchiveFormatFromName(singleEntry.name)
-        : null;
-    if (singleEntry && selectedArchiveFormat) {
-      menuItems.push({
-        key: "extract",
-        label: "解压",
-        icon: <IconArchive />,
-        dividerBefore: true,
-        disabled: operationLoading,
-        children: [
-          {
-            key: "extract-here",
-            label: "解压到当前目录",
-            icon: <IconArchive />,
-            onClick: () => extractRemoteArchive(singleEntry, false),
-          },
-          {
-            key: "extract-directory",
-            label: "解压到同名目录",
-            icon: <IconFolderAdd />,
-            onClick: () => extractRemoteArchive(singleEntry, true),
-          },
-        ],
-      });
-    }
-
-    if (entries.length > 0) {
-      menuItems.push({
-        key: "compress",
-        label:
-          entries.length === 1 ? "压缩..." : `压缩所选（${entries.length}）...`,
-        icon: <IconArchive />,
-        dividerBefore: !selectedArchiveFormat,
-        disabled: operationLoading,
-        onClick: () => openArchiveDialog(entries, "compress"),
-      });
-    }
-    if (
-      entries.length > 1 ||
-      entries.some((entry) => entry.kind === "directory")
-    ) {
-      menuItems.push({
-        key: "archive-download",
-        label:
-          entries.length === 1
-            ? "打包下载..."
-            : `打包下载所选（${entries.length}）...`,
-        icon: <IconDownload />,
-        disabled: operationLoading,
-        onClick: () => openArchiveDialog(entries, "download"),
-      });
-    }
-
-    if (entries.length > 0) {
-      menuItems.push(
-        {
-          key: "copy",
-          label:
-            entries.length === 1 ? "复制" : `复制所选（${entries.length}）`,
-          icon: <IconCopy />,
-          disabled: operationLoading,
-          dividerBefore: true,
-          onClick: () => storeClipboard(entries, "copy"),
-        },
-        {
-          key: "cut",
-          label:
-            entries.length === 1 ? "剪切" : `剪切所选（${entries.length}）`,
-          icon: <IconScissor />,
-          disabled: operationLoading,
-          onClick: () => storeClipboard(entries, "cut"),
-        },
-      );
-    }
-
-    const pasteTarget =
-      singleEntry?.kind === "directory"
-        ? singleEntry.path
-        : entries.length === 0
-          ? browser?.path
-          : undefined;
-    if (currentClipboard && pasteTarget) {
-      menuItems.push({
-        key: "paste",
-        label:
-          singleEntry?.kind === "directory"
-            ? `粘贴到“${singleEntry.name}”`
-            : `粘贴（${currentClipboard.entries.length}）`,
-        icon: <IconPaste />,
-        disabled: operationLoading,
-        onClick: () => requestPaste(pasteTarget, currentClipboard),
-      });
-    }
-
-    if (singleEntry) {
-      menuItems.push({
-        key: "rename",
-        label: "重命名",
-        icon: <IconEdit />,
-        disabled: operationLoading,
-        onClick: () => openRenameDialog(singleEntry),
-      });
-    }
-
-    menuItems.push({
-      key: "refresh",
-      label: "刷新",
-      icon: <IconRefresh />,
-      disabled: operationLoading,
-      onClick: () => {
+    return buildSftpContextMenu({
+      clipboardEntryCount: currentClipboard?.entries.length ?? 0,
+      entries,
+      externalEditorName,
+      externalEditorPath,
+      operationLoading,
+      onArchive: openArchiveDialog,
+      onChooseExternalEditor: chooseExternalEditor,
+      onCopy: (selected) => storeClipboard(selected, "copy"),
+      onCut: (selected) => storeClipboard(selected, "cut"),
+      onDelete: requestDeleteEntries,
+      onDownload: downloadEntry,
+      onDownloadMany: downloadEntries,
+      onEditText: openTextEditor,
+      onExtract: extractRemoteArchive,
+      onFastDelete: requestFastDelete,
+      onOpenDirectory: openDirectory,
+      onOpenExternal: openExternalEditor,
+      onPaste: (targetDirectory) =>
+        currentClipboard
+          ? requestPaste(targetDirectory, currentClipboard)
+          : undefined,
+      onPermissions: openPermissionsDialog,
+      onRefresh: () => {
         if (session && browser) {
           return loadDirectory(session.id, browser.path);
         }
       },
+      onRename: openRenameDialog,
+      onResolveExternalEdit: setExternalEditConflict,
+      onSendFilesToAi: sendFilesToAi,
+      onSendSelectionToAi: (selected) => {
+        if (!session || !browser) return;
+        return onSendSelectionToAi(session.id, browser.path, selected);
+      },
+      resolveExternalEdit: externalEditForEntry,
+      rootDirectory: browser?.path,
     });
-
-    if (entries.length > 0) {
-      menuItems.push({
-        key: "permissions",
-        label:
-          entries.length === 1
-            ? "文件权限"
-            : `修改所选权限（${entries.length}）`,
-        icon: <IconLock />,
-        disabled: operationLoading,
-        onClick: () => openPermissionsDialog(entries),
-      });
-    }
-
-    if (entries.length > 0) {
-      menuItems.push(
-        {
-          key: "delete",
-          label:
-            entries.length === 1 ? "删除" : `删除所选（${entries.length}）`,
-          icon: <IconDelete />,
-          disabled: operationLoading,
-          danger: true,
-          dividerBefore: true,
-          onClick: () => requestDeleteEntries(entries),
-        },
-        {
-          key: "fast-delete",
-          label:
-            entries.length === 1
-              ? "删除(rm)"
-              : `删除所选(rm)（${entries.length}）`,
-          icon: <IconThunderbolt />,
-          disabled: operationLoading,
-          danger: true,
-          onClick: () => requestFastDelete(entries),
-        },
-      );
-    }
-
-    return menuItems;
   }
 
   function resolveEntryContextMenu(
@@ -2902,218 +2604,46 @@ function SftpPanel({
       ref={panelRef}
       tabIndex={-1}
     >
-      <div className="panel-toolbar sftp-toolbar">
-        <Space size="mini">
-          <Tooltip content="返回上级目录">
-            <Button
-              aria-label="返回上级目录"
-              disabled={!ready || browser?.path === "/"}
-              icon={<IconArrowUp />}
-              onClick={() =>
-                session &&
-                browser &&
-                void loadDirectory(session.id, remoteParentPath(browser.path))
-              }
-              size="mini"
-            />
-          </Tooltip>
-          <Tooltip content="刷新">
-            <Button
-              aria-label="刷新目录"
-              disabled={!ready}
-              icon={<IconRefresh />}
-              loading={browser?.status === "loading"}
-              onClick={() =>
-                session &&
-                browser &&
-                void loadDirectory(session.id, browser.path)
-              }
-              size="mini"
-            />
-          </Tooltip>
-        </Space>
-        <div className="sftp-path-controls">
-          <AutoComplete
-            className="sftp-path-autocomplete"
-            data={pathSuggestions}
-            disabled={!ready}
-            inputProps={{
-              "aria-label": "远程目录路径",
-              size: "mini",
-            }}
-            onChange={(value) =>
-              session && updateBrowser(session.id, { inputPath: value })
-            }
-            onPressEnter={(_, activeOption) => {
-              if (!activeOption && browser?.inputPath) {
-                navigateToPath(browser.inputPath);
-              }
-            }}
-            onSelect={navigateToPath}
-            value={connected ? (browser?.inputPath ?? "/") : ""}
-          />
-          <Tooltip
-            content={
-              currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"
-            }
-          >
-            <Button
-              aria-label={
-                currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"
-              }
-              className={currentPathBookmarked ? "is-active" : undefined}
-              disabled={!ready}
-              icon={currentPathBookmarked ? <IconStarFill /> : <IconStar />}
-              onClick={toggleCurrentPathBookmark}
-              size="mini"
-            />
-          </Tooltip>
-          <Dropdown
-            disabled={!ready}
-            droplist={
-              <Menu className="sftp-location-menu" selectable={false}>
-                <Menu.ItemGroup title="快速目录">
-                  {currentLocation.bookmarks.length ? (
-                    currentLocation.bookmarks.map((path) => (
-                      <Menu.Item
-                        key={`bookmark:${path}`}
-                        onClick={() => navigateToPath(path)}
-                      >
-                        <span className="sftp-location-menu-item">
-                          <IconStarFill />
-                          <span className="sftp-location-path">{path}</span>
-                          <Button
-                            aria-label={`取消收藏 ${path}`}
-                            icon={<IconClose />}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              removePathBookmark(path);
-                            }}
-                            size="mini"
-                            type="text"
-                          />
-                        </span>
-                      </Menu.Item>
-                    ))
-                  ) : (
-                    <Menu.Item disabled key="empty-bookmarks">
-                      暂无收藏目录
-                    </Menu.Item>
-                  )}
-                </Menu.ItemGroup>
-                <Menu.ItemGroup title="最近访问">
-                  {currentLocation.history.length ? (
-                    currentLocation.history.map((path) => (
-                      <Menu.Item
-                        key={`history:${path}`}
-                        onClick={() => navigateToPath(path)}
-                      >
-                        <span className="sftp-location-menu-item">
-                          <IconHistory />
-                          <span className="sftp-location-path">{path}</span>
-                        </span>
-                      </Menu.Item>
-                    ))
-                  ) : (
-                    <Menu.Item disabled key="empty-history">
-                      暂无访问记录
-                    </Menu.Item>
-                  )}
-                </Menu.ItemGroup>
-                {currentLocation.history.length > 0 && (
-                  <Menu.Item key="clear-history" onClick={clearPathHistory}>
-                    <span className="sftp-location-menu-item sftp-location-menu-action">
-                      <IconDelete />
-                      <span>清空最近访问</span>
-                    </span>
-                  </Menu.Item>
-                )}
-              </Menu>
-            }
-            position="bl"
-            trigger="click"
-          >
-            <Tooltip content="快速目录和最近访问">
-              <Button
-                aria-label="打开快速目录和最近访问"
-                disabled={!ready}
-                icon={<IconBook />}
-                size="mini"
-              />
-            </Tooltip>
-          </Dropdown>
-        </div>
-        <Space size="mini">
-          <Dropdown.Button
-            buttonProps={{ icon: <IconFolderAdd /> }}
-            disabled={!ready}
-            droplist={
-              <Menu
-                className="sftp-create-menu"
-                onClickMenuItem={(key) =>
-                  openCreateDialog(key === "file" ? "file" : "directory")
-                }
-                selectable={false}
-              >
-                <Menu.Item key="file">
-                  <span className="sftp-create-menu-label">
-                    <IconFile />
-                    新建文件
-                  </span>
-                </Menu.Item>
-                <Menu.Item key="directory">
-                  <span className="sftp-create-menu-label">
-                    <IconFolderAdd />
-                    新建目录
-                  </span>
-                </Menu.Item>
-              </Menu>
-            }
-            icon={<IconDown />}
-            onClick={() => openCreateDialog("directory")}
-            size="mini"
-            trigger="click"
-          >
-            新建
-          </Dropdown.Button>
-          <Tooltip
-            content={
-              currentClipboard
-                ? `粘贴 ${currentClipboard.entries.length} 个项目`
-                : "剪贴板为空"
-            }
-          >
-            <Button
-              aria-label="粘贴远程项目"
-              disabled={!ready || !currentClipboard || operationLoading}
-              icon={<IconPaste />}
-              onClick={() =>
-                browser && void requestPaste(browser.path, currentClipboard)
-              }
-              size="mini"
-            />
-          </Tooltip>
-          <Button
-            disabled={!ready}
-            icon={<IconUpload />}
-            onClick={() => void chooseUploadFiles()}
-            size="mini"
-            type="primary"
-          >
-            上传
-          </Button>
-          <Tooltip content="传输记录">
-            <Badge count={transferActivityCount} maxCount={99}>
-              <Button
-                aria-label="打开传输记录"
-                icon={<IconHistory />}
-                onClick={() => setTransferDrawerVisible(true)}
-                size="mini"
-              />
-            </Badge>
-          </Tooltip>
-        </Space>
-      </div>
+      <SftpToolbar
+        bookmarks={currentLocation.bookmarks}
+        clipboardEntryCount={currentClipboard?.entries.length ?? 0}
+        connected={Boolean(connected)}
+        currentPath={browser?.path ?? "/"}
+        currentPathBookmarked={currentPathBookmarked}
+        history={currentLocation.history}
+        inputPath={browser?.inputPath ?? "/"}
+        loading={browser?.status === "loading"}
+        onClearHistory={clearPathHistory}
+        onCreate={openCreateDialog}
+        onInputPathChange={(value) =>
+          session && updateBrowser(session.id, { inputPath: value })
+        }
+        onNavigate={navigateToPath}
+        onOpenTransfers={() => setTransferDrawerVisible(true)}
+        onPaste={() => {
+          if (browser && currentClipboard) {
+            void requestPaste(browser.path, currentClipboard);
+          }
+        }}
+        onRefresh={() => {
+          if (session && browser) {
+            void loadDirectory(session.id, browser.path);
+          }
+        }}
+        onRemoveBookmark={removePathBookmark}
+        onToggleBookmark={toggleCurrentPathBookmark}
+        onUp={() => {
+          if (session && browser) {
+            void loadDirectory(session.id, remoteParentPath(browser.path));
+          }
+        }}
+        onUpload={() => void chooseUploadFiles()}
+        operationLoading={operationLoading}
+        pathSuggestions={pathSuggestions}
+        ready={ready}
+        transferActivityCount={transferActivityCount}
+      />
+
       {connected && browser?.status === "failed" ? (
         <div className="panel-empty">
           <div className="empty-action">
@@ -3216,362 +2746,108 @@ function SftpPanel({
           </div>
         </ContextMenu>
       )}
-      <Drawer
-        bodyStyle={{ padding: 0 }}
-        className="sftp-transfer-drawer"
-        footer={null}
-        getChildrenPopupContainer={() => document.body}
-        onCancel={() => setTransferDrawerVisible(false)}
-        title={
-          <div className="sftp-transfer-drawer-title">
-            <span>传输记录</span>
-            {currentTransfers.some(
-              (item) => !isActiveSftpTransfer(item.status),
-            ) && (
-              <Tooltip content="清除已结束记录">
-                <Button
-                  aria-label="清除已结束传输和同步记录"
-                  icon={<IconDelete />}
-                  onClick={clearFinishedTransfers}
-                  size="mini"
-                  type="text"
-                />
-              </Tooltip>
-            )}
-          </div>
-        }
+      <SftpTransferDrawer
+        externalEdits={currentExternalEdits}
+        onCancelTransfer={(transfer) => void cancelTransfer(transfer)}
+        onClearFinished={clearFinishedTransfers}
+        onClose={() => setTransferDrawerVisible(false)}
+        onOpenExternalEdit={(edit) => void reopenExternalEditLocalFile(edit)}
+        onPauseTransfer={(transfer) => void pauseTransfer(transfer)}
+        onResolveExternalEdit={setExternalEditConflict}
+        onResumeTransfer={(transfer) => void resumeTransfer(transfer)}
+        onRetryTransfer={(transfer) => void retryTransfer(transfer)}
+        transfers={currentTransfers}
         visible={transferDrawerVisible}
-        width={440}
-      >
-        <TransferActivityList
-          externalEdits={currentExternalEdits}
-          onCancel={(transfer) => void cancelTransfer(transfer)}
-          onOpenExternalEdit={(edit) => void reopenExternalEditLocalFile(edit)}
-          onPause={(transfer) => void pauseTransfer(transfer)}
-          onResolveExternalEdit={setExternalEditConflict}
-          onResume={(transfer) => void resumeTransfer(transfer)}
-          onRetry={(transfer) => void retryTransfer(transfer)}
-          transfers={currentTransfers}
-        />
-      </Drawer>
-      <Modal
-        cancelButtonProps={{ disabled: Boolean(textEditor?.saving) }}
-        className="sftp-text-editor-modal"
-        confirmLoading={Boolean(textEditor?.saving)}
-        maskClosable={false}
-        okButtonProps={{
-          disabled: Boolean(
-            textEditor?.loading ||
-            !textEditor?.document ||
-            textEditor.content === textEditor.document.content ||
-            textEditorByteLength > REMOTE_TEXT_MAX_BYTES,
-          ),
-        }}
-        okText="保存"
+      />
+      <TextEditorDialog
+        byteLength={textEditorByteLength}
+        maxBytes={REMOTE_TEXT_MAX_BYTES}
         onCancel={requestCloseTextEditor}
-        onOk={() => void saveTextEditor()}
-        title={textEditor ? `编辑文本 - ${textEditor.entry.name}` : "编辑文本"}
-        visible={Boolean(textEditor)}
-      >
-        <div className="sftp-text-editor-body">
-          <div className="sftp-text-editor-meta">
-            <Typography.Text ellipsis={{ showTooltip: true }} type="secondary">
-              {textEditor?.entry.path ?? ""}
-            </Typography.Text>
-            <Typography.Text
-              type={
-                textEditorByteLength > REMOTE_TEXT_MAX_BYTES
-                  ? "error"
-                  : "secondary"
-              }
-            >
-              {formatFileSize(textEditorByteLength)} / 2 MiB
-            </Typography.Text>
-          </div>
-          <div className="sftp-text-editor-field">
-            <Input.TextArea
-              aria-label="远程文本内容"
-              className="sftp-text-editor-input"
-              disabled={Boolean(textEditor?.loading || textEditor?.saving)}
-              onChange={(content) =>
-                setTextEditor((current) =>
-                  current
-                    ? {
-                        ...current,
-                        content,
-                      }
-                    : current,
-                )
-              }
-              onKeyDown={(event) => {
-                if (
-                  (event.metaKey || event.ctrlKey) &&
-                  event.key.toLowerCase() === "s"
-                ) {
-                  event.preventDefault();
-                  void saveTextEditor();
+        onChange={(content) =>
+          setTextEditor((current) =>
+            current
+              ? {
+                  ...current,
+                  content,
                 }
-              }}
-              placeholder={textEditor?.loading ? "正在读取远程文件..." : ""}
-              spellCheck={false}
-              value={textEditor?.content ?? ""}
-            />
-            {textEditor?.loading && (
-              <div className="sftp-text-editor-loading">
-                <Spin />
-              </div>
-            )}
-          </div>
-        </div>
-      </Modal>
-      <Modal
-        footer={
-          <Space>
-            <Button
-              disabled={externalEditActionLoading}
-              onClick={() => setExternalEditConflict(null)}
-            >
-              保留本地
-            </Button>
-            <Button
-              disabled={externalEditActionLoading}
-              onClick={() => void resolveExternalEdit("reload")}
-            >
-              重新加载远端
-            </Button>
-            <Button
-              loading={externalEditActionLoading}
-              onClick={() => void resolveExternalEdit("overwrite")}
-              status="danger"
-              type="primary"
-            >
-              覆盖远端
-            </Button>
-          </Space>
+              : current,
+          )
         }
-        maskClosable={false}
+        onSave={() => void saveTextEditor()}
+        state={textEditor}
+      />
+      <ExternalEditConflictDialog
+        edit={externalEditConflict}
+        loading={externalEditActionLoading}
         onCancel={() => setExternalEditConflict(null)}
-        title={
-          externalEditConflict?.status === "failed"
-            ? "自动同步失败"
-            : "远程文件已修改"
-        }
-        visible={Boolean(externalEditConflict)}
-      >
-        <div className="sftp-external-edit-conflict">
-          <Typography.Paragraph>
-            {externalEditConflict?.error ||
-              "远端文件在本地编辑期间发生了变化。"}
-          </Typography.Paragraph>
-          <Typography.Text ellipsis={{ showTooltip: true }} type="secondary">
-            {externalEditConflict?.remotePath ?? ""}
-          </Typography.Text>
-        </div>
-      </Modal>
-      <Modal
-        confirmLoading={operationLoading}
-        maskClosable={false}
+        onResolve={(action) => void resolveExternalEdit(action)}
+      />
+      <PasteConflictDialog
+        conflictCount={pendingPaste?.conflictCount ?? 0}
+        loading={operationLoading}
         onCancel={() => setPendingPaste(null)}
-        onOk={async () => {
+        onConfirm={() => {
           if (!pendingPaste) return;
-          await pasteClipboard(
+          void pasteClipboard(
             pendingPaste.clipboard,
             pendingPaste.targetDirectory,
             pasteConflictPolicy,
-          );
-          setPendingPaste(null);
+          ).then(() => setPendingPaste(null));
         }}
-        title="发现同名项目"
+        onPolicyChange={setPasteConflictPolicy}
+        policy={pasteConflictPolicy}
         visible={Boolean(pendingPaste)}
-      >
-        <div className="sftp-paste-conflict">
-          <Typography.Paragraph>
-            目标目录中有 {pendingPaste?.conflictCount ?? 0}{" "}
-            个同名项目，请选择处理方式。
-          </Typography.Paragraph>
-          <Radio.Group
-            direction="vertical"
-            onChange={(value) =>
-              setPasteConflictPolicy(value as PasteConflictPolicy)
-            }
-            options={[
-              { label: "自动重命名并保留两者", value: "rename" },
-              { label: "覆盖同名项目", value: "overwrite" },
-              { label: "跳过同名项目", value: "skip" },
-            ]}
-            value={pasteConflictPolicy}
-          />
-        </div>
-      </Modal>
-      <Modal
-        confirmLoading={operationLoading}
-        maskClosable={false}
+      />
+      <ArchiveDialog
+        baseName={archiveBaseName}
+        format={archiveFormat}
+        loading={operationLoading}
+        onBaseNameChange={setArchiveBaseName}
         onCancel={closeArchiveDialog}
-        onOk={() => void submitArchiveDialog()}
-        okText={archiveDialog?.mode === "download" ? "选择保存位置" : "压缩"}
-        title={
-          archiveDialog?.mode === "download"
-            ? `打包下载 ${archiveDialog.entries.length} 个项目`
-            : `压缩 ${archiveDialog?.entries.length ?? 0} 个项目`
-        }
-        visible={Boolean(archiveDialog)}
-      >
-        <div className="sftp-archive-editor">
-          <Input
-            addAfter={remoteArchiveExtension(archiveFormat)}
-            addBefore="名称"
-            autoFocus
-            maxLength={200}
-            onChange={setArchiveBaseName}
-            onPressEnter={() => void submitArchiveDialog()}
-            placeholder="archive"
-            value={archiveBaseName}
-          />
-          <Select
-            onChange={(value) => setArchiveFormat(value as RemoteArchiveFormat)}
-            options={ARCHIVE_FORMAT_OPTIONS}
-            value={archiveFormat}
-          />
-        </div>
-      </Modal>
-      <Modal
-        confirmLoading={operationLoading}
-        maskClosable={false}
+        onConfirm={() => void submitArchiveDialog()}
+        onFormatChange={setArchiveFormat}
+        state={archiveDialog}
+      />
+      <CreateEntryDialog
+        kind={creatingEntryKind}
+        loading={operationLoading}
+        name={newEntryName}
         onCancel={() => {
           setCreatingEntryKind(null);
           setNewEntryName("");
         }}
-        onOk={() => void createEntry()}
-        title={creatingEntryKind === "directory" ? "新建文件夹" : "新建文件"}
-        visible={Boolean(creatingEntryKind)}
-      >
-        <Input
-          autoFocus
-          onChange={setNewEntryName}
-          onPressEnter={() => void createEntry()}
-          placeholder={
-            creatingEntryKind === "directory" ? "文件夹名称" : "文件名称"
-          }
-          value={newEntryName}
-        />
-      </Modal>
-      <Modal
-        confirmLoading={operationLoading}
-        maskClosable={false}
+        onConfirm={() => void createEntry()}
+        onNameChange={setNewEntryName}
+      />
+      <PermissionsDialog
+        entries={permissionEntries}
+        group={permissionGroup}
+        loading={operationLoading}
         onCancel={() => {
           setPermissionEntries([]);
           setPermissionValue("");
           setPermissionOwner("");
           setPermissionGroup("");
         }}
-        onOk={() => void updatePermissions()}
-        title={
-          permissionEntries.length === 1
-            ? `权限与所有者 - ${permissionEntries[0].name}`
-            : `修改 ${permissionEntries.length} 个项目的属性`
-        }
-        visible={permissionEntries.length > 0}
-      >
-        <div className="sftp-permission-editor">
-          <div className="sftp-owner-fields">
-            <Input
-              addBefore="用户"
-              maxLength={128}
-              onChange={setPermissionOwner}
-              placeholder={
-                permissionEntries.length > 1 ? "留空保持不变" : "用户名或 UID"
-              }
-              value={permissionOwner}
-            />
-            <Input
-              addBefore="用户组"
-              maxLength={128}
-              onChange={setPermissionGroup}
-              placeholder={
-                permissionEntries.length > 1
-                  ? "留空保持不变"
-                  : "用户组名称或 GID"
-              }
-              value={permissionGroup}
-            />
-          </div>
-          <Input
-            addBefore="权限"
-            autoFocus
-            maxLength={4}
-            onChange={(value) =>
-              setPermissionValue(value.replace(/[^0-7]/g, "").slice(0, 4))
-            }
-            onPressEnter={() => void updatePermissions()}
-            placeholder={permissionEntries.length > 1 ? "留空保持不变" : "755"}
-            status={
-              permissionValue && parsedPermissionValue === null
-                ? "error"
-                : undefined
-            }
-            value={permissionValue}
-          />
-          <Checkbox.Group
-            onChange={(values) => {
-              setPermissionValue(
-                formatPermissions(
-                  permissionValueFromFlags(
-                    values as PermissionFlag[],
-                    parsedPermissionValue ?? 0,
-                  ),
-                ),
-              );
-            }}
-            value={selectedPermissionFlags}
-          >
-            <div className="sftp-permission-matrix">
-              <div className="sftp-permission-matrix-header">
-                <span />
-                {PERMISSION_MATRIX_COLUMNS.map(({ capability, label }) => (
-                  <span key={capability}>{label}</span>
-                ))}
-              </div>
-              {PERMISSION_MATRIX_ROWS.map(({ label, scope }) => (
-                <div className="sftp-permission-matrix-row" key={scope}>
-                  <span>{label}</span>
-                  {PERMISSION_MATRIX_COLUMNS.map(
-                    ({ capability, label: action }) => {
-                      const value = `${scope}-${capability}` as PermissionFlag;
-                      return (
-                        <span className="sftp-permission-checkbox" key={value}>
-                          <Checkbox
-                            aria-label={`${label}${action}权限`}
-                            value={value}
-                          />
-                        </span>
-                      );
-                    },
-                  )}
-                </div>
-              ))}
-            </div>
-          </Checkbox.Group>
-        </div>
-      </Modal>
-      <Modal
-        confirmLoading={operationLoading}
-        maskClosable={false}
+        onConfirm={() => void updatePermissions()}
+        onGroupChange={setPermissionGroup}
+        onOwnerChange={setPermissionOwner}
+        onPermissionChange={setPermissionValue}
+        owner={permissionOwner}
+        parsedPermission={parsedPermissionValue}
+        permission={permissionValue}
+      />
+      <RenameDialog
+        entry={renamingEntry}
+        loading={operationLoading}
+        name={renameName}
         onCancel={() => {
           setRenamingEntry(null);
           setRenameName("");
         }}
-        onOk={() => void renameEntry()}
-        title="重命名"
-        visible={Boolean(renamingEntry)}
-      >
-        <Input
-          autoFocus
-          onChange={setRenameName}
-          onPressEnter={() => void renameEntry()}
-          placeholder="新名称"
-          value={renameName}
-        />
-      </Modal>
+        onConfirm={() => void renameEntry()}
+        onNameChange={setRenameName}
+      />
     </section>
   );
 }
