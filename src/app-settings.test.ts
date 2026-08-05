@@ -17,6 +17,7 @@ describe("app settings", () => {
 
   test("bounds numeric values and preserves supported preferences", () => {
     const settings = sanitizeAppSettings({
+      appearanceMode: "dark",
       terminalColorScheme: "solarizedDark",
       terminalFontFamily: "menlo",
       terminalFontSize: 99,
@@ -51,6 +52,7 @@ describe("app settings", () => {
     });
 
     expect(settings).toMatchObject({
+      appearanceMode: "dark",
       terminalColorScheme: "solarizedDark",
       terminalFontFamily: "menlo",
       terminalFontSize: 24,

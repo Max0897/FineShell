@@ -8,11 +8,24 @@
     <script>
       const hashParams = new URLSearchParams(window.location.hash.slice(1));
       const searchParams = new URLSearchParams(window.location.search);
-      if (
-        !hashParams.has("view") &&
-        !searchParams.has("view")
-      ) {
+      if (!hashParams.has("view") && !searchParams.has("view")) {
         document.documentElement.classList.add("main-window");
+      }
+
+      try {
+        const savedAppearance = localStorage.getItem(
+          "fineshell.appearance-mode",
+        );
+        const appearance =
+          savedAppearance === "dark" ||
+          (savedAppearance === "system" &&
+            matchMedia("(prefers-color-scheme: dark)").matches)
+            ? "dark"
+            : "light";
+        document.documentElement.dataset.appearance = appearance;
+        document.documentElement.style.colorScheme = appearance;
+      } catch {
+        document.documentElement.dataset.appearance = "light";
       }
     </script>
     <style>
@@ -22,6 +35,11 @@
         height: 100%;
         margin: 0;
         background: #f2f3f5;
+      }
+
+      html[data-appearance="dark"],
+      html[data-appearance="dark"] body {
+        background: #17171a;
       }
 
       .startup-loader {
@@ -76,6 +94,18 @@
         font-size: 12px;
         line-height: 20px;
         text-align: center;
+      }
+
+      html[data-appearance="dark"] .startup-loader {
+        background: #17171a;
+      }
+
+      html[data-appearance="dark"] .startup-loader-track {
+        background: #3c3c3f;
+      }
+
+      html[data-appearance="dark"] .startup-loader-label {
+        color: #929293;
       }
 
       @keyframes startup-loader-reveal {

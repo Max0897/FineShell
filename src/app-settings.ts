@@ -8,6 +8,7 @@ import {
 export type { AiProvider } from "./ai-providers";
 
 export type TerminalFontFamily = "system" | "menlo" | "consolas";
+export type AppearanceMode = "light" | "dark" | "system";
 export type TerminalCursorStyle = "block" | "underline" | "bar";
 export type TerminalColorScheme =
   "fineshellDark" | "graphiteLight" | "solarizedDark" | "dracula";
@@ -16,13 +17,10 @@ export type ConnectionHistoryLimit = 0 | 20 | 50 | 100;
 export type ConnectionHistoryRetentionDays = 0 | 7 | 30 | 90;
 export type DiagnosticLogLevel = "debug" | "info" | "warn" | "error";
 export type GithubMirrorRoute =
-  | "auto"
-  | "direct"
-  | "gh-proxy.com"
-  | "ghproxy.net"
-  | "custom";
+  "auto" | "direct" | "gh-proxy.com" | "ghproxy.net" | "custom";
 
 export interface AppSettings {
+  appearanceMode: AppearanceMode;
   terminalColorScheme: TerminalColorScheme;
   terminalFontFamily: TerminalFontFamily;
   terminalFontSize: number;
@@ -57,6 +55,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
+  appearanceMode: "light",
   terminalColorScheme: "fineshellDark",
   terminalFontFamily: "system",
   terminalFontSize: 13,
@@ -164,6 +163,10 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
   const aiBaseUrl =
     stringValue(settings.aiBaseUrl) || DEFAULT_APP_SETTINGS.aiBaseUrl;
   return {
+    appearanceMode:
+      settings.appearanceMode === "dark" || settings.appearanceMode === "system"
+        ? settings.appearanceMode
+        : DEFAULT_APP_SETTINGS.appearanceMode,
     terminalColorScheme:
       settings.terminalColorScheme === "graphiteLight" ||
       settings.terminalColorScheme === "solarizedDark" ||

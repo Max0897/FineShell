@@ -8,14 +8,14 @@ import ApplicationErrorBoundary from "./components/ApplicationErrorBoundary";
 import { installGlobalDiagnostics } from "./diagnostics";
 import { installSelectAllShortcuts } from "./select-all-shortcut";
 import { windowViewFromContext } from "./window-view";
+import { initializeAppearance } from "./appearance";
 
+initializeAppearance();
 installGlobalDiagnostics();
 installSelectAllShortcuts();
 
 const App = React.lazy(() => import("./App"));
-const SettingsWindow = React.lazy(
-  () => import("./components/SettingsWindow"),
-);
+const SettingsWindow = React.lazy(() => import("./components/SettingsWindow"));
 const ShortcutGuideWindow = React.lazy(
   () => import("./components/ShortcutGuideWindow"),
 );

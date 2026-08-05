@@ -2,7 +2,7 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #ffffff;
+  background: var(--color-bg-2);
 }
 
 .settings-window {
@@ -11,7 +11,7 @@
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
   overflow: hidden;
-  background: #ffffff;
+  background: var(--color-bg-2);
 }
 
 .shortcut-guide-window {
@@ -19,7 +19,7 @@
   height: 100%;
   display: flex;
   overflow: hidden;
-  background: #ffffff;
+  background: var(--color-bg-2);
 }
 
 .shortcut-guide-content {
@@ -35,10 +35,10 @@
   align-items: center;
   min-height: 24px;
   padding: 2px 7px;
-  border: 1px solid #c9cdd4;
+  border: 1px solid var(--color-border-3);
   border-radius: 3px;
-  color: #4e5969;
-  background: #f7f8fa;
+  color: var(--color-text-2);
+  background: var(--color-fill-1);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
   font-weight: 400;
@@ -52,8 +52,8 @@
   padding: 16px 10px;
   overflow: auto;
   scrollbar-width: none;
-  border-right: 1px solid #e5e6eb;
-  background: #ffffff;
+  border-right: 1px solid var(--color-border-2);
+  background: var(--color-bg-2);
 }
 
 .settings-sidebar::-webkit-scrollbar {
@@ -107,7 +107,7 @@
 .settings-group {
   width: 100%;
   max-width: 680px;
-  border-top: 1px solid #e5e6eb;
+  border-top: 1px solid var(--color-border-2);
 }
 
 .settings-row {
@@ -116,7 +116,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  border-bottom: 1px solid #e5e6eb;
+  border-bottom: 1px solid var(--color-border-2);
 }
 
 .settings-row > .arco-typography {
@@ -222,7 +222,7 @@
   width: 14px;
   height: 14px;
   flex: 0 0 14px;
-  border: 1px solid #c9cdd4;
+  border: 1px solid var(--color-border-3);
   border-radius: 2px;
 }
 
@@ -282,7 +282,7 @@
 
 .about-update-section {
   padding-top: 24px;
-  border-top: 1px solid #e5e6eb;
+  border-top: 1px solid var(--color-border-2);
 }
 
 .about-update-route {
@@ -335,8 +335,8 @@
   margin: 12px 0 0;
   padding-left: 12px;
   overflow: auto;
-  border-left: 2px solid #c9cdd4;
-  color: #4e5969;
+  border-left: 2px solid var(--color-border-3);
+  color: var(--color-text-2);
 }
 
 .release-notes-markdown {
@@ -363,7 +363,7 @@
 .release-notes-markdown h5,
 .release-notes-markdown h6 {
   margin: 14px 0 6px;
-  color: #1d2129;
+  color: var(--color-text-1);
   font-size: 14px;
   line-height: 1.5;
 }
@@ -386,7 +386,7 @@
 }
 
 .release-notes-markdown a {
-  color: #165dff;
+  color: rgb(var(--primary-6));
   text-decoration: none;
 }
 
@@ -397,8 +397,8 @@
 .release-notes-markdown code {
   padding: 1px 4px;
   border-radius: 2px;
-  background: #f2f3f5;
-  color: #4e5969;
+  background: var(--color-fill-2);
+  color: var(--color-text-2);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
 }
@@ -411,14 +411,14 @@
 .release-notes-markdown th,
 .release-notes-markdown td {
   padding: 5px 8px;
-  border: 1px solid #e5e6eb;
+  border: 1px solid var(--color-border-2);
   text-align: left;
 }
 
 .release-notes-markdown blockquote {
   padding-left: 10px;
-  border-left: 2px solid #c9cdd4;
-  color: #86909c;
+  border-left: 2px solid var(--color-border-3);
+  color: var(--color-text-3);
 }
 
 .about-download-meta {
@@ -434,8 +434,8 @@
   margin-top: 16px !important;
   padding: 12px;
   overflow: auto;
-  background: #f7f8fa;
-  color: #4e5969;
+  background: var(--color-fill-1);
+  color: var(--color-text-2);
 }
 
 .configuration-retention-cell {
@@ -660,7 +660,7 @@
 }
 
 .quick-command-template-label > svg {
-  color: #86909c;
+  color: var(--color-text-3);
 }
 
 .proxy-name-cell {
@@ -717,8 +717,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  border-top: 1px solid #e5e6eb;
-  background: #ffffff;
+  border-top: 1px solid var(--color-border-2);
+  background: var(--color-bg-2);
 }
 
 .manager-pane {
@@ -756,7 +756,7 @@
   position: sticky;
   top: 0;
   z-index: 3;
-  background: #f7f8fa;
+  background: var(--color-fill-1);
 }
 
 .manager-toolbar-actions {
@@ -784,7 +784,7 @@
 }
 
 .host-sort-control > .arco-icon {
-  color: #86909c;
+  color: var(--color-text-3);
 }
 
 .host-sort-control .arco-select {
@@ -793,7 +793,7 @@
 
 .host-more-delete,
 .host-more-delete .arco-icon {
-  color: #f53f3f;
+  color: rgb(var(--danger-6));
 }
 
 .host-more-menu-label {
@@ -808,7 +808,7 @@
 
 .app-context-menu {
   min-width: 150px;
-  border: 1px solid #e5e6eb;
+  border: 1px solid var(--color-border-2);
   box-shadow: none;
 }
 
@@ -829,11 +829,11 @@
 
 .app-context-menu-danger,
 .app-context-menu-danger .arco-icon {
-  color: #f53f3f;
+  color: rgb(var(--danger-6));
 }
 
 .app-context-menu-divider {
-  border-top: 1px solid #f2f3f5;
+  border-top: 1px solid var(--color-border-1);
 }
 
 .app-context-menu-label {
@@ -876,7 +876,7 @@
 }
 
 .host-table-group-row .arco-table-td {
-  background: #f7f8fa;
+  background: var(--color-fill-1);
 }
 
 .host-table-host-row {
@@ -897,7 +897,7 @@
 
 .host-table-group-cell > .arco-icon {
   flex: 0 0 auto;
-  color: #4e5969;
+  color: var(--color-text-2);
 }
 
 .host-table-group-cell > .arco-typography {
@@ -913,7 +913,7 @@
 
 .quick-connect {
   padding-bottom: 18px;
-  border-bottom: 1px solid #e5e6eb;
+  border-bottom: 1px solid var(--color-border-2);
 }
 
 .connection-history-modal {
@@ -975,7 +975,7 @@
 .host-editor-menu.arco-menu {
   width: 100%;
   height: 100%;
-  border-right: 1px solid #e5e6eb;
+  border-right: 1px solid var(--color-border-2);
   background: transparent;
 }
 

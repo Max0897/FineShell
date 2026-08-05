@@ -34,6 +34,7 @@ import {
   sanitizeAppSettings,
   type AppSettings,
 } from "./app-settings";
+import { setAppearanceMode } from "./appearance";
 import {
   type AiContextSource,
   type AiContextSourceId,
@@ -298,6 +299,9 @@ function App() {
       .then((configuration) => {
         if (disposed) return;
         setSettings(configuration.settings);
+        setAppearanceMode(configuration.settings.appearanceMode, {
+          persist: true,
+        });
         setQuickCommands(configuration.quickCommands);
       })
       .catch((error) => {
@@ -422,7 +426,9 @@ function App() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listenProtocolEvent("settings:changed", ({ payload }) => {
-      setSettings(sanitizeAppSettings(payload));
+      const nextSettings = sanitizeAppSettings(payload);
+      setSettings(nextSettings);
+      setAppearanceMode(nextSettings.appearanceMode, { persist: true });
     }).then((stopListening) => {
       if (disposed) {
         stopListening();

@@ -32,12 +32,10 @@ import {
   appSettingsEqual,
   type AppSettings,
 } from "../app-settings";
+import { setAppearanceMode } from "../appearance";
 import { loadConfiguration } from "../config-database";
 import { updateAppSettings } from "../configuration-mutations";
-import {
-  configureDiagnosticLogging,
-  recordDiagnostic,
-} from "../diagnostics";
+import { configureDiagnosticLogging, recordDiagnostic } from "../diagnostics";
 import {
   applicationUpdater,
   isApplicationUpdateInstalling,
@@ -60,6 +58,7 @@ import QuickCommandSettings from "./QuickCommandSettings";
 import SshKeySettings from "./SshKeySettings";
 
 type SettingsSection =
+  | "appearance"
   | "terminal"
   | "quickCommands"
   | "ai"
@@ -76,6 +75,7 @@ type SettingsSection =
   | "about";
 
 const NESTED_SECTION_TITLES: Partial<Record<SettingsSection, string>> = {
+  appearance: "外观",
   terminal: "终端",
   files: "文件管理",
   monitor: "服务器监控",
@@ -89,6 +89,7 @@ const NESTED_SECTION_TITLES: Partial<Record<SettingsSection, string>> = {
 };
 
 const SECTIONS_WITH_SETTINGS_FOOTER = new Set<SettingsSection>([
+  "appearance",
   "terminal",
   "files",
   "monitor",
@@ -144,6 +145,7 @@ function SettingsWindow() {
         if (disposed) return;
         setSettings(configuration.settings);
         setSavedSettings(configuration.settings);
+        setAppearanceMode(configuration.settings.appearanceMode);
       })
       .catch((error) => {
         if (!disposed) {
@@ -164,17 +166,12 @@ function SettingsWindow() {
   useEffect(
     () =>
       listenApplicationUpdateNotice((notice) => {
-        setUpdateNotice(
-          applicationUpdater.canInstallUpdates ? notice : null,
-        );
+        setUpdateNotice(applicationUpdater.canInstallUpdates ? notice : null);
       }),
     [],
   );
 
-  useEffect(
-    () => listenApplicationUpdateInstalling(setUpdateInstalling),
-    [],
-  );
+  useEffect(() => listenApplicationUpdateInstalling(setUpdateInstalling), []);
 
   useEffect(() => {
     if (!isTauri() || !isApplePlatform()) return;
@@ -203,6 +200,10 @@ function SettingsWindow() {
     );
   }, [savedSettings.diagnosticLogLevel]);
 
+  useEffect(() => {
+    if (!loading) setAppearanceMode(settings.appearanceMode);
+  }, [loading, settings.appearanceMode]);
+
   const updateSetting = <Key extends keyof AppSettings>(
     key: Key,
     value: AppSettings[Key],
@@ -216,6 +217,9 @@ function SettingsWindow() {
       const configuration = await updateAppSettings(settings);
       setSettings(configuration.settings);
       setSavedSettings(configuration.settings);
+      setAppearanceMode(configuration.settings.appearanceMode, {
+        persist: true,
+      });
       if (isTauri()) {
         await emitProtocolEventTo(
           "main",
@@ -254,6 +258,32 @@ function SettingsWindow() {
 
   const content = (() => {
     switch (activeSection) {
+      case "appearance":
+        return (
+          <div className="settings-group">
+            <SettingRow
+              control={
+                <Radio.Group
+                  aria-label="应用外观"
+                  onChange={(value) =>
+                    updateSetting(
+                      "appearanceMode",
+                      value as AppSettings["appearanceMode"],
+                    )
+                  }
+                  options={[
+                    { label: "浅色", value: "light" },
+                    { label: "深色", value: "dark" },
+                    { label: "跟随系统", value: "system" },
+                  ]}
+                  type="button"
+                  value={settings.appearanceMode}
+                />
+              }
+              label="主题模式"
+            />
+          </div>
+        );
       case "terminal":
         return (
           <>
@@ -483,9 +513,7 @@ function SettingsWindow() {
       case "quickCommands":
         return <QuickCommandSettings />;
       case "ai":
-        return (
-          <AiSettings settings={settings} updateSetting={updateSetting} />
-        );
+        return <AiSettings settings={settings} updateSetting={updateSetting} />;
       case "monitor":
         return (
           <>
@@ -595,10 +623,7 @@ function SettingsWindow() {
         );
       case "advanced":
         return (
-          <AdvancedSettings
-            settings={settings}
-            updateSetting={updateSetting}
-          />
+          <AdvancedSettings settings={settings} updateSetting={updateSetting} />
         );
       case "backups":
         return (
@@ -633,7 +658,9 @@ function SettingsWindow() {
       </Typography.Title>
       {content}
     </>
-  ) : content;
+  ) : (
+    content
+  );
 
   return (
     <main className="settings-window">
@@ -656,6 +683,7 @@ function SettingsWindow() {
               </span>
             }
           >
+            <Menu.Item key="appearance">外观</Menu.Item>
             <Menu.Item key="terminal">终端</Menu.Item>
             <Menu.Item key="files">文件管理</Menu.Item>
             <Menu.Item key="monitor">服务器监控</Menu.Item>
