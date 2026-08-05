@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
-import { Tabs, Tooltip } from "@arco-design/web-react";
+import { Button, Tabs, Tooltip } from "@arco-design/web-react";
 import { IconHome } from "@arco-design/web-react/icon";
+import { Bot } from "lucide-react";
 import type { TerminalSession } from "../models";
 import { sessionTabName } from "../terminal-utils";
 import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
@@ -9,9 +10,12 @@ const HOME_TAB_ID = "home";
 
 interface SessionTabsProps {
   activeSessionId: string | null;
+  aiAssistantVisible: boolean;
+  hasActiveSession: boolean;
   homeContent: ReactNode;
   onActiveSessionChange: (sessionId: string | null) => void;
   onCloseSession: (sessionId: string) => void;
+  onToggleAiAssistant: () => void;
   renderSession: (session: TerminalSession) => ReactNode;
   sessionContextMenuItems: (session: TerminalSession) => ContextMenuItem[];
   sessions: TerminalSession[];
@@ -33,9 +37,12 @@ function sessionStatusLabel(session: TerminalSession) {
 
 function SessionTabs({
   activeSessionId,
+  aiAssistantVisible,
+  hasActiveSession,
   homeContent,
   onActiveSessionChange,
   onCloseSession,
+  onToggleAiAssistant,
   renderSession,
   sessionContextMenuItems,
   sessions,
@@ -105,6 +112,23 @@ function SessionTabs({
           </Tabs.TabPane>
         ))}
       </Tabs>
+      <div className="terminal-ai-action">
+        <Tooltip content="AI">
+          <span>
+            <Button
+              aria-label={aiAssistantVisible ? "关闭 AI 助手" : "打开 AI 助手"}
+              aria-pressed={aiAssistantVisible}
+              className={`terminal-ai-action-button${
+                aiAssistantVisible ? " is-active" : ""
+              }`}
+              disabled={!hasActiveSession}
+              icon={<Bot aria-hidden="true" />}
+              onClick={onToggleAiAssistant}
+              type="text"
+            />
+          </span>
+        </Tooltip>
+      </div>
     </>
   );
 }

@@ -1,4 +1,5 @@
 .terminal-panel {
+  --terminal-ai-action-width: 44px;
   --terminal-home-tab-width: 92px;
   --terminal-tab-height: 36px;
   position: relative;
@@ -62,7 +63,8 @@
   box-sizing: border-box;
   height: var(--terminal-tab-height);
   margin: 0;
-  padding: 0 8px 0 calc(8px + var(--terminal-home-tab-width));
+  padding: 0 calc(8px + var(--terminal-ai-action-width)) 0
+    calc(8px + var(--terminal-home-tab-width));
   background: #f2f2f2;
 }
 
@@ -173,6 +175,51 @@
 .terminal-tabs .arco-tabs-add-icon:hover {
   color: #165dff;
   background: #f2f3f5;
+}
+
+.terminal-ai-action {
+  position: absolute;
+  top: 3px;
+  right: 8px;
+  z-index: 3;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.terminal-ai-action > span,
+.terminal-ai-action-button.arco-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.terminal-ai-action-button.arco-btn {
+  padding: 0;
+  color: #4e5969;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+}
+
+.terminal-ai-action-button.arco-btn:not(.arco-btn-disabled):hover {
+  color: #1d2129;
+  background: #e5e6eb;
+}
+
+.terminal-ai-action-button.arco-btn.is-active,
+.terminal-ai-action-button.arco-btn.is-active:hover {
+  color: #165dff;
+  background: #e8f3ff;
+}
+
+.terminal-ai-action-button svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.75;
 }
 
 .terminal-tab-label {

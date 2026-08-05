@@ -84,9 +84,7 @@ import { useTerminalSessions } from "./hooks/useTerminalSessions";
 const ServerMonitorPanel = lazy(
   () => import("./components/ServerMonitorPanel"),
 );
-const AiAssistantPanel = lazy(
-  () => import("./components/AiAssistantPanel"),
-);
+const AiAssistantPanel = lazy(() => import("./components/AiAssistantPanel"));
 const TerminalView = lazy(() => import("./components/TerminalView"));
 
 function createId(prefix: string) {
@@ -191,9 +189,7 @@ function App() {
       recordDiagnostic(
         "warn",
         "application.window",
-        operation === "expand"
-          ? "AI 侧栏窗口扩宽失败"
-          : "AI 侧栏窗口还原失败",
+        operation === "expand" ? "AI 侧栏窗口扩宽失败" : "AI 侧栏窗口还原失败",
         { error: commandErrorMessage(error) },
       );
       Message.warning(
@@ -482,7 +478,7 @@ function App() {
   useEffect(() => {
     if (!activeSessionId) {
       setQuickCommandDrawerVisible(false);
-      closeAiAssistant();
+      closeAiSidebar();
       return;
     }
     const handleQuickCommandShortcut = (event: KeyboardEvent) => {
@@ -500,13 +496,10 @@ function App() {
     window.addEventListener("keydown", handleQuickCommandShortcut, true);
     return () =>
       window.removeEventListener("keydown", handleQuickCommandShortcut, true);
-  }, [activeSessionId]);
+  }, [activeSessionId, closeAiSidebar]);
 
   async function sendQuickCommand(command: string, execute: boolean) {
-    if (
-      !activeSession ||
-      !isTerminalSessionOperational(activeSession.status)
-    ) {
+    if (!activeSession || !isTerminalSessionOperational(activeSession.status)) {
       throw new Error("当前终端未连接");
     }
     const input = execute ? `${command}\r` : command;
@@ -518,10 +511,7 @@ function App() {
     Message.success(execute ? "命令已发送" : "命令已填入终端");
   }
 
-  function handleAiCommandPrepared(
-    sessionId: string,
-    command: string,
-  ) {
+  function handleAiCommandPrepared(sessionId: string, command: string) {
     setTerminalInjectedInputs((current) => ({
       ...current,
       [sessionId]: {
@@ -601,10 +591,6 @@ function App() {
       };
     });
     await openAiAssistant(request.prompt, [request.source.id]);
-  }
-
-  function closeAiAssistant() {
-    closeAiSidebar();
   }
 
   function toggleAiAssistant() {
@@ -701,11 +687,14 @@ function App() {
     <section className="panel terminal-panel">
       <SessionTabs
         activeSessionId={activeSessionId}
+        aiAssistantVisible={aiAssistantActive}
+        hasActiveSession={Boolean(activeSession)}
         homeContent={
           <HostManagerPanel onConnect={openSession} settings={settings} />
         }
         onActiveSessionChange={setActiveSessionId}
         onCloseSession={closeSession}
+        onToggleAiAssistant={toggleAiAssistant}
         renderSession={(session) => (
           <Suspense fallback={null}>
             <TerminalView
@@ -828,7 +817,6 @@ function App() {
         initialPrompt={aiInitialPrompt}
         initialContextIds={aiInitialContextIds}
         initialPromptRequest={aiInitialPromptRequest}
-        onClose={closeAiAssistant}
         onAgentActionExecuted={handleAiAgentActionExecuted}
         onCommandPrepared={handleAiCommandPrepared}
         onRemoveRemoteFile={(sessionId, path) =>
@@ -858,7 +846,6 @@ function App() {
     <AppWorkspaceLayout
       applicationTitleBar={
         <ApplicationTitleBar
-          aiAssistantVisible={aiAssistantActive}
           hasActiveSession={Boolean(activeSession)}
           onOpenQuickCommands={() => setQuickCommandDrawerVisible(true)}
           onOpenSettings={() => openAuxiliaryWindow("settings")}
@@ -867,7 +854,6 @@ function App() {
             setServerMonitorCollapsed((collapsed) => !collapsed)
           }
           onToggleSftp={() => setSftpCollapsed((collapsed) => !collapsed)}
-          onToggleAiAssistant={toggleAiAssistant}
           serverMonitorCollapsed={serverMonitorCollapsed}
           sftpCollapsed={sftpCollapsed}
         />

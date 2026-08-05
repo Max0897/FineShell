@@ -254,6 +254,30 @@ code *,
   background: #e8f3ff;
 }
 
+.application-titlebar-menu {
+  min-width: 156px;
+  border: 1px solid #e5e6eb;
+  box-shadow: none;
+}
+
+.application-titlebar-menu-label {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.application-titlebar-menu-label .lucide {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.75;
+}
+
+.application-titlebar-menu-settings {
+  border-top: 1px solid #f2f3f5;
+}
+
 .application-window-control {
   width: 46px;
   height: 100%;
@@ -318,15 +342,13 @@ code *,
   overflow: hidden;
 }
 
-.main-split-left-collapsed
-  > .arco-resizebox-split-group-pane:first-child {
+.main-split-left-collapsed > .arco-resizebox-split-group-pane:first-child {
   display: none;
   flex-basis: 0 !important;
   min-width: 0;
 }
 
-.main-split-left-collapsed
-  > .arco-resizebox-split-group-pane:last-child {
+.main-split-left-collapsed > .arco-resizebox-split-group-pane:last-child {
   flex-basis: 100% !important;
 }
 
@@ -338,13 +360,11 @@ code *,
   width: 100%;
 }
 
-.right-split-sftp-collapsed
-  > .arco-resizebox-split-group-pane:first-child {
+.right-split-sftp-collapsed > .arco-resizebox-split-group-pane:first-child {
   flex-basis: 100% !important;
 }
 
-.right-split-sftp-collapsed
-  > .arco-resizebox-split-group-pane:last-child {
+.right-split-sftp-collapsed > .arco-resizebox-split-group-pane:last-child {
   display: none;
   flex-basis: 0 !important;
 }

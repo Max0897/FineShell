@@ -15,10 +15,7 @@ export interface AiSidebarWindowAdapter {
 
 interface UseAiSidebarControllerOptions {
   getWorkspaceWidth: () => number | undefined;
-  onResizeFailure?: (
-    error: unknown,
-    operation: "expand" | "collapse",
-  ) => void;
+  onResizeFailure?: (error: unknown, operation: "expand" | "collapse") => void;
   sidebarWidth: number;
   windowAdapter?: AiSidebarWindowAdapter | null;
 }
@@ -140,15 +137,9 @@ export function useAiSidebarController({
             sidebarWidthRef.current,
           );
           await adapter.setInnerSize(targetWidth, before.height);
-          appliedExpansionRef.current = Math.max(
-            0,
-            targetWidth - before.width,
-          );
+          appliedExpansionRef.current = Math.max(0, targetWidth - before.width);
           const after = await adapter.getInnerSize();
-          appliedExpansionRef.current = Math.max(
-            0,
-            after.width - before.width,
-          );
+          appliedExpansionRef.current = Math.max(0, after.width - before.width);
           resizeFailureReportedRef.current = false;
         }
       } catch (error) {
@@ -218,35 +209,37 @@ export function useAiSidebarController({
     let disposed = false;
     let unlisten: (() => void) | undefined;
     let timer: number | undefined;
-    void adapter.onResized(() => {
-      if (
-        disposed ||
-        stateRef.current.phase !== "closed" ||
-        appliedExpansionRef.current <= 0
-      ) {
-        return;
-      }
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        void enqueue(async () => {
-          if (
-            disposed ||
-            stateRef.current.phase !== "closed" ||
-            appliedExpansionRef.current <= 0
-          ) {
-            return;
-          }
-          try {
-            await collapseWindow(adapter);
-          } catch (error) {
-            reportResizeFailure(error, "collapse");
-          }
-        });
-      }, 120);
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
+    void adapter
+      .onResized(() => {
+        if (
+          disposed ||
+          stateRef.current.phase !== "closed" ||
+          appliedExpansionRef.current <= 0
+        ) {
+          return;
+        }
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          void enqueue(async () => {
+            if (
+              disposed ||
+              stateRef.current.phase !== "closed" ||
+              appliedExpansionRef.current <= 0
+            ) {
+              return;
+            }
+            try {
+              await collapseWindow(adapter);
+            } catch (error) {
+              reportResizeFailure(error, "collapse");
+            }
+          });
+        }, 120);
+      })
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      });
     return () => {
       disposed = true;
       window.clearTimeout(timer);

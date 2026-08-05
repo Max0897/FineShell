@@ -7,12 +7,7 @@ import {
   Tooltip,
   Typography,
 } from "@arco-design/web-react";
-import {
-  IconClose,
-  IconDelete,
-  IconHistory,
-  IconPlus,
-} from "@arco-design/web-react/icon";
+import { IconHistory, IconPlus } from "@arco-design/web-react/icon";
 import type { AgentApprovalMode } from "../../tauri-protocol";
 
 const AI_APPROVAL_MODE_OPTIONS = [
@@ -24,14 +19,11 @@ const AI_APPROVAL_MODE_OPTIONS = [
 interface AiAssistantHeaderProps {
   approvalMode: AgentApprovalMode;
   canInsertCommand: boolean;
-  conversationAvailable: boolean;
   conversationSummarized: boolean;
   conversationSummarizing: boolean;
   conversationTitle: string;
   disconnectedError?: string;
   onApprovalModeChange: (mode: AgentApprovalMode) => void;
-  onClose: () => void;
-  onDelete: () => void;
   onNew: () => void;
   onOpenHistory: () => void;
   sessionAvailable: boolean;
@@ -41,14 +33,11 @@ interface AiAssistantHeaderProps {
 export default function AiAssistantHeader({
   approvalMode,
   canInsertCommand,
-  conversationAvailable,
   conversationSummarized,
   conversationSummarizing,
   conversationTitle,
   disconnectedError,
   onApprovalModeChange,
-  onClose,
-  onDelete,
   onNew,
   onOpenHistory,
   sessionAvailable,
@@ -123,21 +112,6 @@ export default function AiAssistantHeader({
             type="text"
           />
         </Tooltip>
-        <Tooltip content="删除当前对话">
-          <Button
-            aria-label="删除当前对话"
-            disabled={!conversationAvailable || sending}
-            icon={<IconDelete />}
-            onClick={onDelete}
-            type="text"
-          />
-        </Tooltip>
-        <Button
-          aria-label="关闭 AI 助手"
-          icon={<IconClose />}
-          onClick={onClose}
-          type="text"
-        />
       </Space>
     </div>
   );

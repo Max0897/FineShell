@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
-import { Button, Message, Tooltip } from "@arco-design/web-react";
+import {
+  Button,
+  Dropdown,
+  Menu as ArcoMenu,
+  Message,
+  Tooltip,
+} from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Bot,
   CircleHelp,
   Command,
   Maximize,
+  Menu,
   Minimize,
   Minus,
   PanelBottomClose,
@@ -16,17 +22,15 @@ import {
   Settings,
   X,
 } from "lucide-react";
-import { isApplePlatform, primaryShortcutModifier } from "../platform-utils";
+import { isApplePlatform } from "../platform-utils";
 
 interface ApplicationTitleBarProps {
-  aiAssistantVisible: boolean;
   hasActiveSession: boolean;
   onOpenQuickCommands: () => void;
   onOpenSettings: () => void;
   onOpenShortcutGuide: () => void;
   onToggleServerMonitor: () => void;
   onToggleSftp: () => void;
-  onToggleAiAssistant: () => void;
   platform?: string;
   serverMonitorCollapsed: boolean;
   sftpCollapsed: boolean;
@@ -38,21 +42,18 @@ function reportWindowOperationError(error: unknown) {
 }
 
 export default function ApplicationTitleBar({
-  aiAssistantVisible,
   hasActiveSession,
   onOpenQuickCommands,
   onOpenSettings,
   onOpenShortcutGuide,
   onToggleServerMonitor,
   onToggleSftp,
-  onToggleAiAssistant,
   platform = navigator.platform,
   serverMonitorCollapsed,
   sftpCollapsed,
 }: ApplicationTitleBarProps) {
   const applePlatform = isApplePlatform(platform);
   const [maximized, setMaximized] = useState(false);
-  const primaryModifier = primaryShortcutModifier(platform);
 
   useEffect(() => {
     if (applePlatform || !isTauri()) return;
@@ -122,58 +123,6 @@ export default function ApplicationTitleBar({
 
       <div className="application-titlebar-toolbar">
         <Tooltip
-          content={
-            hasActiveSession
-              ? aiAssistantVisible
-                ? "关闭 AI 助手"
-                : "打开 AI 助手"
-              : "请先打开终端会话"
-          }
-        >
-          <span className="application-titlebar-action-wrapper">
-            <Button
-              aria-label={aiAssistantVisible ? "关闭 AI 助手" : "打开 AI 助手"}
-              aria-pressed={aiAssistantVisible}
-              className={`application-titlebar-action-button${
-                aiAssistantVisible ? " is-active" : ""
-              }`}
-              disabled={!hasActiveSession}
-              icon={<Bot aria-hidden="true" />}
-              onClick={onToggleAiAssistant}
-              type="text"
-            />
-          </span>
-        </Tooltip>
-        <Tooltip
-          content={
-            hasActiveSession
-              ? `快捷命令（${primaryModifier} + Shift + P）`
-              : "请先打开终端会话"
-          }
-        >
-          <span className="application-titlebar-action-wrapper">
-            <Button
-              aria-label="打开快捷命令"
-              className="application-titlebar-action-button"
-              disabled={!hasActiveSession}
-              icon={<Command aria-hidden="true" />}
-              onClick={onOpenQuickCommands}
-              type="text"
-            />
-          </span>
-        </Tooltip>
-        <Tooltip content="快捷键与操作">
-          <span className="application-titlebar-action-wrapper">
-            <Button
-              aria-label="打开快捷键与操作"
-              className="application-titlebar-action-button"
-              icon={<CircleHelp aria-hidden="true" />}
-              onClick={onOpenShortcutGuide}
-              type="text"
-            />
-          </span>
-        </Tooltip>
-        <Tooltip
           content={serverMonitorCollapsed ? "显示服务器监控" : "隐藏服务器监控"}
         >
           <span className="application-titlebar-action-wrapper">
@@ -213,17 +162,53 @@ export default function ApplicationTitleBar({
             />
           </span>
         </Tooltip>
-        <Tooltip content={`设置（${primaryModifier} + ,）`}>
-          <span className="application-titlebar-action-wrapper">
-            <Button
-              aria-label="打开设置"
-              className="application-titlebar-action-button"
-              icon={<Settings aria-hidden="true" />}
-              onClick={onOpenSettings}
-              type="text"
-            />
-          </span>
-        </Tooltip>
+        <span className="application-titlebar-action-wrapper">
+          <Dropdown
+            droplist={
+              <ArcoMenu
+                className="application-titlebar-menu"
+                onClickMenuItem={(key) => {
+                  if (key === "quickCommands") onOpenQuickCommands();
+                  else if (key === "shortcutGuide") onOpenShortcutGuide();
+                  else if (key === "settings") onOpenSettings();
+                }}
+              >
+                <ArcoMenu.Item disabled={!hasActiveSession} key="quickCommands">
+                  <span className="application-titlebar-menu-label">
+                    <Command aria-hidden="true" />
+                    <span>快捷命令</span>
+                  </span>
+                </ArcoMenu.Item>
+                <ArcoMenu.Item key="shortcutGuide">
+                  <span className="application-titlebar-menu-label">
+                    <CircleHelp aria-hidden="true" />
+                    <span>快捷键</span>
+                  </span>
+                </ArcoMenu.Item>
+                <ArcoMenu.Item
+                  className="application-titlebar-menu-settings"
+                  key="settings"
+                >
+                  <span className="application-titlebar-menu-label">
+                    <Settings aria-hidden="true" />
+                    <span>设置</span>
+                  </span>
+                </ArcoMenu.Item>
+              </ArcoMenu>
+            }
+            position="br"
+            trigger="click"
+          >
+            <Tooltip content="菜单">
+              <Button
+                aria-label="打开应用菜单"
+                className="application-titlebar-action-button"
+                icon={<Menu aria-hidden="true" />}
+                type="text"
+              />
+            </Tooltip>
+          </Dropdown>
+        </span>
       </div>
 
       {!applePlatform && (
