@@ -1,16 +1,38 @@
 :root {
   font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
-  color: #1d2129;
-  background: #f2f3f5;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+html {
+  background: #ffffff;
+}
+
+html[data-appearance="dark"] {
+  background: #17171a;
+}
+
+body {
+  --fs-drop-overlay: rgb(255 255 255 / 94%);
+  --fs-scrollbar-thumb: #c9cdd4;
+  --fs-scrollbar-thumb-hover: #86909c;
+  --fs-scrollbar-thumb-active: #4e5969;
+  color: var(--color-text-1);
+  background: var(--color-bg-1);
+}
+
+body[arco-theme="dark"] {
+  --fs-drop-overlay: rgb(35 35 36 / 94%);
+  --fs-scrollbar-thumb: rgb(255 255 255 / 26%);
+  --fs-scrollbar-thumb-hover: rgb(255 255 255 / 40%);
+  --fs-scrollbar-thumb-active: rgb(255 255 255 / 56%);
+}
+
 * {
   box-sizing: border-box;
-  scrollbar-color: #c9cdd4 transparent;
+  scrollbar-color: var(--fs-scrollbar-thumb) transparent;
   scrollbar-width: thin;
 }
 
@@ -26,15 +48,15 @@
 
 *::-webkit-scrollbar-thumb {
   border-radius: 3px;
-  background: #c9cdd4;
+  background: var(--fs-scrollbar-thumb);
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: #86909c;
+  background: var(--fs-scrollbar-thumb-hover);
 }
 
 *::-webkit-scrollbar-thumb:active {
-  background: #4e5969;
+  background: var(--fs-scrollbar-thumb-active);
 }
 
 *::-webkit-scrollbar-button {
@@ -79,7 +101,7 @@
 }
 
 .app-shell :focus-visible {
-  outline: 2px solid #165dff;
+  outline: 2px solid rgb(var(--primary-6));
   outline-offset: 2px;
 }
 
@@ -126,18 +148,18 @@ code *,
   display: grid;
   place-items: center;
   padding: 32px;
-  background: #ffffff;
+  background: var(--color-bg-2);
 }
 
 .application-error-content {
   width: min(480px, 100%);
-  color: #4e5969;
+  color: var(--color-text-2);
   text-align: center;
 }
 
 .application-error-content h1 {
   margin: 0 0 12px;
-  color: #1d2129;
+  color: var(--color-text-1);
   font-size: 20px;
   line-height: 28px;
 }
@@ -156,7 +178,7 @@ code *,
   border: 0;
   border-radius: 2px;
   color: #ffffff;
-  background: #165dff;
+  background: rgb(var(--primary-6));
   cursor: pointer;
   font: inherit;
 }
@@ -167,7 +189,7 @@ code *,
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #f2f3f5;
+  background: var(--color-fill-2);
 }
 
 .application-titlebar {
@@ -178,8 +200,8 @@ code *,
   flex: 0 0 38px;
   display: flex;
   align-items: stretch;
-  border-bottom: 1px solid #e5e6eb;
-  background: #ffffff;
+  border-bottom: 1px solid var(--color-border-2);
+  background: var(--color-bg-2);
 }
 
 .application-titlebar-drag-region {
@@ -199,7 +221,7 @@ code *,
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #4e5969;
+  color: var(--color-text-2);
   font-size: 13px;
   font-weight: 500;
   pointer-events: none;
@@ -235,7 +257,7 @@ code *,
   height: 30px;
   padding: 0;
   border-radius: 4px;
-  color: #4e5969;
+  color: var(--color-text-2);
 }
 
 .application-titlebar-action-button .lucide {
@@ -245,18 +267,18 @@ code *,
 }
 
 .application-titlebar-action-button.arco-btn:not(.arco-btn-disabled):hover {
-  color: #1d2129;
-  background: #f2f3f5;
+  color: var(--color-text-1);
+  background: var(--color-fill-2);
 }
 
 .application-titlebar-action-button.arco-btn.is-active {
-  color: #165dff;
-  background: #e8f3ff;
+  color: rgb(var(--primary-6));
+  background: var(--color-primary-light-1);
 }
 
 .application-titlebar-menu {
   min-width: 156px;
-  border: 1px solid #e5e6eb;
+  border: 1px solid var(--color-border-2);
   box-shadow: none;
 }
 
@@ -275,7 +297,7 @@ code *,
 }
 
 .application-titlebar-menu-settings {
-  border-top: 1px solid #f2f3f5;
+  border-top: 1px solid var(--color-border-1);
 }
 
 .application-window-control {
@@ -287,7 +309,7 @@ code *,
   justify-content: center;
   border: 0;
   border-radius: 0;
-  color: #4e5969;
+  color: var(--color-text-2);
   background: transparent;
   cursor: default;
 }
@@ -299,8 +321,8 @@ code *,
 }
 
 .application-window-control:hover {
-  color: #1d2129;
-  background: #e5e6eb;
+  color: var(--color-text-1);
+  background: var(--color-border-2);
 }
 
 .application-window-control-close:hover {
@@ -309,6 +331,7 @@ code *,
 }
 
 .app-workspace {
+  position: relative;
   width: 100%;
   height: auto;
   min-width: 0;
@@ -316,6 +339,7 @@ code *,
   flex: 1;
   display: flex;
   overflow: hidden;
+  background: var(--color-bg-2);
 }
 
 .main-split,
@@ -409,7 +433,7 @@ body.ai-sidebar-resizing::after {
 }
 
 .arco-resizebox-trigger-icon-wrapper {
-  background: #e5e6eb;
+  background: var(--color-border-2);
 }
 
 .collapsible-split-trigger {
@@ -418,7 +442,7 @@ body.ai-sidebar-resizing::after {
 }
 
 .arco-resizebox-slit-trigger:hover .arco-resizebox-trigger-icon-wrapper {
-  background: #c9cdd4;
+  background: var(--color-border-3);
 }
 
 .panel-toolbar {
@@ -427,8 +451,8 @@ body.ai-sidebar-resizing::after {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #ffffff;
-  border-bottom: 1px solid #e5e6eb;
+  background: var(--color-bg-2);
+  border-bottom: 1px solid var(--color-border-2);
 }
 
 .panel {
@@ -439,14 +463,14 @@ body.ai-sidebar-resizing::after {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #ffffff;
+  background: var(--color-bg-2);
 }
 
 .panel-empty {
   flex: 1;
   display: grid;
   place-items: center;
-  background: #fafbfc;
+  background: var(--color-fill-1);
 }
 
 .empty-action {
@@ -487,12 +511,12 @@ body.ai-sidebar-resizing::after {
 }
 
 .connection-status-overlay .arco-spin-icon {
-  color: #ff7d00;
+  color: rgb(var(--warning-6));
   font-size: 24px;
 }
 
 .connection-status-overlay.is-reconnecting .arco-spin-icon {
-  color: #165dff;
+  color: rgb(var(--primary-6));
 }
 
 .connection-status-overlay .arco-spin-loading-layer-inner {
@@ -500,7 +524,7 @@ body.ai-sidebar-resizing::after {
 }
 
 .connection-status-overlay .arco-spin-tip {
-  color: #4e5969;
+  color: var(--color-text-2);
   font-size: 13px;
   font-weight: 400;
 }
@@ -559,14 +583,14 @@ body.ai-sidebar-resizing::after {
 }
 
 .monitor-system-facts dt {
-  color: #86909c;
+  color: var(--color-text-3);
 }
 
 .monitor-system-facts dd {
   min-width: 0;
   margin: 0;
   overflow: hidden;
-  color: #1d2129;
+  color: var(--color-text-1);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -575,7 +599,7 @@ body.ai-sidebar-resizing::after {
   width: 100%;
   min-width: 0;
   padding-top: 12px;
-  border-top: 1px solid #f2f3f5;
+  border-top: 1px solid var(--color-border-1);
 }
 
 .monitor-chart {
@@ -597,11 +621,11 @@ body.ai-sidebar-resizing::after {
   justify-content: space-between;
   gap: 4px;
   font-size: 11px;
-  color: #86909c;
+  color: var(--color-text-3);
 }
 
 .monitor-current-values strong {
-  color: #1d2129;
+  color: var(--color-text-1);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
@@ -628,7 +652,7 @@ body.ai-sidebar-resizing::after {
 .network-diagnostics-section + .network-diagnostics-section {
   margin-top: 24px;
   padding-top: 20px;
-  border-top: 1px solid #e5e6eb;
+  border-top: 1px solid var(--color-border-2);
 }
 
 .network-diagnostics-section-heading {
@@ -685,7 +709,7 @@ body.ai-sidebar-resizing::after {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  border-bottom: 1px solid #e5e6eb;
+  border-bottom: 1px solid var(--color-border-2);
 }
 
 .server-process-toolbar > .arco-input-group-wrapper {

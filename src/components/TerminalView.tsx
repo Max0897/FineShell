@@ -70,6 +70,10 @@ import {
   terminalFontZoomWheelAction,
   type TerminalFontZoomAction,
 } from "../terminal-font-zoom";
+import {
+  TerminalLogBatcher,
+  terminalLogStatusMessage,
+} from "../terminal-logging";
 import { diagnosticInvoke as invoke } from "../diagnostics";
 import { listenProtocolEvent } from "../tauri-protocol";
 import ConnectionStatusOverlay from "./ConnectionStatusOverlay";
@@ -199,6 +203,11 @@ function TerminalView({
   const selectionChangeRef = useRef(onSelectionChange);
   const currentDirectoryChangeRef = useRef(onCurrentDirectoryChange);
   const settingsRef = useRef(settings);
+  const terminalLoggerRef = useRef<TerminalLogBatcher>();
+  const terminalLogStatusRef = useRef({
+    error: session.error,
+    status: session.status,
+  });
   const fontZoomRef = useRef(onFontZoom);
   const lastWheelZoomAtRef = useRef(Number.NEGATIVE_INFINITY);
   const searchVisibleRef = useRef(false);
@@ -212,6 +221,10 @@ function TerminalView({
 
   searchVisibleRef.current = searchVisible;
   settingsRef.current = settings;
+  terminalLogStatusRef.current = {
+    error: session.error,
+    status: session.status,
+  };
   fontZoomRef.current = onFontZoom;
   commandLifecycleRef.current = onCommandLifecycle;
   commandTrackingEnabledRef.current = commandTrackingEnabled;
@@ -219,6 +232,74 @@ function TerminalView({
   currentDirectoryChangeRef.current = onCurrentDirectoryChange;
   recentOutputChangeRef.current = onRecentOutputChange;
   selectionChangeRef.current = onSelectionChange;
+
+  useEffect(() => {
+    if (!isTauri() || !settings.terminalLoggingEnabled) {
+      terminalLoggerRef.current = undefined;
+      return;
+    }
+
+    let logger: TerminalLogBatcher | undefined;
+    const startTimer = window.setTimeout(() => {
+      logger = new TerminalLogBatcher(
+        {
+          address: `${session.host.address}:${session.host.port}`,
+          directory: settings.terminalLogDirectory,
+          format: settings.terminalLogFormat,
+          hostName: session.host.name,
+          logId: `${session.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          maxFileSizeMb: settings.terminalLogMaxFileSizeMb,
+          sessionId: session.id,
+          startedAt: session.openedAt,
+          username: session.host.username,
+        },
+        {
+          onError: (error) => {
+            Message.error(`终端日志记录失败：${String(error)}`);
+          },
+        },
+      );
+      terminalLoggerRef.current = logger;
+      const currentStatus = terminalLogStatusRef.current;
+      void logger.marker(
+        new Date().toISOString(),
+        terminalLogStatusMessage(currentStatus.status, currentStatus.error),
+      );
+    }, 0);
+
+    return () => {
+      window.clearTimeout(startTimer);
+      if (logger && terminalLoggerRef.current === logger) {
+        terminalLoggerRef.current = undefined;
+      }
+      if (logger) void logger.stop();
+    };
+  }, [
+    session.host.address,
+    session.host.name,
+    session.host.port,
+    session.host.username,
+    session.id,
+    session.openedAt,
+    settings.terminalLogDirectory,
+    settings.terminalLogFormat,
+    settings.terminalLoggingEnabled,
+    settings.terminalLogMaxFileSizeMb,
+  ]);
+
+  useEffect(() => {
+    terminalLoggerRef.current?.marker(
+      new Date().toISOString(),
+      terminalLogStatusMessage(session.status, session.error),
+    );
+  }, [
+    session.error,
+    session.status,
+    settings.terminalLogDirectory,
+    settings.terminalLogFormat,
+    settings.terminalLoggingEnabled,
+    settings.terminalLogMaxFileSizeMb,
+  ]);
 
   recordTerminalHistoryRef.current = (command) => {
     const hostId = session.host.id;
@@ -683,6 +764,7 @@ function TerminalView({
           shellIntegrationEchoFilterRef.current = filtered.filter;
         }
         if (data.length > 0) {
+          terminalLoggerRef.current?.append(data);
           terminal.write(data, scheduleRecentOutput);
         }
       }

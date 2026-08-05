@@ -8,21 +8,20 @@ import {
 export type { AiProvider } from "./ai-providers";
 
 export type TerminalFontFamily = "system" | "menlo" | "consolas";
+export type AppearanceMode = "light" | "dark" | "system";
 export type TerminalCursorStyle = "block" | "underline" | "bar";
 export type TerminalColorScheme =
   "fineshellDark" | "graphiteLight" | "solarizedDark" | "dracula";
 export type TerminalRightClickAction = "menu" | "paste";
+export type TerminalLogFormat = "plain" | "raw";
 export type ConnectionHistoryLimit = 0 | 20 | 50 | 100;
 export type ConnectionHistoryRetentionDays = 0 | 7 | 30 | 90;
 export type DiagnosticLogLevel = "debug" | "info" | "warn" | "error";
 export type GithubMirrorRoute =
-  | "auto"
-  | "direct"
-  | "gh-proxy.com"
-  | "ghproxy.net"
-  | "custom";
+  "auto" | "direct" | "gh-proxy.com" | "ghproxy.net" | "custom";
 
 export interface AppSettings {
+  appearanceMode: AppearanceMode;
   terminalColorScheme: TerminalColorScheme;
   terminalFontFamily: TerminalFontFamily;
   terminalFontSize: number;
@@ -32,6 +31,10 @@ export interface AppSettings {
   terminalScrollback: number;
   terminalCopyOnSelect: boolean;
   terminalRightClickAction: TerminalRightClickAction;
+  terminalLoggingEnabled: boolean;
+  terminalLogDirectory: string;
+  terminalLogFormat: TerminalLogFormat;
+  terminalLogMaxFileSizeMb: number;
   showHiddenFiles: boolean;
   confirmFileDelete: boolean;
   externalEditorPath: string;
@@ -57,6 +60,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
+  appearanceMode: "light",
   terminalColorScheme: "fineshellDark",
   terminalFontFamily: "system",
   terminalFontSize: 13,
@@ -66,6 +70,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   terminalScrollback: 5_000,
   terminalCopyOnSelect: false,
   terminalRightClickAction: "menu",
+  terminalLoggingEnabled: false,
+  terminalLogDirectory: "",
+  terminalLogFormat: "plain",
+  terminalLogMaxFileSizeMb: 100,
   showHiddenFiles: true,
   confirmFileDelete: true,
   externalEditorPath: "",
@@ -164,6 +172,10 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
   const aiBaseUrl =
     stringValue(settings.aiBaseUrl) || DEFAULT_APP_SETTINGS.aiBaseUrl;
   return {
+    appearanceMode:
+      settings.appearanceMode === "dark" || settings.appearanceMode === "system"
+        ? settings.appearanceMode
+        : DEFAULT_APP_SETTINGS.appearanceMode,
     terminalColorScheme:
       settings.terminalColorScheme === "graphiteLight" ||
       settings.terminalColorScheme === "solarizedDark" ||
@@ -210,6 +222,21 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
       settings.terminalRightClickAction === "paste"
         ? "paste"
         : DEFAULT_APP_SETTINGS.terminalRightClickAction,
+    terminalLoggingEnabled: booleanValue(
+      settings.terminalLoggingEnabled,
+      DEFAULT_APP_SETTINGS.terminalLoggingEnabled,
+    ),
+    terminalLogDirectory: stringValue(settings.terminalLogDirectory),
+    terminalLogFormat:
+      settings.terminalLogFormat === "raw"
+        ? "raw"
+        : DEFAULT_APP_SETTINGS.terminalLogFormat,
+    terminalLogMaxFileSizeMb: numberValue(
+      settings.terminalLogMaxFileSizeMb,
+      DEFAULT_APP_SETTINGS.terminalLogMaxFileSizeMb,
+      10,
+      2_048,
+    ),
     showHiddenFiles: booleanValue(
       settings.showHiddenFiles,
       DEFAULT_APP_SETTINGS.showHiddenFiles,

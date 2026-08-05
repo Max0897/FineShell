@@ -83,6 +83,7 @@ describe("useAiSidebarController", () => {
     });
     expect(view.result.current.phase).toBe("opening");
     expect(view.result.current.active).toBe(true);
+    expect(view.result.current.mounted).toBe(true);
     expect(view.result.current.visible).toBe(false);
     await waitFor(() => expect(view.result.current.phase).toBe("open"));
     expect(window.currentWidth()).toBe(1_720);
@@ -92,8 +93,10 @@ describe("useAiSidebarController", () => {
       void view.result.current.close();
     });
     expect(view.result.current.phase).toBe("closing");
+    expect(view.result.current.mounted).toBe(true);
     expect(view.result.current.visible).toBe(false);
     await waitFor(() => expect(view.result.current.phase).toBe("closed"));
+    expect(view.result.current.mounted).toBe(false);
     expect(window.currentWidth()).toBe(1_200);
   });
 

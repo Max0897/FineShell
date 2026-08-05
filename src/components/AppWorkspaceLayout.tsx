@@ -6,7 +6,8 @@ import CollapsibleSplitTrigger from "./CollapsibleSplitTrigger";
 interface AppWorkspaceLayoutProps {
   applicationTitleBar: ReactNode;
   aiAssistantPanel: ReactNode;
-  aiAssistantVisible: boolean;
+  aiAssistantMounted: boolean;
+  aiAssistantOpening: boolean;
   aiSidebarWidth: number;
   frozenWorkspaceWidth: number | null;
   mainSplitRef: RefObject<HTMLElement | null>;
@@ -21,7 +22,8 @@ interface AppWorkspaceLayoutProps {
 export default function AppWorkspaceLayout({
   applicationTitleBar,
   aiAssistantPanel,
-  aiAssistantVisible,
+  aiAssistantMounted,
+  aiAssistantOpening,
   aiSidebarWidth,
   frozenWorkspaceWidth,
   mainSplitRef,
@@ -123,9 +125,10 @@ export default function AppWorkspaceLayout({
           }
         />
         <ResizeBox
+          aria-hidden={aiAssistantOpening}
           className={`ai-assistant-sidebar${
-            aiAssistantVisible ? "" : " ai-assistant-sidebar-hidden"
-          }`}
+            aiAssistantMounted ? "" : " ai-assistant-sidebar-hidden"
+          }${aiAssistantOpening ? " ai-assistant-sidebar-opening" : ""}`}
           directions={["left"]}
           onMoving={(_, size) => {
             const workspaceWidth =

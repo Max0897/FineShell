@@ -8,6 +8,7 @@ import {
   type AiFileEditDiffLine,
   type AiFileEditSideBySideRow,
 } from "../ai-file-edits";
+import { useResolvedAppearance } from "../hooks/useResolvedAppearance";
 
 export type AiFileDiffMode = "split" | "unified";
 
@@ -148,7 +149,9 @@ function UnifiedDiff({
     <div className="ai-file-diff-lines ai-file-diff-lines-unified">
       {items.map((entry, index) => {
         if (!entry.item) {
-          return <OmittedRows count={entry.omitted ?? 0} key={`omitted-${index}`} />;
+          return (
+            <OmittedRows count={entry.omitted ?? 0} key={`omitted-${index}`} />
+          );
         }
         const line = entry.item;
         return (
@@ -165,7 +168,11 @@ function UnifiedDiff({
               {line.newLineNumber ?? ""}
             </span>
             <span className="ai-file-diff-marker" aria-hidden>
-              {line.kind === "added" ? "+" : line.kind === "removed" ? "-" : " "}
+              {line.kind === "added"
+                ? "+"
+                : line.kind === "removed"
+                  ? "-"
+                  : " "}
             </span>
             <code>
               {renderTokens(
@@ -198,12 +205,16 @@ function SplitDiff({
       </div>
       {items.map((entry, index) => {
         if (!entry.item) {
-          return <OmittedRows count={entry.omitted ?? 0} key={`omitted-${index}`} />;
+          return (
+            <OmittedRows count={entry.omitted ?? 0} key={`omitted-${index}`} />
+          );
         }
         const row = entry.item;
         return (
           <div className="ai-file-diff-split-row" key={index}>
-            <div className={`ai-file-diff-cell ai-file-diff-line-${row.left?.kind ?? "empty"}`}>
+            <div
+              className={`ai-file-diff-cell ai-file-diff-line-${row.left?.kind ?? "empty"}`}
+            >
               <span className="ai-file-diff-line-number">
                 {row.left?.oldLineNumber ?? ""}
               </span>
@@ -212,7 +223,9 @@ function SplitDiff({
               </span>
               <code>{renderTokens(row.left, "old", oldRender)}</code>
             </div>
-            <div className={`ai-file-diff-cell ai-file-diff-line-${row.right?.kind ?? "empty"}`}>
+            <div
+              className={`ai-file-diff-cell ai-file-diff-line-${row.right?.kind ?? "empty"}`}
+            >
               <span className="ai-file-diff-line-number">
                 {row.right?.newLineNumber ?? ""}
               </span>
@@ -235,23 +248,28 @@ function AiFileDiffView({
   path,
   proposedContent,
 }: AiFileDiffViewProps) {
+  const appearance = useResolvedAppearance();
+  const syntaxTheme = appearance === "dark" ? themes.oneDark : themes.oneLight;
   const language = aiFileLanguage(path);
   const summary = useMemo(
     () => aiFileEditLineSummary(originalContent, proposedContent),
     [originalContent, proposedContent],
   );
   const unifiedItems = useMemo(
-    () => boundedItems(
-      aiFileEditDiffLines(originalContent, proposedContent),
-      (line) => line.kind !== "unchanged",
-    ),
+    () =>
+      boundedItems(
+        aiFileEditDiffLines(originalContent, proposedContent),
+        (line) => line.kind !== "unchanged",
+      ),
     [originalContent, proposedContent],
   );
   const splitItems = useMemo(
-    () => boundedItems(
-      aiFileEditSideBySideRows(originalContent, proposedContent),
-      (row) => row.left?.kind !== "unchanged" || row.right?.kind !== "unchanged",
-    ),
+    () =>
+      boundedItems(
+        aiFileEditSideBySideRows(originalContent, proposedContent),
+        (row) =>
+          row.left?.kind !== "unchanged" || row.right?.kind !== "unchanged",
+      ),
     [originalContent, proposedContent],
   );
 
@@ -275,23 +293,37 @@ function AiFileDiffView({
           value={mode}
         />
       </div>
-      <div className="ai-file-edit-diff" role="region" aria-label="文件修改差异">
-        <Highlight code={originalContent} language={language} theme={themes.oneLight}>
+      <div
+        className="ai-file-edit-diff"
+        role="region"
+        aria-label="文件修改差异"
+      >
+        <Highlight
+          code={originalContent}
+          language={language}
+          theme={syntaxTheme}
+        >
           {(oldRender) => (
-            <Highlight code={proposedContent} language={language} theme={themes.oneLight}>
-              {(newRender) => mode === "unified" ? (
-                <UnifiedDiff
-                  items={unifiedItems}
-                  newRender={newRender}
-                  oldRender={oldRender}
-                />
-              ) : (
-                <SplitDiff
-                  items={splitItems}
-                  newRender={newRender}
-                  oldRender={oldRender}
-                />
-              )}
+            <Highlight
+              code={proposedContent}
+              language={language}
+              theme={syntaxTheme}
+            >
+              {(newRender) =>
+                mode === "unified" ? (
+                  <UnifiedDiff
+                    items={unifiedItems}
+                    newRender={newRender}
+                    oldRender={oldRender}
+                  />
+                ) : (
+                  <SplitDiff
+                    items={splitItems}
+                    newRender={newRender}
+                    oldRender={oldRender}
+                  />
+                )
+              }
             </Highlight>
           )}
         </Highlight>

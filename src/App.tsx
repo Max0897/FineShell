@@ -34,6 +34,7 @@ import {
   sanitizeAppSettings,
   type AppSettings,
 } from "./app-settings";
+import { setAppearanceMode } from "./appearance";
 import {
   type AiContextSource,
   type AiContextSourceId,
@@ -84,7 +85,8 @@ import { useTerminalSessions } from "./hooks/useTerminalSessions";
 const ServerMonitorPanel = lazy(
   () => import("./components/ServerMonitorPanel"),
 );
-const AiAssistantPanel = lazy(() => import("./components/AiAssistantPanel"));
+const loadAiAssistantPanel = () => import("./components/AiAssistantPanel");
+const AiAssistantPanel = lazy(loadAiAssistantPanel);
 const TerminalView = lazy(() => import("./components/TerminalView"));
 
 function createId(prefix: string) {
@@ -178,9 +180,9 @@ function App() {
     active: aiAssistantActive,
     close: closeAiSidebar,
     frozenWorkspaceWidth: mainWorkspaceFrozenWidth,
+    mounted: aiAssistantMounted,
     open: openAiSidebar,
     phase: aiSidebarPhase,
-    toggle: toggleAiSidebar,
     visible: aiAssistantVisible,
   } = useAiSidebarController({
     getWorkspaceWidth: () =>
@@ -298,6 +300,9 @@ function App() {
       .then((configuration) => {
         if (disposed) return;
         setSettings(configuration.settings);
+        setAppearanceMode(configuration.settings.appearanceMode, {
+          persist: true,
+        });
         setQuickCommands(configuration.quickCommands);
       })
       .catch((error) => {
@@ -422,7 +427,9 @@ function App() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listenProtocolEvent("settings:changed", ({ payload }) => {
-      setSettings(sanitizeAppSettings(payload));
+      const nextSettings = sanitizeAppSettings(payload);
+      setSettings(nextSettings);
+      setAppearanceMode(nextSettings.appearanceMode, { persist: true });
     }).then((stopListening) => {
       if (disposed) {
         stopListening();
@@ -572,6 +579,7 @@ function App() {
     setAiInitialPrompt(prompt);
     setAiInitialContextIds(contextIds);
     setAiInitialPromptRequest((current) => current + 1);
+    await loadAiAssistantPanel();
     await openAiSidebar();
   }
 
@@ -593,12 +601,17 @@ function App() {
     await openAiAssistant(request.prompt, [request.source.id]);
   }
 
-  function toggleAiAssistant() {
+  async function toggleAiAssistant() {
     if (!activeSession) {
       Message.warning("请先打开终端会话");
       return;
     }
-    toggleAiSidebar();
+    if (aiAssistantActive) {
+      await closeAiSidebar();
+      return;
+    }
+    await loadAiAssistantPanel();
+    await openAiSidebar();
   }
 
   function sessionContextMenuItems(
@@ -804,7 +817,7 @@ function App() {
     />
   );
 
-  const aiAssistantPanel = aiAssistantVisible ? (
+  const aiAssistantPanel = aiAssistantMounted ? (
     <Suspense fallback={<div className="ai-assistant-sidebar-panel" />}>
       <AiAssistantPanel
         canInsertCommand={Boolean(
@@ -859,7 +872,8 @@ function App() {
         />
       }
       aiAssistantPanel={aiAssistantPanel}
-      aiAssistantVisible={aiAssistantVisible}
+      aiAssistantMounted={aiAssistantMounted}
+      aiAssistantOpening={aiSidebarPhase === "opening"}
       aiSidebarWidth={aiSidebarWidth}
       frozenWorkspaceWidth={mainWorkspaceFrozenWidth}
       mainSplitRef={mainSplitRef}

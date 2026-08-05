@@ -1,5 +1,5 @@
 {
-  "version": 27,
+  "version": 29,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -38,6 +38,12 @@
     "diagnostic_record": true,
     "diagnostic_open_log": true,
     "diagnostic_open_log_directory": true,
+    "terminal_log_start": true,
+    "terminal_log_default_directory": true,
+    "terminal_log_append": true,
+    "terminal_log_marker": true,
+    "terminal_log_stop": true,
+    "terminal_log_open_directory": true,
     "ssh_connect": true,
     "ssh_write": true,
     "ssh_resize": true,

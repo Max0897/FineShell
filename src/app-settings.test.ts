@@ -17,6 +17,7 @@ describe("app settings", () => {
 
   test("bounds numeric values and preserves supported preferences", () => {
     const settings = sanitizeAppSettings({
+      appearanceMode: "dark",
       terminalColorScheme: "solarizedDark",
       terminalFontFamily: "menlo",
       terminalFontSize: 99,
@@ -26,6 +27,10 @@ describe("app settings", () => {
       terminalScrollback: 200,
       terminalCopyOnSelect: true,
       terminalRightClickAction: "paste",
+      terminalLoggingEnabled: true,
+      terminalLogDirectory: "  /Users/max/Terminal Logs  ",
+      terminalLogFormat: "raw",
+      terminalLogMaxFileSizeMb: 9_999,
       showHiddenFiles: false,
       confirmFileDelete: false,
       externalEditorPath: "  /Applications/Visual Studio Code.app  ",
@@ -51,6 +56,7 @@ describe("app settings", () => {
     });
 
     expect(settings).toMatchObject({
+      appearanceMode: "dark",
       terminalColorScheme: "solarizedDark",
       terminalFontFamily: "menlo",
       terminalFontSize: 24,
@@ -60,6 +66,10 @@ describe("app settings", () => {
       terminalScrollback: 1_000,
       terminalCopyOnSelect: true,
       terminalRightClickAction: "paste",
+      terminalLoggingEnabled: true,
+      terminalLogDirectory: "/Users/max/Terminal Logs",
+      terminalLogFormat: "raw",
+      terminalLogMaxFileSizeMb: 2_048,
       showHiddenFiles: false,
       confirmFileDelete: false,
       externalEditorPath: "/Applications/Visual Studio Code.app",

@@ -50,12 +50,10 @@ import {
 import ServerProcessDrawer from "./ServerProcessDrawer";
 import PortForwardDrawer from "./PortForwardDrawer";
 import { commandErrorMessage } from "../tauri-protocol";
-import {
-  createNetworkAiHandoff,
-  type AiHandoffRequest,
-} from "../ai-handoff";
+import { createNetworkAiHandoff, type AiHandoffRequest } from "../ai-handoff";
 import ConnectionStatusOverlay from "./ConnectionStatusOverlay";
 import { isTerminalSessionOperational } from "../terminal-utils";
+import { useResolvedAppearance } from "../hooks/useResolvedAppearance";
 
 interface ServerMonitorPanelProps {
   refreshIntervalSeconds: number;
@@ -136,6 +134,10 @@ function ServerMonitorPanel({
   onPortForwardStatusChange,
   onSendToAi,
 }: ServerMonitorPanelProps) {
+  const appearance = useResolvedAppearance();
+  const chartTextColor = appearance === "dark" ? "#c9cdd4" : "#4e5969";
+  const chartSecondaryTextColor =
+    appearance === "dark" ? "rgba(255, 255, 255, 0.45)" : "#86909c";
   const [snapshot, setSnapshot] = useState<ServerMonitorSnapshot | null>(null);
   const [history, setHistory] = useState<ServerMonitorHistoryPoint[]>([]);
   const [error, setError] = useState<string>();
@@ -415,10 +417,10 @@ function ServerMonitorPanel({
   const suspect = session?.status === "suspect";
   const connectionUnavailable = Boolean(
     session &&
-      (session.status === "failed" ||
-        session.status === "disconnected" ||
-        reconnecting ||
-        Boolean(error && !suspect)),
+    (session.status === "failed" ||
+      session.status === "disconnected" ||
+      reconnecting ||
+      Boolean(error && !suspect)),
   );
   const connectionDescription = reconnecting
     ? "正在重新连接服务器"
@@ -524,7 +526,7 @@ function ServerMonitorPanel({
             {
               orient: "left",
               type: "band",
-              label: { style: { fill: "#4e5969", fontSize: 11 } },
+              label: { style: { fill: chartTextColor, fontSize: 11 } },
               tick: { visible: false },
             },
             {
@@ -544,6 +546,7 @@ function ServerMonitorPanel({
           height={105}
           padding={{ bottom: 8, left: 0, right: 0, top: 4 }}
           seriesField="metric"
+          theme={appearance}
           tooltip={PERCENT_TOOLTIP}
           xField="value"
           yField="metric"
@@ -576,7 +579,7 @@ function ServerMonitorPanel({
               type: "linear",
               label: {
                 formatMethod: (value) => `${value}%`,
-                style: { fill: "#86909c", fontSize: 10 },
+                style: { fill: chartSecondaryTextColor, fontSize: 10 },
               },
               tick: { visible: false },
             },
@@ -588,12 +591,15 @@ function ServerMonitorPanel({
           legends={{
             orient: "top",
             position: "start",
-            item: { label: { style: { fill: "#4e5969", fontSize: 10 } } },
+            item: {
+              label: { style: { fill: chartTextColor, fontSize: 10 } },
+            },
           }}
           line={{ style: { lineWidth: 2 } }}
           padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
           point={{ style: { size: 2 }, visible: history.length < 2 }}
           seriesField="metric"
+          theme={appearance}
           tooltip={PERCENT_TOOLTIP}
           xField="time"
           yField="value"
@@ -655,12 +661,15 @@ function ServerMonitorPanel({
           legends={{
             orient: "top",
             position: "start",
-            item: { label: { style: { fill: "#4e5969", fontSize: 10 } } },
+            item: {
+              label: { style: { fill: chartTextColor, fontSize: 10 } },
+            },
           }}
           line={{ style: { lineWidth: 2 } }}
           padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
           point={{ style: { size: 2 }, visible: history.length < 2 }}
           seriesField="metric"
+          theme={appearance}
           tooltip={{
             dimension: {
               content: [{ key: tooltipMetric, value: tooltipRate }],
@@ -789,7 +798,7 @@ function ServerMonitorPanel({
                           ? "#00b42a"
                           : hop.address
                             ? "#165dff"
-                            : "#c9cdd4"
+                            : chartSecondaryTextColor
                       }
                       key={hop.hop}
                       label={`第 ${hop.hop} 跳`}

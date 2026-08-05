@@ -30,7 +30,7 @@
   display: flex;
   align-items: stretch;
   overflow: hidden;
-  background: #f2f3f5;
+  background: var(--color-fill-2);
   border: 1px solid transparent;
   border-radius: 2px;
 }
@@ -62,7 +62,7 @@
 }
 
 .sftp-path-breadcrumb-item:hover {
-  color: #165dff;
+  color: rgb(var(--primary-6));
 }
 
 .sftp-path-edit-target {
@@ -75,12 +75,12 @@
 }
 
 .sftp-path-edit-target:focus-visible {
-  outline: 1px solid #165dff;
+  outline: 1px solid rgb(var(--primary-6));
   outline-offset: -1px;
 }
 
 .sftp-path-controls > .arco-btn.is-active {
-  color: #165dff;
+  color: rgb(var(--primary-6));
 }
 
 .sftp-path-autocomplete .arco-input:focus-visible {
@@ -118,7 +118,7 @@
 }
 
 .sftp-location-menu-action {
-  color: #4e5969;
+  color: var(--color-text-2);
 }
 
 .sftp-table-container {
@@ -136,10 +136,10 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  color: #165dff;
+  color: rgb(var(--primary-6));
   font-size: 14px;
-  background: rgb(255 255 255 / 94%);
-  border: 1px dashed #165dff;
+  background: var(--fs-drop-overlay);
+  border: 1px dashed rgb(var(--primary-6));
   pointer-events: none;
 }
 
@@ -159,8 +159,8 @@
   position: sticky;
   top: 0;
   z-index: 3;
-  background: #f7f8fa;
-  border-bottom: 1px solid #e5e6eb;
+  background: var(--color-fill-1);
+  border-bottom: 1px solid var(--color-border-2);
 }
 
 .sftp-table .arco-table-tr {
@@ -197,11 +197,11 @@ body.sftp-remote-dragging * {
   max-width: 280px;
   height: 30px;
   padding: 0 10px;
-  color: #1d2129;
+  color: var(--color-text-1);
   font-size: 13px;
   white-space: nowrap;
-  background: #fff;
-  border: 1px solid #c9cdd4;
+  background: var(--color-bg-2);
+  border: 1px solid var(--color-border-3);
   border-radius: 4px;
   pointer-events: none;
 }
@@ -220,12 +220,12 @@ body.sftp-remote-dragging * {
   font-size: 11px;
   line-height: 18px;
   text-align: center;
-  background: #165dff;
+  background: rgb(var(--primary-6));
   border-radius: 9px;
 }
 
 .sftp-table .arco-table-row-checked > .arco-table-td {
-  background: #e8f3ff;
+  background: var(--color-primary-light-1);
 }
 
 .sftp-table .sftp-row-cut > .arco-table-td {
@@ -233,13 +233,13 @@ body.sftp-remote-dragging * {
 }
 
 .sftp-table .sftp-row-drop-target > .arco-table-td {
-  background: #e8f3ff;
-  border-top: 1px solid #165dff;
-  border-bottom: 1px solid #165dff;
+  background: var(--color-primary-light-1);
+  border-top: 1px solid rgb(var(--primary-6));
+  border-bottom: 1px solid rgb(var(--primary-6));
 }
 
 .sftp-table .sftp-row-drop-target .sftp-name-cell > svg {
-  color: #165dff;
+  color: rgb(var(--primary-6));
 }
 
 .sftp-table tbody > .arco-table-tr:last-child > .arco-table-td,
@@ -256,7 +256,7 @@ body.sftp-remote-dragging * {
 
 .sftp-name-cell > svg {
   flex: 0 0 auto;
-  color: #4e5969;
+  color: var(--color-text-2);
 }
 
 .sftp-name-cell .arco-typography {
@@ -307,7 +307,7 @@ body.sftp-remote-dragging * {
 
 .sftp-permission-matrix {
   overflow: hidden;
-  border: 1px solid #e5e6eb;
+  border: 1px solid var(--color-border-2);
   border-radius: 4px;
 }
 
@@ -321,10 +321,10 @@ body.sftp-remote-dragging * {
 
 .sftp-permission-matrix-header {
   min-height: 34px;
-  color: #86909c;
+  color: var(--color-text-3);
   font-size: 12px;
-  background: #f7f8fa;
-  border-bottom: 1px solid #e5e6eb;
+  background: var(--color-fill-1);
+  border-bottom: 1px solid var(--color-border-2);
 }
 
 .sftp-permission-matrix-header > span:not(:first-child),
@@ -334,11 +334,11 @@ body.sftp-remote-dragging * {
 
 .sftp-permission-matrix-row > span:first-child {
   padding-left: 16px;
-  color: #4e5969;
+  color: var(--color-text-2);
 }
 
 .sftp-permission-matrix-row + .sftp-permission-matrix-row {
-  border-top: 1px solid #f2f3f5;
+  border-top: 1px solid var(--color-border-1);
 }
 
 .sftp-permission-checkbox .arco-checkbox {
@@ -351,24 +351,24 @@ body.sftp-remote-dragging * {
   flex: 0 0 18px;
   display: inline-grid;
   place-items: center;
-  color: #86909c;
+  color: var(--color-text-3);
 }
 
 .sftp-external-edit-status-syncing,
 .sftp-external-edit-status-active {
-  color: #165dff;
+  color: rgb(var(--primary-6));
 }
 
 .sftp-external-edit-status-synced {
-  color: #00b42a;
+  color: rgb(var(--success-6));
 }
 
 .sftp-external-edit-status-conflict {
-  color: #ff7d00;
+  color: rgb(var(--warning-6));
 }
 
 .sftp-external-edit-status-failed {
-  color: #f53f3f;
+  color: rgb(var(--danger-6));
 }
 
 .sftp-external-edit-conflict .arco-typography {
@@ -441,7 +441,7 @@ body.sftp-remote-dragging * {
   inset: 1px;
   display: grid;
   place-items: center;
-  background: #fff;
+  background: var(--color-bg-2);
 }
 
 .sftp-transfer-drawer .arco-drawer-header-title {
@@ -476,7 +476,7 @@ body.sftp-remote-dragging * {
   grid-template-columns: 24px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid #f2f3f5;
+  border-bottom: 1px solid var(--color-border-1);
 }
 
 .sftp-transfer-direction {
@@ -485,33 +485,33 @@ body.sftp-remote-dragging * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #165dff;
+  color: rgb(var(--primary-6));
   font-size: 16px;
 }
 
 .sftp-transfer-direction-download {
-  color: #00b42a;
+  color: rgb(var(--success-6));
 }
 
 .sftp-transfer-direction-sync-active,
 .sftp-transfer-direction-sync-syncing {
-  color: #165dff;
+  color: rgb(var(--primary-6));
 }
 
 .sftp-transfer-direction-sync-synced {
-  color: #00b42a;
+  color: rgb(var(--success-6));
 }
 
 .sftp-transfer-direction-sync-conflict {
-  color: #ff7d00;
+  color: rgb(var(--warning-6));
 }
 
 .sftp-transfer-direction-sync-failed {
-  color: #f53f3f;
+  color: rgb(var(--danger-6));
 }
 
 .sftp-transfer-direction-sync-closed {
-  color: #86909c;
+  color: var(--color-text-3);
 }
 
 .sftp-transfer-content,
@@ -569,32 +569,32 @@ body.sftp-remote-dragging * {
 
 .sftp-sync-activity-active,
 .sftp-sync-activity-syncing {
-  color: #165dff;
+  color: rgb(var(--primary-6));
 }
 
 .sftp-sync-activity-synced {
-  color: #00b42a;
+  color: rgb(var(--success-6));
 }
 
 .sftp-sync-activity-conflict {
-  color: #ff7d00;
+  color: rgb(var(--warning-6));
 }
 
 .sftp-sync-activity-closed {
-  color: #86909c;
+  color: var(--color-text-3);
 }
 
 .sftp-transfer-activity-completed {
-  color: #00b42a;
+  color: rgb(var(--success-6));
 }
 
 .sftp-transfer-activity-paused {
-  color: #ff7d00;
+  color: rgb(var(--warning-6));
 }
 
 .sftp-transfer-activity-cancelled,
 .sftp-transfer-activity-queued {
-  color: #86909c;
+  color: var(--color-text-3);
 }
 
 .sftp-transfer-row .arco-progress {

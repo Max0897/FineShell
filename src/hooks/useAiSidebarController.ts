@@ -42,6 +42,18 @@ function createWindowAdapter(): AiSidebarWindowAdapter | null {
   };
 }
 
+function waitForPaint() {
+  if (typeof window.requestAnimationFrame !== "function") {
+    return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+  }
+
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
+}
+
 export function useAiSidebarController({
   getWorkspaceWidth,
   onResizeFailure,
@@ -124,6 +136,12 @@ export function useAiSidebarController({
 
     return enqueue(async () => {
       if (stateRef.current.phase !== "opening") return;
+
+      // React commits the mounted sidebar asynchronously. Wait until it has
+      // actually painted before exposing newly added native window space.
+      await waitForPaint();
+      if (stateRef.current.phase !== "opening") return;
+
       try {
         if (
           appliedExpansionRef.current === 0 &&
@@ -146,6 +164,10 @@ export function useAiSidebarController({
         reportResizeFailure(error, "expand");
       }
 
+      // Keep the painted overlay in place until the resized WebView has
+      // completed a frame at its new dimensions. Otherwise macOS can expose
+      // the unpainted backing surface before the normal flex layout catches up.
+      await waitForPaint();
       if (stateRef.current.phase === "opening") {
         updateState({ frozenWorkspaceWidth: null, phase: "open" });
       }
@@ -251,6 +273,7 @@ export function useAiSidebarController({
     active: state.phase === "open" || state.phase === "opening",
     close,
     frozenWorkspaceWidth: state.frozenWorkspaceWidth,
+    mounted: state.phase !== "closed",
     open,
     phase: state.phase,
     toggle,
