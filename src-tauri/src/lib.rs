@@ -18,6 +18,7 @@ mod native_menu;
 mod protocol;
 mod sftp;
 mod ssh;
+mod terminal_logs;
 mod transport;
 #[cfg(desktop)]
 mod updater;
@@ -49,6 +50,7 @@ pub fn run() {
         .manage(diagnostics::DiagnosticLogState::default())
         .manage(external_edit::ExternalEditManager::default())
         .manage(ssh::SshSessionManager::default())
+        .manage(terminal_logs::TerminalLogManager::default())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -120,6 +122,12 @@ pub fn run() {
             diagnostics::diagnostic_record,
             diagnostics::diagnostic_open_log,
             diagnostics::diagnostic_open_log_directory,
+            terminal_logs::terminal_log_start,
+            terminal_logs::terminal_log_default_directory,
+            terminal_logs::terminal_log_append,
+            terminal_logs::terminal_log_marker,
+            terminal_logs::terminal_log_stop,
+            terminal_logs::terminal_log_open_directory,
             ssh::ssh_connect,
             ssh::ssh_write,
             ssh::ssh_resize,

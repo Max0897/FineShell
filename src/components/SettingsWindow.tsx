@@ -18,8 +18,10 @@ import {
   IconApps,
   IconDelete,
   IconCommand,
+  IconFolder,
   IconHistory,
   IconInfoCircle,
+  IconLaunch,
   IconRobot,
   IconThunderbolt,
   IconTool,
@@ -35,7 +37,11 @@ import {
 import { setAppearanceMode } from "../appearance";
 import { loadConfiguration } from "../config-database";
 import { updateAppSettings } from "../configuration-mutations";
-import { configureDiagnosticLogging, recordDiagnostic } from "../diagnostics";
+import {
+  configureDiagnosticLogging,
+  diagnosticInvoke,
+  recordDiagnostic,
+} from "../diagnostics";
 import {
   applicationUpdater,
   isApplicationUpdateInstalling,
@@ -46,6 +52,7 @@ import {
 } from "../app-updater";
 import { emitProtocolEventTo } from "../tauri-protocol";
 import { TERMINAL_THEMES } from "../terminal-themes";
+import { resolveDefaultTerminalLogDirectory } from "../terminal-logging";
 import { isApplePlatform } from "../platform-utils";
 import AdvancedSettings from "./AdvancedSettings";
 import AiSettings from "./AiSettings";
@@ -141,11 +148,28 @@ function SettingsWindow() {
     document.title = "设置";
     let disposed = false;
     void loadConfiguration()
-      .then((configuration) => {
+      .then(async (configuration) => {
+        let resolvedSettings = configuration.settings;
+        if (isTauri() && !resolvedSettings.terminalLogDirectory.trim()) {
+          try {
+            resolvedSettings = {
+              ...resolvedSettings,
+              terminalLogDirectory:
+                await resolveDefaultTerminalLogDirectory(),
+            };
+          } catch (error) {
+            recordDiagnostic(
+              "warn",
+              "terminal.logging",
+              "默认终端日志目录解析失败",
+              { error: String(error) },
+            );
+          }
+        }
         if (disposed) return;
-        setSettings(configuration.settings);
-        setSavedSettings(configuration.settings);
-        setAppearanceMode(configuration.settings.appearanceMode);
+        setSettings(resolvedSettings);
+        setSavedSettings(resolvedSettings);
+        setAppearanceMode(resolvedSettings.appearanceMode);
       })
       .catch((error) => {
         if (!disposed) {
@@ -212,6 +236,14 @@ function SettingsWindow() {
   };
 
   const saveSettings = async () => {
+    if (
+      settings.terminalLoggingEnabled &&
+      !settings.terminalLogDirectory.trim()
+    ) {
+      Message.warning("请先选择终端日志目录");
+      setActiveSection("terminal");
+      return;
+    }
     setSaving(true);
     try {
       const configuration = await updateAppSettings(settings);
@@ -254,6 +286,38 @@ function SettingsWindow() {
       externalEditorPath: selected,
       externalEditorName: editorNameFromPath(selected),
     }));
+  };
+
+  const chooseTerminalLogDirectory = async () => {
+    if (!isTauri()) {
+      Message.warning("仅桌面应用支持选择终端日志目录");
+      return;
+    }
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "选择终端日志目录",
+    });
+    if (typeof selected !== "string") return;
+    updateSetting("terminalLogDirectory", selected);
+  };
+
+  const openTerminalLogDirectory = async () => {
+    if (!isTauri()) {
+      Message.warning("仅桌面应用支持打开终端日志目录");
+      return;
+    }
+    if (!settings.terminalLogDirectory.trim()) {
+      Message.warning("请先选择终端日志目录");
+      return;
+    }
+    try {
+      await diagnosticInvoke("terminal_log_open_directory", {
+        directory: settings.terminalLogDirectory,
+      });
+    } catch (error) {
+      Message.error(String(error));
+    }
   };
 
   const content = (() => {
@@ -448,6 +512,88 @@ function SettingsWindow() {
                   />
                 }
                 label="右键行为"
+              />
+            </div>
+            <div className="settings-subsection-heading">
+              <Typography.Title heading={6}>终端日志</Typography.Title>
+              <Typography.Text type="secondary">
+                每个终端会话单独保存，日志可能包含命令和敏感输出
+              </Typography.Text>
+            </div>
+            <div className="settings-group">
+              <SettingRow
+                control={
+                  <Switch
+                    aria-label="自动记录终端日志"
+                    checked={settings.terminalLoggingEnabled}
+                    onChange={(value) =>
+                      updateSetting("terminalLoggingEnabled", value)
+                    }
+                  />
+                }
+                label="自动记录"
+              />
+              <SettingRow
+                control={
+                  <Space className="terminal-log-directory-control" size={8}>
+                    <Input
+                      aria-label="终端日志目录"
+                      placeholder="请选择日志保存目录"
+                      readOnly
+                      value={settings.terminalLogDirectory}
+                    />
+                    <Button
+                      aria-label="选择终端日志目录"
+                      icon={<IconFolder />}
+                      onClick={() => void chooseTerminalLogDirectory()}
+                    />
+                    <Button
+                      aria-label="打开终端日志目录"
+                      disabled={!settings.terminalLogDirectory.trim()}
+                      icon={<IconLaunch />}
+                      onClick={() => void openTerminalLogDirectory()}
+                    />
+                  </Space>
+                }
+                label="日志目录"
+              />
+              <SettingRow
+                control={
+                  <Select
+                    aria-label="终端日志格式"
+                    disabled={!settings.terminalLoggingEnabled}
+                    onChange={(value) =>
+                      updateSetting(
+                        "terminalLogFormat",
+                        value as AppSettings["terminalLogFormat"],
+                      )
+                    }
+                    options={[
+                      { label: "纯文本", value: "plain" },
+                      { label: "原始输出（ANSI）", value: "raw" },
+                    ]}
+                    value={settings.terminalLogFormat}
+                  />
+                }
+                label="日志格式"
+              />
+              <SettingRow
+                control={
+                  <Select
+                    aria-label="终端日志单文件上限"
+                    disabled={!settings.terminalLoggingEnabled}
+                    onChange={(value) =>
+                      updateSetting("terminalLogMaxFileSizeMb", value)
+                    }
+                    options={[
+                      { label: "50 MB", value: 50 },
+                      { label: "100 MB", value: 100 },
+                      { label: "500 MB", value: 500 },
+                    ]}
+                    value={settings.terminalLogMaxFileSizeMb}
+                  />
+                }
+                label="单文件上限"
               />
             </div>
           </>

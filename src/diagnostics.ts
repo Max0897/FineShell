@@ -20,6 +20,7 @@ const HIGH_FREQUENCY_COMMANDS = new Set<TauriCommand>([
   "ssh_monitor_snapshot",
   "ssh_resize",
   "ssh_write",
+  "terminal_log_append",
 ]);
 const LEVEL_RANK: Record<DiagnosticLogLevel, number> = {
   debug: 0,

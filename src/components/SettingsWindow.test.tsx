@@ -10,6 +10,11 @@ describe("SettingsWindow", () => {
 
     await screen.findByRole("heading", { name: "终端" });
     expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.getByLabelText("自动记录终端日志")).not.toBeNull();
+    expect(screen.getByLabelText("终端日志目录")).not.toBeNull();
+    expect(screen.getByLabelText("选择终端日志目录")).not.toBeNull();
+    expect(screen.getByLabelText("打开终端日志目录")).not.toBeNull();
+    expect(screen.getByRole("combobox", { name: "终端日志格式" })).not.toBeNull();
     const submenuHeaders = Array.from(
       view.container.querySelectorAll(
         ".settings-sidebar .arco-menu-inline-header",
