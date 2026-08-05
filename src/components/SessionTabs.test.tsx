@@ -26,15 +26,21 @@ const SESSION: TerminalSession = {
 function renderTabs(
   activeSessionId: string | null,
   onActiveSessionChange = mock(() => undefined),
+  aiAssistantVisible = false,
 ) {
+  const onToggleAiAssistant = mock(() => undefined);
   return {
     onActiveSessionChange,
+    onToggleAiAssistant,
     ...render(
       <SessionTabs
         activeSessionId={activeSessionId}
+        aiAssistantVisible={aiAssistantVisible}
+        hasActiveSession={activeSessionId !== null}
         homeContent={<div>主机管理内容</div>}
         onActiveSessionChange={onActiveSessionChange}
         onCloseSession={() => undefined}
+        onToggleAiAssistant={onToggleAiAssistant}
         renderSession={(session) => <div>终端 {session.host.name}</div>}
         sessionContextMenuItems={() => []}
         sessions={[SESSION]}
@@ -63,5 +69,32 @@ describe("SessionTabs", () => {
 
     fireEvent.click(container.querySelector(".terminal-home-tab")!);
     expect(onChange).toHaveBeenCalledWith(null);
+  });
+
+  test("keeps the AI toggle fixed outside the scrollable tabs", () => {
+    const { container, onToggleAiAssistant } = renderTabs(
+      "session-1",
+      undefined,
+      true,
+    );
+    const button = screen.getByRole("button", { name: "关闭 AI 助手" });
+
+    expect(container.querySelector(".terminal-tabs")?.contains(button)).toBe(
+      false,
+    );
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(button);
+    expect(onToggleAiAssistant).toHaveBeenCalledTimes(1);
+  });
+
+  test("disables the AI toggle on the fixed home page", () => {
+    renderTabs(null);
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "打开 AI 助手",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
   });
 });

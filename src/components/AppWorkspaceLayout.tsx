@@ -129,12 +129,18 @@ export default function AppWorkspaceLayout({
           directions={["left"]}
           onMoving={(_, size) => {
             const workspaceWidth =
-              mainSplitRef.current?.parentElement?.getBoundingClientRect().width ??
-              window.innerWidth;
-            onAiSidebarWidthChange(clampAiSidebarWidth(size.width, workspaceWidth));
+              mainSplitRef.current?.parentElement?.getBoundingClientRect()
+                .width ?? window.innerWidth;
+            onAiSidebarWidthChange(
+              clampAiSidebarWidth(size.width, workspaceWidth),
+            );
           }}
-          onMovingEnd={() => document.body.classList.remove("ai-sidebar-resizing")}
-          onMovingStart={() => document.body.classList.add("ai-sidebar-resizing")}
+          onMovingEnd={() =>
+            document.body.classList.remove("ai-sidebar-resizing")
+          }
+          onMovingStart={() =>
+            document.body.classList.add("ai-sidebar-resizing")
+          }
           width={aiSidebarWidth}
         >
           {aiAssistantPanel}

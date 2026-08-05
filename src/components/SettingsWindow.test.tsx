@@ -20,6 +20,11 @@ describe("SettingsWindow", () => {
       "连接与安全",
       "数据与隐私",
     ]);
+    expect(
+      view.container.querySelectorAll(
+        ".settings-sidebar .arco-menu-icon-suffix.is-open",
+      ),
+    ).toHaveLength(0);
     const menuItems = Array.from(
       view.container.querySelectorAll(".settings-sidebar .arco-menu-item"),
     ).map((item) => item.textContent?.trim());
@@ -71,11 +76,13 @@ describe("SettingsWindow", () => {
       screen.getByLabelText("允许 AI 生成终端命令提案"),
     ).not.toBeNull();
 
+    await user.click(screen.getByText("连接与安全"));
     await user.click(screen.getByText("连接默认值"));
     await waitFor(() =>
       expect(screen.getByRole("heading", { name: "连接默认值" })).not.toBeNull(),
     );
 
+    await user.click(screen.getByText("数据与隐私"));
     await user.click(screen.getByText("隐私与清理"));
     await waitFor(() =>
       expect(screen.getByRole("heading", { name: "隐私与清理" })).not.toBeNull(),

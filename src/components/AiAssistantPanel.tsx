@@ -77,15 +77,11 @@ interface AiAssistantPanelProps {
   initialContextIds: AiContextSourceId[];
   initialPrompt: string;
   initialPromptRequest: number;
-  onClose: () => void;
   onAgentActionExecuted: (
     sessionId: string,
     result: AgentActionExecutionResult,
   ) => void;
-  onCommandPrepared: (
-    sessionId: string,
-    command: string,
-  ) => void;
+  onCommandPrepared: (sessionId: string, command: string) => void;
   onRemoveRemoteFile: (sessionId: string, path: string) => void;
   remoteFiles: AiRemoteFileContext[];
   sessionId: string | null;
@@ -102,7 +98,6 @@ function AiAssistantPanel({
   initialContextIds,
   initialPrompt,
   initialPromptRequest,
-  onClose,
   onAgentActionExecuted,
   onCommandPrepared,
   onRemoveRemoteFile,
@@ -319,7 +314,13 @@ function AiAssistantPanel({
           ? activeTask.plan?.id
           : undefined,
       ),
-    [activeTask?.id, activeTask?.plan?.id, activeTask?.status, messages, sending],
+    [
+      activeTask?.id,
+      activeTask?.plan?.id,
+      activeTask?.status,
+      messages,
+      sending,
+    ],
   );
   const queuedApproval = approvalQueue[0];
   const queuedApprovalId = queuedApproval
@@ -790,14 +791,10 @@ function AiAssistantPanel({
     feedback: string,
   ) => {
     if (!feedback.trim()) return;
-    await rejectCommandAndResume(
-      messageId,
-      proposal.id,
-      {
-        feedback: feedback.trim(),
-        kind: "revision_requested",
-      },
-    );
+    await rejectCommandAndResume(messageId, proposal.id, {
+      feedback: feedback.trim(),
+      kind: "revision_requested",
+    });
   };
 
   const retry = (assistantIndex: number) => {
@@ -842,20 +839,15 @@ function AiAssistantPanel({
     });
   };
 
-  const closePanel = () => {
-    onClose();
-  };
-
   return (
     <aside className="panel ai-assistant-sidebar-panel">
       <AiAssistantHeader
         approvalMode={approvalMode}
         canInsertCommand={canInsertCommand}
-        conversationAvailable={Boolean(activeConversation)}
         conversationSummarized={Boolean(activeConversation?.summary)}
         conversationSummarizing={Boolean(
           activeConversation &&
-            summarizingConversationIds.has(activeConversation.id),
+          summarizingConversationIds.has(activeConversation.id),
         )}
         conversationTitle={activeConversation?.title ?? ""}
         disconnectedError={
@@ -864,10 +856,6 @@ function AiAssistantPanel({
             : undefined
         }
         onApprovalModeChange={setApprovalMode}
-        onClose={closePanel}
-        onDelete={() =>
-          activeConversation && removeConversation(activeConversation.id)
-        }
         onNew={newConversation}
         onOpenHistory={openHistory}
         sending={sending}
@@ -921,10 +909,7 @@ function AiAssistantPanel({
           sessionId={sessionId}
         />
         {activeApproval && (
-          <section
-            aria-label="AI 操作审批"
-            className="ai-approval-dock"
-          >
+          <section aria-label="AI 操作审批" className="ai-approval-dock">
             {activeApproval.kind === "command" ? (
               <AiCommandProposalList
                 canInsertCommand={canInsertCommand}

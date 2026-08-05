@@ -639,7 +639,7 @@ function SettingsWindow() {
     <main className="settings-window">
       <aside className="settings-sidebar">
         <Menu
-          defaultOpenKeys={["general", "connectionSecurity", "dataPrivacy"]}
+          defaultOpenKeys={[]}
           onClickMenuItem={(key) =>
             updateInstalling && key !== "about"
               ? Message.warning("更新正在安装，请等待安装完成")
