@@ -65,6 +65,8 @@ pub(super) fn supported_tool(name: &str) -> bool {
             | "list_processes"
             | "get_current_directory"
             | "get_network_connections"
+            | "inspect_service"
+            | "read_service_logs"
             | "ping_target"
             | "trace_route"
             | "propose_terminal_command"
@@ -96,6 +98,8 @@ pub(super) fn enabled_diagnostic_tools(
             "list_processes",
             "get_current_directory",
             "get_network_connections",
+            "inspect_service",
+            "read_service_logs",
             "ping_target",
             "trace_route",
         ]
@@ -103,7 +107,7 @@ pub(super) fn enabled_diagnostic_tools(
         .map(str::to_string)
         .collect());
     }
-    if values.len() > 6 {
+    if values.len() > 8 {
         return Err("AI 只读工具权限数量无效".to_string());
     }
     let mut enabled = HashSet::new();
@@ -154,6 +158,41 @@ pub(super) fn valid_network_target(target: &str) -> bool {
         && target.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | ':')
         })
+}
+
+pub(super) fn valid_service_name(service: &str) -> bool {
+    let service = service.trim();
+    !service.is_empty()
+        && service.len() <= 128
+        && !service.starts_with('-')
+        && service.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | '@' | ':')
+        })
+}
+
+fn valid_service_diagnostic_metadata(
+    arguments: &serde_json::Map<String, Value>,
+    allow_lines: bool,
+) -> bool {
+    let Some(service) = arguments.get("service").and_then(Value::as_str) else {
+        return false;
+    };
+    if !valid_service_name(service) {
+        return false;
+    }
+    if allow_lines
+        && arguments.get("lines").is_some_and(|value| {
+            !value
+                .as_u64()
+                .is_some_and(|lines| (1..=200).contains(&lines))
+        })
+    {
+        return false;
+    }
+    let mut metadata = arguments.clone();
+    metadata.remove("service");
+    metadata.remove("lines");
+    valid_diagnostic_metadata(&metadata, false)
 }
 
 pub(super) fn valid_diagnostic_metadata(
@@ -219,6 +258,7 @@ pub(super) fn diagnostic_call_identity(call: &AiToolCall) -> Option<String> {
     let arguments = serde_json::from_str::<Value>(&call.arguments).ok()?;
     let target = arguments
         .get("target")
+        .or_else(|| arguments.get("service"))
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_ascii_lowercase();
@@ -269,6 +309,8 @@ pub(super) fn valid_tool_arguments(name: &str, arguments: &str) -> bool {
         | "list_processes"
         | "get_current_directory"
         | "get_network_connections" => valid_diagnostic_metadata(&arguments, false),
+        "inspect_service" => valid_service_diagnostic_metadata(&arguments, false),
+        "read_service_logs" => valid_service_diagnostic_metadata(&arguments, true),
         "ping_target" | "trace_route" => valid_diagnostic_metadata(&arguments, true),
         "propose_file_edit" => {
             arguments.len() == 2

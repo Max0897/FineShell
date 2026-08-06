@@ -36,7 +36,11 @@ fn diagnostic_descriptor(tool: &str) -> Option<ToolDescriptor> {
         requires_network_target: false,
     };
     match tool {
-        "get_server_status" | "list_processes" | "get_network_connections" => Some(passive),
+        "get_server_status"
+        | "list_processes"
+        | "get_network_connections"
+        | "inspect_service"
+        | "read_service_logs" => Some(passive),
         "get_current_directory" => Some(ToolDescriptor {
             requires_session: false,
             ..passive

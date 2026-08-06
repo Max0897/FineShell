@@ -21,8 +21,26 @@ describe("AI read-only tools", () => {
     expect(isAiReadOnlyToolName("list_processes")).toBe(true);
     expect(isAiReadOnlyToolName("ping_target")).toBe(true);
     expect(isAiReadOnlyToolName("trace_route")).toBe(true);
+    expect(isAiReadOnlyToolName("inspect_service")).toBe(true);
+    expect(isAiReadOnlyToolName("read_service_logs")).toBe(true);
     expect(isAiReadOnlyToolName("run_shell_command")).toBe(false);
     expect(aiToolLabel("run_shell_command")).toBe("未知只读工具");
+  });
+
+  test("summarizes structured service diagnostics", () => {
+    const statusCall = {
+      id: "service-1",
+      name: "inspect_service" as const,
+      arguments: '{"service":"nginx.service"}',
+    };
+    expect(
+      aiToolResultSummary(statusCall, {
+        callId: statusCall.id,
+        name: statusCall.name,
+        content:
+          '{"ok":true,"service":"nginx.service","loadState":"loaded","activeState":"active","subState":"running","unitFileState":"enabled"}',
+      }),
+    ).toContain("active / running");
   });
 
   test("validates network targets before executing diagnostic tools", () => {

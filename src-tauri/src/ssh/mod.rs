@@ -27,7 +27,7 @@ use crate::credentials;
 use crate::dynamic_forward::{self, DynamicConnectRequest, DynamicConnectionResult};
 use crate::monitor::{
     self, NetworkConnectionsResult, NetworkPingResult, NetworkTraceResult, ServerMonitorSnapshot,
-    ServerProcessListResult,
+    ServerProcessListResult, ServiceInspectionResult, ServiceLogsResult,
 };
 use crate::protocol::{PORT_FORWARD_STATUS_EVENT, SSH_OUTPUT_EVENT, SSH_STATUS_EVENT};
 use crate::transport::{self, ProxyConfig};
@@ -257,6 +257,15 @@ enum SessionCommand {
         response: SyncSender<Result<NetworkTraceResult, String>>,
     },
     Processes(SyncSender<Result<ServerProcessListResult, String>>),
+    InspectService {
+        service: String,
+        response: SyncSender<Result<ServiceInspectionResult, String>>,
+    },
+    ServiceLogs {
+        service: String,
+        lines: u16,
+        response: SyncSender<Result<ServiceLogsResult, String>>,
+    },
     AgentVerify {
         verification: AgentBusinessVerification,
         response: SyncSender<Result<AgentBusinessVerificationResult, String>>,

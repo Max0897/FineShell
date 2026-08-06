@@ -59,6 +59,43 @@ pub(super) fn tool_definitions(
         {
             "type": "function",
             "function": {
+                "name": "inspect_service",
+                "description": "Read the structured systemd load, active, sub-state, enablement, and description fields for one exact service. Prefer this over a shell command for service status checks.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "service": { "type": "string", "description": "Exact systemd unit name, for example nginx.service", "minLength": 1, "maxLength": 128 },
+                        "reason": { "type": "string", "description": "Short reason for this diagnostic step", "maxLength": MAX_DIAGNOSTIC_REASON_CHARS },
+                        "optional": { "type": "boolean", "description": "True only when the user may omit this step without weakening the core diagnosis" },
+                        "depends_on": { "type": "array", "description": "One-based indexes of earlier diagnostic steps required by this step", "items": { "type": "integer", "minimum": 1, "maximum": MAX_DIAGNOSTIC_TOOL_CALLS_PER_ROUND }, "maxItems": MAX_DIAGNOSTIC_TOOL_CALLS_PER_ROUND - 1 }
+                    },
+                    "required": ["service"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_service_logs",
+                "description": "Read a bounded tail of journal entries for one exact systemd service. Prefer this over a shell command for service log inspection.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "service": { "type": "string", "description": "Exact systemd unit name, for example nginx.service", "minLength": 1, "maxLength": 128 },
+                        "lines": { "type": "integer", "description": "Maximum number of recent log lines", "minimum": 1, "maximum": 200, "default": 100 },
+                        "reason": { "type": "string", "description": "Short reason for this diagnostic step", "maxLength": MAX_DIAGNOSTIC_REASON_CHARS },
+                        "optional": { "type": "boolean", "description": "True only when the user may omit this step without weakening the core diagnosis" },
+                        "depends_on": { "type": "array", "description": "One-based indexes of earlier diagnostic steps required by this step", "items": { "type": "integer", "minimum": 1, "maximum": MAX_DIAGNOSTIC_TOOL_CALLS_PER_ROUND }, "maxItems": MAX_DIAGNOSTIC_TOOL_CALLS_PER_ROUND - 1 }
+                    },
+                    "required": ["service"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "get_network_connections",
                 "description": "Read a bounded list of the server's current TCP and UDP connections. Use it to inspect listening services and active remote peers.",
                 "parameters": {

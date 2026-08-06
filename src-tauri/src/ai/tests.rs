@@ -516,6 +516,26 @@ fn validates_bounded_network_tool_arguments() {
 }
 
 #[test]
+fn validates_structured_service_diagnostic_arguments() {
+    assert!(valid_tool_arguments(
+        "inspect_service",
+        r#"{"service":"nginx.service"}"#
+    ));
+    assert!(valid_tool_arguments(
+        "read_service_logs",
+        r#"{"service":"nginx.service","lines":100,"reason":"Inspect recent failures"}"#
+    ));
+    assert!(!valid_tool_arguments(
+        "inspect_service",
+        r#"{"service":"nginx.service; reboot"}"#
+    ));
+    assert!(!valid_tool_arguments(
+        "read_service_logs",
+        r#"{"service":"nginx.service","lines":1000}"#
+    ));
+}
+
+#[test]
 fn validates_diagnostic_plan_order_duplicates_and_limit() {
     let valid = vec![
         AiToolCall {
