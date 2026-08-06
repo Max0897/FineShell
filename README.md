@@ -207,16 +207,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib \
 
 ## 版本发布
 
-发布前需要同步修改 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 中的版本，并在 `CHANGELOG.md` 中增加对应版本的更新日志：
-
-```bash
-bun run release:check -- v0.1.0
-bun run release:notes -- v0.1.0
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-版本标签会触发 GitHub Actions 构建 macOS、Linux 和 Windows 安装包；所有平台构建成功后，工作流会将 `CHANGELOG.md` 中对应版本的内容写入 GitHub Release，并发布签名后的 OTA 更新清单。客户端通过 GitHub Releases 检查和下载安装更新。
+开发过程中将变更记录到 `CHANGELOG.md` 顶部的 `Unreleased` 区域。发布时在 GitHub Actions 中运行 `Prepare Release` 并选择版本级别，工作流会统一升级版本、整理更新日志并创建发布 PR。合并发布 PR 后会自动构建 macOS、Linux 和 Windows 安装包，并发布签名后的 OTA 更新清单。
 
 GitHub 仓库需要配置 Tauri 更新签名私钥 `TAURI_SIGNING_PRIVATE_KEY`。完整架构与失败重试方式见 [发布流水线文档](docs/release-pipeline.md)。
 

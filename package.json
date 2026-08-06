@@ -12,6 +12,7 @@
     "check": "bun test && bun run build",
     "release:check": "bun scripts/check-release-version.ts",
     "release:notes": "bun scripts/extract-release-notes.ts",
+    "release:prepare": "bun scripts/prepare-release.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },

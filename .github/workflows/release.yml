@@ -8,14 +8,18 @@ on:
         required: true
         type: string
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+    paths:
+      - package.json
+      - src-tauri/Cargo.toml
+      - src-tauri/tauri.conf.json
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -43,13 +47,18 @@ jobs:
       - id: version
         name: Validate application version
         env:
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          REQUESTED_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || '' }}
         run: |
-          bun scripts/check-release-version.ts "$RELEASE_TAG"
-          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          release_tag="$REQUESTED_RELEASE_TAG"
+          if [[ -z "$release_tag" ]]; then
+            version="$(bun -e 'const value = await Bun.file("package.json").json(); console.log(value.version)')"
+            release_tag="v$version"
+          fi
+          bun scripts/check-release-version.ts "$release_tag"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
       - name: Validate release notes
         env:
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
         run: bun scripts/extract-release-notes.ts "$RELEASE_TAG" > /tmp/release-notes.md
 
   prepare:
