@@ -599,6 +599,7 @@ function ServerMonitorPanel({
           padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
           point={{ style: { size: 2 }, visible: history.length < 2 }}
           seriesField="metric"
+          stack={false}
           theme={appearance}
           tooltip={PERCENT_TOOLTIP}
           xField="time"
@@ -669,6 +670,7 @@ function ServerMonitorPanel({
           padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
           point={{ style: { size: 2 }, visible: history.length < 2 }}
           seriesField="metric"
+          stack={true}
           theme={appearance}
           tooltip={{
             dimension: {
