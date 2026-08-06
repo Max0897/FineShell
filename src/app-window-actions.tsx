@@ -1,11 +1,20 @@
-import { Alert, Message, Modal, Typography } from "@arco-design/web-react";
+import {
+  Alert,
+  Message,
+  Modal,
+  Progress,
+  Spin,
+  Typography,
+} from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
 import type { HostRecord } from "./models";
 import ReleaseNotesMarkdown from "./components/ReleaseNotesMarkdown";
 import { updateStoredHostFingerprint } from "./configuration-mutations";
 import {
   applicationUpdater,
+  formatUpdateBytes,
   markApplicationUpdateRelaunchFocus,
+  setApplicationUpdateInstalling,
   setApplicationUpdateNotice,
   type ApplicationUpdate,
 } from "./app-updater";
@@ -19,45 +28,151 @@ import { auxiliaryWindowHref } from "./window-view";
 
 let startupUpdatePromptShown = false;
 
+interface StartupUpdateProgress {
+  downloadedBytes: number;
+  error?: string;
+  phase: "downloading" | "restarting" | "error";
+  route?: string;
+  totalBytes: number;
+}
+
+function startupUpdateContent(
+  update: ApplicationUpdate,
+  progress?: StartupUpdateProgress,
+) {
+  const percent =
+    progress && progress.totalBytes > 0
+      ? Math.min(
+          100,
+          Math.round(
+            (progress.downloadedBytes / progress.totalBytes) * 100,
+          ),
+        )
+      : 0;
+
+  return (
+    <div className="startup-update-content">
+      <Typography.Text>
+        当前版本 v{update.currentVersion}，发现新版本 v{update.version}。
+      </Typography.Text>
+      {update.body && (
+        <ReleaseNotesMarkdown className="startup-update-notes">
+          {update.body}
+        </ReleaseNotesMarkdown>
+      )}
+      {progress && (
+        <div className="startup-update-progress">
+          {progress.phase === "error" ? (
+            <Alert
+              content={progress.error ?? "更新失败，请重试"}
+              showIcon
+              type="error"
+            />
+          ) : (
+            <>
+              <div className="startup-update-progress-meta">
+                <Typography.Text>
+                  {progress.phase === "restarting"
+                    ? "更新安装完成，正在重启应用"
+                    : `正在下载更新${progress.route ? ` · ${progress.route}` : ""}`}
+                </Typography.Text>
+                {progress.phase === "downloading" && (
+                  <Typography.Text type="secondary">
+                    {formatUpdateBytes(progress.downloadedBytes)}
+                    {progress.totalBytes > 0
+                      ? ` / ${formatUpdateBytes(progress.totalBytes)}`
+                      : ""}
+                  </Typography.Text>
+                )}
+              </div>
+              {progress.phase === "restarting" ? (
+                <Progress percent={100} showText={false} />
+              ) : progress.totalBytes > 0 ? (
+                <Progress percent={percent} showText={false} />
+              ) : (
+                <Spin size={18} />
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function promptStartupApplicationUpdate(update: ApplicationUpdate) {
   if (startupUpdatePromptShown) return;
   startupUpdatePromptShown = true;
 
-  Modal.confirm({
+  let modalInstance: ReturnType<typeof Modal.confirm>;
+  modalInstance = Modal.confirm({
     autoFocus: false,
     cancelText: "稍后",
     className: "startup-update-modal",
-    content: (
-      <div className="startup-update-content">
-        <Typography.Text>
-          当前版本 v{update.currentVersion}，发现新版本 v{update.version}。
-        </Typography.Text>
-        {update.body && (
-          <ReleaseNotesMarkdown className="startup-update-notes">
-            {update.body}
-          </ReleaseNotesMarkdown>
-        )}
-      </div>
-    ),
+    content: startupUpdateContent(update),
     maskClosable: false,
     okText: "立即更新",
     onCancel: () => {
       void update.close();
     },
     onOk: async () => {
+      let progress: StartupUpdateProgress = {
+        downloadedBytes: 0,
+        phase: "downloading",
+        route: update.route,
+        totalBytes: 0,
+      };
+      const renderProgress = () => {
+        modalInstance.update({ content: startupUpdateContent(update, progress) });
+      };
+
+      setApplicationUpdateInstalling(true);
+      renderProgress();
       try {
-        await update.downloadAndInstall();
+        await update.downloadAndInstall((event) => {
+          if (event.event === "Started") {
+            progress = {
+              ...progress,
+              downloadedBytes: 0,
+              totalBytes: event.data.contentLength ?? 0,
+            };
+          } else if (event.event === "Fallback") {
+            progress = {
+              downloadedBytes: 0,
+              phase: "downloading",
+              route: event.data.route,
+              totalBytes: 0,
+            };
+          } else if (event.event === "Progress") {
+            progress = {
+              ...progress,
+              downloadedBytes:
+                progress.downloadedBytes + event.data.chunkLength,
+            };
+          } else {
+            progress = {
+              ...progress,
+              downloadedBytes: progress.totalBytes || progress.downloadedBytes,
+              phase: "restarting",
+            };
+          }
+          renderProgress();
+        });
         markApplicationUpdateRelaunchFocus(update.version);
         setApplicationUpdateNotice(null);
         await applicationUpdater.relaunch();
       } catch (error) {
         const message = commandErrorMessage(error);
+        progress = { ...progress, error: message, phase: "error" };
+        renderProgress();
         recordDiagnostic("error", "application.update", "应用更新失败", {
           error: message,
           version: update.version,
         });
         Message.error(`更新失败：${message}`);
         throw error;
+      } finally {
+        setApplicationUpdateInstalling(false);
       }
     },
     title: "发现新版本",

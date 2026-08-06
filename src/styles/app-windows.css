@@ -456,6 +456,22 @@
   color: var(--color-text-2);
 }
 
+.startup-update-progress {
+  margin-top: 16px;
+}
+
+.startup-update-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.startup-update-progress-meta > .arco-typography {
+  margin: 0;
+}
+
 .configuration-retention-cell {
   display: flex;
   flex-direction: column;
