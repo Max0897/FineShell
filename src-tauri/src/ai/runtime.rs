@@ -44,7 +44,7 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
         api_key: options.api_key,
         model: options.model,
         messages: options.messages,
-        tool_rounds: options.tool_rounds,
+        tool_rounds: options.tool_rounds.to_vec(),
         tool_definitions: definitions,
         cancellation: options.cancellation,
     };
@@ -64,7 +64,7 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
                 api_key: options.api_key,
                 model: options.model,
                 messages: options.fallback_messages,
-                tool_rounds: &[],
+                tool_rounds: Vec::new(),
                 tool_definitions: Value::Array(Vec::new()),
                 cancellation: options.cancellation,
             })

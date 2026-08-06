@@ -390,7 +390,7 @@ fn exposes_and_validates_only_explicitly_enabled_diagnostic_tools() {
 }
 
 #[test]
-fn validates_and_wraps_tool_results_as_untrusted_messages() {
+fn validates_and_redacts_tool_results_before_provider_handling() {
     let rounds = validate_tool_rounds(
         vec![AiToolRound {
             calls: vec![AiToolCall {
