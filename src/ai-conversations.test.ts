@@ -28,6 +28,17 @@ function conversation(id = "conversation-1") {
         content: "请先运行 `nginx -t`。",
         reasoning: "password=reasoning-must-not-be-saved",
         taskId: "task-1",
+        telemetry: {
+          durationMs: 1_240,
+          requestCount: 2,
+          usage: {
+            cachedInputTokens: 200,
+            inputTokens: 1_500,
+            outputTokens: 240,
+            reasoningTokens: 80,
+            totalTokens: 1_740,
+          },
+        },
         diagnosticPlans: [
           {
             createdAt: "2026-07-28T00:20:00.000Z",
@@ -117,6 +128,17 @@ describe("AI conversation persistence", () => {
       status: "success",
     });
     expect(sanitized.messages[1]?.taskId).toBe("task-1");
+    expect(sanitized.messages[1]?.telemetry).toEqual({
+      durationMs: 1_240,
+      requestCount: 2,
+      usage: {
+        cachedInputTokens: 200,
+        inputTokens: 1_500,
+        outputTokens: 240,
+        reasoningTokens: 80,
+        totalTokens: 1_740,
+      },
+    });
     expect(sanitized.messages[1]?.toolRuns?.[0]?.summary).not.toContain(
       "must-not-be-saved",
     );

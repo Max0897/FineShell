@@ -22,6 +22,8 @@ pub(super) struct AiTurnOptions<'a> {
 
 pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult<AiChatResult> {
     let operation = "ai_chat_start";
+    let started_at = Instant::now();
+    let mut failed_provider_attempts = 0_u32;
     let definitions = if options.any_tools_enabled {
         filter_tool_definitions(
             tool_definitions(
@@ -53,6 +55,7 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
                 && options.allow_tool_fallback
                 && error.is_tool_unsupported() =>
         {
+            failed_provider_attempts = failed_provider_attempts.saturating_add(1);
             request_provider_turn(ProviderTurnRequest {
                 app: options.app,
                 request_id: options.request_id,
@@ -105,5 +108,12 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
         action_intents: Vec::new(),
         diagnostic_plans: Vec::new(),
         diagnostic_tool_rounds: Vec::new(),
+        telemetry: AiRequestTelemetry {
+            duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            request_count: response
+                .request_count
+                .saturating_add(failed_provider_attempts),
+            usage: response.usage,
+        },
     })
 }

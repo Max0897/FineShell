@@ -26,6 +26,8 @@ pub(super) struct ProviderTurnResult {
     pub(super) content: String,
     pub(super) reasoning_content: Option<String>,
     pub(super) tool_calls: Vec<AiToolCall>,
+    pub(super) request_count: u32,
+    pub(super) usage: Option<AiTokenUsage>,
 }
 
 #[derive(Debug)]
@@ -96,6 +98,14 @@ impl OpenAiCompatibleProvider {
             content: response.content,
             reasoning_content: response.reasoning_content,
             tool_calls: response.tool_calls,
+            request_count: response.request_count,
+            usage: response.usage.map(|usage| AiTokenUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                total_tokens: usage.total_tokens,
+                cached_input_tokens: usage.cached_input_tokens,
+                reasoning_tokens: usage.reasoning_tokens,
+            }),
         })
         .map_err(ProviderTurnError::from_rig)
     }

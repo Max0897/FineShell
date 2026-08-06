@@ -25,7 +25,10 @@ import {
   type AiRemoteFileContext,
   type AiRequestTokenBudget,
 } from "../ai-utils";
-import type { AgentApprovalMode } from "../tauri-protocol";
+import type {
+  AgentApprovalMode,
+  AiRequestTelemetry,
+} from "../tauri-protocol";
 
 const AI_APPROVAL_MODE_OPTIONS = [
   { label: "请求审批", value: "on_request" },
@@ -41,6 +44,7 @@ interface AiComposerProps {
   editableRemoteFileCount: number;
   fileEditEligibility?: string;
   model: string;
+  lastTelemetry?: AiRequestTelemetry;
   onCancel: () => void | Promise<void>;
   onApprovalModeChange: (mode: AgentApprovalMode) => void;
   onChange: (value: string) => void;
@@ -61,6 +65,11 @@ function formatTokenCount(value: number) {
   return `${scaled >= 10 ? Math.round(scaled) : scaled.toFixed(1)}k`;
 }
 
+function formatDuration(value: number) {
+  if (value < 1_000) return `${Math.round(value)} ms`;
+  return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)} 秒`;
+}
+
 function AiComposer({
   activeConversationAvailable,
   approvalMode,
@@ -68,6 +77,7 @@ function AiComposer({
   contextSources,
   editableRemoteFileCount,
   fileEditEligibility,
+  lastTelemetry,
   model,
   onApprovalModeChange,
   onCancel,
@@ -261,6 +271,26 @@ function AiComposer({
                 <div>上下文：约 {formatTokenCount(tokenBudget.contextTokens)} Token</div>
                 {tokenBudget.contextTruncated && (
                   <div>上下文已按设置上限截断</div>
+                )}
+                {lastTelemetry && (
+                  <>
+                    <div className="ai-token-budget-tooltip-heading">
+                      上次响应
+                    </div>
+                    {lastTelemetry.usage ? (
+                      <div>
+                        实际 {formatTokenCount(lastTelemetry.usage.totalTokens)} Token
+                        （输入 {formatTokenCount(lastTelemetry.usage.inputTokens)} / 输出{" "}
+                        {formatTokenCount(lastTelemetry.usage.outputTokens)}）
+                      </div>
+                    ) : (
+                      <div>供应商未返回 Token 用量</div>
+                    )}
+                    <div>
+                      {lastTelemetry.requestCount} 次请求 ·{" "}
+                      {formatDuration(lastTelemetry.durationMs)}
+                    </div>
+                  </>
                 )}
               </div>
             }

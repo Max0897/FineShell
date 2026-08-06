@@ -262,7 +262,21 @@ describe("useAiRequestOrchestrator", () => {
         const request = args?.request as (typeof requests)[number];
         requests.push(request);
         if (request.toolRounds.length) {
-          return { content: "命令执行成功，当前内存状态正常。", toolCalls: [] };
+          return {
+            content: "命令执行成功，当前内存状态正常。",
+            telemetry: {
+              durationMs: 450,
+              requestCount: 1,
+              usage: {
+                cachedInputTokens: 20,
+                inputTokens: 200,
+                outputTokens: 40,
+                reasoningTokens: 10,
+                totalTokens: 240,
+              },
+            },
+            toolCalls: [],
+          };
         }
         return {
           actionIntents: [
@@ -277,6 +291,17 @@ describe("useAiRequestOrchestrator", () => {
           ],
           content: "需要执行一项终端操作。",
           reasoningContent: "inspect service state before continuing",
+          telemetry: {
+            durationMs: 300,
+            requestCount: 2,
+            usage: {
+              cachedInputTokens: 10,
+              inputTokens: 100,
+              outputTokens: 20,
+              reasoningTokens: 5,
+              totalTokens: 120,
+            },
+          },
           toolCalls: [
             {
               arguments: JSON.stringify({
@@ -351,6 +376,17 @@ describe("useAiRequestOrchestrator", () => {
     expect(callbacks.current().messages[1]?.content).toBe(
       "命令执行成功，当前内存状态正常。",
     );
+    expect(callbacks.current().messages[1]?.telemetry).toEqual({
+      durationMs: 750,
+      requestCount: 3,
+      usage: {
+        cachedInputTokens: 30,
+        inputTokens: 300,
+        outputTokens: 60,
+        reasoningTokens: 15,
+        totalTokens: 360,
+      },
+    });
     expect(result.current.sending).toBe(false);
   });
 

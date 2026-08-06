@@ -137,6 +137,26 @@ pub(crate) struct AiChatResult {
     action_intents: Vec<AgentActionIntent>,
     diagnostic_plans: Vec<AgentPlan>,
     diagnostic_tool_rounds: Vec<AiToolRound>,
+    telemetry: AiRequestTelemetry,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiTokenUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    cached_input_tokens: u64,
+    reasoning_tokens: u64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiRequestTelemetry {
+    duration_ms: u64,
+    request_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<AiTokenUsage>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
