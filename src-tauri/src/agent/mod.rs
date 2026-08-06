@@ -65,3 +65,6 @@ pub(crate) use commands::*;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod scenario_tests;

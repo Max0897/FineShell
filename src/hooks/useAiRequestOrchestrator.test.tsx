@@ -390,6 +390,104 @@ describe("useAiRequestOrchestrator", () => {
     expect(result.current.sending).toBe(false);
   });
 
+  test("continues the agent turn with bounded revision feedback after approval is rejected", async () => {
+    const requests: Array<{
+      toolRounds: Array<{ results: Array<{ content: string }> }>;
+    }> = [];
+    const invoke = mock(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command !== "ai_chat_start") {
+          throw new Error(`unexpected command: ${command}`);
+        }
+        const request = args?.request as (typeof requests)[number];
+        requests.push(request);
+        if (request.toolRounds.length) {
+          return {
+            content: "已按你的要求调整为只读检查，不会重启服务。",
+            toolCalls: [],
+          };
+        }
+        return {
+          actionIntents: [
+            {
+              arguments: {
+                command: "systemctl restart nginx",
+                purpose: "重启 Nginx",
+              },
+              expectedEffect: "重启 Nginx 服务",
+              id: "command-revision-1",
+              reason: "尝试恢复服务",
+              risk: "elevated",
+              tool: "execute_terminal_command",
+            },
+          ],
+          content: "需要执行一项终端操作。",
+          toolCalls: [
+            {
+              arguments: JSON.stringify({
+                command: "systemctl restart nginx",
+                purpose: "重启 Nginx",
+                risk: "caution",
+                risk_reason: "会重启正在运行的服务",
+              }),
+              id: "command-revision-1",
+              name: "propose_terminal_command",
+            },
+          ],
+        };
+      },
+    ) as unknown as AiRequestInvoke;
+    const callbacks = createConversationCallbacks();
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        invoke,
+        listenToStream: async () => () => undefined,
+        persistConversation: async () => undefined,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    let send!: Promise<AiConversation | undefined>;
+    act(() => {
+      send = result.current.sendMessage(baseSendOptions);
+    });
+    await waitFor(() =>
+      expect(callbacks.current().messages[1]?.commandProposals).toHaveLength(1),
+    );
+
+    act(() => {
+      expect(
+        result.current.decideCommandProposal("command-revision-1", {
+          feedback: "不要重启服务，只检查当前状态",
+          kind: "revision_requested",
+        }),
+      ).toBe(true);
+    });
+    await act(async () => {
+      await send;
+    });
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(requests[1]!.toolRounds[0]!.results[0]!.content)).toEqual(
+      expect.objectContaining({
+        decision: "revision_requested",
+        feedback: "不要重启服务，只检查当前状态",
+        ok: false,
+      }),
+    );
+    expect(callbacks.current().messages[1]).toEqual(
+      expect.objectContaining({
+        content: "已按你的要求调整为只读检查，不会重启服务。",
+        failed: false,
+      }),
+    );
+    expect(result.current.sending).toBe(false);
+  });
+
   test("streams only the active request and persists its completed answer", async () => {
     const response = deferred<AiChatResult>();
     const invokeMock = mock(
