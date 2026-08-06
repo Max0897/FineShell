@@ -174,10 +174,10 @@ pub(super) fn tool_definitions(
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "command": { "type": "string", "description": "One complete shell command without a newline or Enter key", "maxLength": MAX_TERMINAL_COMMAND_CHARS },
-                        "purpose": { "type": "string", "description": "Short explanation of what the command is intended to do", "maxLength": MAX_COMMAND_PURPOSE_CHARS },
+                        "command": { "type": "string", "description": "One syntactically complete shell command without CR, LF, a here-document, or an Enter key", "minLength": 1, "maxLength": MAX_TERMINAL_COMMAND_CHARS, "pattern": "^[^\\r\\n]+$" },
+                        "purpose": { "type": "string", "description": "Short explanation of what the command is intended to do", "minLength": 1, "maxLength": MAX_COMMAND_PURPOSE_CHARS },
                         "risk": { "type": "string", "enum": ["safe", "caution", "danger"], "description": "Your safety assessment of this exact command. Use safe only for observational commands with no expected mutation." },
-                        "risk_reason": { "type": "string", "description": "Concrete reason for the selected risk level", "maxLength": MAX_COMMAND_RISK_REASON_CHARS },
+                        "risk_reason": { "type": "string", "description": "Concrete reason for the selected risk level", "minLength": 1, "maxLength": MAX_COMMAND_RISK_REASON_CHARS },
                         "verification": {
                             "description": "Optional registered business verification to run after successful approved execution",
                             "oneOf": [

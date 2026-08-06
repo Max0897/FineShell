@@ -331,16 +331,7 @@ pub(super) fn valid_tool_arguments(name: &str, arguments: &str) -> bool {
                 && arguments
                     .get("command")
                     .and_then(Value::as_str)
-                    .is_some_and(|command| {
-                        let command = command.trim();
-                        !command.is_empty()
-                            && command.chars().count() <= MAX_TERMINAL_COMMAND_CHARS
-                            && !command.chars().any(|character| {
-                                character == '\r'
-                                    || character == '\n'
-                                    || (character.is_control() && character != '\t')
-                            })
-                    })
+                    .is_some_and(crate::agent_actions::valid_command)
                 && arguments
                     .get("purpose")
                     .and_then(Value::as_str)
@@ -366,6 +357,67 @@ pub(super) fn valid_tool_arguments(name: &str, arguments: &str) -> bool {
         }
         _ => false,
     }
+}
+
+fn tool_call_argument_error(call: &AiToolCall) -> Option<String> {
+    if call.arguments.chars().count() > MAX_TOOL_ARGUMENT_CHARS {
+        return Some("AI 工具调用参数超过长度限制".to_string());
+    }
+    if diagnostic_tool(&call.name) {
+        return (!valid_tool_arguments(&call.name, &call.arguments))
+            .then(|| "AI 只读工具参数不符合工具定义".to_string());
+    }
+    proposal_action_intent(&call.id, &call.name, &call.arguments)
+        .err()
+        .or_else(|| {
+            (!valid_tool_arguments(&call.name, &call.arguments))
+                .then(|| "AI 动作工具参数不符合工具定义".to_string())
+        })
+}
+
+pub(super) fn invalid_tool_call_round(
+    calls: &[AiToolCall],
+    content: &str,
+    reasoning_content: Option<&str>,
+) -> Option<AiToolRound> {
+    let mut errors = calls
+        .iter()
+        .map(tool_call_argument_error)
+        .collect::<Vec<_>>();
+    let plan_error = validate_diagnostic_plan_calls(calls).err();
+    if errors.iter().all(Option::is_none) && plan_error.is_none() {
+        return None;
+    }
+
+    let retry_instruction = "Correct the tool arguments and return the complete tool call set again. Do not claim that any rejected call was executed.";
+    let results = calls
+        .iter()
+        .zip(errors.iter_mut())
+        .map(|(call, error)| {
+            let error = error
+                .take()
+                .or_else(|| plan_error.clone())
+                .unwrap_or_else(|| "同一响应中包含无效工具调用，因此本调用未执行".to_string());
+            AiToolResult {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                content: json!({
+                    "ok": false,
+                    "error": sanitize_context(&error).chars().take(300).collect::<String>(),
+                    "retryable": true,
+                    "instruction": retry_instruction,
+                })
+                .to_string(),
+            }
+        })
+        .collect();
+
+    Some(AiToolRound {
+        calls: calls.to_vec(),
+        content: (!content.trim().is_empty()).then(|| content.trim().to_string()),
+        reasoning_content: reasoning_content.map(str::to_string),
+        results,
+    })
 }
 
 pub(super) fn validate_tool_rounds(

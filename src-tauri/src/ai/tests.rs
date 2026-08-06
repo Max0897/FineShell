@@ -9,13 +9,13 @@ use super::{
     apply_finalization_instruction, apply_tool_call_delta, build_request_messages,
     capability_http_failure, complete_tool_calls, create_diagnostic_plan,
     diagnostic_policy_evaluations, diagnostic_tool_requires_connection, enabled_diagnostic_tools,
-    filter_tool_definitions, http_messages, is_local_endpoint, is_tool_unsupported_error,
-    normalize_models, sanitize_context, service_endpoint, stream_delta, stream_tool_call_deltas,
-    tool_allowed, tool_definitions, tool_loop_finalize_reason, tool_probe_supported,
-    valid_stream_probe_event, valid_tool_arguments, validate_diagnostic_plan_calls,
-    validate_enabled_diagnostic_calls, validate_service_url, validate_tool_rounds,
-    AiCapabilityKind, AiCapabilityState, AiChatMessage, AiFinalizeReason, AiModelEntry, AiToolCall,
-    AiToolResult, AiToolRound, SseParser,
+    filter_tool_definitions, http_messages, invalid_tool_call_round, is_local_endpoint,
+    is_tool_unsupported_error, normalize_models, sanitize_context, service_endpoint, stream_delta,
+    stream_tool_call_deltas, tool_allowed, tool_definitions, tool_loop_finalize_reason,
+    tool_probe_supported, valid_stream_probe_event, valid_tool_arguments,
+    validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls, validate_service_url,
+    validate_tool_rounds, AiCapabilityKind, AiCapabilityState, AiChatMessage, AiFinalizeReason,
+    AiModelEntry, AiToolCall, AiToolResult, AiToolRound, SseParser,
 };
 
 fn policy_context(mode: &str) -> AgentTaskContext {
@@ -738,6 +738,16 @@ fn accepts_review_only_terminal_command_proposals() {
         names,
         vec!["propose_service_action", "propose_terminal_command"]
     );
+    let command_schema = definitions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|value| value["function"]["name"] == "propose_terminal_command")
+        .unwrap();
+    assert_eq!(
+        command_schema["function"]["parameters"]["properties"]["command"]["pattern"],
+        "^[^\\r\\n]+$"
+    );
     assert!(valid_tool_arguments(
         "propose_service_action",
         r#"{"service":"nginx.service","action":"restart"}"#
@@ -793,6 +803,35 @@ fn accepts_review_only_terminal_command_proposals() {
         false,
     );
     assert!(!fallback[0].content.contains("propose_terminal_command"));
+}
+
+#[test]
+fn turns_invalid_command_arguments_into_a_retryable_tool_round() {
+    let calls = vec![
+        AiToolCall {
+            id: "call-invalid".to_string(),
+            name: "propose_terminal_command".to_string(),
+            arguments: r#"{"command":"printf ok\nprintf unsafe","purpose":"Write a script","risk":"caution","risk_reason":"Writes remote content"}"#.to_string(),
+        },
+        AiToolCall {
+            id: "call-valid".to_string(),
+            name: "propose_service_action".to_string(),
+            arguments: r#"{"service":"nginx.service","action":"status"}"#.to_string(),
+        },
+    ];
+    let round = invalid_tool_call_round(&calls, "I will inspect it.", None).unwrap();
+    assert_eq!(round.calls.len(), 2);
+    assert_eq!(round.results.len(), 2);
+    let invalid = serde_json::from_str::<Value>(&round.results[0].content).unwrap();
+    assert_eq!(invalid["ok"], false);
+    assert_eq!(invalid["retryable"], true);
+    assert!(invalid["error"].as_str().unwrap().contains("单行命令"));
+    let cancelled = serde_json::from_str::<Value>(&round.results[1].content).unwrap();
+    assert_eq!(cancelled["ok"], false);
+    assert!(cancelled["error"]
+        .as_str()
+        .unwrap()
+        .contains("本调用未执行"));
 }
 
 #[test]
