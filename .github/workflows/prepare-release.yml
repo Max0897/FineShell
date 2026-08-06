@@ -14,6 +14,7 @@ on:
           - major
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -94,3 +95,8 @@ jobs:
             --head "$BRANCH_NAME" \
             --title "准备发布 $RELEASE_TAG" \
             --body "合并此 PR 后将自动构建并发布 FineShell $RELEASE_TAG。"
+      - name: Trigger release pull request checks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH_NAME: ${{ steps.release.outputs.branch_name }}
+        run: gh workflow run ci.yml --ref "$BRANCH_NAME"
