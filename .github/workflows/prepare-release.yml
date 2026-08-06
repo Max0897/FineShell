@@ -37,15 +37,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
-      - name: Verify Actions pull request permission
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          allowed="$(gh api "repos/$GITHUB_REPOSITORY/actions/permissions/workflow" --jq '.can_approve_pull_request_reviews')"
-          if [[ "$allowed" != "true" ]]; then
-            echo "Enable 'Allow GitHub Actions to create and approve pull requests' in repository Actions settings." >&2
-            exit 1
-          fi
       - name: Prepare version files and changelog
         run: bun scripts/prepare-release.ts "${{ inputs.version_bump }}"
       - name: Validate release files
