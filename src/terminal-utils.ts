@@ -26,6 +26,10 @@ export interface TerminalCommandSubmission {
   id: string;
   output?: string;
   outputTruncated?: boolean;
+  stdout?: string;
+  stdoutTruncated?: boolean;
+  stderr?: string;
+  stderrTruncated?: boolean;
   phase?: "submitted" | "completed" | "unavailable";
   reason?: string;
   sessionId: string;

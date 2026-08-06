@@ -1,6 +1,75 @@
 use super::*;
 
 impl AgentTaskManager {
+    pub(crate) fn resolve_interruption(
+        &self,
+        request: AgentTaskRecoveryRequest,
+    ) -> Result<(AgentTaskRecoveryContext, Vec<AgentTaskEvent>), String> {
+        let context = {
+            let tasks = self.lock_tasks()?;
+            let task = tasks
+                .get(&request.task_id)
+                .ok_or_else(|| "AI 任务不存在".to_string())?;
+            if !matches!(
+                task.status,
+                AgentTaskStatus::Paused | AgentTaskStatus::PausedDisconnected
+            ) {
+                return Err("AI 任务当前不需要恢复决策".to_string());
+            }
+            let summarize = |action: &AgentActionState| {
+                action
+                    .summary
+                    .as_deref()
+                    .or(action.error.as_deref())
+                    .unwrap_or(action.reason.as_str())
+                    .chars()
+                    .take(160)
+                    .collect::<String>()
+            };
+            AgentTaskRecoveryContext {
+                previous_task_id: task.id.clone(),
+                host_id: task.host_id.clone(),
+                decision: request.decision,
+                objective: task.objective.clone(),
+                interruption_reason: task
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "AI 任务执行被中断".to_string()),
+                completed_actions: task
+                    .actions
+                    .iter()
+                    .filter(|action| action.status == AgentActionStatus::Succeeded)
+                    .map(summarize)
+                    .collect(),
+                uncertain_actions: task
+                    .actions
+                    .iter()
+                    .filter(|action| action.status != AgentActionStatus::Succeeded)
+                    .map(summarize)
+                    .collect(),
+            }
+        };
+        let (summary, stop_reason, action_message) = match request.decision {
+            AgentTaskRecoveryDecision::ContinueAnalysis => (
+                "已从中断点创建后继分析任务",
+                "interruption_continue",
+                "旧任务已结束，后继任务将重新确认当前状态",
+            ),
+            AgentTaskRecoveryDecision::Retry => (
+                "已从中断点创建全新重试任务",
+                "interruption_retry",
+                "旧任务已结束，重试动作必须重新审批",
+            ),
+            AgentTaskRecoveryDecision::Finish => (
+                "用户结束了中断任务",
+                "interruption_finished",
+                "用户结束了中断任务",
+            ),
+        };
+        let events = self.close_task(&request.task_id, summary, stop_reason, action_message)?;
+        Ok((context, events))
+    }
+
     pub(crate) fn fail_task(
         &self,
         task_id: &str,
@@ -62,6 +131,21 @@ impl AgentTaskManager {
     }
 
     pub(crate) fn cancel_task(&self, task_id: &str) -> Result<Vec<AgentTaskEvent>, String> {
+        self.close_task(
+            task_id,
+            "AI 任务已取消",
+            "user_cancelled",
+            "用户取消了 AI 任务",
+        )
+    }
+
+    fn close_task(
+        &self,
+        task_id: &str,
+        summary: &str,
+        stop_reason: &str,
+        action_message: &str,
+    ) -> Result<Vec<AgentTaskEvent>, String> {
         let events = {
             let mut tasks = self.lock_tasks()?;
             let Some(task) = tasks.get_mut(task_id) else {
@@ -75,8 +159,13 @@ impl AgentTaskManager {
             let now = timestamp_ms();
             for action in &mut task.actions {
                 if action.status.is_unresolved() {
+                    if let Some(command) = action.command_execution.as_mut() {
+                        command.phase = AgentCommandExecutionPhase::Cancelling;
+                        command.reason = Some(action_message.to_string());
+                        command.updated_at = now;
+                    }
                     action.status = AgentActionStatus::Cancelled;
-                    action.error = Some("用户取消了 AI 任务".to_string());
+                    action.error = Some(action_message.to_string());
                     action.completed_at = Some(now);
                     action.duration_ms = action
                         .started_at
@@ -92,17 +181,18 @@ impl AgentTaskManager {
                         AgentPlanStepStatus::Pending | AgentPlanStepStatus::InProgress
                     ) {
                         step.status = AgentPlanStepStatus::Skipped;
-                        step.summary = Some("用户取消了 AI 任务".to_string());
-                        step.error = Some("用户取消了 AI 任务".to_string());
+                        step.summary = Some(action_message.to_string());
+                        step.error = Some(action_message.to_string());
                     }
                 }
             }
             task.result = Some(AgentTaskResult {
-                summary: "AI 任务已取消".to_string(),
+                summary: summary.to_string(),
                 verified: false,
                 verification_status: AgentVerificationStatus::NotApplicable,
-                stop_reason: Some("user_cancelled".to_string()),
+                stop_reason: Some(stop_reason.to_string()),
             });
+            task.error = None;
             vec![task.event(AgentTaskEventKind::TaskCancelled)]
         };
         if let Ok(controls) = self.plan_controls.lock() {

@@ -143,22 +143,16 @@ function agentTask(
 }
 
 describe("useAiRequestOrchestrator", () => {
-  test("finishes with collected evidence after the tool budget is exhausted", async () => {
-    const requests: Array<{
-      finalizeReason?: string;
-      toolRounds: unknown[];
-    }> = [];
+  test("leaves tool-loop finalization to the Rust agent runtime", async () => {
+    const requests: Array<{ toolRounds: unknown[] }> = [];
     const invokeMock = mock(
       async (command: string, args?: Record<string, unknown>) => {
         if (command !== "ai_chat_start") {
           throw new Error(`unexpected command: ${command}`);
         }
-        const request = args?.request as {
-          finalizeReason?: string;
-          toolRounds: unknown[];
-        };
+        const request = args?.request as { toolRounds: unknown[] };
         requests.push(request);
-        if (request.finalizeReason) {
+        if (request.toolRounds.length >= 8) {
           return {
             content: "已根据现有诊断结果完成总结，未执行更多工具。",
             toolCalls: [],
@@ -239,9 +233,11 @@ describe("useAiRequestOrchestrator", () => {
       await send;
     });
 
-    expect(requests[requests.length - 1]).toMatchObject({
-      finalizeReason: "tool_budget",
-    });
+    expect(requests).toHaveLength(9);
+    expect(requests.every((request) => !("finalizeReason" in request))).toBe(
+      true,
+    );
+    expect(requests[requests.length - 1]?.toolRounds).toHaveLength(8);
     expect(callbacks.current().messages[1]).toMatchObject({
       content: "已根据现有诊断结果完成总结，未执行更多工具。",
       failed: false,
@@ -250,7 +246,12 @@ describe("useAiRequestOrchestrator", () => {
   });
 
   test("pauses a terminal tool call until terminal execution completes", async () => {
-    const requests: Array<{ toolRounds: Array<{ results: Array<{ content: string }> }> }> = [];
+    const requests: Array<{
+      toolRounds: Array<{
+        reasoningContent?: string;
+        results: Array<{ content: string }>;
+      }>;
+    }> = [];
     const invoke = mock(
       async (command: string, args?: Record<string, unknown>) => {
         if (command !== "ai_chat_start") {
@@ -273,6 +274,7 @@ describe("useAiRequestOrchestrator", () => {
             },
           ],
           content: "需要执行一项终端操作。",
+          reasoningContent: "inspect service state before continuing",
           toolCalls: [
             {
               arguments: JSON.stringify({
@@ -334,6 +336,9 @@ describe("useAiRequestOrchestrator", () => {
     });
 
     expect(invoke).toHaveBeenCalledTimes(2);
+    expect(requests[1]!.toolRounds[0]!.reasoningContent).toBe(
+      "inspect service state before continuing",
+    );
     expect(JSON.parse(requests[1]!.toolRounds[0]!.results[0]!.content)).toEqual(
       expect.objectContaining({
         decision: "approved_and_completed",
@@ -441,9 +446,15 @@ describe("useAiRequestOrchestrator", () => {
     expect(result.current.activeTask).toEqual(runningTask);
 
     act(() => {
+      onStream({
+        delta: "检查服务器指标",
+        kind: "reasoning",
+        requestId: request.requestId,
+      });
       onStream({ delta: "正在分析", requestId: request.requestId });
       onStream({ delta: "忽略", requestId: "obsolete-request" });
     });
+    expect(callbacks.current().messages[1]?.reasoning).toBe("检查服务器指标");
     expect(callbacks.current().messages[1]?.content).toBe("正在分析");
 
     await act(async () => {
@@ -503,6 +514,95 @@ describe("useAiRequestOrchestrator", () => {
       });
     });
     expect(result.current.activeTask).toEqual(replayedTask);
+  });
+
+  test("drops a restored task when the terminal session changes", async () => {
+    const restoredTask = agentTask("task-restored", "paused", 5);
+    const invoke = mock(async (command: string) => {
+      if (command === "ai_task_get") return restoredTask;
+      if (command === "ai_task_events_since") return [];
+      throw new Error(`unexpected command: ${command}`);
+    }) as unknown as AiRequestInvoke;
+    const callbacks = createConversationCallbacks();
+    const { result, rerender } = renderHook(
+      ({ sessionId }: { sessionId: string }) =>
+        useAiRequestOrchestrator({
+          invoke,
+          listenToStream: async () => () => undefined,
+          listenToTaskEvents: async () => () => undefined,
+          persistConversation: async () => undefined,
+          restoreTaskId: "task-restored",
+          sessionId,
+          settings: aiSettings,
+          setDraft: () => undefined,
+          updateConversation: callbacks.updateConversation,
+          updateMessages: callbacks.updateMessages,
+        }),
+      { initialProps: { sessionId: "session-1" } },
+    );
+
+    await waitFor(() => expect(result.current.activeTask).toEqual(restoredTask));
+    rerender({ sessionId: "session-2" });
+    await waitFor(() => expect(result.current.activeTask).toBeUndefined());
+  });
+
+  test("resolves an interrupted task and keeps the recovery prompt internal", async () => {
+    let chatRequest: Record<string, unknown> | undefined;
+    const invokeMock = mock(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "ai_task_recovery_decide") {
+          return {
+            completedActions: [],
+            decision: "continue_analysis",
+            hostId: "host-1",
+            interruptionReason: "应用重启",
+            objective: "检查系统状态",
+            previousTaskId: "task-restored",
+            uncertainActions: [],
+          };
+        }
+        if (command === "ai_chat_start") {
+          chatRequest = args?.request as Record<string, unknown>;
+          return { content: "继续完成", toolCalls: [] };
+        }
+        throw new Error(`unexpected command: ${command}`);
+      },
+    );
+    const callbacks = createConversationCallbacks();
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        invoke: invokeMock as unknown as AiRequestInvoke,
+        listenToStream: async () => () => undefined,
+        listenToTaskEvents: async () => () => undefined,
+        persistConversation: async () => undefined,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    await act(async () => {
+      const recovery = await result.current.resolveTaskInterruption(
+        "task-restored",
+        "continue_analysis",
+      );
+      expect(recovery.previousTaskId).toBe("task-restored");
+      await result.current.sendMessage({
+        ...baseSendOptions,
+        requestValue: "内部恢复上下文",
+        value: "继续分析",
+      });
+    });
+
+    expect(callbacks.current().messages[0]?.content).toBe("继续分析");
+    expect(chatRequest?.messages).toEqual([
+      { content: "内部恢复上下文", role: "user" },
+    ]);
+    expect(
+      (chatRequest?.task as { objective?: string } | undefined)?.objective,
+    ).toBe("内部恢复上下文");
   });
 
   test("renders backend diagnostic plans and sends approval decisions to Rust", async () => {

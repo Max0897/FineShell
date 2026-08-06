@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { IDecoration, IDisposable, IMarker, Terminal } from "@xterm/xterm";
 import type { TerminalCommandHistoryRecord } from "./models";
 import { TerminalHistoryCompletionAddon } from "./terminal-history-completion";
@@ -33,28 +33,51 @@ function keyboardEvent(key: string) {
 function fakeTerminal() {
   const callbacks: { resize?: () => void; writeParsed?: () => void } = {};
   const classes = new Set<string>();
+  const lines = new Map<number, { isWrapped: boolean; text: string }>();
   const element = {
     classList: { add: (value: string) => classes.add(value) },
     style: {} as Record<string, string>,
     textContent: "",
   } as unknown as HTMLElement;
-  const marker = {
-    dispose: () => undefined,
-    id: 1,
-    isDisposed: false,
-    line: 0,
-    onDispose: () => disposable(),
-  } as unknown as IMarker;
-  const decoration = {
-    dispose: () => undefined,
-    element,
-    marker,
-    onRender: (listener: (element: HTMLElement) => void) => {
-      listener(element);
-      return disposable();
+  let markerId = 0;
+  const createMarker = () => {
+    const state = {
+      id: (markerId += 1),
+      isDisposed: false,
+      line: active.baseY + active.cursorY,
+    };
+    return {
+      ...state,
+      dispose: () => {
+        state.isDisposed = true;
+      },
+      get isDisposed() {
+        return state.isDisposed;
+      },
+      onDispose: () => disposable(),
+    } as unknown as IMarker;
+  };
+  const active = {
+    baseY: 0,
+    cursorX: 4,
+    cursorY: 0,
+    getLine: (lineIndex: number) => {
+      const line = lines.get(lineIndex);
+      if (!line) return undefined;
+      return {
+        isWrapped: line.isWrapped,
+        translateToString: (
+          trimRight = false,
+          startColumn = 0,
+          endColumn = line.text.length,
+        ) => {
+          const value = line.text.slice(startColumn, endColumn);
+          return trimRight ? value.trimEnd() : value;
+        },
+      };
     },
-  } as unknown as IDecoration;
-  const active = { cursorX: 4, type: "normal" };
+    type: "normal",
+  };
   let decorationOptions: unknown;
   const terminal = {
     buffer: { active },
@@ -75,11 +98,19 @@ function fakeTerminal() {
       letterSpacing: 1,
       lineHeight: 1.2,
     },
-    registerDecoration: (options: unknown) => {
+    registerDecoration: (options: { marker: IMarker }) => {
       decorationOptions = options;
-      return decoration;
+      return {
+        dispose: () => undefined,
+        element,
+        marker: options.marker,
+        onRender: (listener: (target: HTMLElement) => void) => {
+          listener(element);
+          return disposable();
+        },
+      } as unknown as IDecoration;
     },
-    registerMarker: () => marker,
+    registerMarker: () => createMarker(),
   } as unknown as Terminal;
   return {
     active,
@@ -87,8 +118,15 @@ function fakeTerminal() {
     classes,
     decorationOptions: () => decorationOptions,
     element,
+    setLine: (lineIndex: number, text: string, isWrapped = false) => {
+      lines.set(lineIndex, { isWrapped, text });
+    },
     terminal,
   };
+}
+
+function waitForInputResync() {
+  return new Promise((resolve) => setTimeout(resolve, 45));
 }
 
 const HISTORY: TerminalCommandHistoryRecord[] = [
@@ -171,6 +209,88 @@ describe("TerminalHistoryCompletionAddon", () => {
 
     fake.active.type = "alternate";
     addon.synchronizeInput("git st", true);
+    expect(addon.suggestion).toBeUndefined();
+  });
+
+  test("resynchronizes input after native Tab completion redraws the line", async () => {
+    const fake = fakeTerminal();
+    const onSynchronizeInput = mock(() => undefined);
+    const addon = new TerminalHistoryCompletionAddon({
+      hostId: "host-1",
+      getCurrentDirectory: () => "/srv/app",
+      onAccept: () => undefined,
+      onSynchronizeInput,
+    });
+    addon.activate(fake.terminal);
+    addon.setHistory(HISTORY);
+    addon.setPromptReady(true);
+    fake.setLine(0, "$   ");
+    fake.callbacks.writeParsed?.();
+    addon.synchronizeInput("unknown", true);
+
+    const tab = keyboardEvent("Tab");
+    expect(addon.handleKeyEvent(tab.event)).toBe(true);
+    expect(tab.prevented()).toBe(false);
+    addon.synchronizeInput("", false);
+    fake.setLine(0, "$   git st");
+    fake.active.cursorX = 10;
+    fake.callbacks.writeParsed?.();
+    await waitForInputResync();
+
+    expect(onSynchronizeInput).toHaveBeenCalledWith("git st");
+    expect(addon.suggestion).toBe("atus --short");
+  });
+
+  test("resynchronizes input after shell history navigation", async () => {
+    const fake = fakeTerminal();
+    const onSynchronizeInput = mock(() => undefined);
+    const addon = new TerminalHistoryCompletionAddon({
+      hostId: "host-1",
+      getCurrentDirectory: () => "/srv/app",
+      onAccept: () => undefined,
+      onSynchronizeInput,
+    });
+    addon.activate(fake.terminal);
+    addon.setHistory(HISTORY);
+    addon.setPromptReady(true);
+    fake.setLine(0, "$   ");
+    fake.callbacks.writeParsed?.();
+    addon.synchronizeInput("local", true);
+
+    const arrowUp = keyboardEvent("ArrowUp");
+    expect(addon.handleKeyEvent(arrowUp.event)).toBe(true);
+    addon.synchronizeInput("", false);
+    fake.setLine(0, "$   git st");
+    fake.active.cursorX = 10;
+    fake.callbacks.writeParsed?.();
+    await waitForInputResync();
+
+    expect(onSynchronizeInput).toHaveBeenCalledWith("git st");
+    expect(addon.suggestion).toBe("atus --short");
+  });
+
+  test("does not resynchronize when the cursor is inside existing text", async () => {
+    const fake = fakeTerminal();
+    const onSynchronizeInput = mock(() => undefined);
+    const addon = new TerminalHistoryCompletionAddon({
+      hostId: "host-1",
+      getCurrentDirectory: () => "/srv/app",
+      onAccept: () => undefined,
+      onSynchronizeInput,
+    });
+    addon.activate(fake.terminal);
+    addon.setPromptReady(true);
+    fake.setLine(0, "$   ");
+    fake.callbacks.writeParsed?.();
+
+    expect(addon.handleKeyEvent(keyboardEvent("ArrowLeft").event)).toBe(true);
+    addon.synchronizeInput("", false);
+    fake.setLine(0, "$   git status");
+    fake.active.cursorX = 10;
+    fake.callbacks.writeParsed?.();
+    await waitForInputResync();
+
+    expect(onSynchronizeInput).not.toHaveBeenCalled();
     expect(addon.suggestion).toBeUndefined();
   });
 });

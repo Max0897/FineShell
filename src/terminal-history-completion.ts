@@ -12,8 +12,21 @@ export interface TerminalHistoryCompletionOptions {
   hostId: string;
   getCurrentDirectory: () => string | undefined;
   onAccept: (suffix: string) => void;
+  onSynchronizeInput?: (commandLine: string) => void;
   ghostTextColor?: string;
 }
+
+const INPUT_RESYNC_DELAY_MS = 32;
+const NATIVE_LINE_EDIT_KEYS = new Set([
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "Delete",
+  "End",
+  "Home",
+  "Tab",
+]);
 
 export class TerminalHistoryCompletionAddon implements ITerminalAddon {
   private terminal?: Terminal;
@@ -21,6 +34,10 @@ export class TerminalHistoryCompletionAddon implements ITerminalAddon {
   private commandLine = "";
   private inputReliable = true;
   private promptReady = false;
+  private capturePromptAnchor = false;
+  private inputResyncRequested = false;
+  private inputResyncTimer?: ReturnType<typeof setTimeout>;
+  private promptAnchor?: { marker: IMarker; x: number };
   private suggestionValue?: string;
   private decoration?: IDecoration;
   private decorationRenderDisposable?: IDisposable;
@@ -46,7 +63,7 @@ export class TerminalHistoryCompletionAddon implements ITerminalAddon {
     }
     this.terminal = terminal;
     this.disposables.push(
-      terminal.onWriteParsed(() => this.refreshDecoration()),
+      terminal.onWriteParsed(() => this.handleWriteParsed()),
       terminal.onResize(() => this.refreshDecoration()),
     );
   }
@@ -59,6 +76,14 @@ export class TerminalHistoryCompletionAddon implements ITerminalAddon {
 
   public setPromptReady(ready: boolean) {
     this.promptReady = ready;
+    if (ready) {
+      this.capturePromptAnchor = true;
+    } else {
+      this.capturePromptAnchor = false;
+      this.inputResyncRequested = false;
+      this.clearInputResyncTimer();
+      this.clearPromptAnchor();
+    }
     this.updateSuggestion();
     if (!ready) this.clearVisual();
   }
@@ -97,6 +122,9 @@ export class TerminalHistoryCompletionAddon implements ITerminalAddon {
       this.cancel();
       return false;
     }
+    if (NATIVE_LINE_EDIT_KEYS.has(event.key)) {
+      this.requestInputResync();
+    }
     return true;
   }
 
@@ -117,8 +145,116 @@ export class TerminalHistoryCompletionAddon implements ITerminalAddon {
 
   public dispose() {
     this.cancel();
+    this.clearInputResyncTimer();
+    this.clearPromptAnchor();
     for (const disposable of this.disposables.splice(0)) disposable.dispose();
     this.terminal = undefined;
+  }
+
+  private handleWriteParsed() {
+    if (this.capturePromptAnchor) {
+      this.capturePromptAnchor = false;
+      this.updatePromptAnchor();
+    }
+    if (this.inputResyncRequested) this.scheduleInputResync();
+    this.refreshDecoration();
+  }
+
+  private requestInputResync() {
+    if (!this.promptReady || !this.promptAnchor) return;
+    this.inputResyncRequested = true;
+    this.inputReliable = false;
+    this.suggestionValue = undefined;
+    this.clearVisual();
+  }
+
+  private scheduleInputResync() {
+    this.clearInputResyncTimer();
+    this.inputResyncTimer = setTimeout(() => {
+      this.inputResyncTimer = undefined;
+      this.synchronizeInputFromBuffer();
+    }, INPUT_RESYNC_DELAY_MS);
+  }
+
+  private clearInputResyncTimer() {
+    if (this.inputResyncTimer === undefined) return;
+    clearTimeout(this.inputResyncTimer);
+    this.inputResyncTimer = undefined;
+  }
+
+  private updatePromptAnchor() {
+    const terminal = this.terminal;
+    if (!terminal || terminal.buffer.active.type === "alternate") return;
+    this.clearPromptAnchor();
+    this.promptAnchor = {
+      marker: terminal.registerMarker(0),
+      x: terminal.buffer.active.cursorX,
+    };
+  }
+
+  private clearPromptAnchor() {
+    this.promptAnchor?.marker.dispose();
+    this.promptAnchor = undefined;
+  }
+
+  private synchronizeInputFromBuffer() {
+    if (!this.inputResyncRequested) return;
+    const commandLine = this.readInputFromBuffer();
+    if (commandLine === undefined) return;
+    this.inputResyncRequested = false;
+    this.commandLine = commandLine;
+    this.inputReliable = true;
+    this.options.onSynchronizeInput?.(commandLine);
+    this.updateSuggestion();
+    this.refreshDecoration();
+  }
+
+  private readInputFromBuffer() {
+    const terminal = this.terminal;
+    const anchor = this.promptAnchor;
+    if (
+      !terminal ||
+      !anchor ||
+      anchor.marker.isDisposed ||
+      anchor.marker.line < 0 ||
+      terminal.buffer.active.type === "alternate"
+    ) {
+      return undefined;
+    }
+
+    const buffer = terminal.buffer.active;
+    const cursorLine = buffer.baseY + buffer.cursorY;
+    if (cursorLine < anchor.marker.line) return undefined;
+    const cursorBufferLine = buffer.getLine(cursorLine);
+    if (!cursorBufferLine) return undefined;
+    if (cursorBufferLine.translateToString(true, buffer.cursorX)) {
+      return undefined;
+    }
+
+    let inputStartLine = cursorLine;
+    while (inputStartLine > anchor.marker.line) {
+      const line = buffer.getLine(inputStartLine);
+      if (!line?.isWrapped) break;
+      inputStartLine -= 1;
+    }
+    if (inputStartLine < anchor.marker.line) return undefined;
+
+    let commandLine = "";
+    for (let lineIndex = inputStartLine; lineIndex <= cursorLine; lineIndex += 1) {
+      const line = buffer.getLine(lineIndex);
+      if (!line) return undefined;
+      const startColumn = lineIndex === inputStartLine ? anchor.x : 0;
+      const endColumn = lineIndex === cursorLine ? buffer.cursorX : terminal.cols;
+      if (endColumn < startColumn) return undefined;
+      commandLine += line.translateToString(true, startColumn, endColumn);
+    }
+    if (
+      commandLine.length > 4_096 ||
+      /[\u0000-\u001f\u007f]/u.test(commandLine)
+    ) {
+      return undefined;
+    }
+    return commandLine;
   }
 
   private updateSuggestion() {

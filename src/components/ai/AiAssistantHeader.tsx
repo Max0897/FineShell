@@ -1,29 +1,17 @@
 import {
   Button,
-  Modal,
-  Select,
   Space,
   Tag,
   Tooltip,
   Typography,
 } from "@arco-design/web-react";
 import { IconHistory, IconPlus } from "@arco-design/web-react/icon";
-import type { AgentApprovalMode } from "../../tauri-protocol";
-
-const AI_APPROVAL_MODE_OPTIONS = [
-  { label: "请求审批", value: "on_request" },
-  { label: "替我审批", value: "auto_safe" },
-  { label: "完全访问", value: "full_access" },
-] satisfies { label: string; value: AgentApprovalMode }[];
 
 interface AiAssistantHeaderProps {
-  approvalMode: AgentApprovalMode;
-  canInsertCommand: boolean;
   conversationSummarized: boolean;
   conversationSummarizing: boolean;
   conversationTitle: string;
   disconnectedError?: string;
-  onApprovalModeChange: (mode: AgentApprovalMode) => void;
   onNew: () => void;
   onOpenHistory: () => void;
   sessionAvailable: boolean;
@@ -31,13 +19,10 @@ interface AiAssistantHeaderProps {
 }
 
 export default function AiAssistantHeader({
-  approvalMode,
-  canInsertCommand,
   conversationSummarized,
   conversationSummarizing,
   conversationTitle,
   disconnectedError,
-  onApprovalModeChange,
   onNew,
   onOpenHistory,
   sessionAvailable,
@@ -50,30 +35,6 @@ export default function AiAssistantHeader({
         <Typography.Text ellipsis title={conversationTitle}>
           {conversationTitle}
         </Typography.Text>
-        <Select
-          aria-label="AI 审批模式"
-          className={`ai-approval-mode ai-approval-mode-${approvalMode}`}
-          disabled={!canInsertCommand || sending}
-          onChange={(value) => {
-            const next = value as AgentApprovalMode;
-            if (next !== "full_access" || approvalMode === "full_access") {
-              onApprovalModeChange(next);
-              return;
-            }
-            Modal.confirm({
-              cancelText: "取消",
-              content:
-                "完全访问会自动执行 AI 提出的终端命令和文件操作，仅在当前主机和当前连接周期内生效。",
-              okButtonProps: { status: "danger" },
-              okText: "启用",
-              onOk: () => onApprovalModeChange(next),
-              title: "启用完全访问？",
-            });
-          }}
-          options={AI_APPROVAL_MODE_OPTIONS}
-          size="mini"
-          value={approvalMode}
-        />
         {conversationSummarizing ? (
           <Tooltip content="正在后台压缩较早的对话，不影响当前操作">
             <Tag color="arcoblue" size="small">

@@ -153,6 +153,22 @@ pub(super) fn tool_definitions(
         definitions.push(json!({
             "type": "function",
             "function": {
+                "name": "propose_service_action",
+                "description": "Create a review-only systemd service action. Prefer this over a free-form shell command for checking, starting, stopping, or restarting one service. FineShell generates the exact command, risk classification, and post-action verification from the structured service and action values.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "service": { "type": "string", "description": "Exact systemd unit name, for example nginx.service", "minLength": 1, "maxLength": 128 },
+                        "action": { "type": "string", "enum": ["status", "start", "stop", "restart"] }
+                    },
+                    "required": ["service", "action"],
+                    "additionalProperties": false
+                }
+            }
+        }));
+        definitions.push(json!({
+            "type": "function",
+            "function": {
                 "name": "propose_terminal_command",
                 "description": "Create one review-only single-line shell command proposal. The tool never executes or writes to the terminal by itself; FineShell applies the active approval policy and either executes it automatically or asks the user to approve, reject, or revise it. Call once per command and preserve execution order across multiple calls.",
                 "parameters": {
@@ -169,6 +185,15 @@ pub(super) fn tool_definitions(
                                     "type": "object",
                                     "properties": {
                                         "kind": { "const": "service_active" },
+                                        "service": { "type": "string", "minLength": 1, "maxLength": 128 }
+                                    },
+                                    "required": ["kind", "service"],
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "kind": { "const": "service_inactive" },
                                         "service": { "type": "string", "minLength": 1, "maxLength": 128 }
                                     },
                                     "required": ["kind", "service"],
@@ -279,8 +304,7 @@ pub(super) fn tool_loop_finalize_reason(
         .flat_map(|round| &round.results)
         .map(|result| result.content.chars().count())
         .sum::<usize>();
-    if rounds.len() >= MAX_TOOL_ROUNDS
-        || completed_calls.saturating_add(next_calls.len()) > MAX_TOOL_CALLS
+    if completed_calls.saturating_add(next_calls.len()) > MAX_TOOL_CALLS
         || completed_result_chars >= MAX_RUNTIME_TOOL_RESULT_CHARS
     {
         return Some(AiFinalizeReason::ToolBudget);

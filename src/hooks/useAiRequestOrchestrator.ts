@@ -9,10 +9,7 @@ import {
 import {
   buildAiConversationRequestMessages,
 } from "../ai-summaries";
-import {
-  aiToolLoopFinalizeReason,
-  finishAiToolRun,
-} from "../ai-tools";
+import { finishAiToolRun } from "../ai-tools";
 import type { AiRemoteFileContext } from "../ai-utils";
 import { diagnosticInvoke } from "../diagnostics";
 import {
@@ -22,8 +19,10 @@ import {
   type AgentApprovalMode,
   type AgentTask,
   type AgentTaskEventPayload,
+  type AgentTaskRecoveryContext,
+  type AgentTaskRecoveryDecision,
   type AiChatResult,
-  type AiFinalizeReason,
+  type AiStreamPayload,
   type AiToolRound,
   type TauriCommand,
 } from "../tauri-protocol";
@@ -47,7 +46,7 @@ export type AiRequestInvoke = <T>(
 ) => Promise<T>;
 
 export type AiStreamListener = (
-  callback: (payload: { delta: string; requestId: string }) => void,
+  callback: (payload: AiStreamPayload) => void,
 ) => Promise<() => void>;
 
 export type AiTaskListener = (
@@ -55,6 +54,7 @@ export type AiTaskListener = (
 ) => Promise<() => void>;
 
 interface SendAiMessageOptions {
+  approvalModeOverride?: AgentApprovalMode;
   commandProposalEnabled: boolean;
   conversationSummary?: AiConversationSummaryRecord;
   context: string;
@@ -68,6 +68,7 @@ interface SendAiMessageOptions {
   targetSessionId: string;
   toolCurrentDirectory: string | null;
   value: string;
+  requestValue?: string;
 }
 
 interface UseAiRequestOrchestratorOptions {
@@ -192,6 +193,14 @@ export function useAiRequestOrchestrator({
     }
   }, [invoke, rejectPendingCommandApprovals, rejectPendingFileApprovals]);
 
+  const resolveTaskInterruption = useCallback(
+    (taskId: string, decision: AgentTaskRecoveryDecision) =>
+      invoke<AgentTaskRecoveryContext>("ai_task_recovery_decide", {
+        request: { decision, taskId },
+      }),
+    [invoke],
+  );
+
   const decideDiagnosticPlan = useCallback(
     (
       planId: string,
@@ -310,7 +319,12 @@ export function useAiRequestOrchestrator({
         (current) =>
           current.map((message) =>
             message.id === activeRequest.assistantId
-              ? { ...message, content: message.content + payload.delta }
+              ? payload.kind === "reasoning"
+                ? {
+                    ...message,
+                    reasoning: `${message.reasoning ?? ""}${payload.delta}`,
+                  }
+                : { ...message, content: message.content + payload.delta }
               : message,
           ),
       );
@@ -422,6 +436,7 @@ export function useAiRequestOrchestrator({
   const sendMessage = useCallback(
     async ({
       commandProposalEnabled,
+      approvalModeOverride,
       conversationSummary,
       context,
       contextLabels,
@@ -434,6 +449,7 @@ export function useAiRequestOrchestrator({
       targetSessionId,
       toolCurrentDirectory,
       value,
+      requestValue,
     }: SendAiMessageOptions) => {
       if (activeRequestRef.current || !value.trim()) return undefined;
       if (!settings.aiModel.trim()) {
@@ -441,6 +457,7 @@ export function useAiRequestOrchestrator({
         return undefined;
       }
 
+      const modelRequestValue = requestValue?.trim() || value.trim();
       const requestId = createAiRequestId("ai-request");
       const userMessage: AiMessage = {
         id: createAiRequestId("ai-user"),
@@ -479,13 +496,12 @@ export function useAiRequestOrchestrator({
       try {
         const requestMessages = [
           ...buildAiConversationRequestMessages(history, conversationSummary),
-          { role: "user" as const, content: userMessage.content },
+          { role: "user" as const, content: modelRequestValue },
         ];
         const toolRounds: AiToolRound[] = [];
         const responseParts: string[] = [];
         const proposedFilePaths = new Set<string>();
         const proposedCommands = new Set<string>();
-        let finalizeReason: AiFinalizeReason | undefined;
         const fileProposalEnabled =
           settings.aiFileProposalsEnabled &&
           (editableFiles.length > 0 || Boolean(currentOperationDirectory));
@@ -507,7 +523,6 @@ export function useAiRequestOrchestrator({
               enabledTools: settings.aiReadOnlyTools,
               fileEditEnabled: fileProposalEnabled,
               commandProposalEnabled: terminalProposalEnabled,
-              finalizeReason,
               toolRounds,
               task: {
                 id: requestId,
@@ -521,8 +536,8 @@ export function useAiRequestOrchestrator({
                   path,
                   size,
                 })),
-                objective: userMessage.content,
-                approvalMode,
+                objective: modelRequestValue,
+                approvalMode: approvalModeOverride ?? approvalMode,
               },
             },
           });
@@ -562,18 +577,6 @@ export function useAiRequestOrchestrator({
             );
             break;
           }
-          if (finalizeReason) {
-            throw new Error("AI 收尾响应返回了意外的工具调用");
-          }
-          const nextFinalizeReason = aiToolLoopFinalizeReason(
-            toolRounds,
-            result.toolCalls,
-          );
-          if (nextFinalizeReason) {
-            finalizeReason = nextFinalizeReason;
-            continue;
-          }
-
           const proposalRound = prepareAiProposalRound({
             calls: result.toolCalls,
             currentOperationDirectory,
@@ -624,6 +627,7 @@ export function useAiRequestOrchestrator({
           toolRounds.push({
             calls: result.toolCalls,
             content: result.content.trim() || undefined,
+            reasoningContent: result.reasoningContent,
             results: toolResults,
           });
         }
@@ -739,6 +743,7 @@ export function useAiRequestOrchestrator({
     decideCommandProposal,
     decideFileProposal,
     reviseDiagnosticPlan,
+    resolveTaskInterruption,
     sendMessage,
     sending,
     stopDiagnosticPlan,

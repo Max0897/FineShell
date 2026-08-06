@@ -44,6 +44,33 @@ pub(crate) struct AgentActionTransitionRequest {
     pub(crate) error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentTaskRecoveryDecision {
+    ContinueAnalysis,
+    Retry,
+    Finish,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct AgentTaskRecoveryRequest {
+    pub(crate) task_id: String,
+    pub(crate) decision: AgentTaskRecoveryDecision,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentTaskRecoveryContext {
+    pub(crate) previous_task_id: String,
+    pub(crate) host_id: String,
+    pub(crate) decision: AgentTaskRecoveryDecision,
+    pub(crate) objective: String,
+    pub(crate) interruption_reason: String,
+    pub(crate) completed_actions: Vec<String>,
+    pub(crate) uncertain_actions: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentCommandObservationPhase {
@@ -55,16 +82,16 @@ pub(crate) enum AgentCommandObservationPhase {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct AgentCommandObservationRequest {
-    pub(super) task_id: String,
-    pub(super) action_id: String,
-    pub(super) host_id: String,
-    pub(super) session_id: String,
-    pub(super) submission_id: String,
-    pub(super) phase: AgentCommandObservationPhase,
-    pub(super) command: String,
-    pub(super) exit_code: Option<u16>,
-    pub(super) duration_ms: Option<u64>,
-    pub(super) reason: Option<String>,
+    pub(crate) task_id: String,
+    pub(crate) action_id: String,
+    pub(crate) host_id: String,
+    pub(crate) session_id: String,
+    pub(crate) submission_id: String,
+    pub(crate) phase: AgentCommandObservationPhase,
+    pub(crate) command: String,
+    pub(crate) exit_code: Option<u16>,
+    pub(crate) duration_ms: Option<u64>,
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +101,8 @@ pub(crate) struct AuthorizedAgentAction {
     pub(crate) tool: String,
     pub(crate) arguments: serde_json::Value,
     pub(crate) session_id: String,
+    pub(crate) host_id: String,
+    pub(crate) current_directory: Option<String>,
     pub(crate) rollback: bool,
     pub(crate) execution_kind: AgentActionExecutionKind,
 }

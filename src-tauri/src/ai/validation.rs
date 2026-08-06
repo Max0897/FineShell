@@ -68,6 +68,7 @@ pub(super) fn supported_tool(name: &str) -> bool {
             | "ping_target"
             | "trace_route"
             | "propose_terminal_command"
+            | "propose_service_action"
             | "propose_file_edit"
             | "propose_file_operation"
     )
@@ -78,7 +79,7 @@ pub(super) fn file_mutation_tool(name: &str) -> bool {
 }
 
 pub(super) fn command_proposal_tool(name: &str) -> bool {
-    name == "propose_terminal_command"
+    matches!(name, "propose_terminal_command" | "propose_service_action")
 }
 
 pub(super) fn diagnostic_tool(name: &str) -> bool {
@@ -352,6 +353,17 @@ pub(super) fn valid_tool_arguments(name: &str, arguments: &str) -> bool {
                             })
                     })
         }
+        "propose_service_action" => {
+            arguments.len() == 2
+                && arguments
+                    .get("service")
+                    .and_then(Value::as_str)
+                    .is_some_and(crate::agent_actions::valid_service_name)
+                && arguments
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .is_some_and(|action| matches!(action, "status" | "start" | "stop" | "restart"))
+        }
         _ => false,
     }
 }
@@ -365,9 +377,6 @@ pub(super) fn validate_tool_rounds(
     if !diagnostics_enabled && !file_edit_enabled && !command_proposal_enabled && !rounds.is_empty()
     {
         return Err("AI 工具调用未启用".to_string());
-    }
-    if rounds.len() > MAX_TOOL_ROUNDS {
-        return Err("AI 工具调用轮数超过限制".to_string());
     }
     let mut total_result_chars = 0usize;
     let mut total_tool_calls = 0usize;
@@ -395,6 +404,11 @@ pub(super) fn validate_tool_rounds(
             .is_some_and(|content| content.chars().count() > 8_000)
         {
             return Err("AI 工具调用说明过长".to_string());
+        }
+        if round.reasoning_content.as_ref().is_some_and(|reasoning| {
+            reasoning.is_empty() || reasoning.chars().count() > MAX_REASONING_CONTENT_CHARS
+        }) {
+            return Err("AI 工具调用推理内容无效".to_string());
         }
         for call in &round.calls {
             if call.id.trim().is_empty()

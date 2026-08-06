@@ -15,8 +15,11 @@ use std::{
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use ssh2::{Channel, HashType, Session};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
+use crate::agent::{
+    emit_task_events, AgentCommandExecutionPhase, AgentCommandOutputSnapshot, AgentTaskManager,
+};
 use crate::agent_verification::{
     execute_business_verification, AgentBusinessVerification, AgentBusinessVerificationResult,
 };
@@ -296,6 +299,7 @@ enum SessionHandle {
     Connected(Sender<SessionCommand>),
 }
 
+mod agent;
 mod auth;
 mod events;
 mod forwarding;
@@ -303,6 +307,8 @@ mod health;
 mod manager;
 mod session;
 
+use agent::*;
+pub(crate) use agent::{AgentCommandExecutionContext, AgentCommandExecutionResult};
 pub(crate) use auth::connect_authenticated_session;
 use auth::*;
 use events::*;

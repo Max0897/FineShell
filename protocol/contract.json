@@ -1,5 +1,5 @@
 {
-  "version": 29,
+  "version": 32,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -28,6 +28,7 @@
     "ai_chat_cancel": true,
     "ai_task_get": true,
     "ai_task_events_since": true,
+    "ai_task_recovery_decide": true,
     "ai_task_plan_decide": true,
     "ai_task_action_transition": true,
     "ai_task_command_observe": true,
@@ -128,6 +129,7 @@
     "action_approved": true,
     "action_rejected": true,
     "action_started": true,
+    "action_progress": true,
     "action_succeeded": true,
     "action_conflicted": true,
     "action_failed": true,
@@ -182,6 +184,14 @@
     "rollback_conflict": true,
     "rollback_failed": true,
     "cancelled": true
+  },
+  "agentCommandExecutionPhases": {
+    "connecting": true,
+    "running": true,
+    "cancelling": true,
+    "completed": true,
+    "failed": true,
+    "interrupted": true
   },
   "agentActionTransitions": {
     "approve": true,

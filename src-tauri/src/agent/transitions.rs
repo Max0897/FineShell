@@ -262,6 +262,7 @@ impl AgentTaskManager {
                     task.actions[index].verification_status = AgentVerificationStatus::Pending;
                     task.actions[index].verification_evidence.clear();
                     task.actions[index].command_submission_id = None;
+                    task.actions[index].command_execution = None;
                     task.result = None;
                     task.refresh_action_status();
                     events.push(task.action_event(AgentTaskEventKind::ActionRetried, &action_id));
@@ -374,6 +375,23 @@ impl AgentTaskManager {
                 }
                 return Err("AI 命令已经由其他终端提交结束".to_string());
             }
+            let action_id = task.actions[index].id.clone();
+            let now = timestamp_ms();
+            if task.status == AgentTaskStatus::Cancelled
+                && request.phase == AgentCommandObservationPhase::Unavailable
+                && same_submission
+            {
+                if let Some(command) = task.actions[index].command_execution.as_mut() {
+                    command.phase = AgentCommandExecutionPhase::Interrupted;
+                    command.reason = reason;
+                    command.duration_ms = request.duration_ms;
+                    command.updated_at = now;
+                    command.completed_at = Some(now);
+                }
+                return Ok(vec![
+                    task.action_event(AgentTaskEventKind::ActionProgress, &action_id)
+                ]);
+            }
             if matches!(
                 task.status,
                 AgentTaskStatus::Completed | AgentTaskStatus::Failed | AgentTaskStatus::Cancelled
@@ -381,14 +399,28 @@ impl AgentTaskManager {
                 return Err("AI 任务已经结束".to_string());
             }
 
-            let action_id = task.actions[index].id.clone();
-            let now = timestamp_ms();
             let mut events = Vec::with_capacity(3);
             match task.actions[index].status {
                 AgentActionStatus::Approved => {
                     task.actions[index].command_submission_id = Some(request.submission_id.clone());
+                    task.actions[index].command_execution = Some(AgentCommandExecutionState {
+                        submission_id: request.submission_id.clone(),
+                        phase: AgentCommandExecutionPhase::Connecting,
+                        output_excerpt: None,
+                        output_truncated: false,
+                        stdout_excerpt: None,
+                        stdout_truncated: false,
+                        stderr_excerpt: None,
+                        stderr_truncated: false,
+                        exit_code: None,
+                        duration_ms: None,
+                        reason: None,
+                        submitted_at: now,
+                        updated_at: now,
+                        completed_at: None,
+                    });
                     task.actions[index].status = AgentActionStatus::Running;
-                    task.actions[index].summary = Some("用户已在终端提交命令".to_string());
+                    task.actions[index].summary = Some("已提交后台 SSH 命令".to_string());
                     task.actions[index].error = None;
                     task.actions[index].started_at = Some(now);
                     task.actions[index].completed_at = None;
@@ -411,6 +443,19 @@ impl AgentTaskManager {
                 AgentCommandObservationPhase::Submitted => {}
                 AgentCommandObservationPhase::Completed => {
                     let exit_code = request.exit_code.unwrap_or_default();
+                    if let Some(command) = task.actions[index].command_execution.as_mut() {
+                        command.phase = if exit_code == 0 {
+                            AgentCommandExecutionPhase::Completed
+                        } else {
+                            AgentCommandExecutionPhase::Failed
+                        };
+                        command.exit_code = Some(exit_code);
+                        command.duration_ms = request.duration_ms;
+                        command.reason =
+                            (exit_code != 0).then(|| format!("终端命令退出码 {exit_code}"));
+                        command.updated_at = now;
+                        command.completed_at = Some(now);
+                    }
                     task.actions[index].completed_at = Some(now);
                     task.actions[index].duration_ms = request.duration_ms;
                     if exit_code == 0 {
@@ -464,9 +509,29 @@ impl AgentTaskManager {
                     );
                 }
                 AgentCommandObservationPhase::Unavailable => {
+                    let execution_interrupted = reason.as_deref().is_some_and(|value| {
+                        value.contains("超时")
+                            || value.contains("连接已断开")
+                            || value.contains("连接已关闭")
+                    });
+                    if let Some(command) = task.actions[index].command_execution.as_mut() {
+                        command.phase = if execution_interrupted
+                            || reason
+                                .as_deref()
+                                .is_some_and(|value| value.contains("取消"))
+                        {
+                            AgentCommandExecutionPhase::Interrupted
+                        } else {
+                            AgentCommandExecutionPhase::Failed
+                        };
+                        command.reason = reason.clone();
+                        command.duration_ms = request.duration_ms;
+                        command.updated_at = now;
+                        command.completed_at = Some(now);
+                    }
                     task.actions[index].status = AgentActionStatus::Failed;
                     task.actions[index].summary = None;
-                    task.actions[index].error = reason;
+                    task.actions[index].error = reason.clone();
                     task.actions[index].completed_at = Some(now);
                     task.actions[index].duration_ms = request.duration_ms;
                     task.actions[index].record_verification(
@@ -485,9 +550,17 @@ impl AgentTaskManager {
                             &action_id,
                         ),
                     );
+                    if execution_interrupted {
+                        task.status = AgentTaskStatus::Paused;
+                        task.error = reason.clone();
+                        events.push(task.event(AgentTaskEventKind::TaskPaused));
+                    }
                 }
             }
-            if task.model_completed && !task.has_unresolved_actions() {
+            if task.model_completed
+                && !task.has_unresolved_actions()
+                && task.status != AgentTaskStatus::Paused
+            {
                 task.complete_actions();
                 events.push(task.event(AgentTaskEventKind::TaskCompleted));
             }
@@ -500,6 +573,60 @@ impl AgentTaskManager {
             self.revoke_task_approvals(&task_id)?;
         }
         Ok(events)
+    }
+
+    pub(crate) fn observe_command_progress(
+        &self,
+        task_id: &str,
+        action_id: &str,
+        submission_id: &str,
+        phase: AgentCommandExecutionPhase,
+        output: AgentCommandOutputSnapshot,
+    ) -> Result<Vec<AgentTaskEvent>, String> {
+        if [task_id, action_id, submission_id]
+            .into_iter()
+            .any(|value| !valid_identifier(value))
+            || phase.is_terminal()
+        {
+            return Err("AI 后台命令进度无效".to_string());
+        }
+        let mut tasks = self.lock_tasks()?;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| "AI 任务不存在".to_string())?;
+        let action = task
+            .actions
+            .iter_mut()
+            .find(|action| action.id == action_id)
+            .ok_or_else(|| "AI 动作不存在".to_string())?;
+        if action.tool != "execute_terminal_command"
+            || action.status != AgentActionStatus::Running
+            || action.command_submission_id.as_deref() != Some(submission_id)
+        {
+            return Ok(Vec::new());
+        }
+        let command = action
+            .command_execution
+            .as_mut()
+            .ok_or_else(|| "AI 后台命令缺少运行快照".to_string())?;
+        command.phase = phase;
+        command.updated_at = timestamp_ms();
+        if let Some(excerpt) = output.output_excerpt {
+            command.output_excerpt = Some(excerpt);
+            command.output_truncated = output.output_truncated;
+        }
+        if let Some(stdout) = output.stdout_excerpt {
+            command.stdout_excerpt = Some(stdout);
+            command.stdout_truncated = output.stdout_truncated;
+        }
+        if let Some(stderr) = output.stderr_excerpt {
+            command.stderr_excerpt = Some(stderr);
+            command.stderr_truncated = output.stderr_truncated;
+        }
+        Ok(vec![task.action_event(
+            AgentTaskEventKind::ActionProgress,
+            action_id,
+        )])
     }
 
     pub(crate) fn pending_business_verification(

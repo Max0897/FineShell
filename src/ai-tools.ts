@@ -6,10 +6,8 @@ import type {
   ServerProcessListResult,
 } from "./models";
 import type {
-  AiFinalizeReason,
   AiToolCall,
   AiToolResult,
-  AiToolRound,
 } from "./tauri-protocol";
 import { redactAiContext } from "./ai-utils";
 import {
@@ -45,14 +43,6 @@ export interface AiToolRun {
   status: AiToolRunStatus;
 }
 
-export const MAX_AI_TOOL_ROUNDS = 8;
-export const MAX_AI_TOOL_CALLS = 24;
-export const MAX_AI_TOOL_RESULT_CHARS = 64_000;
-export const MAX_AI_IDENTICAL_TOOL_EXECUTIONS = 2;
-export const MAX_AI_CONSECUTIVE_FAILED_ROUNDS = 3;
-
-const TOOL_PLANNING_ARGUMENTS = new Set(["depends_on", "optional", "reason"]);
-
 const TOOL_LABELS: Record<AiReadOnlyToolName, string> = {
   get_server_status: "读取服务器状态",
   list_processes: "读取进程列表",
@@ -70,98 +60,6 @@ const MAX_DATE_TIMESTAMP = 8_640_000_000_000_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function canonicalToolValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalToolValue);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([key]) => !TOOL_PLANNING_ARGUMENTS.has(key))
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => [key, canonicalToolValue(item)]),
-  );
-}
-
-export function aiToolCallFingerprint(call: AiToolCall) {
-  let args: unknown = call.arguments;
-  try {
-    args = canonicalToolValue(JSON.parse(call.arguments));
-  } catch {
-    // Invalid arguments are rejected by the normal tool validation path.
-  }
-  return `${call.name}:${JSON.stringify(args)}`;
-}
-
-function aiToolRoundFailed(round: AiToolRound) {
-  return (
-    round.results.length > 0 &&
-    round.results.every((result) => {
-      try {
-        const value: unknown = JSON.parse(result.content);
-        return isRecord(value) && value.ok === false;
-      } catch {
-        return false;
-      }
-    })
-  );
-}
-
-export function aiToolLoopFinalizeReason(
-  rounds: readonly AiToolRound[],
-  nextCalls: readonly AiToolCall[],
-): AiFinalizeReason | undefined {
-  const completedCalls = rounds.reduce(
-    (total, round) => total + round.calls.length,
-    0,
-  );
-  const completedResultChars = rounds.reduce(
-    (total, round) =>
-      total +
-      round.results.reduce(
-        (roundTotal, result) => roundTotal + result.content.length,
-        0,
-      ),
-    0,
-  );
-  if (
-    rounds.length >= MAX_AI_TOOL_ROUNDS ||
-    completedCalls + nextCalls.length > MAX_AI_TOOL_CALLS ||
-    completedResultChars >= MAX_AI_TOOL_RESULT_CHARS
-  ) {
-    return "tool_budget";
-  }
-
-  if (
-    rounds.length >= MAX_AI_CONSECUTIVE_FAILED_ROUNDS &&
-    rounds
-      .slice(-MAX_AI_CONSECUTIVE_FAILED_ROUNDS)
-      .every(aiToolRoundFailed)
-  ) {
-    return "consecutive_failures";
-  }
-
-  const executionCounts = new Map<string, number>();
-  for (const round of rounds) {
-    for (const call of round.calls) {
-      const fingerprint = aiToolCallFingerprint(call);
-      executionCounts.set(
-        fingerprint,
-        (executionCounts.get(fingerprint) ?? 0) + 1,
-      );
-    }
-  }
-  if (
-    nextCalls.length > 0 &&
-    nextCalls.every(
-      (call) =>
-        (executionCounts.get(aiToolCallFingerprint(call)) ?? 0) >=
-        MAX_AI_IDENTICAL_TOOL_EXECUTIONS,
-    )
-  ) {
-    return "no_progress";
-  }
-  return undefined;
 }
 
 function boundedSafeText(value: unknown, maxLength: number) {

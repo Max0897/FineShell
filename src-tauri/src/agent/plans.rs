@@ -169,7 +169,7 @@ impl AgentTaskManager {
             return Err("AI 审批反馈过长".to_string());
         }
         if feedback.is_some() && !matches!(request.decision, AgentPlanDecisionKind::Reject) {
-            return Err("AI 审批反馈只能用于驳回决定".to_string());
+            return Err("AI 审批反馈只能用于拒绝决定".to_string());
         }
         let (host_id, session_id, current_directory) = {
             let tasks = self.lock_tasks()?;

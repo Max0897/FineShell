@@ -7,6 +7,7 @@ import {
   type AgentActionStatus,
   type AgentActionTransition,
   type AgentActionRisk,
+  type AgentCommandExecutionPhase,
   type AgentApprovalMode,
   type AgentPlanStepStatus,
   type AgentPlanStatus,
@@ -29,7 +30,7 @@ describe("Tauri shared protocol", () => {
     expect(PROTOCOL_VERSION).toBe(contract.version);
     expect(contract.commands[command]).toBe(true);
     expect(contract.events[event]).toBe(true);
-    expect(Object.keys(contract.commands)).toHaveLength(87);
+    expect(Object.keys(contract.commands)).toHaveLength(88);
     expect(Object.keys(contract.events)).toHaveLength(11);
   });
 
@@ -44,6 +45,7 @@ describe("Tauri shared protocol", () => {
     const risk: AgentActionRisk = "reversible_write";
     const actionStatus: AgentActionStatus = "running";
     const actionTransition: AgentActionTransition = "rollback_start";
+    const commandPhase: AgentCommandExecutionPhase = "interrupted";
     const verification: AgentVerificationStatus = "unverified";
     const evidence: AgentVerificationEvidenceKind = "service_status";
     const repairStop: AgentRepairStopReason = "repair_budget_exhausted";
@@ -60,6 +62,7 @@ describe("Tauri shared protocol", () => {
     expect(contract.agentActionRisks[risk]).toBe(true);
     expect(contract.agentActionStatuses[actionStatus]).toBe(true);
     expect(contract.agentActionTransitions[actionTransition]).toBe(true);
+    expect(contract.agentCommandExecutionPhases[commandPhase]).toBe(true);
     expect(contract.agentVerificationStatuses[verification]).toBe(true);
     expect(contract.agentVerificationEvidenceKinds[evidence]).toBe(true);
     expect(contract.agentRepairStopReasons[repairStop]).toBe(true);

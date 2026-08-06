@@ -38,24 +38,18 @@ import type {
 import { TERMINAL_FONT_FAMILIES, type AppSettings } from "../app-settings";
 import {
   appendInjectedTerminalInput,
-  consumeTerminalCommandCandidate,
   decodeSshOutput,
   EMPTY_TERMINAL_INPUT_STATE,
   isTerminalSessionOperational,
   isWindowsTerminalPasteShortcut,
   terminalStatusNoticeKey,
-  terminalInjectedInputData,
-  trackInjectedTerminalInput,
-  type TerminalCommandSubmission,
   trackTerminalInput,
-  type TerminalInjectedInput,
 } from "../terminal-utils";
 import { loadConfiguration } from "../config-database";
 import { recordTerminalCommandHistory } from "../configuration-mutations";
 import { TerminalHistoryCompletionAddon } from "../terminal-history-completion";
 import {
   FINESHELL_OSC_ID,
-  boundedShellCommandOutput,
   buildShellIntegrationInstallCommand,
   buildShellIntegrationUninstallCommand,
   createShellIntegrationEchoFilter,
@@ -81,25 +75,16 @@ import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 interface TerminalViewProps {
   active: boolean;
-  commandTrackingEnabled: boolean;
   focusRequest: number;
-  injectedInput?: TerminalInjectedInput;
   onFontZoom: (action: TerminalFontZoomAction) => void;
   settings: AppSettings;
   session: TerminalSession;
   terminalFontSize: number;
   onAskAi: (selection: string) => void;
-  onCommandLifecycle: (event: TerminalCommandSubmission) => void;
   onCurrentDirectoryChange: (sessionId: string, path: string) => void;
   onReconnect: () => void;
   onRecentOutputChange: (output: string) => void;
   onSelectionChange: (selection: string) => void;
-}
-
-interface PendingShellCommand {
-  startLine: number;
-  startedAtMs: number;
-  submission: TerminalCommandSubmission;
 }
 
 type ShellIntegrationMutation = "install" | "uninstall";
@@ -146,15 +131,12 @@ async function writeClipboard(value: string) {
 
 function TerminalView({
   active,
-  commandTrackingEnabled,
   focusRequest,
-  injectedInput,
   onFontZoom,
   settings,
   session,
   terminalFontSize,
   onAskAi,
-  onCommandLifecycle,
   onCurrentDirectoryChange,
   onReconnect,
   onRecentOutputChange,
@@ -169,9 +151,6 @@ function TerminalView({
   );
   const searchInputRef = useRef<RefInputType>(null);
   const connectedRef = useRef(isTerminalSessionOperational(session.status));
-  const commandLifecycleRef = useRef(onCommandLifecycle);
-  const commandTrackingEnabledRef = useRef(commandTrackingEnabled);
-  const shellCommandResultsEnabledRef = useRef(commandTrackingEnabled);
   const shellIntegrationInstalledRef = useRef(false);
   const shellIntegrationNonceRef = useRef(createShellIntegrationNonce());
   const shellIntegrationStateRef = useRef<
@@ -186,19 +165,13 @@ function TerminalView({
   const settleShellIntegrationMutationRef = useRef<
     (result: "ready" | "disabled" | "unavailable") => void
   >(() => undefined);
-  const pendingShellCommandsRef = useRef<PendingShellCommand[]>([]);
-  const aiCommandCandidatesRef = useRef<string[]>([]);
   const terminalCommandHistoryRef = useRef<TerminalCommandHistoryRecord[]>([]);
   const terminalHistoryWriteRef = useRef<Promise<void>>(Promise.resolve());
   const currentDirectoryRef = useRef("");
   const inputStateRef = useRef({ ...EMPTY_TERMINAL_INPUT_STATE });
-  const trackSubmittedCommandRef = useRef<(command: string) => void>(
-    () => undefined,
-  );
   const recordTerminalHistoryRef = useRef<(command: string) => void>(
     () => undefined,
   );
-  const lastInjectedInputIdRef = useRef<string>();
   const recentOutputChangeRef = useRef(onRecentOutputChange);
   const selectionChangeRef = useRef(onSelectionChange);
   const currentDirectoryChangeRef = useRef(onCurrentDirectoryChange);
@@ -226,9 +199,6 @@ function TerminalView({
     status: session.status,
   };
   fontZoomRef.current = onFontZoom;
-  commandLifecycleRef.current = onCommandLifecycle;
-  commandTrackingEnabledRef.current = commandTrackingEnabled;
-  shellCommandResultsEnabledRef.current = commandTrackingEnabled;
   currentDirectoryChangeRef.current = onCurrentDirectoryChange;
   recentOutputChangeRef.current = onRecentOutputChange;
   selectionChangeRef.current = onSelectionChange;
@@ -321,46 +291,6 @@ function TerminalView({
       .catch(() => undefined);
   };
 
-  trackSubmittedCommandRef.current = (command) => {
-    const candidate = consumeTerminalCommandCandidate(
-      aiCommandCandidatesRef.current,
-      command,
-    );
-    aiCommandCandidatesRef.current = candidate.candidates;
-    if (!candidate.matched) return;
-    const submittedAt = new Date().toISOString();
-    const submission: TerminalCommandSubmission = {
-      command,
-      hostId: session.host.id,
-      id: `terminal-command-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      phase: "submitted",
-      sessionId: session.id,
-      submittedAt,
-    };
-    commandLifecycleRef.current(submission);
-    if (!shellCommandResultsEnabledRef.current) return;
-    const terminal = terminalRef.current;
-    if (shellIntegrationStateRef.current === "ready" && terminal) {
-      const buffer = terminal.buffer.active;
-      pendingShellCommandsRef.current.push({
-        startLine: buffer.baseY + buffer.cursorY + 1,
-        startedAtMs: Date.now(),
-        submission,
-      });
-      return;
-    }
-    commandLifecycleRef.current({
-      ...submission,
-      completedAt: submittedAt,
-      durationMs: 0,
-      phase: "unavailable",
-      reason:
-        shellIntegrationStateRef.current === "unavailable"
-          ? "当前远程 Shell 不支持结果关联"
-          : "Shell Integration 尚未就绪",
-    });
-  };
-
   const clearShellIntegrationTimeout = () => {
     if (!shellIntegrationTimeoutRef.current) return;
     clearTimeout(shellIntegrationTimeoutRef.current);
@@ -425,36 +355,16 @@ function TerminalView({
     if (!isTerminalSessionOperational(session.status)) {
       currentDirectoryRef.current = "";
       currentDirectoryChangeRef.current(session.id, "");
-      const completedAt = new Date().toISOString();
-      for (const pending of pendingShellCommandsRef.current) {
-        commandLifecycleRef.current({
-          ...pending.submission,
-          completedAt,
-          durationMs: Math.max(0, Date.now() - pending.startedAtMs),
-          phase: "unavailable",
-          reason: "终端会话已断开，无法确认命令结果",
-        });
-      }
-      pendingShellCommandsRef.current = [];
       shellIntegrationInstalledRef.current = false;
       shellIntegrationStateRef.current = "disabled";
       shellIntegrationMutationRef.current = undefined;
       shellIntegrationEchoFilterRef.current = undefined;
       clearShellIntegrationTimeout();
-      aiCommandCandidatesRef.current = [];
       inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
       historyCompletionRef.current?.setPromptReady(false);
       historyCompletionRef.current?.synchronizeInput("", true);
     }
   }, [session.status]);
-
-  useEffect(() => {
-    if (commandTrackingEnabled) return;
-    pendingShellCommandsRef.current = [];
-    aiCommandCandidatesRef.current = [];
-    inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
-    historyCompletionRef.current?.synchronizeInput("", true);
-  }, [commandTrackingEnabled]);
 
   useEffect(() => {
     if (!isTerminalSessionOperational(session.status) || !terminalReady) return;
@@ -466,47 +376,6 @@ function TerminalView({
       startShellIntegrationMutationRef.current("install");
     }
   }, [session.id, session.status, terminalReady]);
-
-  useEffect(() => {
-    if (
-      !injectedInput ||
-      lastInjectedInputIdRef.current === injectedInput.id
-    ) {
-      return;
-    }
-    lastInjectedInputIdRef.current = injectedInput.id;
-    if (commandTrackingEnabled || injectedInput.submit) {
-      aiCommandCandidatesRef.current = [
-        ...aiCommandCandidatesRef.current.filter(
-          (candidate) => candidate !== injectedInput.value,
-        ),
-        injectedInput.value,
-      ].slice(-8);
-    }
-    const tracked = trackInjectedTerminalInput(
-      inputStateRef.current,
-      injectedInput,
-    );
-    inputStateRef.current = tracked.state;
-    historyCompletionRef.current?.synchronizeInput(
-      tracked.state.value,
-      tracked.state.reliable,
-    );
-    if (injectedInput.submit) {
-      historyCompletionRef.current?.setPromptReady(false);
-    }
-    tracked.submissions.forEach((command) => {
-      recordTerminalHistoryRef.current(command);
-      if (commandTrackingEnabled || injectedInput.submit) {
-        trackSubmittedCommandRef.current(command);
-      }
-    });
-    const data = terminalInjectedInputData(injectedInput);
-    void invoke("ssh_write", {
-      sessionId: session.id,
-      data: Array.from(new TextEncoder().encode(data)),
-    }).catch(() => undefined);
-  }, [commandTrackingEnabled, injectedInput, session.id]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -547,6 +416,9 @@ function TerminalView({
           data: Array.from(new TextEncoder().encode(suffix)),
         }).catch(() => undefined);
       },
+      onSynchronizeInput: (commandLine) => {
+        inputStateRef.current = { reliable: true, value: commandLine };
+      },
     });
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
@@ -574,9 +446,6 @@ function TerminalView({
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
     inputStateRef.current = { ...EMPTY_TERMINAL_INPUT_STATE };
-    aiCommandCandidatesRef.current = [];
-    pendingShellCommandsRef.current = [];
-    lastInjectedInputIdRef.current = undefined;
     currentDirectoryRef.current = "";
 
     const loadTerminalHistory = () =>
@@ -620,9 +489,6 @@ function TerminalView({
       }
       tracked.submissions.forEach((command) => {
         recordTerminalHistoryRef.current(command);
-        if (commandTrackingEnabledRef.current) {
-          trackSubmittedCommandRef.current(command);
-        }
       });
       void invoke("ssh_write", {
         sessionId: session.id,
@@ -682,50 +548,10 @@ function TerminalView({
           historyCompletionAddon.setPromptReady(false);
           currentDirectoryRef.current = "";
           currentDirectoryChangeRef.current(session.id, "");
-          const completedAt = new Date().toISOString();
-          for (const pending of pendingShellCommandsRef.current) {
-            commandLifecycleRef.current({
-              ...pending.submission,
-              completedAt,
-              durationMs: Math.max(0, Date.now() - pending.startedAtMs),
-              phase: "unavailable",
-              reason: "当前远程 Shell 不支持结果关联",
-            });
-          }
-          pendingShellCommandsRef.current = [];
           return true;
         }
 
         historyCompletionAddon.setPromptReady(true);
-        const pending = pendingShellCommandsRef.current.shift();
-        if (!pending) return true;
-        window.setTimeout(() => {
-          const buffer = terminal.buffer.active;
-          const endLine = buffer.baseY + buffer.cursorY;
-          let rawOutput = "";
-          for (
-            let index = Math.max(0, pending.startLine);
-            index <= endLine;
-            index += 1
-          ) {
-            const line = buffer.getLine(index);
-            if (!line) continue;
-            const value = line.translateToString(true);
-            rawOutput += line.isWrapped
-              ? value
-              : `${rawOutput ? "\n" : ""}${value}`;
-          }
-          const result = boundedShellCommandOutput(rawOutput);
-          commandLifecycleRef.current({
-            ...pending.submission,
-            completedAt: new Date().toISOString(),
-            durationMs: Math.max(0, Date.now() - pending.startedAtMs),
-            exitCode: message.exitCode,
-            output: result.output,
-            outputTruncated: result.truncated,
-            phase: "completed",
-          });
-        }, 0);
         return true;
       },
     );

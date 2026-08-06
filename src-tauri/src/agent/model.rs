@@ -129,6 +129,56 @@ pub(crate) enum AgentActionStatus {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub(crate) enum AgentCommandExecutionPhase {
+    Connecting,
+    Running,
+    Cancelling,
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+impl AgentCommandExecutionPhase {
+    pub(super) fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Interrupted)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct AgentCommandOutputSnapshot {
+    pub(crate) output_excerpt: Option<String>,
+    pub(crate) output_truncated: bool,
+    pub(crate) stdout_excerpt: Option<String>,
+    pub(crate) stdout_truncated: bool,
+    pub(crate) stderr_excerpt: Option<String>,
+    pub(crate) stderr_truncated: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentCommandExecutionState {
+    pub(super) submission_id: String,
+    pub(super) phase: AgentCommandExecutionPhase,
+    pub(super) output_excerpt: Option<String>,
+    pub(super) output_truncated: bool,
+    #[serde(default)]
+    pub(super) stdout_excerpt: Option<String>,
+    #[serde(default)]
+    pub(super) stdout_truncated: bool,
+    #[serde(default)]
+    pub(super) stderr_excerpt: Option<String>,
+    #[serde(default)]
+    pub(super) stderr_truncated: bool,
+    pub(super) exit_code: Option<u16>,
+    pub(super) duration_ms: Option<u64>,
+    pub(super) reason: Option<String>,
+    pub(super) submitted_at: u64,
+    pub(super) updated_at: u64,
+    pub(super) completed_at: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum AgentVerificationStatus {
     Pending,
     Verified,
@@ -226,6 +276,8 @@ pub(crate) struct AgentActionState {
     pub(super) verification_status: AgentVerificationStatus,
     pub(super) verification_evidence: Vec<AgentVerificationEvidence>,
     pub(super) recovery_state: Option<AgentRecoveryState>,
+    #[serde(default)]
+    pub(super) command_execution: Option<AgentCommandExecutionState>,
     #[serde(default, skip_serializing)]
     pub(super) arguments: serde_json::Value,
     #[serde(default, skip_serializing)]
@@ -250,6 +302,7 @@ impl AgentActionState {
             verification_status: AgentVerificationStatus::Pending,
             verification_evidence: Vec::new(),
             recovery_state: None,
+            command_execution: None,
             command_submission_id: None,
         }
     }
@@ -418,6 +471,7 @@ pub(crate) enum AgentTaskEventKind {
     ActionApproved,
     ActionRejected,
     ActionStarted,
+    ActionProgress,
     ActionSucceeded,
     ActionConflicted,
     ActionFailed,

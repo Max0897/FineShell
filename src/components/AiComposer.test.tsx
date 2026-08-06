@@ -49,6 +49,8 @@ function renderComposer({
     ...render(
       <AiComposer
         activeConversationAvailable
+        approvalMode="on_request"
+        canInsertCommand
         contextSources={[
           {
             content: "root@server:~# uptime",
@@ -58,6 +60,7 @@ function renderComposer({
         ]}
         editableRemoteFileCount={1}
         model="deepseek-chat"
+        onApprovalModeChange={() => undefined}
         onCancel={onCancel}
         onChange={onChange}
         onRemoveRemoteFile={onRemoveRemoteFile}
@@ -118,9 +121,12 @@ describe("AiComposer", () => {
     render(
       <AiComposer
         activeConversationAvailable
+        approvalMode="on_request"
+        canInsertCommand
         contextSources={[]}
         editableRemoteFileCount={1}
         model="deepseek-chat"
+        onApprovalModeChange={() => undefined}
         onCancel={() => undefined}
         onChange={() => undefined}
         onRemoveRemoteFile={() => undefined}
@@ -154,14 +160,25 @@ describe("AiComposer", () => {
     renderComposer();
 
     expect(screen.queryByText("约 2.0k Token")).toBeNull();
+    const model = screen.getByText("deepseek-chat");
     const budget = screen.getByLabelText(
       "本次请求约 2020 Token，上下文占用 25%",
     );
     const progress = screen.getByRole("progressbar");
     expect(progress.getAttribute("aria-valuenow")).toBe("25");
     expect(
-      budget.compareDocumentPosition(screen.getByRole("button", { name: "发送" })) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+      model.compareDocumentPosition(budget) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+    expect(
+      budget.compareDocumentPosition(
+        screen.getByRole("button", { name: "发送" }),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  test("places the approval mode selector in the composer footer", () => {
+    renderComposer();
+
+    expect(screen.getByRole("combobox", { name: "AI 审批模式" })).not.toBeNull();
   });
 });

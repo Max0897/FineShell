@@ -12,6 +12,7 @@ function renderTimeline(
   dockedDiagnosticPlanIds: ReadonlySet<string> = new Set(),
   dockedFileEditProposalIds: ReadonlySet<string> = new Set(),
   dockedFileOperationProposalIds: ReadonlySet<string> = new Set(),
+  sending = false,
 ) {
   return {
     onRetryMessage,
@@ -38,7 +39,6 @@ function renderTimeline(
         onCopyCode={async () => undefined}
         onCopyCommand={() => undefined}
         onCopyCommands={() => undefined}
-        onCopyToolRun={() => undefined}
         onCancelDiagnosticPlan={() => undefined}
         onConfirmDiagnosticPlan={() => undefined}
         onReviseDiagnosticPlan={() => undefined}
@@ -59,7 +59,7 @@ function renderTimeline(
         onStopDiagnosticPlan={() => undefined}
         onToggleToolRun={() => undefined}
         scrollRef={createRef<HTMLDivElement>()}
-        sending={false}
+        sending={sending}
         sessionId="session-1"
       />,
     ),
@@ -113,6 +113,119 @@ describe("AiMessageTimeline", () => {
     expect(screen.getByRole("button", { name: "复制代码" })).not.toBeNull();
     expect(screen.queryByRole("button", { name: "填入终端" })).toBeNull();
     expect(screen.getByText("仅供查看")).not.toBeNull();
+  });
+
+  test("shows completed model reasoning in a collapsed disclosure", () => {
+    renderTimeline([
+      {
+        content: "配置检查完成。",
+        id: "assistant-1",
+        reasoning: "先读取配置，再对照运行进程。",
+        role: "assistant",
+      },
+    ]);
+
+    const toggle = screen.getByRole("button", { name: "思考过程" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("先读取配置，再对照运行进程。")).toBeNull();
+
+    fireEvent.click(toggle);
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("先读取配置，再对照运行进程。")).not.toBeNull();
+  });
+
+  test("keeps active model reasoning expanded while waiting for an answer", () => {
+    renderTimeline(
+      [
+        {
+          content: "",
+          id: "assistant-1",
+          reasoning: "正在检查服务器状态。",
+          role: "assistant",
+        },
+      ],
+      undefined,
+      undefined,
+      new Set(),
+      new Set(),
+      new Set(),
+      new Set(),
+      true,
+    );
+
+    const toggle = screen.getByRole("button", { name: "正在思考..." });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("正在检查服务器状态。")).not.toBeNull();
+    expect(screen.queryByRole("status", { name: "AI 正在生成" })).toBeNull();
+  });
+
+  test("keeps a streaming indicator after partial answer content", () => {
+    renderTimeline(
+      [
+        {
+          content: "正在分析 Nginx 配置。",
+          id: "assistant-1",
+          role: "assistant",
+        },
+      ],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+
+    expect(screen.getByText("正在分析 Nginx 配置。")).not.toBeNull();
+    expect(screen.getByRole("status", { name: "AI 正在生成" })).not.toBeNull();
+  });
+
+  test("shows an initial generation state before the first token", () => {
+    renderTimeline(
+      [{ content: "", id: "assistant-1", role: "assistant" }],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+
+    expect(screen.getByRole("status", { name: "AI 正在生成" })).not.toBeNull();
+  });
+
+  test("lets an approval card own the active request status", () => {
+    renderTimeline(
+      [
+        {
+          commandProposals: [
+            {
+              assessment: { canInsert: true, label: "低风险", risk: "safe" },
+              command: "uname -a",
+              id: "command-1",
+              purpose: "查看系统信息",
+              sessionId: "session-1",
+              status: "pending",
+            },
+          ],
+          content: "请确认以下命令。",
+          id: "assistant-1",
+          role: "assistant",
+        },
+      ],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+
+    expect(screen.queryByRole("status", { name: "AI 正在生成" })).toBeNull();
   });
 
   test("does not duplicate a command approval docked above the composer", () => {

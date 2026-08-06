@@ -1,6 +1,8 @@
 import {
   isValidElement,
   memo,
+  useEffect,
+  useState,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -19,7 +21,9 @@ import {
   IconCommand,
   IconCopy,
   IconDashboard,
+  IconDown,
   IconRefresh,
+  IconRight,
   IconRobot,
 } from "@arco-design/web-react/icon";
 import ReactMarkdown from "react-markdown";
@@ -66,12 +70,8 @@ interface AiMessageTimelineProps {
   onCopyCode: (value: string) => Promise<void>;
   onCopyCommand: (command: string) => void | Promise<void>;
   onCopyCommands: (proposals: AiCommandProposal[]) => void | Promise<void>;
-  onCopyToolRun: (run: AiToolRun) => void | Promise<void>;
   onCancelDiagnosticPlan: (planId: string) => void;
-  onConfirmDiagnosticPlan: (
-    planId: string,
-    selectedCallIds: string[],
-  ) => void;
+  onConfirmDiagnosticPlan: (planId: string, selectedCallIds: string[]) => void;
   onReviseDiagnosticPlan: (planId: string, feedback: string) => void;
   onApproveCommandProposal: (
     messageId: string,
@@ -107,10 +107,7 @@ interface AiMessageTimelineProps {
     messageId: string,
     proposals: AiFileOperationProposal[],
   ) => void;
-  onRollbackFileEdit: (
-    messageId: string,
-    proposal: AiFileEditProposal,
-  ) => void;
+  onRollbackFileEdit: (messageId: string, proposal: AiFileEditProposal) => void;
   onRollbackFileOperation: (
     messageId: string,
     proposal: AiFileOperationProposal,
@@ -136,15 +133,25 @@ function textContent(node: ReactNode): string {
 
 function codeLanguage(node: ReactNode) {
   if (!isValidElement<{ className?: string }>(node)) return "";
-  return node.props.className?.match(/language-([\w-]+)/)?.[1]?.toLowerCase() ?? "";
+  return (
+    node.props.className?.match(/language-([\w-]+)/)?.[1]?.toLowerCase() ?? ""
+  );
 }
 
 function isShellLanguage(language: string) {
   return (
     !language ||
-    ["bash", "bat", "cmd", "console", "fish", "powershell", "sh", "shell", "zsh"].includes(
-      language,
-    )
+    [
+      "bash",
+      "bat",
+      "cmd",
+      "console",
+      "fish",
+      "powershell",
+      "sh",
+      "shell",
+      "zsh",
+    ].includes(language)
   );
 }
 
@@ -168,7 +175,12 @@ function containsOnlyDockedApproval(
   dockedFileEditProposalIds?: ReadonlySet<string>,
   dockedFileOperationProposalIds?: ReadonlySet<string>,
 ) {
-  if (message.role !== "assistant" || message.content || message.failed) {
+  if (
+    message.role !== "assistant" ||
+    message.content ||
+    message.reasoning ||
+    message.failed
+  ) {
     return false;
   }
   const hasDockedCommand = message.commandProposals?.some((proposal) =>
@@ -208,6 +220,120 @@ function containsOnlyDockedApproval(
       (proposal) => !dockedFileOperationProposalIds?.has(proposal.id),
     ) ||
     message.fileChanges?.length
+  );
+}
+
+function AiReasoningDisclosure({
+  active,
+  reasoning,
+}: {
+  active: boolean;
+  reasoning: string;
+}) {
+  const [expanded, setExpanded] = useState(active);
+
+  useEffect(() => {
+    setExpanded(active);
+  }, [active]);
+
+  return (
+    <div className={`ai-reasoning${active ? " ai-reasoning-active" : ""}`}>
+      <Button
+        aria-expanded={expanded}
+        className="ai-reasoning-toggle"
+        icon={expanded ? <IconDown /> : <IconRight />}
+        onClick={() => setExpanded((current) => !current)}
+        size="mini"
+        type="text"
+      >
+        {active ? "正在思考..." : "思考过程"}
+      </Button>
+      {expanded && (
+        <div className="ai-reasoning-content">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{reasoning}</ReactMarkdown>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function messageIsActivelyThinking(
+  message: AiMessage,
+  index: number,
+  messageCount: number,
+  sending: boolean,
+) {
+  return (
+    sending &&
+    index === messageCount - 1 &&
+    !message.content &&
+    !message.failed &&
+    !message.commandProposals?.length &&
+    !message.fileEditProposals?.length &&
+    !message.fileOperationProposals?.length &&
+    !message.diagnosticPlans?.length &&
+    !message.toolRuns?.length
+  );
+}
+
+function messageHasActiveWorkflow(message: AiMessage) {
+  return Boolean(
+    message.commandProposals?.some(
+      (proposal) =>
+        proposal.status === "pending" ||
+        proposal.status === "approved" ||
+        proposal.status === "executed" ||
+        proposal.executionPhase === "connecting" ||
+        proposal.executionPhase === "running" ||
+        proposal.executionPhase === "cancelling",
+    ) ||
+    message.diagnosticPlans?.some(
+      (plan) => plan.status === "pending" || plan.status === "running",
+    ) ||
+    message.toolRuns?.some(
+      (run) => run.status === "pending" || run.status === "running",
+    ) ||
+    message.fileEditProposals?.some(
+      (proposal) => proposal.status === "pending",
+    ) ||
+    message.fileOperationProposals?.some(
+      (proposal) => proposal.status === "pending",
+    ),
+  );
+}
+
+function messageIsActivelyStreaming(
+  message: AiMessage,
+  index: number,
+  messageCount: number,
+  sending: boolean,
+) {
+  if (
+    !sending ||
+    index !== messageCount - 1 ||
+    message.role !== "assistant" ||
+    message.failed ||
+    messageHasActiveWorkflow(message)
+  ) {
+    return false;
+  }
+  return Boolean(message.content || !message.reasoning);
+}
+
+function AiStreamingIndicator() {
+  return (
+    <div
+      aria-label="AI 正在生成"
+      className="ai-streaming-indicator"
+      role="status"
+    >
+      <span>正在生成</span>
+      <span aria-hidden="true" className="ai-streaming-dots">
+        <i />
+        <i />
+        <i />
+      </span>
+    </div>
   );
 }
 
@@ -284,7 +410,6 @@ function AiMessageTimeline({
   onCopyCode,
   onCopyCommand,
   onCopyCommands,
-  onCopyToolRun,
   onCancelDiagnosticPlan,
   onConfirmDiagnosticPlan,
   onReviseDiagnosticPlan,
@@ -327,171 +452,176 @@ function AiMessageTimeline({
             return null;
           }
           return (
-          <div
-            className={`ai-message ai-message-${message.role}`}
-            key={message.id}
-          >
-            <div className="ai-message-role">
-              {message.role === "assistant" ? <IconRobot /> : null}
-              <Typography.Text type="secondary">
-                {message.role === "assistant" ? "AI" : "你"}
-              </Typography.Text>
-              {message.contextLabels?.map((label) => (
-                <Tag key={label} size="small">
-                  {label}
-                </Tag>
-              ))}
-            </div>
-            {message.role === "assistant" &&
-              Boolean(
-                message.diagnosticPlans?.some(
-                  (plan) => !dockedDiagnosticPlanIds?.has(plan.id),
-                ),
-              ) && (
-                <AiDiagnosticPlanList
-                  expandedRuns={expandedToolRuns}
-                  messageId={message.id}
-                  onAddToDraft={onAddToolRunToDraft}
-                  onCancel={onCancelDiagnosticPlan}
-                  onConfirm={onConfirmDiagnosticPlan}
-                  onCopy={onCopyToolRun}
-                  onRevise={onReviseDiagnosticPlan}
-                  onStop={onStopDiagnosticPlan}
-                  onToggleRun={onToggleToolRun}
-                  plans={(message.diagnosticPlans ?? []).filter(
-                    (plan) => !dockedDiagnosticPlanIds?.has(plan.id),
+            <div
+              className={`ai-message ai-message-${message.role}`}
+              key={message.id}
+            >
+              <div className="ai-message-role">
+                {message.role === "assistant" ? <IconRobot /> : null}
+                <Typography.Text type="secondary">
+                  {message.role === "assistant" ? "AI" : "你"}
+                </Typography.Text>
+                {message.contextLabels?.map((label) => (
+                  <Tag key={label} size="small">
+                    {label}
+                  </Tag>
+                ))}
+              </div>
+              {message.role === "assistant" && message.reasoning && (
+                <AiReasoningDisclosure
+                  active={messageIsActivelyThinking(
+                    message,
+                    index,
+                    messages.length,
+                    sending,
                   )}
-                  runs={message.toolRuns ?? []}
-                  sending={sending}
+                  reasoning={message.reasoning}
                 />
               )}
-            {message.role === "assistant" &&
-              Boolean(message.toolRuns?.some((run) => !run.planId)) && (
-              <AiToolRunList
-                expandedRuns={expandedToolRuns}
-                messageId={message.id}
-                onAddToDraft={onAddToolRunToDraft}
-                onCopy={onCopyToolRun}
-                onToggle={onToggleToolRun}
-                runs={message.toolRuns?.filter((run) => !run.planId) ?? []}
-                sending={sending}
-              />
-            )}
-            {message.role === "assistant" && (
-              <AiCommandProposalList
-                canInsertCommand={canInsertCommand}
-                hasRecentTerminalOutput={hasRecentTerminalOutput}
-                hostName={hostName}
-                onApprove={(proposal) =>
-                  onApproveCommandProposal(message.id, proposal)
-                }
-                onAnalyze={(proposal) => onAnalyzeCommand(message.id, proposal)}
-                onCopy={onCopyCommand}
-                onCopyAll={onCopyCommands}
-                onReject={(proposalId) =>
-                  onRejectCommand(message.id, proposalId)
-                }
-                onRevise={(proposal, feedback) =>
-                  onReviseCommand(message.id, proposal, feedback)
-                }
-                proposals={message.commandProposals?.filter(
-                  (proposal) => !dockedCommandProposalIds?.has(proposal.id),
+              {message.role === "assistant" &&
+                Boolean(
+                  message.diagnosticPlans?.some(
+                    (plan) => !dockedDiagnosticPlanIds?.has(plan.id),
+                  ),
+                ) && (
+                  <AiDiagnosticPlanList
+                    expandedRuns={expandedToolRuns}
+                    messageId={message.id}
+                    onAddToDraft={onAddToolRunToDraft}
+                    onCancel={onCancelDiagnosticPlan}
+                    onConfirm={onConfirmDiagnosticPlan}
+                    onRevise={onReviseDiagnosticPlan}
+                    onStop={onStopDiagnosticPlan}
+                    onToggleRun={onToggleToolRun}
+                    plans={(message.diagnosticPlans ?? []).filter(
+                      (plan) => !dockedDiagnosticPlanIds?.has(plan.id),
+                    )}
+                    runs={message.toolRuns ?? []}
+                    sending={sending}
+                  />
                 )}
-                records={message.commandRecords}
-                sending={sending}
-                sessionId={sessionId}
-              />
-            )}
-            {message.role === "assistant" && (
-              <AiFileChangePanels
-                applying={applyingFileChanges}
-                changes={message.fileChanges}
-                editProposals={message.fileEditProposals?.filter(
-                  (proposal) => !dockedFileEditProposalIds?.has(proposal.id),
+              {message.role === "assistant" &&
+                Boolean(message.toolRuns?.some((run) => !run.planId)) && (
+                  <AiToolRunList
+                    expandedRuns={expandedToolRuns}
+                    messageId={message.id}
+                    onAddToDraft={onAddToolRunToDraft}
+                    onToggle={onToggleToolRun}
+                    runs={message.toolRuns?.filter((run) => !run.planId) ?? []}
+                    sending={sending}
+                  />
                 )}
-                onApplyAllEdits={(proposals) =>
-                  onApplyAllFileEdits(message.id, proposals)
-                }
-                onApplyAllOperations={(proposals) =>
-                  onApplyAllFileOperations(message.id, proposals)
-                }
-                onOpenEditReview={(proposal) =>
-                  onOpenFileEditReview(message.id, proposal)
-                }
-                onOpenOperationReview={(proposal) =>
-                  onOpenFileOperationReview(message.id, proposal)
-                }
-                onRejectEdit={(proposalId) =>
-                  onRejectFileEdit(message.id, proposalId)
-                }
-                onRejectOperation={(proposalId) =>
-                  onRejectFileOperation(message.id, proposalId)
-                }
-                onRetryEdit={(proposalId) =>
-                  onRetryFileEdit(message.id, proposalId)
-                }
-                onRetryOperation={(proposalId) =>
-                  onRetryFileOperation(message.id, proposalId)
-                }
-                onRollbackAllEdits={(proposals) =>
-                  onRollbackAllFileEdits(message.id, proposals)
-                }
-                onRollbackAllOperations={(proposals) =>
-                  onRollbackAllFileOperations(message.id, proposals)
-                }
-                onRollbackEdit={(proposal) =>
-                  onRollbackFileEdit(message.id, proposal)
-                }
-                onRollbackOperation={(proposal) =>
-                  onRollbackFileOperation(message.id, proposal)
-                }
-                operationProposals={message.fileOperationProposals?.filter(
-                  (proposal) =>
-                    !dockedFileOperationProposalIds?.has(proposal.id),
-                )}
-              />
-            )}
-            <div className="ai-message-content">
-              {message.role === "assistant" ? (
-                <>
-                  {message.content ? (
-                    <AiMarkdown
-                      onCopyCode={onCopyCode}
-                    >
-                      {message.content}
-                    </AiMarkdown>
-                  ) : message.failed ||
-                    message.commandProposals?.length ||
-                    message.commandRecords?.length ||
-                    message.fileEditProposals?.length ||
-                    message.fileOperationProposals?.length ||
-                    message.fileChanges?.length ||
-                    message.diagnosticPlans?.length ? null : message.toolRuns?.some(
-                        (run) => run.status === "running",
-                      ) ? null : (
-                    <Spin size={14} />
+              {message.role === "assistant" && (
+                <AiCommandProposalList
+                  canInsertCommand={canInsertCommand}
+                  hasRecentTerminalOutput={hasRecentTerminalOutput}
+                  hostName={hostName}
+                  onApprove={(proposal) =>
+                    onApproveCommandProposal(message.id, proposal)
+                  }
+                  onAnalyze={(proposal) =>
+                    onAnalyzeCommand(message.id, proposal)
+                  }
+                  onCopy={onCopyCommand}
+                  onCopyAll={onCopyCommands}
+                  onReject={(proposalId) =>
+                    onRejectCommand(message.id, proposalId)
+                  }
+                  onRevise={(proposal, feedback) =>
+                    onReviseCommand(message.id, proposal, feedback)
+                  }
+                  proposals={message.commandProposals?.filter(
+                    (proposal) => !dockedCommandProposalIds?.has(proposal.id),
                   )}
-                  {message.failed && (
-                    <div className="ai-message-failure">
-                      <Typography.Text type="error">
-                        {message.error}
-                      </Typography.Text>
-                      <Button
-                        icon={<IconRefresh />}
-                        onClick={() => onRetryMessage(index)}
-                        size="mini"
-                        type="text"
-                      >
-                        重试
-                      </Button>
-                    </div>
-                  )}
-                </>
-              ) : (
-                message.content
+                  records={message.commandRecords}
+                  sending={sending}
+                  sessionId={sessionId}
+                />
               )}
+              {message.role === "assistant" && (
+                <AiFileChangePanels
+                  applying={applyingFileChanges}
+                  changes={message.fileChanges}
+                  editProposals={message.fileEditProposals?.filter(
+                    (proposal) => !dockedFileEditProposalIds?.has(proposal.id),
+                  )}
+                  onApplyAllEdits={(proposals) =>
+                    onApplyAllFileEdits(message.id, proposals)
+                  }
+                  onApplyAllOperations={(proposals) =>
+                    onApplyAllFileOperations(message.id, proposals)
+                  }
+                  onOpenEditReview={(proposal) =>
+                    onOpenFileEditReview(message.id, proposal)
+                  }
+                  onOpenOperationReview={(proposal) =>
+                    onOpenFileOperationReview(message.id, proposal)
+                  }
+                  onRejectEdit={(proposalId) =>
+                    onRejectFileEdit(message.id, proposalId)
+                  }
+                  onRejectOperation={(proposalId) =>
+                    onRejectFileOperation(message.id, proposalId)
+                  }
+                  onRetryEdit={(proposalId) =>
+                    onRetryFileEdit(message.id, proposalId)
+                  }
+                  onRetryOperation={(proposalId) =>
+                    onRetryFileOperation(message.id, proposalId)
+                  }
+                  onRollbackAllEdits={(proposals) =>
+                    onRollbackAllFileEdits(message.id, proposals)
+                  }
+                  onRollbackAllOperations={(proposals) =>
+                    onRollbackAllFileOperations(message.id, proposals)
+                  }
+                  onRollbackEdit={(proposal) =>
+                    onRollbackFileEdit(message.id, proposal)
+                  }
+                  onRollbackOperation={(proposal) =>
+                    onRollbackFileOperation(message.id, proposal)
+                  }
+                  operationProposals={message.fileOperationProposals?.filter(
+                    (proposal) =>
+                      !dockedFileOperationProposalIds?.has(proposal.id),
+                  )}
+                />
+              )}
+              <div className="ai-message-content">
+                {message.role === "assistant" ? (
+                  <>
+                    {message.content && (
+                      <AiMarkdown onCopyCode={onCopyCode}>
+                        {message.content}
+                      </AiMarkdown>
+                    )}
+                    {messageIsActivelyStreaming(
+                      message,
+                      index,
+                      messages.length,
+                      sending,
+                    ) && <AiStreamingIndicator />}
+                    {message.failed && (
+                      <div className="ai-message-failure">
+                        <Typography.Text type="error">
+                          {message.error}
+                        </Typography.Text>
+                        <Button
+                          icon={<IconRefresh />}
+                          onClick={() => onRetryMessage(index)}
+                          size="mini"
+                          type="text"
+                        >
+                          重试
+                        </Button>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  message.content
+                )}
+              </div>
             </div>
-          </div>
           );
         })
       ) : (

@@ -61,6 +61,8 @@ impl AgentTaskManager {
                     tool: action.tool.clone(),
                     arguments: action.arguments.clone(),
                     session_id,
+                    host_id: task.host_id.clone(),
+                    current_directory: task.current_directory.clone(),
                     rollback,
                     execution_kind,
                 },

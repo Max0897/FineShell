@@ -1,8 +1,7 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import {
   Button,
-  Input,
-  Space,
+  Modal,
   Tag,
   Tooltip,
   Typography,
@@ -10,6 +9,8 @@ import {
 import {
   IconCommand,
   IconCopy,
+  IconDown,
+  IconRight,
   IconRobot,
 } from "@arco-design/web-react/icon";
 import {
@@ -17,6 +18,7 @@ import {
   type AiCommandProposal,
   type AiCommandRecord,
 } from "../ai-command-proposals";
+import AiApprovalActions from "./AiApprovalActions";
 
 interface AiCommandProposalListProps {
   canInsertCommand: boolean;
@@ -39,7 +41,20 @@ interface AiCommandProposalListProps {
   sessionId: string | null;
 }
 
-function proposalStatus(status: AiCommandProposal["status"]) {
+function proposalStatus(proposal: AiCommandProposal) {
+  if (proposal.executionPhase === "connecting") {
+    return { color: "blue", label: "连接中" };
+  }
+  if (proposal.executionPhase === "running") {
+    return { color: "orange", label: "执行中" };
+  }
+  if (proposal.executionPhase === "cancelling") {
+    return { color: "orange", label: "取消中" };
+  }
+  if (proposal.executionPhase === "interrupted") {
+    return { color: "gray", label: "已中断" };
+  }
+  const { status } = proposal;
   if (status === "verified") return { color: "green", label: "已分析" };
   if (status === "succeeded") return { color: "green", label: "执行成功" };
   if (status === "failed") return { color: "red", label: "执行失败" };
@@ -67,18 +82,6 @@ function riskLabel(risk: AiCommandRecord["risk"]) {
   return "低风险";
 }
 
-function verificationLabel(proposal: AiCommandProposal) {
-  const verification = proposal.verification;
-  if (!verification) return null;
-  if (verification.kind === "service_active") {
-    return `执行后验证服务 ${verification.service} 是否处于运行状态`;
-  }
-  if (verification.kind === "port_listening") {
-    return `执行后验证 ${verification.port}/${verification.protocol.toUpperCase()} 端口是否监听`;
-  }
-  return `执行后验证 ${verification.validator} 配置语法`;
-}
-
 function AiCommandProposalList({
   canInsertCommand,
   hasRecentTerminalOutput,
@@ -96,34 +99,12 @@ function AiCommandProposalList({
   sending,
   sessionId,
 }: AiCommandProposalListProps) {
-  const [revisionProposalId, setRevisionProposalId] = useState<string | null>(
-    null,
+  const [collapsedOutputs, setCollapsedOutputs] = useState<Set<string>>(
+    () => new Set(),
   );
-  const [revisionFeedback, setRevisionFeedback] = useState("");
-  const [processingProposalId, setProcessingProposalId] = useState<
+  const [fullOutputProposalId, setFullOutputProposalId] = useState<
     string | null
   >(null);
-  const processingProposalRef = useRef<string | null>(null);
-
-  const runDecision = async (
-    proposalId: string,
-    decision: () => unknown | Promise<unknown>,
-  ) => {
-    if (processingProposalRef.current) return;
-    processingProposalRef.current = proposalId;
-    setProcessingProposalId(proposalId);
-    try {
-      await decision();
-    } finally {
-      if (processingProposalRef.current === proposalId) {
-        processingProposalRef.current = null;
-      }
-      setProcessingProposalId((current) =>
-        current === proposalId ? null : current,
-      );
-    }
-  };
-
   if (!proposals.length && !records.length) return null;
 
   if (!proposals.length) {
@@ -186,16 +167,27 @@ function AiCommandProposalList({
       </div>
       {proposals.map((proposal, proposalIndex) => {
         const sameSession = proposal.sessionId === sessionId;
-        const status = proposalStatus(proposal.status);
+        const status = proposalStatus(proposal);
         const hasCapturedResult =
           (proposal.status === "succeeded" || proposal.status === "failed") &&
           proposal.resultOutput !== undefined;
         const canAnalyze =
           hasCapturedResult ||
           (proposal.status === "executed" && hasRecentTerminalOutput);
-        const verification = verificationLabel(proposal);
-        const revising = revisionProposalId === proposal.id;
-        const processing = processingProposalId === proposal.id;
+        const hasOutput =
+          proposal.resultOutput !== undefined ||
+          proposal.outputStreamsSeparated;
+        const outputCollapsed = collapsedOutputs.has(proposal.id);
+        const hasFullOutput =
+          proposal.resultOutputTruncated === true ||
+          proposal.resultStdoutTruncated === true ||
+          proposal.resultStderrTruncated === true ||
+          (proposal.fullResultOutput !== undefined &&
+            proposal.fullResultOutput !== proposal.resultOutput) ||
+          (proposal.fullResultStdout !== undefined &&
+            proposal.fullResultStdout !== proposal.resultStdout) ||
+          (proposal.fullResultStderr !== undefined &&
+            proposal.fullResultStderr !== proposal.resultStderr);
         return (
           <div className="ai-command-proposal" key={proposal.id}>
             <div className="ai-command-proposal-heading">
@@ -214,190 +206,88 @@ function AiCommandProposalList({
                 >
                   {proposal.assessment.label}
                 </Tag>
-                <Tag color={status.color} size="small">
-                  {status.label}
-                </Tag>
+                {(presentation === "timeline" ||
+                  proposal.status !== "pending") && (
+                  <Tag color={status.color} size="small">
+                    {status.label}
+                  </Tag>
+                )}
               </span>
             </div>
             <pre className="ai-command-proposal-command">
               <code>{proposal.command}</code>
             </pre>
-            <div className="ai-command-proposal-details">
+            <div className="ai-command-proposal-context">
               <Typography.Text type="secondary">
-                <span>执行位置</span>
                 {hostName}
                 {proposal.directory ? ` · ${proposal.directory}` : ""}
               </Typography.Text>
-              {proposal.assessment.reason && (
-                <Typography.Text
-                  type={
-                    proposal.assessment.risk === "danger"
-                      ? "error"
-                      : "secondary"
+              {proposal.assessment.reason &&
+                proposal.assessment.risk !== "safe" && (
+                  <Typography.Text
+                    type={
+                      proposal.assessment.risk === "danger"
+                        ? "error"
+                        : "secondary"
+                    }
+                  >
+                    {proposal.assessment.reason}
+                  </Typography.Text>
+                )}
+            </div>
+            {presentation === "approval" &&
+              (proposal.status === "pending" ? (
+                <AiApprovalActions
+                  approvalKey={proposal.id}
+                  approveDisabled={!canInsertCommand || !sameSession}
+                  approveTooltip={
+                    !sameSession
+                      ? "该提案属于其他终端会话"
+                      : canInsertCommand
+                        ? "审批后立即通过后台 SSH 执行"
+                        : "当前终端会话未连接"
+                  }
+                  feedbackPlaceholder="输入其他处理要求，例如：改为只检查状态，不重启服务"
+                  leading={
+                    <Tooltip content="复制命令">
+                      <Button
+                        aria-label="复制命令提案"
+                        icon={<IconCopy />}
+                        onClick={() => void onCopy(proposal.command)}
+                        size="mini"
+                        type="text"
+                      />
+                    </Tooltip>
+                  }
+                  onApprove={() => onApprove(proposal)}
+                  onReject={() => onReject(proposal.id)}
+                  onRevise={(feedback) => onRevise(proposal, feedback)}
+                />
+              ) : proposal.status === "executed" ||
+                proposal.status === "succeeded" ||
+                proposal.status === "failed" ? (
+                <Tooltip
+                  content={
+                    !sameSession
+                      ? "请切换到提交该命令的终端会话"
+                      : hasCapturedResult
+                        ? "将该命令的退出码和有界输出加入下一次提问"
+                        : canAnalyze
+                          ? "将最近终端输出加入下一次提问"
+                          : "暂无可分析的命令输出"
                   }
                 >
-                  <span>风险说明</span>
-                  {proposal.assessment.reason}
-                </Typography.Text>
-              )}
-              {verification && (
-                <Typography.Text type="secondary">
-                  <span>预期验证</span>
-                  {verification}
-                </Typography.Text>
-              )}
-            </div>
-            {presentation === "approval" && (
-            <div className="ai-command-proposal-footer">
-              <Space size={4}>
-                <Tooltip content="复制命令">
                   <Button
-                    aria-label="复制命令提案"
-                    icon={<IconCopy />}
-                    onClick={() => void onCopy(proposal.command)}
+                    disabled={sending || !sameSession || !canAnalyze}
+                    icon={<IconRobot />}
+                    onClick={() => onAnalyze(proposal)}
                     size="mini"
                     type="text"
-                  />
+                  >
+                    分析结果
+                  </Button>
                 </Tooltip>
-                {presentation === "approval" && proposal.status === "pending" && (
-                  <Button
-                    disabled={processing}
-                    onClick={() => {
-                      setRevisionProposalId((current) =>
-                        current === proposal.id ? null : proposal.id,
-                      );
-                      setRevisionFeedback("");
-                    }}
-                    size="mini"
-                    type="text"
-                  >
-                    其他
-                  </Button>
-                )}
-                {presentation === "approval" && proposal.status === "pending" && (
-                  <Button
-                    disabled={processing}
-                    onClick={() =>
-                      void runDecision(proposal.id, () =>
-                        onReject(proposal.id),
-                      )
-                    }
-                    size="mini"
-                    type="text"
-                  >
-                    驳回
-                  </Button>
-                )}
-              </Space>
-              <Space size={4}>
-                {presentation === "approval" && proposal.status === "pending" && (
-                  <Tooltip
-                    content={
-                      !sameSession
-                        ? "该提案属于其他终端会话"
-                        : canInsertCommand
-                          ? "审批后立即提交到当前终端"
-                          : "当前终端会话未连接"
-                    }
-                  >
-                    <Button
-                      disabled={
-                        processing ||
-                        !canInsertCommand ||
-                        !sameSession
-                      }
-                      loading={processing}
-                      onClick={() =>
-                        void runDecision(proposal.id, () =>
-                          onApprove(proposal),
-                        )
-                      }
-                      size="mini"
-                      type="primary"
-                    >
-                      同意
-                    </Button>
-                  </Tooltip>
-                )}
-                {(proposal.status === "executed" ||
-                  proposal.status === "succeeded" ||
-                  proposal.status === "failed") && (
-                  <Tooltip
-                    content={
-                      !sameSession
-                        ? "请切换到提交该命令的终端会话"
-                        : hasCapturedResult
-                          ? "将该命令的退出码和有界输出加入下一次提问"
-                          : canAnalyze
-                            ? "将最近终端输出加入下一次提问"
-                            : "暂无可分析的命令输出"
-                    }
-                  >
-                    <Button
-                      disabled={sending || !sameSession || !canAnalyze}
-                      icon={<IconRobot />}
-                      onClick={() => onAnalyze(proposal)}
-                      size="mini"
-                      type="text"
-                    >
-                      分析结果
-                    </Button>
-                  </Tooltip>
-                )}
-              </Space>
-            </div>
-            )}
-            {presentation === "approval" && proposal.status === "pending" && revising && (
-              <div className="ai-command-proposal-revision">
-                <Input.TextArea
-                  autoFocus
-                  maxLength={500}
-                  onChange={setRevisionFeedback}
-                  placeholder="输入其他处理要求，例如：改为只检查状态，不重启服务"
-                  rows={2}
-                  value={revisionFeedback}
-                />
-                <div className="ai-command-proposal-revision-actions">
-                  <Button
-                    onClick={() => setRevisionProposalId(null)}
-                    size="mini"
-                    type="text"
-                  >
-                    取消
-                  </Button>
-                  <Button
-                    disabled={
-                      processing || !revisionFeedback.trim()
-                    }
-                    onClick={() =>
-                      void runDecision(proposal.id, () =>
-                        onRevise(proposal, revisionFeedback.trim()),
-                      )
-                    }
-                    size="mini"
-                    type="primary"
-                  >
-                    提交
-                  </Button>
-                </div>
-              </div>
-            )}
-            {proposal.status === "approved" && (
-              <Typography.Text
-                className="ai-command-proposal-warning"
-                type="secondary"
-              >
-                已同意，正在等待终端执行结果
-              </Typography.Text>
-            )}
-            {proposal.status === "executed" && (
-              <Typography.Text
-                className="ai-command-proposal-warning"
-                type="secondary"
-              >
-                已检测到手动提交，不代表命令执行成功
-              </Typography.Text>
-            )}
+              ) : null)}
             {(proposal.status === "succeeded" ||
               proposal.status === "failed" ||
               (proposal.status === "verified" &&
@@ -413,6 +303,73 @@ function AiCommandProposalList({
                 {proposal.resultOutputTruncated ? " · 输出已截断" : ""}
               </Typography.Text>
             )}
+            {hasOutput && (
+              <div className="ai-command-proposal-output">
+                <div className="ai-command-proposal-output-heading">
+                  <Button
+                    aria-expanded={!outputCollapsed}
+                    aria-label={
+                      outputCollapsed ? "展开命令输出" : "收起命令输出"
+                    }
+                    icon={outputCollapsed ? <IconRight /> : <IconDown />}
+                    onClick={() =>
+                      setCollapsedOutputs((current) => {
+                        const next = new Set(current);
+                        if (next.has(proposal.id)) next.delete(proposal.id);
+                        else next.add(proposal.id);
+                        return next;
+                      })
+                    }
+                    size="mini"
+                    type="text"
+                  >
+                    命令输出
+                  </Button>
+                  {hasFullOutput && (
+                    <Button
+                      onClick={() => setFullOutputProposalId(proposal.id)}
+                      size="mini"
+                      type="text"
+                    >
+                      查看完整输出
+                    </Button>
+                  )}
+                </div>
+                {!outputCollapsed && (
+                  <div className="ai-command-proposal-output-streams">
+                    {proposal.outputStreamsSeparated ? (
+                      <>
+                        {proposal.resultStdout && (
+                          <section>
+                            <pre className="ai-command-proposal-live-output">
+                              <code>{proposal.resultStdout}</code>
+                            </pre>
+                          </section>
+                        )}
+                        {proposal.resultStderr && (
+                          <section className="ai-command-output-stderr">
+                            <pre className="ai-command-proposal-live-output">
+                              <code>{proposal.resultStderr}</code>
+                            </pre>
+                          </section>
+                        )}
+                        {!proposal.resultStdout && !proposal.resultStderr && (
+                          <pre className="ai-command-proposal-live-output">
+                            <code>（命令未产生输出）</code>
+                          </pre>
+                        )}
+                      </>
+                    ) : (
+                      <pre className="ai-command-proposal-live-output">
+                        <code>
+                          {proposal.resultOutput || "（命令未产生输出）"}
+                        </code>
+                      </pre>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             {proposal.status === "unavailable" && (
               <Typography.Text
                 className="ai-command-proposal-warning"
@@ -425,6 +382,48 @@ function AiCommandProposalList({
           </div>
         );
       })}
+      <Modal
+        className="ai-command-output-modal"
+        footer={null}
+        onCancel={() => setFullOutputProposalId(null)}
+        title="完整命令输出"
+        visible={fullOutputProposalId !== null}
+      >
+        {(() => {
+          const proposal = proposals.find(
+            (item) => item.id === fullOutputProposalId,
+          );
+          if (!proposal) return null;
+          return (
+            <div className="ai-command-full-output">
+              {(proposal.resultOutputTruncated ||
+                proposal.resultStdoutTruncated ||
+                proposal.resultStderrTruncated) && (
+                <Typography.Text type="secondary">
+                  输出超过后台采集上限，以下为已捕获的最近内容。
+                </Typography.Text>
+              )}
+              {proposal.outputStreamsSeparated ? (
+                <>
+                  <section>
+                    <Typography.Text bold>标准输出</Typography.Text>
+                    <pre>{proposal.fullResultStdout || "（无标准输出）"}</pre>
+                  </section>
+                  <section className="ai-command-output-stderr">
+                    <Typography.Text bold>错误输出</Typography.Text>
+                    <pre>{proposal.fullResultStderr || "（无错误输出）"}</pre>
+                  </section>
+                </>
+              ) : (
+                <section>
+                  <Typography.Text bold>命令输出</Typography.Text>
+                  <pre>{proposal.fullResultOutput || "（命令未产生输出）"}</pre>
+                </section>
+              )}
+            </div>
+          );
+        })()}
+      </Modal>
     </div>
   );
 }

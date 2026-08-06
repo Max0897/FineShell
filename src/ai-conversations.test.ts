@@ -26,6 +26,7 @@ function conversation(id = "conversation-1") {
         id: "message-2",
         role: "assistant" as const,
         content: "请先运行 `nginx -t`。",
+        reasoning: "password=reasoning-must-not-be-saved",
         taskId: "task-1",
         diagnosticPlans: [
           {
@@ -88,6 +89,7 @@ describe("AI conversation persistence", () => {
     });
     expect(sanitized.messages[0]).not.toHaveProperty("context");
     expect(sanitized.messages[1]).not.toHaveProperty("fileEditProposals");
+    expect(sanitized.messages[1]).not.toHaveProperty("reasoning");
     expect(sanitized.messages[1]?.fileChanges).toEqual([
       {
         addedLines: 1,

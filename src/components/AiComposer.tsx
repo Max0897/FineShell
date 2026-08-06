@@ -2,7 +2,9 @@ import { memo } from "react";
 import {
   Button,
   Mentions,
+  Modal,
   Progress,
+  Select,
   Tag,
   Tooltip,
   Typography,
@@ -23,14 +25,24 @@ import {
   type AiRemoteFileContext,
   type AiRequestTokenBudget,
 } from "../ai-utils";
+import type { AgentApprovalMode } from "../tauri-protocol";
+
+const AI_APPROVAL_MODE_OPTIONS = [
+  { label: "请求审批", value: "on_request" },
+  { label: "替我审批", value: "auto_safe" },
+  { label: "完全访问", value: "full_access" },
+] satisfies { label: string; value: AgentApprovalMode }[];
 
 interface AiComposerProps {
   activeConversationAvailable: boolean;
+  approvalMode: AgentApprovalMode;
+  canInsertCommand: boolean;
   contextSources: AiContextSource[];
   editableRemoteFileCount: number;
   fileEditEligibility?: string;
   model: string;
   onCancel: () => void | Promise<void>;
+  onApprovalModeChange: (mode: AgentApprovalMode) => void;
   onChange: (value: string) => void;
   onRemoveRemoteFile: (file: AiRemoteFileContext) => void;
   onSend: () => void;
@@ -51,10 +63,13 @@ function formatTokenCount(value: number) {
 
 function AiComposer({
   activeConversationAvailable,
+  approvalMode,
+  canInsertCommand,
   contextSources,
   editableRemoteFileCount,
   fileEditEligibility,
   model,
+  onApprovalModeChange,
   onCancel,
   onChange,
   onRemoveRemoteFile,
@@ -191,9 +206,30 @@ function AiComposer({
       />
       <div className="ai-assistant-composer-actions">
         <span className="ai-assistant-composer-meta">
-          <Typography.Text type="secondary">
-            {model || "未配置模型"}
-          </Typography.Text>
+          <Select
+            aria-label="AI 审批模式"
+            className={`ai-approval-mode ai-approval-mode-${approvalMode}`}
+            disabled={!canInsertCommand || sending}
+            onChange={(value) => {
+              const next = value as AgentApprovalMode;
+              if (next !== "full_access" || approvalMode === "full_access") {
+                onApprovalModeChange(next);
+                return;
+              }
+              Modal.confirm({
+                cancelText: "取消",
+                content:
+                  "完全访问会自动执行 AI 提出的终端命令和文件操作，仅在当前主机和当前连接周期内生效。",
+                okButtonProps: { status: "danger" },
+                okText: "启用",
+                onOk: () => onApprovalModeChange(next),
+                title: "启用完全访问？",
+              });
+            }}
+            options={AI_APPROVAL_MODE_OPTIONS}
+            size="mini"
+            value={approvalMode}
+          />
           {hasSelectedRemoteFile && (
             <Tooltip content={fileEditEligibility ?? "修改前需要手动审阅确认"}>
               <Tag
@@ -208,6 +244,15 @@ function AiComposer({
           )}
         </span>
         <span className="ai-assistant-composer-submit">
+          <Tooltip content={model || "未配置模型"}>
+            <Typography.Text
+              className="ai-assistant-composer-model"
+              ellipsis
+              type="secondary"
+            >
+              {model || "未配置模型"}
+            </Typography.Text>
+          </Tooltip>
           <Tooltip
             content={
               <div className="ai-token-budget-tooltip">

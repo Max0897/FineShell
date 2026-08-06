@@ -54,7 +54,6 @@ function renderPlans(
         onAddToDraft={() => undefined}
         onCancel={onCancel}
         onConfirm={onConfirm}
-        onCopy={() => undefined}
         onRevise={onRevise}
         onStop={onStop}
         onToggleRun={() => undefined}
@@ -88,7 +87,7 @@ describe("AiDiagnosticPlanList", () => {
   test("cancels a pending plan", async () => {
     const view = renderPlans();
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "驳回" }));
+      fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
       await Promise.resolve();
     });
     expect(view.onCancel).toHaveBeenCalledWith("plan-1");

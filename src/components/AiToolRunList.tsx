@@ -7,7 +7,6 @@ import {
 import {
   IconCheckCircle,
   IconCloseCircle,
-  IconCopy,
   IconDown,
   IconPlus,
   IconRight,
@@ -19,7 +18,6 @@ interface AiToolRunListProps {
   expandedRuns: ReadonlySet<string>;
   messageId: string;
   onAddToDraft: (run: AiToolRun) => void;
-  onCopy: (run: AiToolRun) => void | Promise<void>;
   onToggle: (key: string) => void;
   runs: AiToolRun[];
   sending: boolean;
@@ -56,7 +54,6 @@ function AiToolRunList({
   expandedRuns,
   messageId,
   onAddToDraft,
-  onCopy,
   onToggle,
   runs,
   sending,
@@ -92,17 +89,6 @@ function AiToolRunList({
                       aria-label={expanded ? "收起诊断结果" : "展开诊断结果"}
                       icon={expanded ? <IconDown /> : <IconRight />}
                       onClick={() => onToggle(runKey)}
-                      size="mini"
-                      type="text"
-                    />
-                  </Tooltip>
-                )}
-                {hasDetail && (
-                  <Tooltip content="复制摘要">
-                    <Button
-                      aria-label="复制诊断摘要"
-                      icon={<IconCopy />}
-                      onClick={() => void onCopy(run)}
                       size="mini"
                       type="text"
                     />

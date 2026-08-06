@@ -98,7 +98,7 @@ pub(crate) async fn ai_chat_start(
     let file_edit_enabled = request.file_edit_enabled;
     let command_proposal_enabled = request.command_proposal_enabled;
     let any_tools_configured = tools_enabled || file_edit_enabled || command_proposal_enabled;
-    let mut finalize_reason = request.finalize_reason;
+    let mut finalize_reason = None;
     let mut tool_rounds = validate_tool_rounds(
         request.tool_rounds,
         tools_enabled,
@@ -177,6 +177,20 @@ pub(crate) async fn ai_chat_start(
             })
             .await?;
 
+            if !response.tool_calls.is_empty() {
+                if let Some(reason) = tool_loop_finalize_reason(&tool_rounds, &response.tool_calls)
+                {
+                    if let Some(context) = task_context.as_ref() {
+                        let events = task_manager
+                            .finish_model_turn(context.id(), true)
+                            .map_err(|error| structured(operation, error))?;
+                        agent::emit_task_events(&app, events);
+                    }
+                    finalize_reason = Some(reason);
+                    continue;
+                }
+            }
+
             response.action_intents = response
                 .tool_calls
                 .iter()
@@ -204,13 +218,6 @@ pub(crate) async fn ai_chat_start(
                         .finish_model_turn(&request_id, true)
                         .map_err(|error| structured(operation, error))?;
                     agent::emit_task_events(&app, events);
-
-                    if let Some(reason) =
-                        tool_loop_finalize_reason(&tool_rounds, &response.tool_calls)
-                    {
-                        finalize_reason = Some(reason);
-                        continue;
-                    }
 
                     let mut plan = create_diagnostic_plan(
                         &response.tool_calls,
@@ -269,6 +276,7 @@ pub(crate) async fn ai_chat_start(
                         calls,
                         content: (!response.content.trim().is_empty())
                             .then(|| response.content.trim().to_string()),
+                        reasoning_content: response.reasoning_content.clone(),
                         results,
                     };
                     tool_rounds.push(round.clone());
@@ -316,6 +324,7 @@ pub(crate) fn ai_chat_cancel(
     app: AppHandle,
     manager: State<'_, AiRequestManager>,
     task_manager: State<'_, AgentTaskManager>,
+    ssh_manager: State<'_, SshSessionManager>,
     request_id: String,
 ) -> CommandResult<()> {
     let operation = "ai_chat_cancel";
@@ -328,6 +337,7 @@ pub(crate) fn ai_chat_cancel(
             let _ = cancellation.send(true);
         }
     }
+    ssh_manager.cancel_agent_commands(&request_id);
     let events = task_manager
         .cancel_task(&request_id)
         .map_err(|error| structured(operation, error))?;
