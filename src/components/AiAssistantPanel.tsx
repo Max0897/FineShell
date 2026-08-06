@@ -10,7 +10,6 @@ import type {
   AiActionTransitionHandler,
 } from "../ai-action-lifecycle";
 import { buildAiConversationRequestMessages } from "../ai-summaries";
-import type { AiToolRun } from "../ai-tools";
 import {
   agentTaskNeedsRecovery,
   buildAgentRecoveryPrompt,
@@ -808,17 +807,6 @@ function AiAssistantPanel({
     });
   };
 
-  const copyToolRun = async (run: AiToolRun) => {
-    const value = run.summary ?? run.error;
-    if (!value) return;
-    try {
-      await copyCode(value);
-      Message.success("诊断摘要已复制");
-    } catch (error) {
-      Message.error(commandErrorMessage(error));
-    }
-  };
-
   useEffect(() => {
     if (!visible) return;
     const frame = requestAnimationFrame(() => {
@@ -1002,7 +990,6 @@ function AiAssistantPanel({
           onCopyCode={copyCode}
           onCopyCommand={copyCommandProposal}
           onCopyCommands={copyAllCommandProposals}
-          onCopyToolRun={copyToolRun}
           onCancelDiagnosticPlan={cancelDiagnosticPlan}
           onConfirmDiagnosticPlan={confirmDiagnosticPlan}
           onReviseDiagnosticPlan={reviseDiagnosticPlan}
@@ -1076,7 +1063,6 @@ function AiAssistantPanel({
                 onAddToDraft={addToolRunToDraft}
                 onCancel={cancelDiagnosticPlan}
                 onConfirm={confirmDiagnosticPlan}
-                onCopy={copyToolRun}
                 onRevise={reviseDiagnosticPlan}
                 onStop={stopDiagnosticPlan}
                 onToggleRun={toggleToolRun}

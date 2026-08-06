@@ -10,8 +10,8 @@ import {
   IconCommand,
   IconCopy,
   IconDown,
+  IconRight,
   IconRobot,
-  IconUp,
 } from "@arco-design/web-react/icon";
 import {
   aiCommandRiskColor,
@@ -65,22 +65,6 @@ function proposalStatus(proposal: AiCommandProposal) {
   return { color: "blue", label: "待确认" };
 }
 
-function proposalExecutionMessage(proposal: AiCommandProposal) {
-  if (proposal.executionPhase === "connecting") {
-    return "正在建立后台 SSH 执行通道";
-  }
-  if (proposal.executionPhase === "running") {
-    return "后台 SSH 命令正在执行";
-  }
-  if (proposal.executionPhase === "cancelling") {
-    return "正在取消后台 SSH 命令";
-  }
-  if (proposal.status === "approved") {
-    return "已同意，正在通过后台 SSH 执行";
-  }
-  return "后台 SSH 已提交，正在等待退出结果";
-}
-
 function recordStatus(status: AiCommandRecord["status"]) {
   if (status === "verified") return { color: "green", label: "已分析" };
   if (status === "succeeded") return { color: "green", label: "执行成功" };
@@ -96,33 +80,6 @@ function riskLabel(risk: AiCommandRecord["risk"]) {
   if (risk === "danger") return "高风险";
   if (risk === "caution") return "需确认";
   return "低风险";
-}
-
-function verificationLabel(proposal: AiCommandProposal) {
-  const verification = proposal.verification;
-  if (!verification) return null;
-  if (verification.kind === "service_active") {
-    return `执行后验证服务 ${verification.service} 是否处于运行状态`;
-  }
-  if (verification.kind === "service_inactive") {
-    return `执行后验证服务 ${verification.service} 是否已停止`;
-  }
-  if (verification.kind === "port_listening") {
-    return `执行后验证 ${verification.port}/${verification.protocol.toUpperCase()} 端口是否监听`;
-  }
-  return `执行后验证 ${verification.validator} 配置语法`;
-}
-
-function businessVerificationPresentation(
-  proposal: AiCommandProposal,
-): { color: string; label: string } | null {
-  const status = proposal.businessVerification?.status;
-  if (!status) return null;
-  if (status === "verified") return { color: "green", label: "验证通过" };
-  if (status === "failed") return { color: "red", label: "验证失败" };
-  if (status === "partial") return { color: "orange", label: "部分通过" };
-  if (status === "pending") return { color: "blue", label: "验证中" };
-  return { color: "gray", label: "未验证" };
 }
 
 function AiCommandProposalList({
@@ -145,9 +102,6 @@ function AiCommandProposalList({
   const [collapsedOutputs, setCollapsedOutputs] = useState<Set<string>>(
     () => new Set(),
   );
-  const [detailVisibility, setDetailVisibility] = useState<
-    Record<string, boolean>
-  >({});
   const [fullOutputProposalId, setFullOutputProposalId] = useState<
     string | null
   >(null);
@@ -220,15 +174,10 @@ function AiCommandProposalList({
         const canAnalyze =
           hasCapturedResult ||
           (proposal.status === "executed" && hasRecentTerminalOutput);
-        const verification = verificationLabel(proposal);
         const hasOutput =
           proposal.resultOutput !== undefined ||
           proposal.outputStreamsSeparated;
         const outputCollapsed = collapsedOutputs.has(proposal.id);
-        const detailsExpanded =
-          detailVisibility[proposal.id] ??
-          proposal.assessment.risk === "danger";
-        const businessVerification = businessVerificationPresentation(proposal);
         const hasFullOutput =
           proposal.resultOutputTruncated === true ||
           proposal.resultStdoutTruncated === true ||
@@ -268,49 +217,24 @@ function AiCommandProposalList({
             <pre className="ai-command-proposal-command">
               <code>{proposal.command}</code>
             </pre>
-            <div className="ai-command-proposal-detail-toggle">
-              <Button
-                icon={detailsExpanded ? <IconUp /> : <IconDown />}
-                onClick={() =>
-                  setDetailVisibility((current) => ({
-                    ...current,
-                    [proposal.id]: !detailsExpanded,
-                  }))
-                }
-                size="mini"
-                type="text"
-              >
-                {detailsExpanded ? "收起详情" : "查看详情"}
-              </Button>
-            </div>
-            {detailsExpanded && (
-              <div className="ai-command-proposal-details">
-                <Typography.Text type="secondary">
-                  <span>执行位置</span>
-                  {hostName}
-                  {proposal.directory ? ` · ${proposal.directory}` : ""}
-                </Typography.Text>
-                {proposal.assessment.reason &&
-                  proposal.assessment.risk !== "safe" && (
-                    <Typography.Text
-                      type={
-                        proposal.assessment.risk === "danger"
-                          ? "error"
-                          : "secondary"
-                      }
-                    >
-                      <span>风险说明</span>
-                      {proposal.assessment.reason}
-                    </Typography.Text>
-                  )}
-                {verification && (
-                  <Typography.Text type="secondary">
-                    <span>预期验证</span>
-                    {verification}
+            <div className="ai-command-proposal-context">
+              <Typography.Text type="secondary">
+                {hostName}
+                {proposal.directory ? ` · ${proposal.directory}` : ""}
+              </Typography.Text>
+              {proposal.assessment.reason &&
+                proposal.assessment.risk !== "safe" && (
+                  <Typography.Text
+                    type={
+                      proposal.assessment.risk === "danger"
+                        ? "error"
+                        : "secondary"
+                    }
+                  >
+                    {proposal.assessment.reason}
                   </Typography.Text>
                 )}
-              </div>
-            )}
+            </div>
             {presentation === "approval" &&
               (proposal.status === "pending" ? (
                 <AiApprovalActions
@@ -364,15 +288,6 @@ function AiCommandProposalList({
                   </Button>
                 </Tooltip>
               ) : null)}
-            {(proposal.status === "approved" ||
-              proposal.status === "executed") && (
-              <Typography.Text
-                className="ai-command-proposal-warning"
-                type="secondary"
-              >
-                {proposalExecutionMessage(proposal)}
-              </Typography.Text>
-            )}
             {(proposal.status === "succeeded" ||
               proposal.status === "failed" ||
               (proposal.status === "verified" &&
@@ -388,49 +303,37 @@ function AiCommandProposalList({
                 {proposal.resultOutputTruncated ? " · 输出已截断" : ""}
               </Typography.Text>
             )}
-            {proposal.businessVerification && businessVerification && (
-              <div className="ai-command-business-verification">
-                <Tag color={businessVerification.color} size="small">
-                  {businessVerification.label}
-                </Tag>
-                <Typography.Text type="secondary">
-                  {proposal.businessVerification.summary}
-                </Typography.Text>
-              </div>
-            )}
             {hasOutput && (
               <div className="ai-command-proposal-output">
                 <div className="ai-command-proposal-output-heading">
-                  <Typography.Text type="secondary">命令输出</Typography.Text>
-                  <span>
-                    {hasFullOutput && (
-                      <Button
-                        onClick={() => setFullOutputProposalId(proposal.id)}
-                        size="mini"
-                        type="text"
-                      >
-                        查看完整输出
-                      </Button>
-                    )}
+                  <Button
+                    aria-expanded={!outputCollapsed}
+                    aria-label={
+                      outputCollapsed ? "展开命令输出" : "收起命令输出"
+                    }
+                    icon={outputCollapsed ? <IconRight /> : <IconDown />}
+                    onClick={() =>
+                      setCollapsedOutputs((current) => {
+                        const next = new Set(current);
+                        if (next.has(proposal.id)) next.delete(proposal.id);
+                        else next.add(proposal.id);
+                        return next;
+                      })
+                    }
+                    size="mini"
+                    type="text"
+                  >
+                    命令输出
+                  </Button>
+                  {hasFullOutput && (
                     <Button
-                      aria-label={
-                        outputCollapsed ? "展开命令输出" : "收起命令输出"
-                      }
-                      icon={outputCollapsed ? <IconDown /> : <IconUp />}
-                      onClick={() =>
-                        setCollapsedOutputs((current) => {
-                          const next = new Set(current);
-                          if (next.has(proposal.id)) next.delete(proposal.id);
-                          else next.add(proposal.id);
-                          return next;
-                        })
-                      }
+                      onClick={() => setFullOutputProposalId(proposal.id)}
                       size="mini"
                       type="text"
                     >
-                      {outputCollapsed ? "展开" : "收起"}
+                      查看完整输出
                     </Button>
-                  </span>
+                  )}
                 </div>
                 {!outputCollapsed && (
                   <div className="ai-command-proposal-output-streams">
@@ -438,9 +341,6 @@ function AiCommandProposalList({
                       <>
                         {proposal.resultStdout && (
                           <section>
-                            <Typography.Text type="secondary">
-                              标准输出
-                            </Typography.Text>
                             <pre className="ai-command-proposal-live-output">
                               <code>{proposal.resultStdout}</code>
                             </pre>
@@ -448,9 +348,6 @@ function AiCommandProposalList({
                         )}
                         {proposal.resultStderr && (
                           <section className="ai-command-output-stderr">
-                            <Typography.Text type="secondary">
-                              错误输出
-                            </Typography.Text>
                             <pre className="ai-command-proposal-live-output">
                               <code>{proposal.resultStderr}</code>
                             </pre>

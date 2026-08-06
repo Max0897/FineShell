@@ -14,7 +14,6 @@ interface AiDiagnosticPlanListProps {
     planId: string,
     selectedCallIds: string[],
   ) => unknown | Promise<unknown>;
-  onCopy: (run: AiToolRun) => void | Promise<void>;
   onRevise?: (planId: string, feedback: string) => unknown | Promise<unknown>;
   onStop: (planId: string) => void;
   onToggleRun: (key: string) => void;
@@ -44,7 +43,6 @@ function AiDiagnosticPlanList({
   onAddToDraft,
   onCancel,
   onConfirm,
-  onCopy,
   onRevise,
   onStop,
   onToggleRun,
@@ -135,7 +133,6 @@ function AiDiagnosticPlanList({
                   expandedRuns={expandedRuns}
                   messageId={messageId}
                   onAddToDraft={onAddToDraft}
-                  onCopy={onCopy}
                   onToggle={onToggleRun}
                   runs={steps}
                   sending={sending}

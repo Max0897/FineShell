@@ -582,8 +582,8 @@ pub(super) async fn execute_diagnostic_plan(
             Some((
                 feedback
                     .as_ref()
-                    .map(|feedback| format!("用户驳回了当前操作。附加要求：{feedback}"))
-                    .unwrap_or_else(|| "用户驳回了当前操作".to_string()),
+                    .map(|feedback| format!("用户拒绝了当前操作。附加要求：{feedback}"))
+                    .unwrap_or_else(|| "用户拒绝了当前操作".to_string()),
                 false,
             ))
         } else if matches!(decision, AgentPlanDecision::Stop)

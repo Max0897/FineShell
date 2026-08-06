@@ -89,12 +89,12 @@ describe("AiCommandProposalList", () => {
     });
     await waitFor(() =>
       expect(
-        (screen.getByRole("button", { name: "驳回" }) as HTMLButtonElement)
+        (screen.getByRole("button", { name: "拒绝" }) as HTMLButtonElement)
           .disabled,
       ).toBe(false),
     );
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "驳回" }));
+      fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
       await Promise.resolve();
     });
 
@@ -105,15 +105,14 @@ describe("AiCommandProposalList", () => {
     expect(view.onReject).toHaveBeenCalledWith("command-1");
   });
 
-  test("keeps low-risk approval details collapsed until requested", () => {
+  test("shows the execution target without an extra details section", () => {
     renderList([proposal()], [], false, "approval");
 
-    expect(screen.queryByText("生产服务器 · /root")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
     expect(screen.getByText("生产服务器 · /root")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "查看详情" })).toBeNull();
   });
 
-  test("expands high-risk approval details by default", () => {
+  test("keeps a high-risk reason visible without another card", () => {
     renderList(
       [
         {
@@ -132,7 +131,7 @@ describe("AiCommandProposalList", () => {
     );
 
     expect(screen.getByText("会删除数据")).not.toBeNull();
-    expect(screen.getByRole("button", { name: "收起详情" })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "收起详情" })).toBeNull();
   });
 
   test("collects revision feedback inside the approval card", async () => {
@@ -164,7 +163,7 @@ describe("AiCommandProposalList", () => {
         .disabled,
     ).toBe(false);
     expect(
-      (screen.getByRole("button", { name: "驳回" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "拒绝" }) as HTMLButtonElement)
         .disabled,
     ).toBe(false);
   });
@@ -174,9 +173,7 @@ describe("AiCommandProposalList", () => {
     renderList([executed]);
 
     expect(screen.getByText("终端执行记录")).not.toBeNull();
-    expect(
-      screen.getByText("后台 SSH 已提交，正在等待退出结果"),
-    ).not.toBeNull();
+    expect(screen.queryByText("后台 SSH 已提交，正在等待退出结果")).toBeNull();
     expect(screen.queryByRole("button", { name: "分析结果" })).toBeNull();
     expect(screen.queryByRole("button", { name: "复制命令提案" })).toBeNull();
   });
@@ -191,7 +188,7 @@ describe("AiCommandProposalList", () => {
     ]);
 
     expect(screen.getByText("执行中")).not.toBeNull();
-    expect(screen.getByText("后台 SSH 命令正在执行")).not.toBeNull();
+    expect(screen.queryByText("后台 SSH 命令正在执行")).toBeNull();
     expect(screen.getByText(/first line\s+second line/)).not.toBeNull();
   });
 
@@ -200,7 +197,7 @@ describe("AiCommandProposalList", () => {
       { ...proposal("executed"), executionPhase: "connecting" },
     ]);
     expect(screen.getByText("连接中")).not.toBeNull();
-    expect(screen.getByText("正在建立后台 SSH 执行通道")).not.toBeNull();
+    expect(screen.queryByText("正在建立后台 SSH 执行通道")).toBeNull();
 
     view.rerender(
       <AiCommandProposalList
@@ -310,9 +307,9 @@ describe("AiCommandProposalList", () => {
       },
     ]);
 
-    expect(screen.getByText("标准输出")).not.toBeNull();
+    expect(screen.queryByText("标准输出")).toBeNull();
     expect(screen.getByText("stdout summary")).not.toBeNull();
-    expect(screen.getByText("错误输出")).not.toBeNull();
+    expect(screen.queryByText("错误输出")).toBeNull();
     expect(screen.getByText("stderr summary")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "查看完整输出" }));
     expect(screen.getByText("完整命令输出")).not.toBeNull();
@@ -320,7 +317,7 @@ describe("AiCommandProposalList", () => {
     expect(screen.getByText("full stderr details")).not.toBeNull();
   });
 
-  test("shows structured business verification separately from exit status", () => {
+  test("does not render a separate business verification card", () => {
     renderList([
       {
         ...proposal("succeeded"),
@@ -332,7 +329,7 @@ describe("AiCommandProposalList", () => {
       },
     ]);
 
-    expect(screen.getByText("验证通过")).not.toBeNull();
-    expect(screen.getByText("服务 nginx.service 处于运行状态")).not.toBeNull();
+    expect(screen.queryByText("验证通过")).toBeNull();
+    expect(screen.queryByText("服务 nginx.service 处于运行状态")).toBeNull();
   });
 });

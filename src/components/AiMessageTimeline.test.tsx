@@ -39,7 +39,6 @@ function renderTimeline(
         onCopyCode={async () => undefined}
         onCopyCommand={() => undefined}
         onCopyCommands={() => undefined}
-        onCopyToolRun={() => undefined}
         onCancelDiagnosticPlan={() => undefined}
         onConfirmDiagnosticPlan={() => undefined}
         onReviseDiagnosticPlan={() => undefined}
@@ -158,6 +157,75 @@ describe("AiMessageTimeline", () => {
     const toggle = screen.getByRole("button", { name: "正在思考..." });
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText("正在检查服务器状态。")).not.toBeNull();
+    expect(screen.queryByRole("status", { name: "AI 正在生成" })).toBeNull();
+  });
+
+  test("keeps a streaming indicator after partial answer content", () => {
+    renderTimeline(
+      [
+        {
+          content: "正在分析 Nginx 配置。",
+          id: "assistant-1",
+          role: "assistant",
+        },
+      ],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+
+    expect(screen.getByText("正在分析 Nginx 配置。")).not.toBeNull();
+    expect(screen.getByRole("status", { name: "AI 正在生成" })).not.toBeNull();
+  });
+
+  test("shows an initial generation state before the first token", () => {
+    renderTimeline(
+      [{ content: "", id: "assistant-1", role: "assistant" }],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+
+    expect(screen.getByRole("status", { name: "AI 正在生成" })).not.toBeNull();
+  });
+
+  test("lets an approval card own the active request status", () => {
+    renderTimeline(
+      [
+        {
+          commandProposals: [
+            {
+              assessment: { canInsert: true, label: "低风险", risk: "safe" },
+              command: "uname -a",
+              id: "command-1",
+              purpose: "查看系统信息",
+              sessionId: "session-1",
+              status: "pending",
+            },
+          ],
+          content: "请确认以下命令。",
+          id: "assistant-1",
+          role: "assistant",
+        },
+      ],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+
+    expect(screen.queryByRole("status", { name: "AI 正在生成" })).toBeNull();
   });
 
   test("does not duplicate a command approval docked above the composer", () => {
