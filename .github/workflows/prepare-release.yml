@@ -1,0 +1,103 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: "版本级别"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release pull request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Prepare Release must run from main." >&2
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - name: Verify Actions pull request permission
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          allowed="$(gh api "repos/$GITHUB_REPOSITORY/actions/permissions/workflow" --jq '.can_approve_pull_request_reviews')"
+          if [[ "$allowed" != "true" ]]; then
+            echo "Enable 'Allow GitHub Actions to create and approve pull requests' in repository Actions settings." >&2
+            exit 1
+          fi
+      - name: Prepare version files and changelog
+        run: bun scripts/prepare-release.ts "${{ inputs.version_bump }}"
+      - name: Validate release files
+        run: |
+          bun test \
+            scripts/prepare-release.test.ts \
+            scripts/check-release-version.test.ts \
+            scripts/extract-release-notes.test.ts
+          release_tag="v$(bun -e 'const value = await Bun.file("package.json").json(); console.log(value.version)')"
+          bun run release:check -- "$release_tag"
+          bun run release:notes -- "$release_tag" > /tmp/release-notes.md
+      - id: release
+        name: Resolve release metadata
+        run: |
+          version="$(bun -e 'const value = await Bun.file("package.json").json(); console.log(value.version)')"
+          release_tag="v$version"
+          branch_name="fix/release-$release_tag"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "branch_name=$branch_name" >> "$GITHUB_OUTPUT"
+      - name: Ensure release branch does not exist
+        env:
+          BRANCH_NAME: ${{ steps.release.outputs.branch_name }}
+        run: |
+          if git ls-remote --exit-code --heads origin "$BRANCH_NAME" >/dev/null 2>&1; then
+            echo "Release branch already exists: $BRANCH_NAME" >&2
+            exit 1
+          fi
+      - name: Commit and push release preparation
+        env:
+          BRANCH_NAME: ${{ steps.release.outputs.branch_name }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH_NAME"
+          git add \
+            CHANGELOG.md \
+            package.json \
+            src-tauri/Cargo.toml \
+            src-tauri/Cargo.lock \
+            src-tauri/tauri.conf.json
+          git commit -m "准备发布 $RELEASE_TAG"
+          git push origin "$BRANCH_NAME"
+      - name: Create release pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH_NAME: ${{ steps.release.outputs.branch_name }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "$BRANCH_NAME" \
+            --title "准备发布 $RELEASE_TAG" \
+            --body "合并此 PR 后将自动构建并发布 FineShell $RELEASE_TAG。"
