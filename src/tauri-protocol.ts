@@ -264,6 +264,8 @@ export interface AgentTaskDiagnostics {
 }
 
 export interface AgentTaskContext {
+  contextVersion: number;
+  contextCapturedAt: number;
   id: string;
   conversationId: string;
   hostId: string;
@@ -280,6 +282,8 @@ export interface AgentTaskContext {
 }
 
 export interface AgentTask {
+  contextVersion: number;
+  contextCapturedAt: number;
   id: string;
   conversationId: string;
   hostId: string;

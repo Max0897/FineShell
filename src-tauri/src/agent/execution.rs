@@ -1,6 +1,24 @@
 use super::*;
 
 impl AgentTaskManager {
+    pub(crate) fn validate_action_execution_context(
+        &self,
+        task_id: &str,
+        action_id: &str,
+    ) -> Result<String, String> {
+        if !valid_identifier(task_id) || !valid_identifier(action_id) {
+            return Err("AI 动作作用域无效".to_string());
+        }
+        let tasks = self.lock_tasks()?;
+        let task = tasks
+            .get(task_id)
+            .ok_or_else(|| "AI 任务不存在".to_string())?;
+        if !task.actions.iter().any(|action| action.id == action_id) {
+            return Err("AI 动作不存在".to_string());
+        }
+        Ok(task.validate_execution_context()?.to_string())
+    }
+
     pub(crate) fn authorize_action_execution(
         &self,
         task_id: &str,

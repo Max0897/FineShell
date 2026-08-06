@@ -111,6 +111,8 @@ function agentTask(
   return {
     activeStepId: null,
     approvalMode: "on_request",
+    contextCapturedAt: Date.now(),
+    contextVersion: 1,
     conversationId: "conversation-1",
     currentDirectory: null,
     createdAt: 1,
@@ -403,6 +405,8 @@ describe("useAiRequestOrchestrator", () => {
       task: {
         approvalMode: string;
         conversationId: string;
+        contextCapturedAt: number;
+        contextVersion: number;
         currentDirectory: string;
         fileOperationDirectory?: string;
         hostId: string;
@@ -418,6 +422,8 @@ describe("useAiRequestOrchestrator", () => {
     expect(request.task).toEqual({
       approvalMode: "auto_safe",
       conversationId: "conversation-1",
+      contextCapturedAt: expect.any(Number),
+      contextVersion: 1,
       currentDirectory: "/root",
       fileOperationDirectory: undefined,
       hostId: "host-1",

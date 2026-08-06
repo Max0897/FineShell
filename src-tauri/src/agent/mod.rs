@@ -34,6 +34,13 @@ const MAX_AGENT_REPAIR_ATTEMPTS: u8 = 2;
 const MAX_AGENT_EVENTS_PER_TASK: usize = 128;
 const AGENT_RUNTIME_STATE_VERSION: u8 = 1;
 const AGENT_RUNTIME_STATE_FILE: &str = "ai-agent-runtime.json";
+const AGENT_CONTEXT_VERSION: u16 = 1;
+const MAX_AGENT_CONTEXT_AGE_MS: u64 = 10 * 60 * 1_000;
+const MAX_AGENT_CONTEXT_CLOCK_SKEW_MS: u64 = 60 * 1_000;
+
+fn agent_context_version() -> u16 {
+    AGENT_CONTEXT_VERSION
+}
 
 mod model;
 mod requests;

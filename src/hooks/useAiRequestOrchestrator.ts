@@ -525,6 +525,8 @@ export function useAiRequestOrchestrator({
               commandProposalEnabled: terminalProposalEnabled,
               toolRounds,
               task: {
+                contextVersion: 1,
+                contextCapturedAt: Date.now(),
                 id: requestId,
                 conversationId: targetConversationId,
                 hostId: targetHostId,

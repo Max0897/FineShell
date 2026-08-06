@@ -20,6 +20,8 @@ use super::{
 
 fn policy_context(mode: &str) -> AgentTaskContext {
     serde_json::from_value(json!({
+        "contextVersion": 1,
+        "contextCapturedAt": crate::agent::timestamp_ms(),
         "id": "task-1",
         "conversationId": "conversation-1",
         "hostId": "host-1",
