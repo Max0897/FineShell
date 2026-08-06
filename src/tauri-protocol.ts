@@ -22,11 +22,18 @@ export type AgentPlanStatus = keyof typeof contract.agentPlanStatuses;
 export type AgentApprovalMode = keyof typeof contract.agentApprovalModes;
 export type AgentActionRisk = keyof typeof contract.agentActionRisks;
 export type AgentActionStatus = keyof typeof contract.agentActionStatuses;
-export type AgentActionTransition = keyof typeof contract.agentActionTransitions;
-export type AgentVerificationStatus = keyof typeof contract.agentVerificationStatuses;
+export type AgentCommandExecutionPhase =
+  keyof typeof contract.agentCommandExecutionPhases;
+export type AgentActionTransition =
+  keyof typeof contract.agentActionTransitions;
+export type AgentTaskRecoveryDecision =
+  "continue_analysis" | "retry" | "finish";
+export type AgentVerificationStatus =
+  keyof typeof contract.agentVerificationStatuses;
 export type AgentVerificationEvidenceKind =
   keyof typeof contract.agentVerificationEvidenceKinds;
-export type AgentRepairStopReason = keyof typeof contract.agentRepairStopReasons;
+export type AgentRepairStopReason =
+  keyof typeof contract.agentRepairStopReasons;
 export type AgentRecoveryRecommendation =
   keyof typeof contract.agentRecoveryRecommendations;
 export type AgentRecoveryStatus = keyof typeof contract.agentRecoveryStatuses;
@@ -78,12 +85,7 @@ export interface SftpTransferPayload {
 }
 
 export type ExternalEditStatus =
-  | "watching"
-  | "syncing"
-  | "synced"
-  | "conflict"
-  | "failed"
-  | "closed";
+  "watching" | "syncing" | "synced" | "conflict" | "failed" | "closed";
 
 export interface ExternalEditPayload {
   editId: string;
@@ -108,6 +110,7 @@ export interface MenuSelectAllPayload {
 export interface AiStreamPayload {
   requestId: string;
   delta: string;
+  kind?: "content" | "reasoning";
 }
 
 export interface AiCompletePayload {
@@ -161,6 +164,7 @@ export interface AgentActionState {
   verificationStatus: AgentVerificationStatus;
   verificationEvidence: AgentVerificationEvidence[];
   recoveryState: AgentRecoveryState | null;
+  commandExecution: AgentCommandExecutionState | null;
 }
 
 export interface AgentRecoveryState {
@@ -208,6 +212,38 @@ export interface AgentActionExecutionResult {
     permissions: number | null;
   } | null;
   affectedPaths: string[];
+  command: {
+    submissionId: string;
+    phase: "completed" | "unavailable";
+    output: string | null;
+    outputTruncated: boolean;
+    stdout: string | null;
+    stdoutTruncated: boolean;
+    stderr: string | null;
+    stderrTruncated: boolean;
+    exitCode: number | null;
+    durationMs: number;
+    reason: string | null;
+    submittedAt: number;
+    completedAt: number;
+  } | null;
+}
+
+export interface AgentCommandExecutionState {
+  submissionId: string;
+  phase: AgentCommandExecutionPhase;
+  outputExcerpt: string | null;
+  outputTruncated: boolean;
+  stdoutExcerpt?: string | null;
+  stdoutTruncated?: boolean;
+  stderrExcerpt?: string | null;
+  stderrTruncated?: boolean;
+  exitCode: number | null;
+  durationMs: number | null;
+  reason: string | null;
+  submittedAt: number;
+  updatedAt: number;
+  completedAt: number | null;
 }
 
 export interface AgentTaskResult {
@@ -276,18 +312,24 @@ export interface AgentTaskEventPayload {
   task: AgentTask;
 }
 
+export interface AgentTaskRecoveryContext {
+  previousTaskId: string;
+  hostId: string;
+  decision: AgentTaskRecoveryDecision;
+  objective: string;
+  interruptionReason: string;
+  completedActions: string[];
+  uncertainActions: string[];
+}
+
 export interface AiChatResult {
   content: string;
+  reasoningContent?: string;
   toolCalls: AiToolCall[];
   actionIntents?: AgentActionIntent[];
   diagnosticPlans?: AgentPlan[];
   diagnosticToolRounds?: AiToolRound[];
 }
-
-export type AiFinalizeReason =
-  | "tool_budget"
-  | "no_progress"
-  | "consecutive_failures";
 
 export interface AiToolCall {
   id: string;
@@ -304,6 +346,7 @@ export interface AiToolResult {
 export interface AiToolRound {
   calls: AiToolCall[];
   content?: string;
+  reasoningContent?: string;
   results: AiToolResult[];
 }
 
@@ -489,9 +532,8 @@ export function emitProtocolEventTo<E extends TauriEvent>(
 }
 
 export async function verifyProtocolVersion() {
-  const result = await invokeProtocolCommand<ProtocolVersionResult>(
-    "protocol_version",
-  );
+  const result =
+    await invokeProtocolCommand<ProtocolVersionResult>("protocol_version");
   if (result.version !== PROTOCOL_VERSION) {
     throw new FineShellCommandError({
       code: "unsupported",

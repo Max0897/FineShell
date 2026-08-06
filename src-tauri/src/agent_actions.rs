@@ -11,6 +11,56 @@ pub(crate) const MAX_COMMAND_PURPOSE_CHARS: usize = 240;
 pub(crate) const MAX_COMMAND_RISK_REASON_CHARS: usize = 240;
 pub(crate) const TERMINAL_EXECUTE_ACTION_TOOL: &str = "execute_terminal_command";
 
+pub(crate) fn valid_service_name(service: &str) -> bool {
+    !service.is_empty()
+        && service.chars().count() <= 128
+        && !service.starts_with('-')
+        && service.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '@' | ':' | '-')
+        })
+}
+
+fn service_action_command(
+    service: &str,
+    action: &str,
+) -> Result<(String, String, String, AgentActionRisk, Option<Value>), String> {
+    if !valid_service_name(service) {
+        return Err("AI 服务名称无效".to_string());
+    }
+    let (command, purpose, expected_effect, risk, verification) = match action {
+        "status" => (
+            format!("systemctl is-active -- {service}"),
+            format!("检查服务 {service} 的运行状态"),
+            "只读取服务当前运行状态".to_string(),
+            AgentActionRisk::LowRisk,
+            None,
+        ),
+        "start" => (
+            format!("sudo -n systemctl start -- {service}"),
+            format!("启动服务 {service}"),
+            "启动指定 systemd 服务并验证其运行状态".to_string(),
+            AgentActionRisk::Elevated,
+            Some(json!({ "kind": "service_active", "service": service })),
+        ),
+        "stop" => (
+            format!("sudo -n systemctl stop -- {service}"),
+            format!("停止服务 {service}"),
+            "停止指定 systemd 服务并验证其已停止".to_string(),
+            AgentActionRisk::Elevated,
+            Some(json!({ "kind": "service_inactive", "service": service })),
+        ),
+        "restart" => (
+            format!("sudo -n systemctl restart -- {service}"),
+            format!("重启服务 {service}"),
+            "重启指定 systemd 服务并验证其恢复运行".to_string(),
+            AgentActionRisk::Elevated,
+            Some(json!({ "kind": "service_active", "service": service })),
+        ),
+        _ => return Err("AI 服务操作类型无效".to_string()),
+    };
+    Ok((command, purpose, expected_effect, risk, verification))
+}
+
 fn parse_arguments(arguments: &str) -> Result<Map<String, Value>, String> {
     let Value::Object(arguments) =
         serde_json::from_str(arguments).map_err(|_| "AI 动作参数不是有效 JSON".to_string())?
@@ -139,7 +189,10 @@ pub(crate) fn proposal_action_intent(
 ) -> Result<Option<AgentActionIntent>, String> {
     if !matches!(
         tool,
-        "propose_file_edit" | "propose_file_operation" | "propose_terminal_command"
+        "propose_file_edit"
+            | "propose_file_operation"
+            | "propose_terminal_command"
+            | "propose_service_action"
     ) {
         return Ok(None);
     }
@@ -287,7 +340,34 @@ pub(crate) fn proposal_action_intent(
                 TERMINAL_EXECUTE_ACTION_TOOL,
                 normalized,
                 purpose,
-                "在当前终端会话中提交命令并等待 Shell Integration 返回结果",
+                "通过独立后台 SSH 连接执行命令并采集结果",
+                risk,
+            )
+        }
+        "propose_service_action" => {
+            if !exact_keys(&arguments, &["service", "action"]) {
+                return Err("AI 服务操作参数无效".to_string());
+            }
+            let service = arguments
+                .get("service")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "AI 服务名称无效".to_string())?;
+            let action = arguments
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "AI 服务操作类型无效".to_string())?;
+            let (command, purpose, expected_effect, risk, verification) =
+                service_action_command(service, action)?;
+            let mut normalized = json!({ "command": command, "purpose": purpose });
+            if let Some(verification) = verification {
+                normalized["verification"] = verification;
+            }
+            intent(
+                id,
+                TERMINAL_EXECUTE_ACTION_TOOL,
+                normalized,
+                purpose,
+                &expected_effect,
                 risk,
             )
         }
@@ -362,6 +442,40 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(understated.risk, AgentActionRisk::Elevated);
+
+        let stop_service = proposal_action_intent(
+            "service-1",
+            "propose_service_action",
+            r#"{"service":"nginx.service","action":"stop"}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(stop_service.tool, TERMINAL_EXECUTE_ACTION_TOOL);
+        assert_eq!(stop_service.risk, AgentActionRisk::Elevated);
+        assert_eq!(
+            stop_service.arguments,
+            json!({
+                "command": "sudo -n systemctl stop -- nginx.service",
+                "purpose": "停止服务 nginx.service",
+                "verification": {
+                    "kind": "service_inactive",
+                    "service": "nginx.service",
+                },
+            })
+        );
+
+        let inspect_service = proposal_action_intent(
+            "service-2",
+            "propose_service_action",
+            r#"{"service":"sshd","action":"status"}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(inspect_service.risk, AgentActionRisk::LowRisk);
+        assert_eq!(
+            inspect_service.arguments["command"],
+            "systemctl is-active -- sshd"
+        );
     }
 
     #[test]
@@ -396,6 +510,12 @@ mod tests {
             "command-1",
             "propose_terminal_command",
             r#"{"command":"echo ok\necho unsafe","purpose":"测试","risk":"safe","risk_reason":"输出文本"}"#,
+        )
+        .is_err());
+        assert!(proposal_action_intent(
+            "service-1",
+            "propose_service_action",
+            r#"{"service":"nginx; reboot","action":"restart"}"#,
         )
         .is_err());
     }

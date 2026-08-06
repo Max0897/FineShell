@@ -3,12 +3,13 @@ use std::collections::{BTreeSet, HashMap};
 use super::{
     AgentActionExecutionKind, AgentActionIntent, AgentActionRisk, AgentActionState,
     AgentActionStatus, AgentActionTransition, AgentActionTransitionRequest, AgentApprovalMode,
-    AgentCommandObservationPhase, AgentCommandObservationRequest, AgentPlan, AgentPlanDecision,
-    AgentPlanDecisionKind, AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep,
-    AgentPlanStepStatus, AgentRecoveryRecommendation, AgentRecoveryStatus, AgentRepairStopReason,
-    AgentTaskContext, AgentTaskEventKind, AgentTaskManager, AgentTaskStatus,
-    AgentTrustedVerification, AgentVerificationEvidenceKind, AgentVerificationStatus,
-    AgentWritableFile, AGENT_RUNTIME_STATE_FILE,
+    AgentCommandExecutionPhase, AgentCommandObservationPhase, AgentCommandObservationRequest,
+    AgentCommandOutputSnapshot, AgentPlan, AgentPlanDecision, AgentPlanDecisionKind,
+    AgentPlanDecisionRequest, AgentPlanStatus, AgentPlanStep, AgentPlanStepStatus,
+    AgentRecoveryRecommendation, AgentRecoveryStatus, AgentRepairStopReason, AgentTaskContext,
+    AgentTaskEventKind, AgentTaskManager, AgentTaskRecoveryDecision, AgentTaskRecoveryRequest,
+    AgentTaskStatus, AgentTrustedVerification, AgentVerificationEvidenceKind,
+    AgentVerificationStatus, AgentWritableFile, AGENT_RUNTIME_STATE_FILE,
 };
 use crate::agent_approvals::ApprovalScope;
 use crate::agent_verification::AgentBusinessVerificationResult;
@@ -521,6 +522,37 @@ fn terminal_command_observations_drive_the_trusted_lifecycle() {
         submitted[0].task.actions[0].status,
         AgentActionStatus::Running
     );
+    assert_eq!(
+        submitted[0].task.actions[0]
+            .command_execution
+            .as_ref()
+            .unwrap()
+            .phase,
+        AgentCommandExecutionPhase::Connecting
+    );
+    let progress = manager
+        .observe_command_progress(
+            "task-1",
+            "command-1",
+            "submission-1",
+            AgentCommandExecutionPhase::Running,
+            AgentCommandOutputSnapshot {
+                output_excerpt: Some("nginx is active".to_string()),
+                stdout_excerpt: Some("nginx is active".to_string()),
+                ..AgentCommandOutputSnapshot::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(progress[0].kind, AgentTaskEventKind::ActionProgress);
+    assert_eq!(
+        progress[0].task.actions[0]
+            .command_execution
+            .as_ref()
+            .unwrap()
+            .output_excerpt
+            .as_deref(),
+        Some("nginx is active")
+    );
     assert!(manager
         .observe_command_execution(command_observation(AgentCommandObservationPhase::Submitted,))
         .unwrap()
@@ -545,6 +577,12 @@ fn terminal_command_observations_drive_the_trusted_lifecycle() {
         completed[1].task.actions[0].verification_status,
         AgentVerificationStatus::Unverified
     );
+    let command = completed[1].task.actions[0]
+        .command_execution
+        .as_ref()
+        .unwrap();
+    assert_eq!(command.phase, AgentCommandExecutionPhase::Completed);
+    assert_eq!(command.exit_code, Some(0));
     assert_eq!(completed[2].kind, AgentTaskEventKind::TaskCompleted);
     assert!(!completed[2].task.result.as_ref().unwrap().verified);
     assert_eq!(
@@ -556,6 +594,199 @@ fn terminal_command_observations_drive_the_trusted_lifecycle() {
             .verification_status,
         AgentVerificationStatus::Unverified
     );
+}
+
+#[test]
+fn command_progress_is_live_only_and_restart_marks_it_interrupted() {
+    let directory = std::env::temp_dir().join(format!(
+        "fineshell-agent-command-state-{}-{}",
+        std::process::id(),
+        super::timestamp_ms()
+    ));
+    let path = directory.join(AGENT_RUNTIME_STATE_FILE);
+    let manager = AgentTaskManager::default();
+    manager.initialize_storage(path.clone()).unwrap();
+    manager.record_events(&manager.begin_model_turn(&context()).unwrap());
+    manager.record_events(
+        &manager
+            .register_actions("task-1", vec![terminal_command_intent()])
+            .unwrap(),
+    );
+    manager.record_events(&manager.finish_model_turn("task-1", false).unwrap());
+    let (_, approved) = manager
+        .authorize_action_execution("task-1", "command-1", false, true, None)
+        .unwrap();
+    manager.record_events(&approved);
+    let submitted = manager
+        .observe_command_execution(command_observation(AgentCommandObservationPhase::Submitted))
+        .unwrap();
+    manager.record_events(&submitted);
+    let progress = manager
+        .observe_command_progress(
+            "task-1",
+            "command-1",
+            "submission-1",
+            AgentCommandExecutionPhase::Running,
+            AgentCommandOutputSnapshot {
+                output_excerpt: Some("TOKEN=secret-runtime-output".to_string()),
+                stdout_excerpt: Some("TOKEN=secret-runtime-output".to_string()),
+                ..AgentCommandOutputSnapshot::default()
+            },
+        )
+        .unwrap();
+    manager.record_events(&progress);
+
+    let live = manager.get_task("task-1").unwrap().unwrap();
+    assert_eq!(
+        live.actions[0]
+            .command_execution
+            .as_ref()
+            .unwrap()
+            .output_excerpt
+            .as_deref(),
+        Some("TOKEN=secret-runtime-output")
+    );
+    let persisted = std::fs::read_to_string(&path).unwrap();
+    assert!(!persisted.contains("secret-runtime-output"));
+    assert!(!manager
+        .events_since("task-1", submitted[0].sequence)
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == AgentTaskEventKind::ActionProgress));
+
+    let restored = AgentTaskManager::default();
+    restored.initialize_storage(path.clone()).unwrap();
+    let task = restored.get_task("task-1").unwrap().unwrap();
+    assert_eq!(task.status, AgentTaskStatus::Paused);
+    assert_eq!(task.actions[0].status, AgentActionStatus::Cancelled);
+    let command = task.actions[0].command_execution.as_ref().unwrap();
+    assert_eq!(command.phase, AgentCommandExecutionPhase::Interrupted);
+    assert!(command.output_excerpt.is_none());
+
+    let (recovery, events) = restored
+        .resolve_interruption(AgentTaskRecoveryRequest {
+            task_id: "task-1".to_string(),
+            decision: AgentTaskRecoveryDecision::ContinueAnalysis,
+        })
+        .unwrap();
+    assert_eq!(
+        recovery.interruption_reason,
+        "应用重启后任务已中断，仅供查看，不会自动重新执行"
+    );
+    assert_eq!(events[0].task.status, AgentTaskStatus::Cancelled);
+    assert_eq!(
+        events[0]
+            .task
+            .result
+            .as_ref()
+            .and_then(|result| result.stop_reason.as_deref()),
+        Some("interruption_continue")
+    );
+
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn cancelled_command_accepts_only_its_late_terminal_observation() {
+    let manager = AgentTaskManager::default();
+    manager.begin_model_turn(&context()).unwrap();
+    manager
+        .register_actions("task-1", vec![terminal_command_intent()])
+        .unwrap();
+    manager.finish_model_turn("task-1", false).unwrap();
+    manager
+        .authorize_action_execution("task-1", "command-1", false, true, None)
+        .unwrap();
+    manager
+        .observe_command_execution(command_observation(AgentCommandObservationPhase::Submitted))
+        .unwrap();
+
+    let cancelled = manager.cancel_task("task-1").unwrap();
+    assert_eq!(
+        cancelled[0].task.actions[0]
+            .command_execution
+            .as_ref()
+            .unwrap()
+            .phase,
+        AgentCommandExecutionPhase::Cancelling
+    );
+    let mut late = command_observation(AgentCommandObservationPhase::Unavailable);
+    late.duration_ms = Some(25);
+    late.reason = Some("AI 后台命令已取消".to_string());
+    let events = manager.observe_command_execution(late).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, AgentTaskEventKind::ActionProgress);
+    assert_eq!(events[0].task.status, AgentTaskStatus::Cancelled);
+    assert_eq!(
+        events[0].task.actions[0]
+            .command_execution
+            .as_ref()
+            .unwrap()
+            .phase,
+        AgentCommandExecutionPhase::Interrupted
+    );
+
+    assert!(manager
+        .observe_command_progress(
+            "task-1",
+            "command-1",
+            "another-submission",
+            AgentCommandExecutionPhase::Running,
+            AgentCommandOutputSnapshot {
+                output_excerpt: Some("stale".to_string()),
+                stdout_excerpt: Some("stale".to_string()),
+                ..AgentCommandOutputSnapshot::default()
+            },
+        )
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn cancelled_command_restores_as_interrupted_before_late_observation() {
+    let directory = std::env::temp_dir().join(format!(
+        "fineshell-agent-cancelled-command-state-{}-{}",
+        std::process::id(),
+        super::timestamp_ms()
+    ));
+    let path = directory.join(AGENT_RUNTIME_STATE_FILE);
+    let manager = AgentTaskManager::default();
+    manager.initialize_storage(path.clone()).unwrap();
+    manager.record_events(&manager.begin_model_turn(&context()).unwrap());
+    manager.record_events(
+        &manager
+            .register_actions("task-1", vec![terminal_command_intent()])
+            .unwrap(),
+    );
+    manager.record_events(&manager.finish_model_turn("task-1", false).unwrap());
+    let (_, approved) = manager
+        .authorize_action_execution("task-1", "command-1", false, true, None)
+        .unwrap();
+    manager.record_events(&approved);
+    let submitted = manager
+        .observe_command_execution(command_observation(AgentCommandObservationPhase::Submitted))
+        .unwrap();
+    manager.record_events(&submitted);
+    let cancelled = manager.cancel_task("task-1").unwrap();
+    manager.record_events(&cancelled);
+    assert_eq!(
+        cancelled[0].task.actions[0]
+            .command_execution
+            .as_ref()
+            .unwrap()
+            .phase,
+        AgentCommandExecutionPhase::Cancelling
+    );
+
+    let restored = AgentTaskManager::default();
+    restored.initialize_storage(path.clone()).unwrap();
+    let task = restored.get_task("task-1").unwrap().unwrap();
+    assert_eq!(task.status, AgentTaskStatus::Cancelled);
+    let command = task.actions[0].command_execution.as_ref().unwrap();
+    assert_eq!(command.phase, AgentCommandExecutionPhase::Interrupted);
+    assert_eq!(command.reason.as_deref(), Some("应用重启导致后台命令中断"));
+
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -912,6 +1143,85 @@ fn disconnected_tasks_pause_and_resume_without_changing_scope() {
 }
 
 #[test]
+fn interrupted_task_recovery_is_consumed_once_and_requires_a_new_task() {
+    let manager = AgentTaskManager::default();
+    manager.begin_model_turn(&context()).unwrap();
+    manager
+        .register_actions("task-1", vec![terminal_command_intent()])
+        .unwrap();
+    manager
+        .pause_disconnected("task-1", "SSH 连接已断开")
+        .unwrap();
+
+    let (recovery_context, events) = manager
+        .resolve_interruption(AgentTaskRecoveryRequest {
+            task_id: "task-1".to_string(),
+            decision: AgentTaskRecoveryDecision::Retry,
+        })
+        .unwrap();
+    assert_eq!(recovery_context.previous_task_id, "task-1");
+    assert_eq!(recovery_context.host_id, "host-1");
+    assert_eq!(recovery_context.uncertain_actions.len(), 1);
+    assert_eq!(events[0].task.status, AgentTaskStatus::Cancelled);
+    assert_eq!(
+        events[0]
+            .task
+            .result
+            .as_ref()
+            .and_then(|result| result.stop_reason.as_deref()),
+        Some("interruption_retry")
+    );
+    assert_eq!(
+        manager
+            .resolve_interruption(AgentTaskRecoveryRequest {
+                task_id: "task-1".to_string(),
+                decision: AgentTaskRecoveryDecision::Retry,
+            })
+            .unwrap_err(),
+        "AI 任务当前不需要恢复决策"
+    );
+
+    let mut successor = context();
+    successor.id = "task-2".to_string();
+    let created = manager.begin_model_turn(&successor).unwrap();
+    assert_eq!(created[0].task.id, "task-2");
+    assert!(created[0].task.actions.is_empty());
+}
+
+#[test]
+fn command_timeout_pauses_task_for_explicit_recovery() {
+    let manager = AgentTaskManager::default();
+    manager.begin_model_turn(&context()).unwrap();
+    manager
+        .register_actions("task-1", vec![terminal_command_intent()])
+        .unwrap();
+    manager.finish_model_turn("task-1", false).unwrap();
+    manager
+        .authorize_action_execution("task-1", "command-1", false, true, None)
+        .unwrap();
+    manager
+        .observe_command_execution(command_observation(AgentCommandObservationPhase::Submitted))
+        .unwrap();
+    let mut timeout = command_observation(AgentCommandObservationPhase::Unavailable);
+    timeout.reason = Some("AI 后台命令执行超时".to_string());
+    timeout.duration_ms = Some(120_000);
+
+    let events = manager.observe_command_execution(timeout).unwrap();
+    let paused = events.last().unwrap();
+    assert_eq!(paused.kind, AgentTaskEventKind::TaskPaused);
+    assert_eq!(paused.task.status, AgentTaskStatus::Paused);
+    assert_eq!(paused.task.error.as_deref(), Some("AI 后台命令执行超时"));
+    assert_eq!(
+        paused.task.actions[0]
+            .command_execution
+            .as_ref()
+            .unwrap()
+            .phase,
+        AgentCommandExecutionPhase::Interrupted
+    );
+}
+
+#[test]
 fn cancelling_a_paused_task_cancels_its_unfinished_plan() {
     let manager = AgentTaskManager::default();
     manager.begin_model_turn(&context()).unwrap();
@@ -1104,6 +1414,7 @@ fn serialized_enums_match_the_shared_contract() {
             AgentTaskEventKind::ActionApproved,
             AgentTaskEventKind::ActionRejected,
             AgentTaskEventKind::ActionStarted,
+            AgentTaskEventKind::ActionProgress,
             AgentTaskEventKind::ActionSucceeded,
             AgentTaskEventKind::ActionConflicted,
             AgentTaskEventKind::ActionFailed,
@@ -1120,6 +1431,17 @@ fn serialized_enums_match_the_shared_contract() {
             AgentTaskEventKind::TaskCancelled,
         ]),
         contract_keys("agentTaskEventKinds")
+    );
+    assert_eq!(
+        serialized_values(&[
+            AgentCommandExecutionPhase::Connecting,
+            AgentCommandExecutionPhase::Running,
+            AgentCommandExecutionPhase::Cancelling,
+            AgentCommandExecutionPhase::Completed,
+            AgentCommandExecutionPhase::Failed,
+            AgentCommandExecutionPhase::Interrupted,
+        ]),
+        contract_keys("agentCommandExecutionPhases")
     );
     assert_eq!(
         serialized_values(&[

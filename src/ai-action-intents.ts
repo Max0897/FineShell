@@ -1,5 +1,8 @@
 import { normalizeAiRemotePath } from "./ai-file-operations";
-import { normalizeAiCommandVerification } from "./ai-command-proposals";
+import {
+  createAiCommandProposal,
+  normalizeAiCommandVerification,
+} from "./ai-command-proposals";
 import {
   combineAiTerminalCommandAssessment,
   normalizeAiTerminalCommand,
@@ -15,12 +18,13 @@ const PROPOSAL_TOOLS = new Set([
   "propose_file_edit",
   "propose_file_operation",
   "propose_terminal_command",
+  "propose_service_action",
 ]);
 
 export const AI_TERMINAL_EXECUTE_ACTION_TOOL_NAME = "execute_terminal_command";
 
 function actionToolForProposal(tool: string) {
-  return tool === "propose_terminal_command"
+  return tool === "propose_terminal_command" || tool === "propose_service_action"
     ? AI_TERMINAL_EXECUTE_ACTION_TOOL_NAME
     : tool;
 }
@@ -139,6 +143,19 @@ function normalizedCallArguments(call: AiToolCall): {
     return {
       arguments: normalizedArguments,
       risk: assessment.risk === "safe" ? "low_risk" : "elevated",
+    };
+  }
+  if (call.name === "propose_service_action") {
+    const proposal = createAiCommandProposal(call, "action-validation");
+    return {
+      arguments: {
+        command: proposal.command,
+        purpose: proposal.purpose,
+        ...(proposal.verification
+          ? { verification: proposal.verification }
+          : {}),
+      },
+      risk: proposal.assessment.risk === "safe" ? "low_risk" : "elevated",
     };
   }
   throw new Error("AI 返回了不支持的动作工具");

@@ -61,7 +61,7 @@ pub(super) fn http_messages(
     .map(|message| json!(message))
     .collect::<Vec<_>>();
     for round in tool_rounds {
-        values.push(json!({
+        let mut assistant = json!({
             "role": "assistant",
             "content": round.content,
             "tool_calls": round.calls.iter().map(|call| json!({
@@ -72,7 +72,11 @@ pub(super) fn http_messages(
                     "arguments": call.arguments,
                 }
             })).collect::<Vec<_>>(),
-        }));
+        });
+        if let Some(reasoning) = &round.reasoning_content {
+            assistant["reasoning_content"] = Value::String(reasoning.clone());
+        }
+        values.push(assistant);
         values.extend(round.results.iter().map(|result| {
             json!({
                 "role": "tool",

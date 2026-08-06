@@ -872,6 +872,7 @@ pub(super) fn connect_session(
 
     let (sender, receiver) = mpsc::channel();
     manager.activate(&request.session_id, sender)?;
+    manager.register_auth_config(&request.session_id, auth.clone())?;
     let worker_manager = manager.clone();
     let worker_session_id = request.session_id.clone();
     if let Err(error) = thread::Builder::new()

@@ -11,6 +11,10 @@ import type {
 } from "../ai-action-lifecycle";
 import { buildAiConversationRequestMessages } from "../ai-summaries";
 import type { AiToolRun } from "../ai-tools";
+import {
+  agentTaskNeedsRecovery,
+  buildAgentRecoveryPrompt,
+} from "../ai-task-recovery";
 import { aiFileEditEligibilityError } from "../ai-file-edits";
 import type { AiFileApprovalDecision } from "../ai-file-approvals";
 import {
@@ -26,14 +30,17 @@ import {
 import { diagnosticInvoke as invoke, recordDiagnostic } from "../diagnostics";
 import {
   commandErrorMessage,
+  listenProtocolEvent,
   type AgentApprovalMode,
   type AgentActionExecutionResult,
-  type AgentCommandObservationRequest,
+  type AgentTask,
+  type AgentTaskRecoveryDecision,
 } from "../tauri-protocol";
 import type { TerminalCommandSubmission } from "../terminal-utils";
 import {
   aiCommandApprovalDecisionFromSubmission,
   aiCommandResultContextSource,
+  reconcileAiCommandProposalExecution,
   type AiCommandApprovalDecision,
   type AiCommandProposal,
 } from "../ai-command-proposals";
@@ -54,6 +61,7 @@ import AiDiagnosticPlanList from "./AiDiagnosticPlanList";
 import AiFileChangeReviewModals from "./AiFileChangeReviewModals";
 import AiFileApprovalCard from "./AiFileApprovalCard";
 import AiMessageTimeline from "./AiMessageTimeline";
+import AiTaskRecoveryCard from "./AiTaskRecoveryCard";
 import AiAssistantHeader from "./ai/AiAssistantHeader";
 import {
   confirmAiConversationDelete,
@@ -70,7 +78,6 @@ import {
 
 interface AiAssistantPanelProps {
   canInsertCommand: boolean;
-  commandSubmission: TerminalCommandSubmission | null;
   contextSources: AiContextSource[];
   hostId: string | null;
   hostName: string;
@@ -81,7 +88,6 @@ interface AiAssistantPanelProps {
     sessionId: string,
     result: AgentActionExecutionResult,
   ) => void;
-  onCommandPrepared: (sessionId: string, command: string) => void;
   onRemoveRemoteFile: (sessionId: string, path: string) => void;
   remoteFiles: AiRemoteFileContext[];
   sessionId: string | null;
@@ -91,7 +97,6 @@ interface AiAssistantPanelProps {
 
 function AiAssistantPanel({
   canInsertCommand,
-  commandSubmission,
   contextSources,
   hostId,
   hostName,
@@ -99,7 +104,6 @@ function AiAssistantPanel({
   initialPrompt,
   initialPromptRequest,
   onAgentActionExecuted,
-  onCommandPrepared,
   onRemoveRemoteFile,
   remoteFiles,
   sessionId,
@@ -114,6 +118,8 @@ function AiAssistantPanel({
   const [automaticApprovalFailures, setAutomaticApprovalFailures] = useState<
     Set<string>
   >(() => new Set());
+  const [recoveryDecision, setRecoveryDecision] =
+    useState<AgentTaskRecoveryDecision>();
   const automaticApprovalAttemptsRef = useRef(new Set<string>());
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -151,6 +157,8 @@ function AiAssistantPanel({
       Message.warning(`AI 对话保存失败：${commandErrorMessage(error)}`),
     sessionId,
   });
+  const conversationsByHostRef = useRef(conversationsByHost);
+  conversationsByHostRef.current = conversationsByHost;
   const commandResultContextSources = useMemo(
     () =>
       messages.flatMap((message) =>
@@ -214,30 +222,6 @@ function AiAssistantPanel({
     },
     [onAgentActionExecuted, sessionId, taskIdForMessage],
   );
-  const observeAgentCommandLifecycle = useCallback(
-    async (
-      messageId: string,
-      actionId: string,
-      submission: TerminalCommandSubmission,
-    ) => {
-      const taskId = taskIdForMessage(messageId);
-      if (!taskId) throw new Error("AI 命令缺少对应的任务");
-      const request: AgentCommandObservationRequest = {
-        taskId,
-        actionId,
-        hostId: submission.hostId,
-        sessionId: submission.sessionId,
-        submissionId: submission.id,
-        phase: submission.phase ?? "submitted",
-        command: submission.command,
-        exitCode: submission.exitCode,
-        durationMs: submission.durationMs,
-        reason: submission.reason,
-      };
-      await invoke("ai_task_command_observe", { request });
-    },
-    [taskIdForMessage],
-  );
   const availableContextSources = useMemo(() => {
     const sources = new Map(
       contextSources.map((source) => [source.id, source]),
@@ -259,7 +243,7 @@ function AiAssistantPanel({
     updateFileOperationProposal,
   } = useAiProposalState({
     activeConversationId: activeConversation?.id,
-    commandSubmission,
+    commandSubmission: null,
     conversationsByHost,
     getHostConversations,
     hostId,
@@ -267,7 +251,7 @@ function AiAssistantPanel({
     onActionTransition: transitionAgentAction,
     onActionTransitionError: (error) =>
       Message.error(`AI 动作状态更新失败：${commandErrorMessage(error)}`),
-    onCommandLifecycleObserved: observeAgentCommandLifecycle,
+    onCommandLifecycleObserved: async () => undefined,
     onCommandLifecycleProcessed: (proposalId, submission) => {
       const decision = aiCommandApprovalDecisionFromSubmission(submission);
       if (decision) commandDecisionRef.current(proposalId, decision);
@@ -275,6 +259,76 @@ function AiAssistantPanel({
     persistConversation,
     updateMessages,
   });
+
+  const reconcileTaskCommandExecutions = useCallback(
+    (task: AgentTask) => {
+      const actions = new Map(
+        task.actions
+          .filter((action) => action.commandExecution)
+          .map((action) => [action.id, action]),
+      );
+      if (actions.size === 0) return;
+      for (const [targetHostId, conversations] of Object.entries(
+        conversationsByHostRef.current,
+      )) {
+        const conversation = conversations.find((candidate) =>
+          candidate.messages.some((message) => message.taskId === task.id),
+        );
+        if (!conversation) continue;
+        updateMessages(targetHostId, conversation.id, (current) =>
+          current.map((message) =>
+            message.taskId === task.id
+              ? {
+                  ...message,
+                  commandProposals: message.commandProposals?.map(
+                    (proposal) => {
+                      const action = actions.get(proposal.id);
+                      return action?.commandExecution
+                        ? reconcileAiCommandProposalExecution(
+                            proposal,
+                            action.commandExecution,
+                            {
+                              evidence: action.verificationEvidence,
+                              status: action.verificationStatus,
+                            },
+                          )
+                        : proposal;
+                    },
+                  ),
+                }
+              : message,
+          ),
+        );
+        break;
+      }
+    },
+    [updateMessages],
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenProtocolEvent("ai-task", ({ payload }) => {
+      if (disposed) return;
+      reconcileTaskCommandExecutions(payload.task);
+    })
+      .then((stopListening) => {
+        if (disposed) stopListening();
+        else unlisten = stopListening;
+      })
+      .catch((error) => {
+        recordDiagnostic(
+          "warn",
+          "ai.command-runtime",
+          "监听 AI 后台命令状态失败",
+          { error: commandErrorMessage(error) },
+        );
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [reconcileTaskCommandExecutions]);
   const {
     activeTask,
     cancelDiagnosticPlan,
@@ -283,6 +337,7 @@ function AiAssistantPanel({
     decideCommandProposal,
     decideFileProposal,
     reviseDiagnosticPlan,
+    resolveTaskInterruption,
     sendMessage,
     sending,
     stopDiagnosticPlan,
@@ -304,6 +359,9 @@ function AiAssistantPanel({
     updateConversation,
     updateMessages,
   });
+  useEffect(() => {
+    if (activeTask) reconcileTaskCommandExecutions(activeTask);
+  }, [activeTask, reconcileTaskCommandExecutions]);
   const approvalQueue = useMemo(
     () =>
       buildAiApprovalQueue(
@@ -388,6 +446,7 @@ function AiAssistantPanel({
     onCopyText: copyCode,
     onPrepareCommand: async (messageId, proposal, userConfirmed) => {
       if (!sessionId) throw new Error("当前终端会话不可用");
+      if (!hostId) throw new Error("当前主机不可用");
       const result = await executeAgentAction(
         messageId,
         proposal.id,
@@ -396,9 +455,27 @@ function AiAssistantPanel({
         userConfirmed,
       );
       if (result.actionType !== "terminal_command") {
-        throw new Error("AI 命令准备返回了无效结果");
+        throw new Error("AI 后台命令返回了无效结果");
       }
-      onCommandPrepared(sessionId, proposal.command);
+      if (!result.command) throw new Error("AI 后台命令缺少执行结果");
+      return {
+        command: proposal.command,
+        completedAt: new Date(result.command.completedAt).toISOString(),
+        durationMs: result.command.durationMs,
+        exitCode: result.command.exitCode ?? undefined,
+        hostId,
+        id: result.command.submissionId,
+        output: result.command.output ?? undefined,
+        outputTruncated: result.command.outputTruncated,
+        stdout: result.command.stdout ?? undefined,
+        stdoutTruncated: result.command.stdoutTruncated,
+        stderr: result.command.stderr ?? undefined,
+        stderrTruncated: result.command.stderrTruncated,
+        phase: result.command.phase,
+        reason: result.command.reason ?? undefined,
+        sessionId,
+        submittedAt: new Date(result.command.submittedAt).toISOString(),
+      } satisfies TerminalCommandSubmission;
     },
     onNotice: showAiCommandNotice,
     sessionId,
@@ -406,11 +483,26 @@ function AiAssistantPanel({
     updateCommandProposal,
     updateCommandProposalInConversation,
   });
+  const executeCommandAndResume = async (
+    messageId: string,
+    proposal: AiCommandProposal,
+    userConfirmed = true,
+  ) => {
+    const submission = await approveCommandProposal(
+      messageId,
+      proposal,
+      userConfirmed,
+    );
+    if (!submission) return false;
+    const decision = aiCommandApprovalDecisionFromSubmission(submission);
+    if (decision) commandDecisionRef.current(proposal.id, decision);
+    return true;
+  };
   const approveCommandAndResume = async (
     messageId: string,
     proposal: AiCommandProposal,
   ) => {
-    await approveCommandProposal(messageId, proposal);
+    await executeCommandAndResume(messageId, proposal);
   };
   const rejectCommandAndResume = async (
     messageId: string,
@@ -567,7 +659,7 @@ function AiAssistantPanel({
 
     void (async () => {
       if (automaticApproval.kind === "command") {
-        const approved = await approveCommandProposal(
+        const approved = await executeCommandAndResume(
           automaticApproval.messageId,
           automaticApproval.proposal,
           false,
@@ -749,9 +841,12 @@ function AiAssistantPanel({
     conversationSummary = activeConversation?.summary,
     verificationTarget: ReturnType<typeof captureVerificationTarget> = null,
     includeComposerContext = true,
+    requestValue?: string,
+    approvalModeOverride?: AgentApprovalMode,
   ) => {
     if (!hostId || !sessionId || !activeConversation) return;
     return sendMessage({
+      approvalModeOverride,
       commandProposalEnabled:
         canInsertCommand && settings.aiCommandProposalsEnabled,
       conversationSummary,
@@ -770,9 +865,36 @@ function AiAssistantPanel({
       targetSessionId: sessionId,
       toolCurrentDirectory: currentRemoteDirectory,
       value,
+      requestValue,
     }).then((completed) => {
       completeVerification(Boolean(completed), verificationTarget);
     });
+  };
+
+  const decideInterruptedTask = async (decision: AgentTaskRecoveryDecision) => {
+    if (!activeTask || recoveryDecision) return;
+    setRecoveryDecision(decision);
+    try {
+      const recovery = await resolveTaskInterruption(activeTask.id, decision);
+      if (decision === "finish") return;
+      if (!hostId || recovery.hostId !== hostId) {
+        throw new Error("中断任务与当前主机不匹配，无法继续");
+      }
+      setApprovalMode("on_request");
+      await sendConversationMessage(
+        decision === "retry" ? "重新尝试" : "继续分析",
+        messages,
+        activeConversation?.summary,
+        null,
+        false,
+        buildAgentRecoveryPrompt(recovery, decision),
+        "on_request",
+      );
+    } catch (error) {
+      Message.error(commandErrorMessage(error));
+    } finally {
+      setRecoveryDecision(undefined);
+    }
   };
 
   const send = () => {
@@ -842,8 +964,6 @@ function AiAssistantPanel({
   return (
     <aside className="panel ai-assistant-sidebar-panel">
       <AiAssistantHeader
-        approvalMode={approvalMode}
-        canInsertCommand={canInsertCommand}
         conversationSummarized={Boolean(activeConversation?.summary)}
         conversationSummarizing={Boolean(
           activeConversation &&
@@ -855,7 +975,6 @@ function AiAssistantPanel({
             ? (activeTask.error ?? "")
             : undefined
         }
-        onApprovalModeChange={setApprovalMode}
         onNew={newConversation}
         onOpenHistory={openHistory}
         sending={sending}
@@ -908,6 +1027,15 @@ function AiAssistantPanel({
           sending={sending}
           sessionId={sessionId}
         />
+        {agentTaskNeedsRecovery(activeTask) && (
+          <AiTaskRecoveryCard
+            busyDecision={recoveryDecision}
+            disconnected={activeTask.status === "paused_disconnected"}
+            onDecision={(decision) => void decideInterruptedTask(decision)}
+            reason={activeTask.error ?? "AI 任务执行被中断"}
+            sessionAvailable={Boolean(sessionId)}
+          />
+        )}
         {activeApproval && (
           <section aria-label="AI 操作审批" className="ai-approval-dock">
             {activeApproval.kind === "command" ? (
@@ -1027,10 +1155,13 @@ function AiAssistantPanel({
         )}
         <AiComposer
           activeConversationAvailable={Boolean(activeConversation)}
+          approvalMode={approvalMode}
+          canInsertCommand={canInsertCommand}
           contextSources={availableContextSources}
           editableRemoteFileCount={editableRemoteFiles.length}
           fileEditEligibility={fileEditEligibility ?? undefined}
           model={settings.aiModel}
+          onApprovalModeChange={setApprovalMode}
           onCancel={cancelRequest}
           onChange={updateDraft}
           onRemoveRemoteFile={removeRemoteFile}

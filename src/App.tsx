@@ -57,8 +57,6 @@ import {
 } from "./app-updater";
 import {
   isTerminalSessionOperational,
-  type TerminalCommandSubmission,
-  type TerminalInjectedInput,
 } from "./terminal-utils";
 import {
   nextTerminalFontSizeOffset,
@@ -89,10 +87,6 @@ const loadAiAssistantPanel = () => import("./components/AiAssistantPanel");
 const AiAssistantPanel = lazy(loadAiAssistantPanel);
 const TerminalView = lazy(() => import("./components/TerminalView"));
 
-function createId(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [quickCommands, setQuickCommands] = useState<QuickCommandRecord[]>([]);
@@ -114,11 +108,6 @@ function App() {
   const [terminalRecentOutputs, setTerminalRecentOutputs] = useState<
     Record<string, string>
   >({});
-  const [terminalInjectedInputs, setTerminalInjectedInputs] = useState<
-    Record<string, TerminalInjectedInput>
-  >({});
-  const [terminalCommandSubmission, setTerminalCommandSubmission] =
-    useState<TerminalCommandSubmission | null>(null);
   const [monitorSnapshots, setMonitorSnapshots] = useState<
     Record<string, ServerMonitorSnapshot>
   >({});
@@ -359,17 +348,6 @@ function App() {
   );
 
   useEffect(() => {
-    if (!terminalCommandSubmission) return;
-    const submissionId = terminalCommandSubmission.id;
-    const timer = window.setTimeout(() => {
-      setTerminalCommandSubmission((current) =>
-        current?.id === submissionId ? null : current,
-      );
-    }, 10_000);
-    return () => window.clearTimeout(timer);
-  }, [terminalCommandSubmission]);
-
-  useEffect(() => {
     if (!applicationUpdater.canInstallUpdates) return;
     void checkForApplicationUpdateOnStartup()
       .then((update) => {
@@ -516,18 +494,6 @@ function App() {
     });
     setQuickCommandDrawerVisible(false);
     Message.success(execute ? "命令已发送" : "命令已填入终端");
-  }
-
-  function handleAiCommandPrepared(sessionId: string, command: string) {
-    setTerminalInjectedInputs((current) => ({
-      ...current,
-      [sessionId]: {
-        id: createId("terminal-input"),
-        submit: true,
-        value: command,
-      },
-    }));
-    Message.success("命令已批准并提交");
   }
 
   function handleAiAgentActionExecuted(
@@ -712,11 +678,9 @@ function App() {
           <Suspense fallback={null}>
             <TerminalView
               active={session.id === activeSessionId}
-              commandTrackingEnabled={settings.aiCommandTrackingEnabled}
               focusRequest={
                 session.id === activeSessionId ? terminalFocusRequest : 0
               }
-              injectedInput={terminalInjectedInputs[session.id]}
               onFontZoom={zoomTerminalFont}
               settings={settings}
               session={session}
@@ -728,7 +692,6 @@ function App() {
                 }));
                 openAiAssistant("请解释这段终端输出，并给出排查建议。");
               }}
-              onCommandLifecycle={setTerminalCommandSubmission}
               onCurrentDirectoryChange={updateTerminalCurrentDirectory}
               onReconnect={() => reconnectSession(session)}
               onRecentOutputChange={(output) =>
@@ -823,7 +786,6 @@ function App() {
         canInsertCommand={Boolean(
           activeSession && isTerminalSessionOperational(activeSession.status),
         )}
-        commandSubmission={terminalCommandSubmission}
         contextSources={aiContextSources}
         hostId={activeSession?.host.id ?? null}
         hostName={activeSession?.host.name ?? ""}
@@ -831,7 +793,6 @@ function App() {
         initialContextIds={aiInitialContextIds}
         initialPromptRequest={aiInitialPromptRequest}
         onAgentActionExecuted={handleAiAgentActionExecuted}
-        onCommandPrepared={handleAiCommandPrepared}
         onRemoveRemoteFile={(sessionId, path) =>
           setAiRemoteFileContexts((current) => {
             const remaining = (current[sessionId] ?? []).filter(

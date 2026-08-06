@@ -3,6 +3,15 @@ use super::*;
 #[derive(Clone, Default)]
 pub(crate) struct SshSessionManager {
     sessions: Arc<Mutex<HashMap<String, SessionHandle>>>,
+    auth_configs: Arc<Mutex<HashMap<String, SshAuthConfig>>>,
+    agent_sessions: Arc<Mutex<HashMap<String, Sender<AgentSessionCommand>>>>,
+    agent_executions: Arc<Mutex<HashMap<String, AgentExecutionControl>>>,
+}
+
+#[derive(Clone)]
+struct AgentExecutionControl {
+    session_id: String,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl SshSessionManager {
@@ -59,6 +68,21 @@ impl SshSessionManager {
         }
     }
 
+    pub(super) fn register_auth_config(
+        &self,
+        session_id: &str,
+        auth_config: SshAuthConfig,
+    ) -> Result<(), String> {
+        if !self.is_connected(session_id)? {
+            return Err("SSH 会话尚未连接".to_string());
+        }
+        self.auth_configs
+            .lock()
+            .map_err(|_| "SSH 认证配置状态不可用".to_string())?
+            .insert(session_id.to_string(), auth_config);
+        Ok(())
+    }
+
     pub(super) fn send(&self, session_id: &str, command: SessionCommand) -> Result<(), String> {
         let handle = self
             .sessions
@@ -83,6 +107,7 @@ impl SshSessionManager {
             .map_err(|_| "SSH 会话状态不可用".to_string())?
             .remove(session_id)
             .ok_or_else(|| "SSH 会话不存在或已关闭".to_string())?;
+        self.remove_agent_session(session_id);
         match handle {
             SessionHandle::Connecting(cancelled) => {
                 cancelled.store(true, Ordering::Release);
@@ -97,6 +122,139 @@ impl SshSessionManager {
     pub(super) fn remove(&self, session_id: &str) {
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.remove(session_id);
+        }
+        self.remove_agent_session(session_id);
+    }
+
+    fn remove_agent_session(&self, session_id: &str) {
+        if let Ok(mut configs) = self.auth_configs.lock() {
+            configs.remove(session_id);
+        }
+        if let Ok(mut sessions) = self.agent_sessions.lock() {
+            if let Some(sender) = sessions.remove(session_id) {
+                let _ = sender.send(AgentSessionCommand::Close);
+            }
+        }
+        if let Ok(executions) = self.agent_executions.lock() {
+            for execution in executions.values() {
+                if execution.session_id == session_id {
+                    execution.cancelled.store(true, Ordering::Release);
+                }
+            }
+        }
+    }
+
+    fn agent_session_sender(
+        &self,
+        session_id: &str,
+    ) -> Result<Sender<AgentSessionCommand>, String> {
+        if let Some(sender) = self
+            .agent_sessions
+            .lock()
+            .map_err(|_| "AI 后台 SSH 会话状态不可用".to_string())?
+            .get(session_id)
+            .cloned()
+        {
+            return Ok(sender);
+        }
+        let config = self
+            .auth_configs
+            .lock()
+            .map_err(|_| "SSH 认证配置状态不可用".to_string())?
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| "终端会话已断开，无法创建 AI 后台 SSH 连接".to_string())?;
+        let (sender, receiver) = mpsc::channel();
+        thread::Builder::new()
+            .name(format!("ssh-agent-{session_id}"))
+            .spawn(move || run_agent_session(config, receiver))
+            .map_err(|error| format!("无法启动 AI 后台 SSH 线程：{error}"))?;
+        self.agent_sessions
+            .lock()
+            .map_err(|_| "AI 后台 SSH 会话状态不可用".to_string())?
+            .insert(session_id.to_string(), sender.clone());
+        Ok(sender)
+    }
+
+    pub(crate) async fn execute_agent_command(
+        &self,
+        app: AppHandle,
+        context: AgentCommandExecutionContext,
+        session_id: &str,
+        command: String,
+        current_directory: Option<String>,
+    ) -> Result<AgentCommandExecutionResult, String> {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        {
+            let mut executions = self
+                .agent_executions
+                .lock()
+                .map_err(|_| "AI 后台命令状态不可用".to_string())?;
+            if executions.contains_key(&context.task_id) {
+                return Err("该 AI 任务已有后台命令正在执行".to_string());
+            }
+            executions.insert(
+                context.task_id.clone(),
+                AgentExecutionControl {
+                    session_id: session_id.to_string(),
+                    cancelled: cancelled.clone(),
+                },
+            );
+        }
+        let sender = match self.agent_session_sender(session_id) {
+            Ok(sender) => sender,
+            Err(error) => {
+                if let Ok(mut executions) = self.agent_executions.lock() {
+                    executions.remove(&context.task_id);
+                }
+                return Err(error);
+            }
+        };
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        if sender
+            .send(AgentSessionCommand::Execute(Box::new(
+                AgentCommandRequest {
+                    app,
+                    context: context.clone(),
+                    command,
+                    current_directory,
+                    cancelled: cancelled.clone(),
+                    response: response_sender,
+                },
+            )))
+            .is_err()
+        {
+            if let Ok(mut executions) = self.agent_executions.lock() {
+                executions.remove(&context.task_id);
+            }
+            self.remove_agent_session(session_id);
+            return Err("AI 后台 SSH 会话已停止".to_string());
+        }
+        let wait_result = tauri::async_runtime::spawn_blocking(move || {
+            response_receiver
+                .recv_timeout(AGENT_COMMAND_TIMEOUT + Duration::from_secs(10))
+                .map_err(|error| format!("等待 AI 后台命令结果失败：{error}"))?
+        })
+        .await;
+        if wait_result.is_err() || wait_result.as_ref().is_ok_and(Result::is_err) {
+            cancelled.store(true, Ordering::Release);
+        }
+        if let Ok(mut executions) = self.agent_executions.lock() {
+            if executions
+                .get(&context.task_id)
+                .is_some_and(|control| Arc::ptr_eq(&control.cancelled, &cancelled))
+            {
+                executions.remove(&context.task_id);
+            }
+        }
+        wait_result.map_err(|error| format!("AI 后台命令任务异常结束：{error}"))?
+    }
+
+    pub(crate) fn cancel_agent_commands(&self, task_id: &str) {
+        if let Ok(executions) = self.agent_executions.lock() {
+            if let Some(execution) = executions.get(task_id) {
+                execution.cancelled.store(true, Ordering::Release);
+            }
         }
     }
 

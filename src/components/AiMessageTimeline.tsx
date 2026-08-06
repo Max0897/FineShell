@@ -1,6 +1,8 @@
 import {
   isValidElement,
   memo,
+  useEffect,
+  useState,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -19,7 +21,9 @@ import {
   IconCommand,
   IconCopy,
   IconDashboard,
+  IconDown,
   IconRefresh,
+  IconRight,
   IconRobot,
 } from "@arco-design/web-react/icon";
 import ReactMarkdown from "react-markdown";
@@ -168,7 +172,12 @@ function containsOnlyDockedApproval(
   dockedFileEditProposalIds?: ReadonlySet<string>,
   dockedFileOperationProposalIds?: ReadonlySet<string>,
 ) {
-  if (message.role !== "assistant" || message.content || message.failed) {
+  if (
+    message.role !== "assistant" ||
+    message.content ||
+    message.reasoning ||
+    message.failed
+  ) {
     return false;
   }
   const hasDockedCommand = message.commandProposals?.some((proposal) =>
@@ -208,6 +217,59 @@ function containsOnlyDockedApproval(
       (proposal) => !dockedFileOperationProposalIds?.has(proposal.id),
     ) ||
     message.fileChanges?.length
+  );
+}
+
+function AiReasoningDisclosure({
+  active,
+  reasoning,
+}: {
+  active: boolean;
+  reasoning: string;
+}) {
+  const [expanded, setExpanded] = useState(active);
+
+  useEffect(() => {
+    setExpanded(active);
+  }, [active]);
+
+  return (
+    <div className={`ai-reasoning${active ? " ai-reasoning-active" : ""}`}>
+      <Button
+        aria-expanded={expanded}
+        className="ai-reasoning-toggle"
+        icon={expanded ? <IconDown /> : <IconRight />}
+        onClick={() => setExpanded((current) => !current)}
+        size="mini"
+        type="text"
+      >
+        {active ? "正在思考..." : "思考过程"}
+      </Button>
+      {expanded && (
+        <div className="ai-reasoning-content">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{reasoning}</ReactMarkdown>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function messageIsActivelyThinking(
+  message: AiMessage,
+  index: number,
+  messageCount: number,
+  sending: boolean,
+) {
+  return (
+    sending &&
+    index === messageCount - 1 &&
+    !message.content &&
+    !message.failed &&
+    !message.commandProposals?.length &&
+    !message.fileEditProposals?.length &&
+    !message.fileOperationProposals?.length &&
+    !message.diagnosticPlans?.length &&
+    !message.toolRuns?.length
   );
 }
 
@@ -342,6 +404,17 @@ function AiMessageTimeline({
                 </Tag>
               ))}
             </div>
+            {message.role === "assistant" && message.reasoning && (
+              <AiReasoningDisclosure
+                active={messageIsActivelyThinking(
+                  message,
+                  index,
+                  messages.length,
+                  sending,
+                )}
+                reasoning={message.reasoning}
+              />
+            )}
             {message.role === "assistant" &&
               Boolean(
                 message.diagnosticPlans?.some(

@@ -151,6 +151,14 @@ impl AgentTask {
             action.error = action.error.as_ref().map(|_| "动作未成功".to_string());
             action.arguments = serde_json::Value::Null;
             action.command_submission_id = None;
+            if let Some(command) = action.command_execution.as_mut() {
+                command.output_excerpt = None;
+                command.output_truncated = false;
+                command.stdout_excerpt = None;
+                command.stdout_truncated = false;
+                command.stderr_excerpt = None;
+                command.stderr_truncated = false;
+            }
             for evidence in &mut action.verification_evidence {
                 evidence.summary = "验证证据已脱敏".to_string();
             }

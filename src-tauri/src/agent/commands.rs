@@ -39,6 +39,25 @@ pub(crate) fn ai_task_get(
 }
 
 #[tauri::command]
+pub(crate) fn ai_task_recovery_decide(
+    app: AppHandle,
+    manager: State<'_, AgentTaskManager>,
+    ssh_manager: State<'_, crate::ssh::SshSessionManager>,
+    request: AgentTaskRecoveryRequest,
+) -> CommandResult<AgentTaskRecoveryContext> {
+    let operation = "ai_task_recovery_decide";
+    if !valid_identifier(&request.task_id) {
+        return Err(CommandError::from_message(operation, "AI 任务标识无效"));
+    }
+    ssh_manager.cancel_agent_commands(&request.task_id);
+    let (context, events) = manager
+        .resolve_interruption(request)
+        .map_err(|error| CommandError::from_message(operation, error))?;
+    emit_task_events(&app, events);
+    Ok(context)
+}
+
+#[tauri::command]
 pub(crate) fn ai_task_plan_decide(
     manager: State<'_, AgentTaskManager>,
     request: AgentPlanDecisionRequest,

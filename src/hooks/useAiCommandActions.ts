@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import {
   markAiCommandProposalApproved,
+  markAiCommandProposalUnavailable,
   markAiCommandProposalVerified,
+  reconcileAiCommandProposalExecution,
   type AiCommandProposal,
 } from "../ai-command-proposals";
+import type { TerminalCommandSubmission } from "../terminal-utils";
 import { appendAiContextMentions, type AiContextSource } from "../ai-utils";
 import { commandErrorMessage } from "../tauri-protocol";
 
@@ -25,7 +28,7 @@ interface UseAiCommandActionsOptions {
     messageId: string,
     proposal: AiCommandProposal,
     userConfirmed: boolean,
-  ) => Promise<void>;
+  ) => Promise<TerminalCommandSubmission>;
   onNotice: (type: AiCommandNotice, content: string) => void;
   sessionId: string | null;
   setDraft: (conversationId: string, value: string) => void;
@@ -82,17 +85,55 @@ export function useAiCommandActions({
     userConfirmed = true,
   ) => {
     if (proposal.status !== "pending") return false;
+    updateCommandProposal(messageId, proposal.id, (current) =>
+      markAiCommandProposalApproved(current),
+    );
     try {
-      await onPrepareCommand(messageId, proposal, userConfirmed);
-      updateCommandProposal(
+      const submission = await onPrepareCommand(
         messageId,
-        proposal.id,
-        markAiCommandProposalApproved,
+        proposal,
+        userConfirmed,
       );
-      return true;
+      updateCommandProposal(messageId, proposal.id, (current) =>
+        reconcileAiCommandProposalExecution(current, {
+          submissionId: submission.id,
+          phase:
+            submission.phase === "unavailable"
+              ? submission.reason?.includes("取消")
+                ? "interrupted"
+                : "failed"
+              : submission.exitCode === 0
+                ? "completed"
+                : "failed",
+          outputExcerpt: submission.output ?? null,
+          outputTruncated: submission.outputTruncated === true,
+          ...(submission.stdout !== undefined || submission.stderr !== undefined
+            ? {
+                stdoutExcerpt: submission.stdout ?? null,
+                stdoutTruncated: submission.stdoutTruncated === true,
+                stderrExcerpt: submission.stderr ?? null,
+                stderrTruncated: submission.stderrTruncated === true,
+              }
+            : {}),
+          exitCode: submission.exitCode ?? null,
+          durationMs: submission.durationMs ?? null,
+          reason: submission.reason ?? null,
+          submittedAt: Date.parse(submission.submittedAt),
+          updatedAt: submission.completedAt
+            ? Date.parse(submission.completedAt)
+            : Date.now(),
+          completedAt: submission.completedAt
+            ? Date.parse(submission.completedAt)
+            : Date.now(),
+        }),
+      );
+      return submission;
     } catch (error) {
+      updateCommandProposal(messageId, proposal.id, (current) =>
+        markAiCommandProposalUnavailable(current, commandErrorMessage(error)),
+      );
       onNotice("error", commandErrorMessage(error));
-      return false;
+      return null;
     }
   };
 

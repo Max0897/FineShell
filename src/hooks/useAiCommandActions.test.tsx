@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { AiCommandProposal } from "../ai-command-proposals";
 import type { AiContextSource } from "../ai-utils";
+import type { TerminalCommandSubmission } from "../terminal-utils";
 import { useAiCommandActions } from "./useAiCommandActions";
 
 function proposal(
@@ -29,19 +30,35 @@ function renderActions(options?: {
     messageId: string,
     proposal: AiCommandProposal,
     userConfirmed: boolean,
-  ) => Promise<void>;
+  ) => Promise<TerminalCommandSubmission>;
 }) {
+  const execution: TerminalCommandSubmission = {
+    command: "systemctl restart nginx",
+    completedAt: "2026-08-05T05:00:01.000Z",
+    durationMs: 1_000,
+    exitCode: 0,
+    hostId: "host-1",
+    id: "agent-exec-1",
+    output: "",
+    phase: "completed",
+    sessionId: "session-1",
+    submittedAt: "2026-08-05T05:00:00.000Z",
+  };
   const onPrepareCommand = mock(
-    options?.onPrepareCommand ?? (async () => undefined),
+    options?.onPrepareCommand ?? (async () => execution),
   );
   const onNotice = mock(() => undefined);
   const setDraft = mock((_conversationId: string, _value: string) => undefined);
+  let currentProposal = proposal();
   const updateCommandProposal = mock(
     (
       _messageId: string,
       _proposalId: string,
       update: (value: AiCommandProposal) => AiCommandProposal,
-    ) => update(proposal()),
+    ) => {
+      currentProposal = update(currentProposal);
+      return currentProposal;
+    },
   );
   const updateCommandProposalInConversation = mock(
     (

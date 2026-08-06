@@ -119,6 +119,7 @@ function executionResult(
     actionId,
     actionType,
     affectedPaths: file ? [file.path] : [],
+    command: null,
     file: file ? { ...file, modifiedAt: null, permissions: null } : null,
   };
 }

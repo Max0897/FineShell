@@ -48,10 +48,39 @@ impl AgentTaskManager {
                 continue;
             }
             task = task.redacted_for_persistence();
-            if !task.status.is_terminal() {
+            let interrupted_at = timestamp_ms();
+            let task_was_running = !task.status.is_terminal();
+            let mut restored_interruption = false;
+            for action in &mut task.actions {
+                if task_was_running && action.status.is_unresolved() {
+                    action.status = AgentActionStatus::Cancelled;
+                    action.summary = None;
+                    action.error = Some("应用重启时动作仍在执行，已标记为中断".to_string());
+                    action.completed_at = Some(interrupted_at);
+                    action.duration_ms = action
+                        .started_at
+                        .map(|started_at| interrupted_at.saturating_sub(started_at));
+                    action.verification_status = AgentVerificationStatus::NotApplicable;
+                    restored_interruption = true;
+                }
+                if let Some(command) = action.command_execution.as_mut() {
+                    if !command.phase.is_terminal() {
+                        command.phase = AgentCommandExecutionPhase::Interrupted;
+                        command.reason = Some("应用重启导致后台命令中断".to_string());
+                        command.updated_at = interrupted_at;
+                        command.completed_at = Some(interrupted_at);
+                        restored_interruption = true;
+                    }
+                }
+            }
+            if task_was_running {
                 task.status = AgentTaskStatus::Paused;
                 task.active_step_id = None;
-                task.error = Some("应用重启后任务已暂停，仅供查看".to_string());
+                task.error = Some("应用重启后任务已中断，仅供查看，不会自动重新执行".to_string());
+            }
+            if restored_interruption {
+                task.updated_at = interrupted_at;
+                task.refresh_diagnostics();
             }
             tasks.insert(task.id.clone(), task);
         }
@@ -86,7 +115,12 @@ impl AgentTaskManager {
         let Ok(mut stored) = self.events.lock() else {
             return;
         };
+        let mut recorded = false;
         for event in events {
+            if event.kind == AgentTaskEventKind::ActionProgress {
+                continue;
+            }
+            recorded = true;
             let mut event = event.clone();
             event.task = event.task.redacted_for_persistence();
             let queue = stored.entry(event.task.id.clone()).or_default();
@@ -96,6 +130,9 @@ impl AgentTaskManager {
             }
         }
         drop(stored);
+        if !recorded {
+            return;
+        }
         if let Err(error) = self.persist_state() {
             log::warn!(target: "fineshell::agent", "保存 AI 运行时状态失败: {error}");
         }

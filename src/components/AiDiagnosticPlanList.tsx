@@ -1,16 +1,8 @@
-import { useState } from "react";
-import {
-  Button,
-  Input,
-  Space,
-  Tag,
-  Typography,
-} from "@arco-design/web-react";
-import {
-  IconStop,
-} from "@arco-design/web-react/icon";
+import { Button, Tag, Typography } from "@arco-design/web-react";
+import { IconStop } from "@arco-design/web-react/icon";
 import type { AiDiagnosticPlan } from "../ai-diagnostic-plans";
 import type { AiToolRun } from "../ai-tools";
+import AiApprovalActions from "./AiApprovalActions";
 import AiToolRunList from "./AiToolRunList";
 
 interface AiDiagnosticPlanListProps {
@@ -62,27 +54,10 @@ function AiDiagnosticPlanList({
   runs,
   sending,
 }: AiDiagnosticPlanListProps) {
-  const [processingPlanId, setProcessingPlanId] = useState<string | null>(null);
-  const [revisionPlanId, setRevisionPlanId] = useState<string | null>(null);
-  const [revisionFeedback, setRevisionFeedback] = useState("");
   if (!plans.length) return null;
 
-  const runDecision = async (
-    planId: string,
-    decide: () => unknown | Promise<unknown>,
-  ) => {
-    setProcessingPlanId(planId);
-    try {
-      await decide();
-    } finally {
-      setProcessingPlanId(null);
-    }
-  };
-
   return (
-    <div
-      className={`ai-diagnostic-plans ai-diagnostic-plans-${presentation}`}
-    >
+    <div className={`ai-diagnostic-plans ai-diagnostic-plans-${presentation}`}>
       {plans.map((plan) => {
         const steps = plan.stepCallIds
           .map((callId) => runs.find((run) => run.callId === callId))
@@ -94,8 +69,6 @@ function AiDiagnosticPlanList({
         const executableCount = steps.filter(
           (run) => run.status !== "unavailable",
         ).length;
-        const revising = revisionPlanId === plan.id;
-        const processing = processingPlanId === plan.id;
         return (
           <section className="ai-diagnostic-plan" key={plan.id}>
             <div className="ai-diagnostic-plan-heading">
@@ -109,7 +82,9 @@ function AiDiagnosticPlanList({
                     : `${steps.length} 项操作`}
                 </Typography.Text>
               </span>
-              <Tag color={status.color} size="small">{status.label}</Tag>
+              <Tag color={status.color} size="small">
+                {status.label}
+              </Tag>
             </div>
             {plan.description && (
               <Typography.Paragraph className="ai-diagnostic-plan-description">
@@ -141,83 +116,18 @@ function AiDiagnosticPlanList({
                     </div>
                   );
                 })}
-                {revising && (
-                  <div className="ai-approval-feedback">
-                    <Input
-                      autoFocus
-                      maxLength={1_000}
-                      onChange={setRevisionFeedback}
-                      onPressEnter={() => {
-                        const feedback = revisionFeedback.trim();
-                        if (!feedback || !onRevise) return;
-                        void runDecision(plan.id, () =>
-                          onRevise(plan.id, feedback),
-                        );
-                      }}
-                      placeholder="输入其他处理要求，例如：不要探测公网，只读取本机连接"
-                      value={revisionFeedback}
-                    />
-                    <Button
-                      disabled={!revisionFeedback.trim() || processing}
-                      loading={processing}
-                      onClick={() => {
-                        const feedback = revisionFeedback.trim();
-                        if (!feedback || !onRevise) return;
-                        void runDecision(plan.id, () =>
-                          onRevise(plan.id, feedback),
-                        );
-                      }}
-                      size="mini"
-                      type="primary"
-                    >
-                      提交
-                    </Button>
-                  </div>
-                )}
-                <div className="ai-diagnostic-plan-actions">
-                  <Space size={4}>
-                    {onRevise && (
-                      <Button
-                        disabled={processing}
-                        onClick={() => {
-                          setRevisionPlanId((current) =>
-                            current === plan.id ? null : plan.id,
-                          );
-                          setRevisionFeedback("");
-                        }}
-                        size="mini"
-                        type="text"
-                      >
-                        其他
-                      </Button>
-                    )}
-                    <Button
-                      disabled={processing}
-                      onClick={() =>
-                        void runDecision(plan.id, () => onCancel(plan.id))
-                      }
-                      size="mini"
-                      type="text"
-                    >
-                      驳回
-                    </Button>
-                  </Space>
-                  <Button
-                    disabled={
-                      processing || !executableCount || !selectedCallIds.length
-                    }
-                    loading={processing}
-                    onClick={() =>
-                      void runDecision(plan.id, () =>
-                        onConfirm(plan.id, selectedCallIds),
-                      )
-                    }
-                    size="mini"
-                    type="primary"
-                  >
-                    同意
-                  </Button>
-                </div>
+                <AiApprovalActions
+                  approvalKey={plan.id}
+                  approveDisabled={!executableCount || !selectedCallIds.length}
+                  feedbackPlaceholder="输入其他处理要求，例如：不要探测公网，只读取本机连接"
+                  onApprove={() => onConfirm(plan.id, selectedCallIds)}
+                  onReject={() => onCancel(plan.id)}
+                  onRevise={
+                    onRevise
+                      ? (feedback) => onRevise(plan.id, feedback)
+                      : undefined
+                  }
+                />
               </div>
             ) : (
               <>

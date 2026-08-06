@@ -3,15 +3,17 @@ use tauri::{AppHandle, State};
 
 use crate::{
     agent::{
-        emit_task_events, AgentActionExecutionKind, AgentActionTransition,
-        AgentActionTransitionRequest, AgentTaskManager, AgentTrustedVerification,
-        AuthorizedAgentAction,
+        emit_task_events, timestamp_ms, AgentActionExecutionKind, AgentActionTransition,
+        AgentActionTransitionRequest, AgentCommandObservationPhase, AgentCommandObservationRequest,
+        AgentTaskManager, AgentTrustedVerification, AuthorizedAgentAction,
     },
+    agent_verification::AgentBusinessVerification,
     protocol::{CommandError, CommandResult},
     sftp::{
         agent_apply_file_operation, agent_write_text_file, AiSftpFileOperationKind,
         AiSftpFileOperationRequest, SftpSessionManager, SftpTextFile,
     },
+    ssh::{AgentCommandExecutionContext, SshSessionManager},
 };
 
 #[derive(Deserialize)]
@@ -32,8 +34,27 @@ pub(crate) struct AgentActionExecutionResult {
     action_type: &'static str,
     file: Option<SftpTextFile>,
     affected_paths: Vec<String>,
+    command: Option<AgentCommandExecution>,
     #[serde(skip)]
     verification: Option<AgentTrustedVerification>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentCommandExecution {
+    submission_id: String,
+    phase: &'static str,
+    output: Option<String>,
+    output_truncated: bool,
+    stdout: Option<String>,
+    stdout_truncated: bool,
+    stderr: Option<String>,
+    stderr_truncated: bool,
+    exit_code: Option<u16>,
+    duration_ms: u64,
+    reason: Option<String>,
+    submitted_at: u64,
+    completed_at: u64,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +80,8 @@ struct FileOperationArguments {
 struct TerminalCommandArguments {
     command: String,
     purpose: String,
+    #[serde(default)]
+    verification: Option<AgentBusinessVerification>,
 }
 
 fn parse_arguments<T: for<'de> Deserialize<'de>>(
@@ -134,6 +157,7 @@ async fn execute_action(
                 action_type: "file_edit",
                 file: Some(file),
                 affected_paths: vec![arguments.path],
+                command: None,
                 verification: Some(AgentTrustedVerification::RemoteContentMatch),
             })
         }
@@ -157,22 +181,183 @@ async fn execute_action(
                 action_type: "file_operation",
                 file: result.file,
                 affected_paths,
+                command: None,
                 verification: Some(verification),
             })
         }
-        "execute_terminal_command" => {
-            let arguments: TerminalCommandArguments = parse_arguments(action)?;
-            let _ = (arguments.command, arguments.purpose);
-            Ok(AgentActionExecutionResult {
-                action_id: action.action_id.clone(),
-                action_type: "terminal_command",
-                file: None,
-                affected_paths: Vec::new(),
-                verification: None,
-            })
-        }
+        "execute_terminal_command" => Err("终端命令必须由后台 SSH 执行器处理".to_string()),
         _ => Err("AI 动作不在可信执行注册表中".to_string()),
     }
+}
+
+fn command_observation(
+    action: &AuthorizedAgentAction,
+    arguments: &TerminalCommandArguments,
+    submission_id: &str,
+    phase: AgentCommandObservationPhase,
+    exit_code: Option<u16>,
+    duration_ms: Option<u64>,
+    reason: Option<String>,
+) -> AgentCommandObservationRequest {
+    AgentCommandObservationRequest {
+        task_id: action.task_id.clone(),
+        action_id: action.action_id.clone(),
+        host_id: action.host_id.clone(),
+        session_id: action.session_id.clone(),
+        submission_id: submission_id.to_string(),
+        phase,
+        command: arguments.command.clone(),
+        exit_code,
+        duration_ms,
+        reason,
+    }
+}
+
+fn bounded_execution_reason(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(500)
+        .collect()
+}
+
+async fn execute_terminal_action(
+    app: &AppHandle,
+    task_manager: &AgentTaskManager,
+    ssh_manager: SshSessionManager,
+    action: &AuthorizedAgentAction,
+) -> Result<AgentActionExecutionResult, String> {
+    let arguments: TerminalCommandArguments = parse_arguments(action)?;
+    let _ = (&arguments.purpose, &arguments.verification);
+    let submission_id = format!("agent-exec-{}", timestamp_ms());
+    let submitted_at = timestamp_ms();
+    let events = task_manager.observe_command_execution(command_observation(
+        action,
+        &arguments,
+        &submission_id,
+        AgentCommandObservationPhase::Submitted,
+        None,
+        None,
+        None,
+    ))?;
+    emit_task_events(app, events);
+
+    let started_at = std::time::Instant::now();
+    let execution = ssh_manager
+        .execute_agent_command(
+            app.clone(),
+            AgentCommandExecutionContext {
+                task_id: action.task_id.clone(),
+                action_id: action.action_id.clone(),
+                submission_id: submission_id.clone(),
+            },
+            &action.session_id,
+            arguments.command.clone(),
+            action.current_directory.clone(),
+        )
+        .await;
+    let completed_at = timestamp_ms();
+    let (command, observation) = match execution {
+        Ok(execution) => {
+            let observation = command_observation(
+                action,
+                &arguments,
+                &submission_id,
+                AgentCommandObservationPhase::Completed,
+                Some(execution.exit_code),
+                Some(execution.duration_ms),
+                None,
+            );
+            (
+                AgentCommandExecution {
+                    submission_id,
+                    phase: "completed",
+                    output: Some(execution.output),
+                    output_truncated: execution.output_truncated,
+                    stdout: Some(execution.stdout),
+                    stdout_truncated: execution.stdout_truncated,
+                    stderr: Some(execution.stderr),
+                    stderr_truncated: execution.stderr_truncated,
+                    exit_code: Some(execution.exit_code),
+                    duration_ms: execution.duration_ms,
+                    reason: None,
+                    submitted_at,
+                    completed_at,
+                },
+                observation,
+            )
+        }
+        Err(error) => {
+            let error = bounded_execution_reason(&error);
+            let duration_ms = started_at
+                .elapsed()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX);
+            let observation = command_observation(
+                action,
+                &arguments,
+                &submission_id,
+                AgentCommandObservationPhase::Unavailable,
+                None,
+                Some(duration_ms),
+                Some(error.clone()),
+            );
+            (
+                AgentCommandExecution {
+                    submission_id,
+                    phase: "unavailable",
+                    output: None,
+                    output_truncated: false,
+                    stdout: None,
+                    stdout_truncated: false,
+                    stderr: None,
+                    stderr_truncated: false,
+                    exit_code: None,
+                    duration_ms,
+                    reason: Some(error),
+                    submitted_at,
+                    completed_at,
+                },
+                observation,
+            )
+        }
+    };
+    match task_manager.observe_command_execution(observation) {
+        Ok(events) => emit_task_events(app, events),
+        Err(error)
+            if command
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("取消")) =>
+        {
+            let _ = error;
+        }
+        Err(error) => return Err(error),
+    }
+
+    if command.phase == "completed" {
+        if let Some(pending) =
+            task_manager.pending_business_verification(&action.task_id, &action.action_id)?
+        {
+            let result = ssh_manager
+                .verify_agent_condition(&pending.session_id, pending.verification.clone())
+                .await;
+            let events = task_manager.complete_business_verification(&pending, result)?;
+            emit_task_events(app, events);
+        }
+    }
+
+    Ok(AgentActionExecutionResult {
+        action_id: action.action_id.clone(),
+        action_type: "terminal_command",
+        file: None,
+        affected_paths: Vec::new(),
+        command: Some(command),
+        verification: None,
+    })
 }
 
 fn is_conflict(error: &str) -> bool {
@@ -184,6 +369,7 @@ pub(crate) async fn ai_task_action_execute(
     app: AppHandle,
     task_manager: State<'_, AgentTaskManager>,
     sftp_manager: State<'_, SftpSessionManager>,
+    ssh_manager: State<'_, SshSessionManager>,
     request: AgentActionExecutionRequest,
 ) -> CommandResult<AgentActionExecutionResult> {
     let operation = "ai_task_action_execute";
@@ -197,7 +383,18 @@ pub(crate) async fn ai_task_action_execute(
         )
         .map_err(|error| CommandError::from_message(operation, error))?;
     emit_task_events(&app, events);
-    match execute_action(&action, sftp_manager.inner().clone()).await {
+    let execution = if action.execution_kind == AgentActionExecutionKind::TerminalCommand {
+        execute_terminal_action(
+            &app,
+            task_manager.inner(),
+            ssh_manager.inner().clone(),
+            &action,
+        )
+        .await
+    } else {
+        execute_action(&action, sftp_manager.inner().clone()).await
+    };
+    match execution {
         Ok(result) => {
             if action.execution_kind == AgentActionExecutionKind::TrustedExecutor {
                 let verification = result.verification.ok_or_else(|| {
@@ -239,7 +436,11 @@ pub(crate) async fn ai_task_action_execute(
 mod tests {
     use serde_json::json;
 
-    use super::{operation_request, FileOperationArguments};
+    use super::{
+        operation_request, parse_arguments, FileOperationArguments, TerminalCommandArguments,
+    };
+    use crate::agent::{AgentActionExecutionKind, AuthorizedAgentAction};
+    use crate::agent_verification::AgentBusinessVerification;
     use crate::sftp::AiSftpFileOperationKind;
 
     fn arguments(operation: AiSftpFileOperationKind) -> FileOperationArguments {
@@ -269,6 +470,38 @@ mod tests {
         assert_eq!(
             serde_json::to_value(delete.content).unwrap(),
             json!("original")
+        );
+    }
+
+    #[test]
+    fn accepts_registered_verification_for_terminal_commands() {
+        let action = AuthorizedAgentAction {
+            task_id: "task-1".to_string(),
+            action_id: "command-1".to_string(),
+            tool: "execute_terminal_command".to_string(),
+            arguments: json!({
+                "command": "sudo systemctl stop carpicks.service",
+                "purpose": "停止 carpicks 服务",
+                "verification": {
+                    "kind": "service_inactive",
+                    "service": "carpicks.service",
+                },
+            }),
+            session_id: "session-1".to_string(),
+            host_id: "host-1".to_string(),
+            current_directory: Some("/home/ubuntu".to_string()),
+            rollback: false,
+            execution_kind: AgentActionExecutionKind::TerminalCommand,
+        };
+
+        let parsed: TerminalCommandArguments = parse_arguments(&action).unwrap();
+        assert_eq!(parsed.command, "sudo systemctl stop carpicks.service");
+        assert_eq!(parsed.purpose, "停止 carpicks 服务");
+        assert_eq!(
+            parsed.verification,
+            Some(AgentBusinessVerification::ServiceInactive {
+                service: "carpicks.service".to_string(),
+            })
         );
     }
 }

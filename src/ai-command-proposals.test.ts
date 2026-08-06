@@ -11,20 +11,31 @@ import {
   markAiCommandProposalExecuted,
   markAiCommandProposalApproved,
   markAiCommandProposalVerified,
+  reconcileAiCommandProposalExecution,
+  updateAiCommandProposalOutput,
 } from "./ai-command-proposals";
 
 function commandCall(argumentsValue: Record<string, unknown>) {
-  const argumentsWithRisk = typeof argumentsValue.command === "string"
-    ? {
-        risk: "safe",
-        risk_reason: "命令只读取当前状态",
-        ...argumentsValue,
-      }
-    : argumentsValue;
+  const argumentsWithRisk =
+    typeof argumentsValue.command === "string"
+      ? {
+          risk: "safe",
+          risk_reason: "命令只读取当前状态",
+          ...argumentsValue,
+        }
+      : argumentsValue;
   return {
     id: "command-1",
     name: "propose_terminal_command",
     arguments: JSON.stringify(argumentsWithRisk),
+  };
+}
+
+function serviceCall(action: "status" | "start" | "stop" | "restart") {
+  return {
+    id: "service-1",
+    name: "propose_service_action",
+    arguments: JSON.stringify({ service: "nginx.service", action }),
   };
 }
 
@@ -81,6 +92,21 @@ describe("AI terminal command proposals", () => {
       kind: "service_active",
       service: "nginx.service",
     });
+    const stoppedProposal = createAiCommandProposal(
+      commandCall({
+        command: "sudo systemctl stop nginx",
+        purpose: "停止 nginx 服务",
+        verification: {
+          kind: "service_inactive",
+          service: "nginx.service",
+        },
+      }),
+      "session-1",
+    );
+    expect(stoppedProposal.verification).toEqual({
+      kind: "service_inactive",
+      service: "nginx.service",
+    });
     expect(() =>
       createAiCommandProposal(
         commandCall({
@@ -94,6 +120,38 @@ describe("AI terminal command proposals", () => {
         "session-1",
       ),
     ).toThrow("业务验证参数无效");
+  });
+
+  test("generates service commands, risk, and verification locally", () => {
+    const stop = createAiCommandProposal(serviceCall("stop"), "session-1");
+    expect(stop).toMatchObject({
+      command: "sudo -n systemctl stop -- nginx.service",
+      purpose: "停止服务 nginx.service",
+      assessment: { risk: "caution" },
+      verification: { kind: "service_inactive", service: "nginx.service" },
+    });
+
+    const status = createAiCommandProposal(serviceCall("status"), "session-1");
+    expect(status).toMatchObject({
+      command: "systemctl is-active -- nginx.service",
+      assessment: { risk: "safe" },
+    });
+    expect(status.verification).toBeUndefined();
+  });
+
+  test("rejects unsafe structured service names", () => {
+    expect(() =>
+      createAiCommandProposal(
+        {
+          ...serviceCall("restart"),
+          arguments: JSON.stringify({
+            service: "nginx; reboot",
+            action: "restart",
+          }),
+        },
+        "session-1",
+      ),
+    ).toThrow("服务操作参数");
   });
 
   test("rejects multiline, oversized, and unknown arguments", () => {
@@ -142,6 +200,145 @@ describe("AI terminal command proposals", () => {
     });
     expect(JSON.stringify(record)).not.toContain("curl");
     expect(JSON.stringify(record)).not.toContain("secret-token");
+  });
+
+  test("captures bounded redacted output while a command is running", () => {
+    const pending = createAiCommandProposal(
+      commandCall({ command: "env", purpose: "检查环境" }),
+      "session-1",
+    );
+    const running = updateAiCommandProposalOutput(
+      pending,
+      `TOKEN=secret-token\n${"x".repeat(12_100)}`,
+    );
+
+    expect(running.status).toBe("approved");
+    expect(running.resultOutput).toHaveLength(12_000);
+    expect(running.resultOutput).not.toContain("secret-token");
+    expect(running.resultOutput).toContain("已省略中间输出");
+    expect(running.fullResultOutput).toContain("TOKEN=[已隐藏]");
+    expect(running.resultOutputTruncated).toBe(true);
+  });
+
+  test("keeps stdout and stderr separate and records business verification", () => {
+    const pending = createAiCommandProposal(
+      commandCall({ command: "check-service", purpose: "检查服务" }),
+      "session-1",
+    );
+    const completed = reconcileAiCommandProposalExecution(
+      pending,
+      {
+        submissionId: "submission-1",
+        phase: "completed",
+        outputExcerpt: "ready\nwarning",
+        outputTruncated: false,
+        stdoutExcerpt: "ready",
+        stdoutTruncated: false,
+        stderrExcerpt: "warning",
+        stderrTruncated: false,
+        exitCode: 0,
+        durationMs: 50,
+        reason: null,
+        submittedAt: Date.parse("2026-08-06T08:00:00.000Z"),
+        updatedAt: Date.parse("2026-08-06T08:00:00.050Z"),
+        completedAt: Date.parse("2026-08-06T08:00:00.050Z"),
+      },
+      {
+        status: "verified",
+        evidence: [
+          {
+            kind: "command_exit_status",
+            summary: "命令退出码为 0",
+            observedAt: Date.parse("2026-08-06T08:00:00.040Z"),
+          },
+          {
+            kind: "service_status",
+            summary: "服务 nginx.service 处于运行状态",
+            observedAt: Date.parse("2026-08-06T08:00:00.050Z"),
+          },
+        ],
+      },
+    );
+
+    expect(completed).toMatchObject({
+      outputStreamsSeparated: true,
+      resultStdout: "ready",
+      resultStderr: "warning",
+      businessVerification: {
+        status: "verified",
+        summary: "服务 nginx.service 处于运行状态",
+      },
+    });
+  });
+
+  test("restores running and terminal command state from an agent task snapshot", () => {
+    const pending = createAiCommandProposal(
+      commandCall({ command: "env", purpose: "检查环境" }),
+      "session-1",
+    );
+    const running = reconcileAiCommandProposalExecution(pending, {
+      submissionId: "submission-1",
+      phase: "running",
+      outputExcerpt: "TOKEN=secret-token\nready",
+      outputTruncated: false,
+      exitCode: null,
+      durationMs: null,
+      reason: null,
+      submittedAt: Date.parse("2026-08-06T08:00:00.000Z"),
+      updatedAt: Date.parse("2026-08-06T08:00:01.000Z"),
+      completedAt: null,
+    });
+    expect(running).toMatchObject({
+      executionPhase: "running",
+      status: "executed",
+      submissionId: "submission-1",
+      resultOutput: "TOKEN=[已隐藏]\nready",
+    });
+
+    const completed = reconcileAiCommandProposalExecution(running, {
+      submissionId: "submission-1",
+      phase: "completed",
+      outputExcerpt: "done",
+      outputTruncated: false,
+      exitCode: 0,
+      durationMs: 1_200,
+      reason: null,
+      submittedAt: Date.parse("2026-08-06T08:00:00.000Z"),
+      updatedAt: Date.parse("2026-08-06T08:00:01.200Z"),
+      completedAt: Date.parse("2026-08-06T08:00:01.200Z"),
+    });
+    expect(completed).toMatchObject({
+      completedAt: "2026-08-06T08:00:01.200Z",
+      durationMs: 1_200,
+      executionPhase: "completed",
+      exitCode: 0,
+      status: "succeeded",
+    });
+  });
+
+  test("marks an interrupted restored command unavailable without replaying it", () => {
+    const proposal = createAiCommandProposal(
+      commandCall({ command: "sleep 60", purpose: "等待" }),
+      "session-1",
+    );
+    const interrupted = reconcileAiCommandProposalExecution(proposal, {
+      submissionId: "submission-1",
+      phase: "interrupted",
+      outputExcerpt: null,
+      outputTruncated: false,
+      exitCode: null,
+      durationMs: 500,
+      reason: "应用重启导致后台命令中断",
+      submittedAt: Date.parse("2026-08-06T08:00:00.000Z"),
+      updatedAt: Date.parse("2026-08-06T08:00:00.500Z"),
+      completedAt: Date.parse("2026-08-06T08:00:00.500Z"),
+    });
+    expect(interrupted).toMatchObject({
+      executionPhase: "interrupted",
+      resultUnavailableReason: "应用重启导致后台命令中断",
+      status: "unavailable",
+      submissionId: "submission-1",
+    });
   });
 
   test("matches only the approved command submitted in the same session", () => {

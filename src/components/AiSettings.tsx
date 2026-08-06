@@ -450,24 +450,6 @@ function AiSettings({
       </div>
       <div className="settings-row">
         <span className="settings-label-with-description">
-          <Typography.Text>命令执行关联</Typography.Text>
-          <Typography.Text type="secondary">
-            仅关联由 AI 填入且由你手动提交的同会话命令
-          </Typography.Text>
-        </span>
-        <div className="settings-control">
-          <Switch
-            aria-label="关联 AI 命令提案与终端提交"
-            checked={settings.aiCommandTrackingEnabled}
-            disabled={!settings.aiCommandProposalsEnabled}
-            onChange={(checked) =>
-              updateSetting("aiCommandTrackingEnabled", checked)
-            }
-          />
-        </div>
-      </div>
-      <div className="settings-row">
-        <span className="settings-label-with-description">
           <Typography.Text>服务能力</Typography.Text>
           <Typography.Text type="secondary">
             会发起少量测试请求，不执行服务器操作

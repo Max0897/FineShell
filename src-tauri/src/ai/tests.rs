@@ -77,6 +77,7 @@ fn finalization_keeps_evidence_and_disables_further_tool_requests() {
                 arguments: "{}".to_string(),
             }],
             content: None,
+            reasoning_content: None,
             results: vec![AiToolResult {
                 call_id: "call-1".to_string(),
                 name: "get_server_status".to_string(),
@@ -109,6 +110,7 @@ fn runtime_stops_repeated_calls_and_consecutive_failed_rounds() {
             ..call.clone()
         }],
         content: None,
+        reasoning_content: None,
         results: vec![AiToolResult {
             call_id: id.to_string(),
             name: call.name.clone(),
@@ -130,6 +132,7 @@ fn runtime_stops_repeated_calls_and_consecutive_failed_rounds() {
             arguments: "{}".to_string(),
         }],
         content: None,
+        reasoning_content: None,
         results: vec![AiToolResult {
             call_id: id.to_string(),
             name: "get_server_status".to_string(),
@@ -151,6 +154,84 @@ fn runtime_stops_repeated_calls_and_consecutive_failed_rounds() {
         ),
         Some(AiFinalizeReason::ConsecutiveFailures)
     );
+}
+
+#[test]
+fn repeated_call_detection_ignores_model_planning_metadata() {
+    let round = |id: &str, reason: &str, optional: bool| AiToolRound {
+        calls: vec![AiToolCall {
+            id: id.to_string(),
+            name: "ping_target".to_string(),
+            arguments: json!({
+                "target": "example.com",
+                "reason": reason,
+                "optional": optional,
+            })
+            .to_string(),
+        }],
+        content: None,
+        reasoning_content: None,
+        results: vec![AiToolResult {
+            call_id: id.to_string(),
+            name: "ping_target".to_string(),
+            content: r#"{"ok":true}"#.to_string(),
+        }],
+    };
+    let next = AiToolCall {
+        id: "ping-3".to_string(),
+        name: "ping_target".to_string(),
+        arguments: json!({
+            "optional": false,
+            "reason": "third wording",
+            "target": "example.com",
+        })
+        .to_string(),
+    };
+
+    assert_eq!(
+        tool_loop_finalize_reason(
+            &[
+                round("ping-1", "first wording", true),
+                round("ping-2", "second wording", false),
+            ],
+            &[next],
+        ),
+        Some(AiFinalizeReason::NoProgress),
+    );
+}
+
+#[test]
+fn runtime_does_not_stop_only_because_the_task_exceeds_ten_rounds() {
+    let rounds = (0..12)
+        .map(|index| {
+            let id = format!("ping-{index}");
+            AiToolRound {
+                calls: vec![AiToolCall {
+                    id: id.clone(),
+                    name: "ping_target".to_string(),
+                    arguments: json!({
+                        "target": format!("host-{index}.example.com"),
+                        "reason": "collect evidence",
+                    })
+                    .to_string(),
+                }],
+                content: None,
+                reasoning_content: None,
+                results: vec![AiToolResult {
+                    call_id: id,
+                    name: "ping_target".to_string(),
+                    content: r#"{"ok":true}"#.to_string(),
+                }],
+            }
+        })
+        .collect::<Vec<_>>();
+    let next = AiToolCall {
+        id: "ping-next".to_string(),
+        name: "ping_target".to_string(),
+        arguments: r#"{"target":"next.example.com","reason":"collect evidence"}"#.to_string(),
+    };
+
+    assert_eq!(tool_loop_finalize_reason(&rounds, &[next]), None);
 }
 
 #[test]
@@ -295,6 +376,7 @@ fn exposes_and_validates_only_explicitly_enabled_diagnostic_tools() {
             arguments: r#"{"target":"example.com"}"#.to_string(),
         }],
         content: None,
+        reasoning_content: None,
         results: vec![AiToolResult {
             call_id: "call-1".to_string(),
             name: "trace_route".to_string(),
@@ -315,6 +397,7 @@ fn validates_and_wraps_tool_results_as_untrusted_messages() {
                 arguments: "{}".to_string(),
             }],
             content: None,
+            reasoning_content: Some("inspect the current directory".to_string()),
             results: vec![AiToolResult {
                 call_id: "call-1".to_string(),
                 name: "get_current_directory".to_string(),
@@ -338,11 +421,40 @@ fn validates_and_wraps_tool_results_as_untrusted_messages() {
         false,
     );
     assert_eq!(messages[messages.len() - 2]["role"], "assistant");
+    assert_eq!(
+        messages[messages.len() - 2]["reasoning_content"],
+        "inspect the current directory"
+    );
     assert_eq!(messages[messages.len() - 1]["role"], "tool");
     assert!(messages[messages.len() - 1]["content"]
         .as_str()
         .unwrap()
         .contains("password=[REDACTED]"));
+}
+
+#[test]
+fn validates_more_than_ten_tool_rounds_within_the_resource_budget() {
+    let rounds = (0..12)
+        .map(|index| {
+            let id = format!("call-{index}");
+            AiToolRound {
+                calls: vec![AiToolCall {
+                    id: id.clone(),
+                    name: "get_current_directory".to_string(),
+                    arguments: "{}".to_string(),
+                }],
+                content: None,
+                reasoning_content: None,
+                results: vec![AiToolResult {
+                    call_id: id,
+                    name: "get_current_directory".to_string(),
+                    content: format!(r#"{{"path":"/srv/{index}"}}"#),
+                }],
+            }
+        })
+        .collect::<Vec<_>>();
+
+    assert!(validate_tool_rounds(rounds, true, false, false).is_ok());
 }
 
 #[test]
@@ -355,6 +467,7 @@ fn rejects_tools_outside_the_read_only_allowlist() {
                 arguments: "{}".to_string(),
             }],
             content: None,
+            reasoning_content: None,
             results: vec![AiToolResult {
                 call_id: "call-1".to_string(),
                 name: "run_shell_command".to_string(),
@@ -463,6 +576,7 @@ fn rejects_tool_rounds_when_read_only_tools_are_disabled() {
                 arguments: r#"{"target":"example.com"}"#.to_string(),
             }],
             content: None,
+            reasoning_content: None,
             results: vec![AiToolResult {
                 call_id: "call-1".to_string(),
                 name: "ping_target".to_string(),
@@ -502,6 +616,7 @@ fn accepts_file_edit_proposals_without_enabling_diagnostics() {
             arguments: arguments.to_string(),
         }],
         content: None,
+        reasoning_content: None,
         results: vec![AiToolResult {
             call_id: "call-file-edit".to_string(),
             name: "propose_file_edit".to_string(),
@@ -517,6 +632,7 @@ fn accepts_file_edit_proposals_without_enabling_diagnostics() {
             arguments: arguments.to_string(),
         }],
         content: None,
+        reasoning_content: None,
         results: vec![AiToolResult {
             call_id: "call-file-edit".to_string(),
             name: "propose_file_edit".to_string(),
@@ -550,6 +666,7 @@ fn accepts_file_edit_proposals_without_enabling_diagnostics() {
             })
             .collect(),
         content: None,
+        reasoning_content: None,
         results: (0..8)
             .map(|index| AiToolResult {
                 call_id: format!("call-file-{index}"),
@@ -569,6 +686,7 @@ fn accepts_file_edit_proposals_without_enabling_diagnostics() {
             })
             .collect(),
         content: None,
+        reasoning_content: None,
         results: (0..4)
             .map(|index| AiToolResult {
                 call_id: format!("call-diagnostic-{index}"),
@@ -587,6 +705,10 @@ fn accepts_review_only_terminal_command_proposals() {
     assert!(valid_tool_arguments(
         "propose_terminal_command",
         r#"{"command":"sudo systemctl restart nginx","purpose":"Restart nginx","risk":"caution","risk_reason":"Restarts a running service","verification":{"kind":"service_active","service":"nginx.service"}}"#
+    ));
+    assert!(valid_tool_arguments(
+        "propose_terminal_command",
+        r#"{"command":"sudo systemctl stop nginx","purpose":"Stop nginx","risk":"caution","risk_reason":"Stops a running service","verification":{"kind":"service_inactive","service":"nginx.service"}}"#
     ));
     assert!(!valid_tool_arguments(
         "propose_terminal_command",
@@ -612,7 +734,19 @@ fn accepts_review_only_terminal_command_proposals() {
         .iter()
         .filter_map(|value| value.pointer("/function/name").and_then(Value::as_str))
         .collect::<Vec<_>>();
-    assert_eq!(names, vec!["propose_terminal_command"]);
+    assert_eq!(
+        names,
+        vec!["propose_service_action", "propose_terminal_command"]
+    );
+    assert!(valid_tool_arguments(
+        "propose_service_action",
+        r#"{"service":"nginx.service","action":"restart"}"#
+    ));
+    assert!(!valid_tool_arguments(
+        "propose_service_action",
+        r#"{"service":"nginx; reboot","action":"restart"}"#
+    ));
+    assert!(tool_allowed("propose_service_action", false, false, true));
     assert!(tool_allowed("propose_terminal_command", false, false, true));
     assert!(!tool_allowed(
         "propose_terminal_command",
@@ -628,6 +762,7 @@ fn accepts_review_only_terminal_command_proposals() {
             arguments: arguments.to_string(),
         }],
         content: None,
+        reasoning_content: None,
         results: vec![AiToolResult {
             call_id: "call-command".to_string(),
             name: "propose_terminal_command".to_string(),

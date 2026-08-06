@@ -12,6 +12,7 @@ function renderTimeline(
   dockedDiagnosticPlanIds: ReadonlySet<string> = new Set(),
   dockedFileEditProposalIds: ReadonlySet<string> = new Set(),
   dockedFileOperationProposalIds: ReadonlySet<string> = new Set(),
+  sending = false,
 ) {
   return {
     onRetryMessage,
@@ -59,7 +60,7 @@ function renderTimeline(
         onStopDiagnosticPlan={() => undefined}
         onToggleToolRun={() => undefined}
         scrollRef={createRef<HTMLDivElement>()}
-        sending={false}
+        sending={sending}
         sessionId="session-1"
       />,
     ),
@@ -113,6 +114,50 @@ describe("AiMessageTimeline", () => {
     expect(screen.getByRole("button", { name: "复制代码" })).not.toBeNull();
     expect(screen.queryByRole("button", { name: "填入终端" })).toBeNull();
     expect(screen.getByText("仅供查看")).not.toBeNull();
+  });
+
+  test("shows completed model reasoning in a collapsed disclosure", () => {
+    renderTimeline([
+      {
+        content: "配置检查完成。",
+        id: "assistant-1",
+        reasoning: "先读取配置，再对照运行进程。",
+        role: "assistant",
+      },
+    ]);
+
+    const toggle = screen.getByRole("button", { name: "思考过程" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("先读取配置，再对照运行进程。")).toBeNull();
+
+    fireEvent.click(toggle);
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("先读取配置，再对照运行进程。")).not.toBeNull();
+  });
+
+  test("keeps active model reasoning expanded while waiting for an answer", () => {
+    renderTimeline(
+      [
+        {
+          content: "",
+          id: "assistant-1",
+          reasoning: "正在检查服务器状态。",
+          role: "assistant",
+        },
+      ],
+      undefined,
+      undefined,
+      new Set(),
+      new Set(),
+      new Set(),
+      new Set(),
+      true,
+    );
+
+    const toggle = screen.getByRole("button", { name: "正在思考..." });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("正在检查服务器状态。")).not.toBeNull();
   });
 
   test("does not duplicate a command approval docked above the composer", () => {

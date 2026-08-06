@@ -6,12 +6,22 @@ import {
   type AiCommandAssessment,
   type AiCommandRisk,
 } from "./ai-utils";
-import type { AiToolCall, AiToolResult } from "./tauri-protocol";
+import type {
+  AgentCommandExecutionPhase,
+  AgentCommandExecutionState,
+  AgentVerificationEvidence,
+  AgentVerificationStatus,
+  AiToolCall,
+  AiToolResult,
+} from "./tauri-protocol";
 import type { TerminalCommandSubmission } from "./terminal-utils";
 
 export const AI_COMMAND_PROPOSAL_TOOL_NAME = "propose_terminal_command";
+export const AI_SERVICE_ACTION_PROPOSAL_TOOL_NAME = "propose_service_action";
 export const MAX_AI_COMMAND_PURPOSE_CHARS = 240;
 export const MAX_AI_COMMAND_RISK_REASON_CHARS = 240;
+const MAX_AI_COMMAND_OUTPUT_SUMMARY_CHARS = 12_000;
+const AI_COMMAND_OUTPUT_OMISSION = "\n\n... 已省略中间输出 ...\n\n";
 
 export type AiCommandProposalStatus =
   | "pending"
@@ -25,6 +35,7 @@ export type AiCommandProposalStatus =
 
 export type AiCommandVerification =
   | { kind: "service_active"; service: string }
+  | { kind: "service_inactive"; service: string }
   | { kind: "port_listening"; port: number; protocol: "tcp" | "udp" }
   | {
       kind: "config_syntax";
@@ -32,19 +43,40 @@ export type AiCommandVerification =
       path?: string;
     };
 
+export interface AiCommandBusinessVerificationResult {
+  observedAt?: string;
+  status: AgentVerificationStatus;
+  summary: string;
+}
+
+export interface AiCommandExecutionVerificationState {
+  evidence: AgentVerificationEvidence[];
+  status: AgentVerificationStatus;
+}
+
 export interface AiCommandProposal {
   assessment: AiCommandAssessment;
   command: string;
   completedAt?: string;
   directory?: string;
   durationMs?: number;
+  executionPhase?: AgentCommandExecutionPhase;
   executedAt?: string;
   exitCode?: number;
   id: string;
   approvedAt?: string;
   purpose: string;
+  businessVerification?: AiCommandBusinessVerificationResult;
+  fullResultOutput?: string;
+  fullResultStderr?: string;
+  fullResultStdout?: string;
+  outputStreamsSeparated?: boolean;
   resultOutput?: string;
   resultOutputTruncated?: boolean;
+  resultStderr?: string;
+  resultStderrTruncated?: boolean;
+  resultStdout?: string;
+  resultStdoutTruncated?: boolean;
   resultUnavailableReason?: string;
   sessionId: string;
   status: AiCommandProposalStatus;
@@ -60,6 +92,10 @@ export type AiCommandApprovalDecision =
       kind: "execution_completed";
       output?: string;
       outputTruncated?: boolean;
+      stderr?: string;
+      stderrTruncated?: boolean;
+      stdout?: string;
+      stdoutTruncated?: boolean;
     }
   | {
       durationMs?: number;
@@ -92,6 +128,46 @@ export interface AiCommandRecord {
     | "not-executed";
 }
 
+function summarizeAiCommandOutput(output: string) {
+  if (output.length <= MAX_AI_COMMAND_OUTPUT_SUMMARY_CHARS) return output;
+  const available =
+    MAX_AI_COMMAND_OUTPUT_SUMMARY_CHARS - AI_COMMAND_OUTPUT_OMISSION.length;
+  const headLength = Math.ceil(available / 2);
+  const tailLength = available - headLength;
+  return `${output.slice(0, headLength)}${AI_COMMAND_OUTPUT_OMISSION}${output.slice(-tailLength)}`;
+}
+
+function combineAiCommandOutput(stdout: string, stderr: string) {
+  if (!stdout) return stderr;
+  if (!stderr) return stdout;
+  return `${stdout}\n${stderr}`;
+}
+
+function businessVerificationResult(
+  verification?: AiCommandExecutionVerificationState,
+): AiCommandBusinessVerificationResult | undefined {
+  if (!verification || verification.status === "not_applicable")
+    return undefined;
+  const evidence = [...verification.evidence]
+    .reverse()
+    .find((item) => item.kind !== "command_exit_status");
+  const fallback = {
+    pending: "正在验证业务结果",
+    verified: "业务结果验证通过",
+    partial: "业务结果仅部分符合预期",
+    unverified: "未能确认业务结果",
+    failed: "业务结果验证失败",
+    not_applicable: "无需业务验证",
+  }[verification.status];
+  return {
+    status: verification.status,
+    summary: evidence?.summary || fallback,
+    ...(evidence
+      ? { observedAt: new Date(evidence.observedAt).toISOString() }
+      : {}),
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -112,7 +188,7 @@ export function normalizeAiCommandVerification(
     throw new Error("AI 返回的业务验证参数无效");
   }
   if (
-    value.kind === "service_active" &&
+    (value.kind === "service_active" || value.kind === "service_inactive") &&
     exactKeys(value, ["kind", "service"]) &&
     typeof value.service === "string" &&
     value.service.length > 0 &&
@@ -148,11 +224,7 @@ export function normalizeAiCommandVerification(
         !/[\x00-\x1f\x7f]/.test(value.path)))
   ) {
     const validator = value.validator as
-      | "nginx"
-      | "apache"
-      | "caddy"
-      | "sshd"
-      | "haproxy";
+      "nginx" | "apache" | "caddy" | "sshd" | "haproxy";
     return {
       kind: value.kind,
       validator,
@@ -163,7 +235,75 @@ export function normalizeAiCommandVerification(
 }
 
 export function isAiCommandProposalToolCall(call: AiToolCall) {
-  return call.name === AI_COMMAND_PROPOSAL_TOOL_NAME;
+  return (
+    call.name === AI_COMMAND_PROPOSAL_TOOL_NAME ||
+    call.name === AI_SERVICE_ACTION_PROPOSAL_TOOL_NAME
+  );
+}
+
+function createAiServiceActionProposal(
+  call: AiToolCall,
+  value: Record<string, unknown>,
+  sessionId: string,
+  directory?: string | null,
+): AiCommandProposal {
+  if (
+    !exactKeys(value, ["service", "action"]) ||
+    typeof value.service !== "string" ||
+    !value.service ||
+    value.service.length > 128 ||
+    value.service.startsWith("-") ||
+    !/^[A-Za-z0-9_.@:-]+$/.test(value.service) ||
+    !["status", "start", "stop", "restart"].includes(String(value.action))
+  ) {
+    throw new Error("AI 返回了无效的服务操作参数");
+  }
+  const service = value.service;
+  const action = value.action as "status" | "start" | "stop" | "restart";
+  const descriptors = {
+    status: {
+      command: `systemctl is-active -- ${service}`,
+      purpose: `检查服务 ${service} 的运行状态`,
+      reason: "只读取服务当前运行状态",
+      risk: "safe" as const,
+      verification: undefined,
+    },
+    start: {
+      command: `sudo -n systemctl start -- ${service}`,
+      purpose: `启动服务 ${service}`,
+      reason: "会启动 systemd 服务并改变进程状态",
+      risk: "caution" as const,
+      verification: { kind: "service_active" as const, service },
+    },
+    stop: {
+      command: `sudo -n systemctl stop -- ${service}`,
+      purpose: `停止服务 ${service}`,
+      reason: "会停止 systemd 服务并中断其对外能力",
+      risk: "caution" as const,
+      verification: { kind: "service_inactive" as const, service },
+    },
+    restart: {
+      command: `sudo -n systemctl restart -- ${service}`,
+      purpose: `重启服务 ${service}`,
+      reason: "会短暂中断并重新启动 systemd 服务",
+      risk: "caution" as const,
+      verification: { kind: "service_active" as const, service },
+    },
+  }[action];
+  return {
+    assessment: combineAiTerminalCommandAssessment(
+      descriptors.command,
+      descriptors.risk,
+      descriptors.reason,
+    ),
+    command: descriptors.command,
+    directory: directory?.trim() || undefined,
+    id: call.id,
+    purpose: descriptors.purpose,
+    sessionId,
+    status: "pending",
+    verification: descriptors.verification,
+  };
 }
 
 export function createAiCommandProposal(
@@ -180,16 +320,21 @@ export function createAiCommandProposal(
   } catch {
     throw new Error("AI 返回了无效的终端命令参数");
   }
+  if (!isRecord(value)) {
+    throw new Error("AI 返回了无效的终端命令参数");
+  }
+  if (call.name === AI_SERVICE_ACTION_PROPOSAL_TOOL_NAME) {
+    return createAiServiceActionProposal(call, value, sessionId, directory);
+  }
   if (
-    !isRecord(value) ||
-    (!exactKeys(value, ["command", "purpose", "risk", "risk_reason"]) &&
-      !exactKeys(value, [
-        "command",
-        "purpose",
-        "risk",
-        "risk_reason",
-        "verification",
-      ]))
+    !exactKeys(value, ["command", "purpose", "risk", "risk_reason"]) &&
+    !exactKeys(value, [
+      "command",
+      "purpose",
+      "risk",
+      "risk_reason",
+      "verification",
+    ])
   ) {
     throw new Error("AI 返回了无效的终端命令参数");
   }
@@ -229,9 +374,10 @@ export function createAiCommandProposal(
     throw new Error("AI 返回的命令风险说明无效");
   }
   const risk = value.risk as AiCommandRisk;
-  const verification = value.verification === undefined
-    ? undefined
-    : normalizeAiCommandVerification(value.verification);
+  const verification =
+    value.verification === undefined
+      ? undefined
+      : normalizeAiCommandVerification(value.verification);
   return {
     assessment: combineAiTerminalCommandAssessment(command, risk, riskReason),
     command,
@@ -261,33 +407,37 @@ export function aiCommandApprovalToolResult(
 ): AiToolResult {
   const content =
     decision.kind === "execution_completed"
-        ? {
-            ok: decision.exitCode === 0,
-            decision: "approved_and_completed",
-            durationMs: decision.durationMs,
-            exitCode: decision.exitCode,
-            output: decision.output?.trim() || undefined,
-            outputTruncated: decision.outputTruncated || undefined,
-            message:
-              decision.exitCode === 0
-                ? "命令已获批准，终端已完成执行"
-                : "命令已获批准，但终端执行返回非零退出码",
-          }
-        : decision.kind === "execution_unavailable"
-          ? {
-              ok: false,
-              decision: "execution_result_unavailable",
-              durationMs: decision.durationMs,
-              error: decision.reason,
-              message: "命令已获批准，但无法获取可靠的终端结束状态",
-            }
-      : decision.kind === "revision_requested"
+      ? {
+          ok: decision.exitCode === 0,
+          decision: "approved_and_completed",
+          durationMs: decision.durationMs,
+          exitCode: decision.exitCode,
+          output: decision.output?.trim() || undefined,
+          outputTruncated: decision.outputTruncated || undefined,
+          stdout: decision.stdout?.trim() || undefined,
+          stdoutTruncated: decision.stdoutTruncated || undefined,
+          stderr: decision.stderr?.trim() || undefined,
+          stderrTruncated: decision.stderrTruncated || undefined,
+          message:
+            decision.exitCode === 0
+              ? "命令已获批准，终端已完成执行"
+              : "命令已获批准，但终端执行返回非零退出码",
+        }
+      : decision.kind === "execution_unavailable"
         ? {
             ok: false,
-            decision: "revision_requested",
-            feedback: decision.feedback.trim(),
-            message: "用户拒绝了当前命令，并要求按反馈重新提案",
+            decision: "execution_result_unavailable",
+            durationMs: decision.durationMs,
+            error: decision.reason,
+            message: "命令已获批准，但无法获取可靠的终端结束状态",
           }
+        : decision.kind === "revision_requested"
+          ? {
+              ok: false,
+              decision: "revision_requested",
+              feedback: decision.feedback.trim(),
+              message: "用户拒绝了当前命令，并要求按反馈重新提案",
+            }
           : {
               ok: false,
               decision: "rejected",
@@ -308,6 +458,144 @@ export function markAiCommandProposalApproved(
     throw new Error("当前终端命令提案不能再次审批");
   }
   return { ...proposal, approvedAt, status: "approved" as const };
+}
+
+export function updateAiCommandProposalOutput(
+  proposal: AiCommandProposal,
+  output: string,
+  outputTruncated = false,
+) {
+  if (
+    proposal.status !== "pending" &&
+    proposal.status !== "approved" &&
+    proposal.status !== "executed"
+  ) {
+    return proposal;
+  }
+  const redactedOutput = redactAiContext(output);
+  const resultOutput = summarizeAiCommandOutput(redactedOutput);
+  return {
+    ...proposal,
+    approvedAt:
+      proposal.approvedAt ??
+      (proposal.status === "pending" ? new Date().toISOString() : undefined),
+    fullResultOutput: redactedOutput,
+    resultOutput,
+    resultOutputTruncated:
+      outputTruncated ||
+      resultOutput.length < redactedOutput.length ||
+      undefined,
+    executionPhase: proposal.executionPhase ?? "running",
+    status:
+      proposal.status === "pending" ? ("approved" as const) : proposal.status,
+  };
+}
+
+export function reconcileAiCommandProposalExecution(
+  proposal: AiCommandProposal,
+  execution: AgentCommandExecutionState,
+  verification?: AiCommandExecutionVerificationState,
+) {
+  if (proposal.status === "rejected" || proposal.status === "verified") {
+    return proposal;
+  }
+  const streamsSeparated =
+    execution.stdoutExcerpt !== undefined ||
+    execution.stderrExcerpt !== undefined;
+  const stdout = streamsSeparated
+    ? redactAiContext(execution.stdoutExcerpt ?? "")
+    : "";
+  const stderr = streamsSeparated
+    ? redactAiContext(execution.stderrExcerpt ?? "")
+    : "";
+  const redactedOutput = streamsSeparated
+    ? combineAiCommandOutput(stdout, stderr)
+    : redactAiContext(execution.outputExcerpt ?? "");
+  const resultOutput = summarizeAiCommandOutput(redactedOutput);
+  const resultStdout = streamsSeparated
+    ? summarizeAiCommandOutput(stdout)
+    : undefined;
+  const resultStderr = streamsSeparated
+    ? summarizeAiCommandOutput(stderr)
+    : undefined;
+  const running = ["connecting", "running", "cancelling"].includes(
+    execution.phase,
+  );
+  const completedAt = execution.completedAt
+    ? new Date(execution.completedAt).toISOString()
+    : undefined;
+  const status: AiCommandProposalStatus = running
+    ? "executed"
+    : execution.phase === "completed"
+      ? execution.exitCode === 0
+        ? "succeeded"
+        : "failed"
+      : execution.phase === "failed" && execution.exitCode !== null
+        ? "failed"
+        : "unavailable";
+  return {
+    ...proposal,
+    approvedAt:
+      proposal.approvedAt ?? new Date(execution.submittedAt).toISOString(),
+    completedAt,
+    durationMs: execution.durationMs ?? undefined,
+    executionPhase: execution.phase,
+    executedAt: new Date(execution.submittedAt).toISOString(),
+    exitCode: execution.exitCode ?? undefined,
+    businessVerification:
+      businessVerificationResult(verification) ?? proposal.businessVerification,
+    fullResultOutput: redactedOutput || proposal.fullResultOutput,
+    fullResultStdout: streamsSeparated ? stdout : proposal.fullResultStdout,
+    fullResultStderr: streamsSeparated ? stderr : proposal.fullResultStderr,
+    outputStreamsSeparated:
+      streamsSeparated || proposal.outputStreamsSeparated || undefined,
+    resultOutput:
+      redactedOutput ||
+      execution.phase === "completed" ||
+      execution.phase === "failed"
+        ? resultOutput
+        : proposal.resultOutput,
+    resultOutputTruncated:
+      execution.outputTruncated ||
+      resultOutput.length < redactedOutput.length ||
+      undefined,
+    resultStdout: streamsSeparated ? resultStdout : proposal.resultStdout,
+    resultStdoutTruncated: streamsSeparated
+      ? execution.stdoutTruncated === true ||
+        resultStdout!.length < stdout.length ||
+        undefined
+      : proposal.resultStdoutTruncated,
+    resultStderr: streamsSeparated ? resultStderr : proposal.resultStderr,
+    resultStderrTruncated: streamsSeparated
+      ? execution.stderrTruncated === true ||
+        resultStderr!.length < stderr.length ||
+        undefined
+      : proposal.resultStderrTruncated,
+    resultUnavailableReason:
+      status === "unavailable"
+        ? execution.reason?.trim() || "后台命令执行已中断"
+        : undefined,
+    status,
+    submissionId: execution.submissionId,
+  };
+}
+
+export function markAiCommandProposalUnavailable(
+  proposal: AiCommandProposal,
+  reason: string,
+) {
+  if (proposal.status !== "approved" && proposal.status !== "executed") {
+    return proposal;
+  }
+  return {
+    ...proposal,
+    completedAt: new Date().toISOString(),
+    executionPhase: reason.includes("取消")
+      ? ("interrupted" as const)
+      : ("failed" as const),
+    resultUnavailableReason: reason.trim() || "后台命令执行结果不可用",
+    status: "unavailable" as const,
+  };
 }
 
 export function aiCommandProposalMatchesSubmission(
@@ -336,6 +624,7 @@ export function markAiCommandProposalExecuted(
   }
   return {
     ...proposal,
+    executionPhase: "running" as const,
     executedAt: submission.submittedAt,
     status: "executed" as const,
     submissionId: submission.id,
@@ -369,13 +658,25 @@ export function aiCommandApprovalDecisionFromSubmission(
     throw new Error("终端结果缺少退出码");
   }
   const redactedOutput = redactAiContext(submission.output ?? "");
+  const stdout = redactAiContext(submission.stdout ?? "");
+  const stderr = redactAiContext(submission.stderr ?? "");
+  const output = summarizeAiCommandOutput(redactedOutput);
   return {
     durationMs: submission.durationMs,
     exitCode: submission.exitCode,
     kind: "execution_completed",
-    output: redactedOutput.slice(-12_000),
+    output,
     outputTruncated:
-      submission.outputTruncated === true || redactedOutput.length > 12_000,
+      submission.outputTruncated === true ||
+      output.length < redactedOutput.length,
+    stdout: summarizeAiCommandOutput(stdout),
+    stdoutTruncated:
+      submission.stdoutTruncated === true ||
+      stdout.length > MAX_AI_COMMAND_OUTPUT_SUMMARY_CHARS,
+    stderr: summarizeAiCommandOutput(stderr),
+    stderrTruncated:
+      submission.stderrTruncated === true ||
+      stderr.length > MAX_AI_COMMAND_OUTPUT_SUMMARY_CHARS,
   };
 }
 
@@ -391,6 +692,7 @@ export function markAiCommandProposalCompleted(
       ...proposal,
       completedAt: result.completedAt,
       durationMs: result.durationMs,
+      executionPhase: "interrupted" as const,
       resultUnavailableReason: result.reason,
       status: "unavailable" as const,
     };
@@ -399,15 +701,41 @@ export function markAiCommandProposalCompleted(
     throw new Error("终端结果缺少退出码");
   }
   const redactedOutput = redactAiContext(result.output ?? "");
+  const stdout = redactAiContext(result.stdout ?? "");
+  const stderr = redactAiContext(result.stderr ?? "");
+  const resultOutput = summarizeAiCommandOutput(redactedOutput);
+  const resultStdout = summarizeAiCommandOutput(stdout);
+  const resultStderr = summarizeAiCommandOutput(stderr);
+  const streamsSeparated =
+    result.stdout !== undefined || result.stderr !== undefined;
   const outputTruncated =
-    result.outputTruncated === true || redactedOutput.length > 12_000;
+    result.outputTruncated === true ||
+    resultOutput.length < redactedOutput.length;
   return {
     ...proposal,
     completedAt: result.completedAt,
     durationMs: result.durationMs,
+    executionPhase:
+      result.exitCode === 0 ? ("completed" as const) : ("failed" as const),
     exitCode: result.exitCode,
-    resultOutput: redactedOutput.slice(-12_000),
+    fullResultOutput: redactedOutput,
+    fullResultStdout: streamsSeparated ? stdout : undefined,
+    fullResultStderr: streamsSeparated ? stderr : undefined,
+    outputStreamsSeparated: streamsSeparated || undefined,
+    resultOutput,
     resultOutputTruncated: outputTruncated,
+    resultStdout: streamsSeparated ? resultStdout : undefined,
+    resultStdoutTruncated: streamsSeparated
+      ? result.stdoutTruncated === true ||
+        resultStdout.length < stdout.length ||
+        undefined
+      : undefined,
+    resultStderr: streamsSeparated ? resultStderr : undefined,
+    resultStderrTruncated: streamsSeparated
+      ? result.stderrTruncated === true ||
+        resultStderr.length < stderr.length ||
+        undefined
+      : undefined,
     status:
       result.exitCode === 0 ? ("succeeded" as const) : ("failed" as const),
   };

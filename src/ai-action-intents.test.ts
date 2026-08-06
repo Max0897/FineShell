@@ -61,6 +61,27 @@ describe("AI action intents", () => {
     expect(() => validateAiActionIntents([call], [intent])).not.toThrow();
   });
 
+  test("accepts a backend-generated structured service action", () => {
+    const call: AiToolCall = {
+      id: "service-1",
+      name: "propose_service_action",
+      arguments: JSON.stringify({ service: "nginx.service", action: "restart" }),
+    };
+    const intent: AgentActionIntent = {
+      id: "service-1",
+      tool: "execute_terminal_command",
+      arguments: {
+        command: "sudo -n systemctl restart -- nginx.service",
+        purpose: "重启服务 nginx.service",
+        verification: { kind: "service_active", service: "nginx.service" },
+      },
+      reason: "重启服务 nginx.service",
+      expectedEffect: "重启指定 systemd 服务并验证其恢复运行",
+      risk: "elevated",
+    };
+    expect(() => validateAiActionIntents([call], [intent])).not.toThrow();
+  });
+
   test("rejects missing, duplicated, or mismatched intents", () => {
     expect(() => validateAiActionIntents([commandCall()], [])).toThrow(
       "数量不一致",

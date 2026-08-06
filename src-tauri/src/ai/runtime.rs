@@ -74,9 +74,16 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
         Err(error) => return Err(structured(operation, error.message)),
     };
     let content = response.content;
+    let reasoning_content = response.reasoning_content;
     let tool_calls = response.tool_calls;
     if content.chars().count() > MAX_RESPONSE_CHARS {
         return Err(structured(operation, "AI 响应内容过长"));
+    }
+    if reasoning_content
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > MAX_REASONING_CONTENT_CHARS)
+    {
+        return Err(structured(operation, "AI 推理内容过长"));
     }
     if options.finalize_reason.is_some() && !tool_calls.is_empty() {
         return Err(structured(operation, "AI 收尾响应不应包含工具调用"));
@@ -96,6 +103,7 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
     }
     Ok(AiChatResult {
         content,
+        reasoning_content,
         tool_calls,
         action_intents: Vec::new(),
         diagnostic_plans: Vec::new(),

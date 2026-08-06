@@ -7,7 +7,10 @@ use std::{
 use futures_util::StreamExt;
 use regex::{Captures, Regex};
 use rig_core::{
-    agent::{AgentRun, AgentRunStep, ModelTurn, ModelTurnOutcome},
+    agent::{
+        AgentRun, AgentRunStep, InvalidToolCallContext, InvalidToolCallHookAction, ModelTurn,
+        ModelTurnOutcome,
+    },
     client::CompletionClient,
     completion::{CompletionModel, Message, ToolDefinition, Usage},
     message::{
@@ -27,9 +30,9 @@ use crate::{
     protocol::AI_STREAM_EVENT,
 };
 
-const MAX_AGENT_TURNS: usize = 10;
 const MAX_DSML_TOOL_CALLS: usize = 8;
 const MAX_DSML_ARGUMENT_CHARS: usize = 400_000;
+const MAX_INVALID_TOOL_CALL_RETRIES: usize = 1;
 const DSML_TOOL_CALLS_OPEN: &str = "<|DSML|tool_calls>";
 const DSML_TOOL_CALLS_CLOSE: &str = "</|DSML|tool_calls>";
 const DSML_INVOKE_CLOSE: &str = "</|DSML|invoke>";
@@ -56,6 +59,14 @@ static DSML_PARAMETER_OPEN: LazyLock<Regex> = LazyLock::new(|| {
 struct StreamPayload {
     request_id: String,
     delta: String,
+    kind: StreamKind,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum StreamKind {
+    Content,
+    Reasoning,
 }
 
 struct ParsedDsmlResponse {
@@ -143,15 +154,21 @@ fn read_dsml_tag(value: &str, cursor: usize) -> Result<(&str, usize), RigTurnErr
     Ok((&remaining[..=end], cursor + end + 1))
 }
 
-fn dsml_call_id(request_id: &str, index: usize) -> String {
+fn agent_tool_call_id(request_id: &str, round_index: usize, call_index: usize) -> String {
     let mut hasher = DefaultHasher::new();
     request_id.hash(&mut hasher);
-    format!("dsml-{:016x}-{}", hasher.finish(), index + 1)
+    format!(
+        "agent-{:016x}-{}-{}",
+        hasher.finish(),
+        round_index.saturating_add(1),
+        call_index.saturating_add(1),
+    )
 }
 
 fn parse_dsml_response(
     value: &str,
     request_id: &str,
+    round_index: usize,
 ) -> Result<Option<ParsedDsmlResponse>, RigTurnError> {
     let normalized = normalize_dsml_tags(value);
     let Some(start) = normalized.find(DSML_TOOL_CALLS_OPEN) else {
@@ -219,7 +236,7 @@ fn parse_dsml_response(
             return Err(RigTurnError::protocol("AI 返回的 DSML 工具参数过长"));
         }
         calls.push(AiToolCall {
-            id: dsml_call_id(request_id, calls.len()),
+            id: agent_tool_call_id(request_id, round_index, calls.len()),
             name,
             arguments,
         });
@@ -236,7 +253,7 @@ fn parse_dsml_response(
     Ok(Some(ParsedDsmlResponse { content, calls }))
 }
 
-fn emit_stream_delta(app: &AppHandle, request_id: &str, delta: String) {
+fn emit_stream_delta(app: &AppHandle, request_id: &str, delta: String, kind: StreamKind) {
     if delta.is_empty() {
         return;
     }
@@ -246,8 +263,21 @@ fn emit_stream_delta(app: &AppHandle, request_id: &str, delta: String) {
         StreamPayload {
             request_id: request_id.to_string(),
             delta,
+            kind,
         },
     );
+}
+
+fn reasoning_stream_delta(accumulated: &mut String, complete: &str) -> String {
+    if complete == accumulated.as_str() {
+        return String::new();
+    }
+    if let Some(delta) = complete.strip_prefix(accumulated.as_str()) {
+        accumulated.push_str(delta);
+        return delta.to_string();
+    }
+    *accumulated = complete.to_string();
+    complete.to_string()
 }
 
 pub(crate) struct RigTurnRequest<'a> {
@@ -265,6 +295,7 @@ pub(crate) struct RigTurnRequest<'a> {
 
 pub(crate) struct RigTurnResult {
     pub content: String,
+    pub reasoning_content: Option<String>,
     pub tool_calls: Vec<AiToolCall>,
 }
 
@@ -301,6 +332,20 @@ fn tool_call(call: &AiToolCall) -> Result<ToolCall, RigTurnError> {
     ))
 }
 
+fn extract_reasoning_content(choice: &OneOrMany<AssistantContent>) -> Option<String> {
+    let parts = choice
+        .iter()
+        .filter_map(|item| match item {
+            AssistantContent::Reasoning(reasoning) => {
+                let value = reasoning.display_text();
+                (!value.is_empty()).then_some(value)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
 struct PreparedTurn {
     run: AgentRun,
     prompt: Message,
@@ -325,9 +370,17 @@ fn prepare_turn(
             .iter()
             .flat_map(|round| round.calls.iter().map(|call| call.name.clone())),
     );
+    // This adapter performs one fresh model turn per invocation. Replayed tool
+    // rounds restore Rig's state, so the required budget comes from the saved
+    // history instead of imposing a global turn limit on the task.
     let mut run = AgentRun::new(prompt)
         .with_history(messages)
-        .max_turns(MAX_AGENT_TURNS.max(rounds.len() + 1));
+        .max_turns(
+            rounds
+                .len()
+                .saturating_add(1 + MAX_INVALID_TOOL_CALL_RETRIES),
+        )
+        .max_invalid_tool_call_retries(MAX_INVALID_TOOL_CALL_RETRIES);
 
     for round in rounds {
         match run
@@ -339,6 +392,13 @@ fn prepare_turn(
         }
 
         let mut content = Vec::new();
+        if let Some(reasoning) = round
+            .reasoning_content
+            .as_deref()
+            .filter(|reasoning| !reasoning.is_empty())
+        {
+            content.push(AssistantContent::reasoning(reasoning));
+        }
         if let Some(text) = round.content.as_deref().filter(|text| !text.is_empty()) {
             content.push(AssistantContent::text(text));
         }
@@ -441,27 +501,76 @@ pub(crate) fn tool_definitions(value: Value) -> Result<Vec<ToolDefinition>, Stri
         .collect()
 }
 
-pub(crate) async fn request_turn(
-    request: RigTurnRequest<'_>,
-) -> Result<RigTurnResult, RigTurnError> {
-    let names = tool_names(&request.tools);
-    let PreparedTurn {
-        mut run,
-        prompt,
-        history,
-    } = prepare_turn(request.messages, request.tool_rounds, &names)?;
-    let rig_client = openai::CompletionsClient::builder()
-        .api_key(request.api_key.unwrap_or("fineshell-local"))
-        .base_url(request.base_url)
-        .http_client(request.client.clone())
-        .build()
-        .map_err(|error| RigTurnError::protocol(format!("创建 AI 客户端失败：{error}")))?;
-    let model = rig_client.completion_model(request.model);
+struct StreamedModelTurn {
+    choice: OneOrMany<AssistantContent>,
+    content: String,
+    message_id: Option<String>,
+    reasoning_content: Option<String>,
+    usage: Usage,
+}
+
+struct ModelTurnStreamContext<'a> {
+    tools: &'a [ToolDefinition],
+    names: &'a BTreeSet<String>,
+    app: &'a AppHandle,
+    request_id: &'a str,
+    round_index: usize,
+}
+
+fn invalid_tool_retry_feedback(context: &InvalidToolCallContext) -> String {
+    if context.allowed_tools.is_empty() {
+        return "No tools are available for this turn. Do not emit function calls or DSML tool markup. Reply with a plain-text final answer using only the evidence already available."
+            .to_string();
+    }
+    format!(
+        "Your previous tool call is unavailable. You may call only these tools: {}. Retry this turn using an allowed tool, or answer without tools. Do not invent or rename tools.",
+        context.allowed_tools.join(", ")
+    )
+}
+
+fn invalid_tool_display_name(name: &str) -> String {
+    let name = name
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(80)
+        .collect::<String>();
+    if name.trim().is_empty() {
+        "未知工具".to_string()
+    } else {
+        name
+    }
+}
+
+fn retry_invalid_tool_call(
+    run: &mut AgentRun,
+    context: &InvalidToolCallContext,
+) -> Result<(), RigTurnError> {
+    let invalid_name = invalid_tool_display_name(&context.tool_name);
+    match run.resolve_invalid_tool_call(InvalidToolCallHookAction::retry(
+        invalid_tool_retry_feedback(context),
+    )) {
+        Ok(ModelTurnOutcome::TurnRetried) => Ok(()),
+        Ok(_) => Err(RigTurnError::protocol(
+            "AI Agent 未正确恢复不可用的工具调用",
+        )),
+        Err(_) => Err(RigTurnError::protocol(format!(
+            "AI 连续调用不可用工具：{invalid_name}",
+        ))),
+    }
+}
+
+async fn stream_model_turn<M: CompletionModel>(
+    model: &M,
+    prompt: Message,
+    history: Vec<Message>,
+    context: &ModelTurnStreamContext<'_>,
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<StreamedModelTurn, RigTurnError> {
     let mut builder = model
         .completion_request(prompt)
         .messages(history)
-        .tools(request.tools);
-    if !names.is_empty() {
+        .tools(context.tools.to_vec());
+    if !context.names.is_empty() {
         builder = builder.tool_choice(ToolChoice::Auto);
     }
     let mut stream = builder.stream().await.map_err(|error| RigTurnError {
@@ -474,11 +583,12 @@ pub(crate) async fn request_turn(
             .unwrap_or_else(|| error.to_string()),
     })?;
     let mut content = String::new();
+    let mut streamed_reasoning = String::new();
     let mut stream_filter = DsmlStreamFilter::default();
     loop {
         let item = tokio::select! {
-            changed = request.cancellation.changed() => {
-                if changed.is_ok() && *request.cancellation.borrow() {
+            changed = cancellation.changed() => {
+                if changed.is_ok() && *cancellation.borrow() {
                     stream.cancel();
                     return Err(RigTurnError::protocol("AI 请求已取消"));
                 }
@@ -487,7 +597,7 @@ pub(crate) async fn request_turn(
             item = stream.next() => item,
         };
         let Some(item) = item else { break };
-        if let StreamedAssistantContent::Text(text) = item.map_err(|error| RigTurnError {
+        let item = item.map_err(|error| RigTurnError {
             status: error
                 .provider_response_status()
                 .map(|status| status.as_u16()),
@@ -495,22 +605,60 @@ pub(crate) async fn request_turn(
                 .provider_response_body()
                 .map(str::to_string)
                 .unwrap_or_else(|| error.to_string()),
-        })? {
-            content.push_str(&text.text);
-            emit_stream_delta(
-                request.app,
-                request.request_id,
-                stream_filter.push(&text.text),
-            );
+        })?;
+        match item {
+            StreamedAssistantContent::Text(text) => {
+                content.push_str(&text.text);
+                emit_stream_delta(
+                    context.app,
+                    context.request_id,
+                    stream_filter.push(&text.text),
+                    StreamKind::Content,
+                );
+            }
+            StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
+                streamed_reasoning.push_str(&reasoning);
+                emit_stream_delta(
+                    context.app,
+                    context.request_id,
+                    reasoning,
+                    StreamKind::Reasoning,
+                );
+            }
+            StreamedAssistantContent::Reasoning(reasoning) => {
+                let complete = reasoning.display_text();
+                let delta = reasoning_stream_delta(&mut streamed_reasoning, &complete);
+                emit_stream_delta(
+                    context.app,
+                    context.request_id,
+                    delta,
+                    StreamKind::Reasoning,
+                );
+            }
+            _ => {}
         }
     }
-    if *request.cancellation.borrow() {
+    if *cancellation.borrow() {
         return Err(RigTurnError::protocol("AI 请求已取消"));
     }
-    let parsed_dsml = parse_dsml_response(&content, request.request_id)?;
+    let original_choice = stream.choice.clone();
+    let reasoning_content = extract_reasoning_content(&original_choice);
+    if let Some(reasoning) = reasoning_content.as_deref() {
+        let delta = reasoning_stream_delta(&mut streamed_reasoning, reasoning);
+        emit_stream_delta(
+            context.app,
+            context.request_id,
+            delta,
+            StreamKind::Reasoning,
+        );
+    }
+    let parsed_dsml = parse_dsml_response(&content, context.request_id, context.round_index)?;
     let choice = if let Some(parsed) = parsed_dsml {
         content = parsed.content;
         let mut response = Vec::new();
+        if let Some(reasoning) = reasoning_content.as_deref() {
+            response.push(AssistantContent::reasoning(reasoning));
+        }
         if !content.is_empty() {
             response.push(AssistantContent::text(content.clone()));
         }
@@ -526,37 +674,107 @@ pub(crate) async fn request_turn(
         OneOrMany::many(response)
             .map_err(|_| RigTurnError::protocol("AI 返回的 DSML 工具调用为空"))?
     } else {
-        emit_stream_delta(request.app, request.request_id, stream_filter.finish());
-        stream.choice.clone()
+        emit_stream_delta(
+            context.app,
+            context.request_id,
+            stream_filter.finish(),
+            StreamKind::Content,
+        );
+        original_choice
     };
-    let usage = stream.usage();
-    let message_id = stream.message_id.clone();
-    match run
-        .model_response(ModelTurn::new(
-            message_id,
+    Ok(StreamedModelTurn {
+        choice,
+        content,
+        message_id: stream.message_id.clone(),
+        reasoning_content,
+        usage: stream.usage(),
+    })
+}
+
+pub(crate) async fn request_turn(
+    request: RigTurnRequest<'_>,
+) -> Result<RigTurnResult, RigTurnError> {
+    let names = tool_names(&request.tools);
+    let PreparedTurn {
+        mut run,
+        mut prompt,
+        mut history,
+    } = prepare_turn(request.messages, request.tool_rounds, &names)?;
+    let rig_client = openai::CompletionsClient::builder()
+        .api_key(request.api_key.unwrap_or("fineshell-local"))
+        .base_url(request.base_url)
+        .http_client(request.client.clone())
+        .build()
+        .map_err(|error| RigTurnError::protocol(format!("创建 AI 客户端失败：{error}")))?;
+    let model = rig_client.completion_model(request.model);
+    let round_index = request.tool_rounds.len();
+    let stream_context = ModelTurnStreamContext {
+        tools: &request.tools,
+        names: &names,
+        app: request.app,
+        request_id: request.request_id,
+        round_index,
+    };
+    let (mut content, reasoning_content) = loop {
+        let streamed = stream_model_turn(
+            &model,
+            prompt,
+            history,
+            &stream_context,
+            request.cancellation,
+        )
+        .await?;
+        let StreamedModelTurn {
             choice,
+            content,
+            message_id,
+            reasoning_content,
             usage,
-            names.clone(),
-            names,
-        ))
-        .map_err(|error| RigTurnError::protocol(error.to_string()))?
-    {
-        ModelTurnOutcome::Continue { .. } => {}
-        ModelTurnOutcome::NeedsResolution(_) => {
-            return Err(RigTurnError::protocol("AI 返回了未启用的工具调用"));
+        } = streamed;
+        match run
+            .model_response(ModelTurn::new(
+                message_id,
+                choice,
+                usage,
+                names.clone(),
+                names.clone(),
+            ))
+            .map_err(|error| RigTurnError::protocol(error.to_string()))?
+        {
+            ModelTurnOutcome::Continue { .. } => break (content, reasoning_content),
+            ModelTurnOutcome::NeedsResolution(context) => {
+                retry_invalid_tool_call(&mut run, &context)?;
+                match run
+                    .next_step()
+                    .map_err(|error| RigTurnError::protocol(error.to_string()))?
+                {
+                    AgentRunStep::CallModel {
+                        prompt: next_prompt,
+                        history: next_history,
+                        ..
+                    } => {
+                        prompt = next_prompt;
+                        history = next_history;
+                    }
+                    _ => {
+                        return Err(RigTurnError::protocol("AI Agent 未进入工具调用纠正回合"));
+                    }
+                }
+            }
+            ModelTurnOutcome::TurnRetried => {
+                return Err(RigTurnError::protocol("AI 工具调用状态无效"));
+            }
         }
-        ModelTurnOutcome::TurnRetried => {
-            return Err(RigTurnError::protocol("AI 返回的工具调用需要重试"));
-        }
-    }
+    };
     let tool_calls = match run
         .next_step()
         .map_err(|error| RigTurnError::protocol(error.to_string()))?
     {
         AgentRunStep::CallTools { calls } => calls
             .into_iter()
-            .map(|call| AiToolCall {
-                id: call.tool_call.id,
+            .enumerate()
+            .map(|(call_index, call)| AiToolCall {
+                id: agent_tool_call_id(request.request_id, round_index, call_index),
                 name: call.tool_call.function.name,
                 arguments: call.tool_call.function.arguments.to_string(),
             })
@@ -573,6 +791,7 @@ pub(crate) async fn request_turn(
     };
     Ok(RigTurnResult {
         content,
+        reasoning_content,
         tool_calls,
     })
 }
@@ -581,10 +800,51 @@ pub(crate) async fn request_turn(
 mod tests {
     use std::collections::BTreeSet;
 
+    use rig_core::{
+        agent::{AgentRun, AgentRunStep, InvalidToolCallContext, ModelTurn, ModelTurnOutcome},
+        completion::{Message, Usage},
+        message::{AssistantContent, ToolCall, ToolFunction},
+        OneOrMany,
+    };
     use serde_json::json;
 
-    use super::{parse_dsml_response, prepare_turn, tool_definitions, DsmlStreamFilter};
+    use super::{
+        extract_reasoning_content, invalid_tool_retry_feedback, parse_dsml_response, prepare_turn,
+        reasoning_stream_delta, retry_invalid_tool_call, tool_definitions, DsmlStreamFilter,
+        StreamKind, StreamPayload,
+    };
     use crate::ai::{AiChatMessage, AiToolCall, AiToolResult, AiToolRound};
+
+    fn unknown_tool_context(
+        run: &mut AgentRun,
+        tool_name: &str,
+        allowed_tools: BTreeSet<String>,
+    ) -> InvalidToolCallContext {
+        let choice = OneOrMany::one(AssistantContent::ToolCall(ToolCall::new(
+            "unknown-call".to_string(),
+            ToolFunction::new(tool_name.to_string(), json!({})),
+        )));
+        match run
+            .model_response(ModelTurn::new(
+                None,
+                choice,
+                Usage::new(),
+                allowed_tools.clone(),
+                allowed_tools,
+            ))
+            .unwrap()
+        {
+            ModelTurnOutcome::NeedsResolution(context) => context,
+            _ => panic!("unknown tool must require resolution"),
+        }
+    }
+
+    fn expect_model_turn(run: &mut AgentRun) {
+        assert!(matches!(
+            run.next_step().unwrap(),
+            AgentRunStep::CallModel { .. }
+        ));
+    }
 
     #[test]
     fn converts_openai_tool_definitions_for_rig() {
@@ -603,6 +863,53 @@ mod tests {
     }
 
     #[test]
+    fn retries_one_unknown_tool_without_executing_it() {
+        let mut run = AgentRun::new("inspect")
+            .max_turns(2)
+            .max_invalid_tool_call_retries(1);
+        expect_model_turn(&mut run);
+        let context = unknown_tool_context(
+            &mut run,
+            "invented_tool",
+            BTreeSet::from(["get_server_status".to_string()]),
+        );
+
+        assert!(invalid_tool_retry_feedback(&context).contains("get_server_status"));
+        retry_invalid_tool_call(&mut run, &context).unwrap();
+        expect_model_turn(&mut run);
+    }
+
+    #[test]
+    fn asks_for_plain_text_when_no_tools_are_available() {
+        let mut run = AgentRun::new("summarize")
+            .max_turns(2)
+            .max_invalid_tool_call_retries(1);
+        expect_model_turn(&mut run);
+        let context = unknown_tool_context(&mut run, "stale_tool", BTreeSet::new());
+
+        let feedback = invalid_tool_retry_feedback(&context);
+        assert!(feedback.contains("No tools are available"));
+        assert!(feedback.contains("plain-text final answer"));
+        retry_invalid_tool_call(&mut run, &context).unwrap();
+        expect_model_turn(&mut run);
+    }
+
+    #[test]
+    fn reports_a_clear_error_after_the_unknown_tool_retry_is_exhausted() {
+        let mut run = AgentRun::new("inspect")
+            .max_turns(2)
+            .max_invalid_tool_call_retries(1);
+        expect_model_turn(&mut run);
+        let first = unknown_tool_context(&mut run, "first_unknown", BTreeSet::new());
+        retry_invalid_tool_call(&mut run, &first).unwrap();
+        expect_model_turn(&mut run);
+        let repeated = unknown_tool_context(&mut run, "second_unknown", BTreeSet::new());
+
+        let error = retry_invalid_tool_call(&mut run, &repeated).unwrap_err();
+        assert_eq!(error.message, "AI 连续调用不可用工具：second_unknown");
+    }
+
+    #[test]
     fn parses_canonical_dsml_tool_calls() {
         let parsed = parse_dsml_response(
             r#"先检查配置。
@@ -614,6 +921,7 @@ mod tests {
 </｜DSML｜invoke>
 </｜DSML｜tool_calls>"#,
             "request-1",
+            0,
         )
         .unwrap()
         .unwrap();
@@ -636,6 +944,7 @@ mod tests {
         let parsed = parse_dsml_response(
             r#"<||DSML||tool_calls><||DSML||invoke name="get_server_status"><||DSML||parameter name="scope" string="true">network</||DSML||parameter></||DSML||invoke></||DSML||tool_calls>"#,
             "request-2",
+            0,
         )
         .unwrap()
         .unwrap();
@@ -654,6 +963,7 @@ mod tests {
         let parsed = parse_dsml_response(
             r#"< | | DSML | | tool_calls>< | | DSML | | invoke name="read_status">< | | DSML | | parameter name="scope" string="true">network</ | | DSML | | parameter></ | | DSML | | invoke></ | | DSML | | tool_calls>"#,
             "request-spaced",
+            0,
         )
         .unwrap()
         .unwrap();
@@ -682,10 +992,42 @@ mod tests {
     }
 
     #[test]
+    fn emits_only_new_reasoning_when_a_provider_repeats_the_complete_value() {
+        let mut accumulated = String::new();
+
+        assert_eq!(
+            reasoning_stream_delta(&mut accumulated, "检查配置"),
+            "检查配置"
+        );
+        assert_eq!(
+            reasoning_stream_delta(&mut accumulated, "检查配置并读取进程"),
+            "并读取进程"
+        );
+        assert_eq!(
+            reasoning_stream_delta(&mut accumulated, "检查配置并读取进程"),
+            ""
+        );
+    }
+
+    #[test]
+    fn serializes_reasoning_as_a_distinct_stream_event_kind() {
+        let payload = serde_json::to_value(StreamPayload {
+            request_id: "request-1".to_string(),
+            delta: "检查配置".to_string(),
+            kind: StreamKind::Reasoning,
+        })
+        .unwrap();
+
+        assert_eq!(payload["requestId"], "request-1");
+        assert_eq!(payload["kind"], "reasoning");
+    }
+
+    #[test]
     fn rejects_duplicate_dsml_parameters() {
         let result = parse_dsml_response(
             r#"<｜DSML｜tool_calls><｜DSML｜invoke name="read_status"><｜DSML｜parameter name="scope" string="true">one</｜DSML｜parameter><｜DSML｜parameter name="scope" string="true">two</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"#,
             "request-3",
+            0,
         );
         let error = match result {
             Err(error) => error,
@@ -693,6 +1035,23 @@ mod tests {
         };
 
         assert!(error.message.contains("重复"));
+    }
+
+    #[test]
+    fn scopes_compatibility_tool_call_ids_to_the_agent_round() {
+        let response = r#"<｜DSML｜tool_calls><｜DSML｜invoke name="get_server_status"><｜DSML｜parameter name="scope" string="true">all</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"#;
+        let first = parse_dsml_response(response, "request-stable", 0)
+            .unwrap()
+            .unwrap();
+        let retried = parse_dsml_response(response, "request-stable", 0)
+            .unwrap()
+            .unwrap();
+        let next = parse_dsml_response(response, "request-stable", 1)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(first.calls[0].id, retried.calls[0].id);
+        assert_ne!(first.calls[0].id, next.calls[0].id);
     }
 
     #[test]
@@ -715,6 +1074,7 @@ mod tests {
                     arguments: "{}".to_string(),
                 }],
                 content: None,
+                reasoning_content: Some("hidden provider reasoning".to_string()),
                 results: vec![AiToolResult {
                     call_id: "call-1".to_string(),
                     name: "get_server_status".to_string(),
@@ -726,5 +1086,71 @@ mod tests {
         .unwrap();
 
         assert_eq!(prepared.history.len(), 3);
+        let Some(content) = prepared.history.iter().find_map(|message| match message {
+            Message::Assistant { content, .. } => Some(content),
+            _ => None,
+        }) else {
+            panic!("restored tool call must be an assistant message");
+        };
+        assert!(content.iter().any(|item| matches!(
+            item,
+            AssistantContent::Reasoning(reasoning)
+                if reasoning.display_text() == "hidden provider reasoning"
+        )));
+    }
+
+    #[test]
+    fn extracts_streamed_reasoning_for_a_tool_round() {
+        let choice = OneOrMany::many(vec![
+            AssistantContent::reasoning("inspect config"),
+            AssistantContent::reasoning("then compare processes"),
+            AssistantContent::ToolCall(ToolCall::new(
+                "call-1".to_string(),
+                ToolFunction::new("get_server_status".to_string(), json!({})),
+            )),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            extract_reasoning_content(&choice).as_deref(),
+            Some("inspect config\nthen compare processes")
+        );
+    }
+
+    #[test]
+    fn derives_the_rig_turn_budget_from_all_restored_rounds() {
+        let rounds = (0..12)
+            .map(|index| AiToolRound {
+                calls: vec![AiToolCall {
+                    id: format!("call-{index}"),
+                    name: "get_server_status".to_string(),
+                    arguments: "{}".to_string(),
+                }],
+                content: None,
+                reasoning_content: None,
+                results: vec![AiToolResult {
+                    call_id: format!("call-{index}"),
+                    name: "get_server_status".to_string(),
+                    content: format!(r#"{{"ok":true,"round":{index}}}"#),
+                }],
+            })
+            .collect::<Vec<_>>();
+        let prepared = prepare_turn(
+            vec![
+                AiChatMessage {
+                    role: "system".to_string(),
+                    content: "system".to_string(),
+                },
+                AiChatMessage {
+                    role: "user".to_string(),
+                    content: "inspect".to_string(),
+                },
+            ],
+            &rounds,
+            &BTreeSet::from(["get_server_status".to_string()]),
+        )
+        .unwrap();
+
+        assert_eq!(prepared.history.len(), 25);
     }
 }
