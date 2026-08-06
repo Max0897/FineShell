@@ -99,13 +99,32 @@ fn valid_content(content: &str) -> bool {
     content.chars().count() <= MAX_FILE_EDIT_CHARS && !content.contains('\0')
 }
 
-pub(crate) fn valid_command(command: &str) -> bool {
+pub(crate) fn validate_command(command: &str) -> Result<&str, String> {
     let command = command.trim();
-    !command.is_empty()
-        && command.chars().count() <= MAX_TERMINAL_COMMAND_CHARS
-        && !command.chars().any(|character| {
-            character == '\r' || character == '\n' || (character.is_control() && character != '\t')
-        })
+    if command.is_empty() {
+        return Err("AI 终端命令不能为空".to_string());
+    }
+    if command.chars().count() > MAX_TERMINAL_COMMAND_CHARS {
+        return Err(format!(
+            "AI 终端命令不能超过 {MAX_TERMINAL_COMMAND_CHARS} 个字符"
+        ));
+    }
+    if command.contains(['\r', '\n']) {
+        return Err(
+            "AI 终端命令必须是单行命令；多行脚本应使用文件操作工具创建后再执行".to_string(),
+        );
+    }
+    if command
+        .chars()
+        .any(|character| character.is_control() && character != '\t')
+    {
+        return Err("AI 终端命令包含不支持的控制字符".to_string());
+    }
+    Ok(command)
+}
+
+pub(crate) fn valid_command(command: &str) -> bool {
+    validate_command(command).is_ok()
 }
 
 fn normalize_purpose(purpose: &str) -> Result<String, String> {
@@ -306,9 +325,8 @@ pub(crate) fn proposal_action_intent(
             let command = arguments
                 .get("command")
                 .and_then(Value::as_str)
-                .filter(|command| valid_command(command))
-                .map(str::trim)
                 .ok_or_else(|| "AI 终端命令无效".to_string())?;
+            let command = validate_command(command)?;
             let purpose = normalize_purpose(
                 arguments
                     .get("purpose")
@@ -379,7 +397,7 @@ pub(crate) fn proposal_action_intent(
 mod tests {
     use serde_json::json;
 
-    use super::{proposal_action_intent, TERMINAL_EXECUTE_ACTION_TOOL};
+    use super::{proposal_action_intent, validate_command, TERMINAL_EXECUTE_ACTION_TOOL};
     use crate::agent::AgentActionRisk;
 
     #[test]
@@ -518,5 +536,16 @@ mod tests {
             r#"{"service":"nginx; reboot","action":"restart"}"#,
         )
         .is_err());
+    }
+
+    #[test]
+    fn explains_why_terminal_commands_are_invalid() {
+        assert!(validate_command("   ").unwrap_err().contains("不能为空"));
+        assert!(validate_command("printf ok\nprintf unsafe")
+            .unwrap_err()
+            .contains("单行命令"));
+        assert!(validate_command("printf '\u{7}'")
+            .unwrap_err()
+            .contains("控制字符"));
     }
 }

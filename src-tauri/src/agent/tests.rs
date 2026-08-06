@@ -16,6 +16,8 @@ use crate::agent_verification::AgentBusinessVerificationResult;
 
 fn context() -> AgentTaskContext {
     AgentTaskContext {
+        context_version: super::AGENT_CONTEXT_VERSION,
+        context_captured_at: super::timestamp_ms(),
         id: "task-1".to_string(),
         conversation_id: "conversation-1".to_string(),
         host_id: "host-1".to_string(),
@@ -1097,6 +1099,53 @@ fn task_scope_is_immutable_across_model_turns() {
     assert_eq!(
         manager.begin_model_turn(&changed).unwrap_err(),
         "AI 任务作用域与已有任务不一致"
+    );
+}
+
+#[test]
+fn task_context_rejects_unsupported_or_stale_snapshots() {
+    let manager = AgentTaskManager::default();
+    let mut unsupported = context();
+    unsupported.context_version = super::AGENT_CONTEXT_VERSION + 1;
+    assert_eq!(
+        manager.begin_model_turn(&unsupported).unwrap_err(),
+        "AI 任务上下文版本不受支持，请重新发起任务"
+    );
+
+    let mut stale = context();
+    stale.context_captured_at =
+        super::timestamp_ms().saturating_sub(super::MAX_AGENT_CONTEXT_AGE_MS + 1);
+    assert_eq!(
+        manager.begin_model_turn(&stale).unwrap_err(),
+        "AI 任务上下文已过期，请重新发起任务"
+    );
+}
+
+#[test]
+fn model_turn_refreshes_execution_context_timestamp() {
+    let manager = AgentTaskManager::default();
+    let initial = context();
+    manager.begin_model_turn(&initial).unwrap();
+    let mut refreshed = initial.clone();
+    refreshed.context_captured_at = refreshed.context_captured_at.saturating_add(1);
+    manager.begin_model_turn(&refreshed).unwrap();
+    manager
+        .register_actions("task-1", vec![terminal_command_intent()])
+        .unwrap();
+
+    assert_eq!(
+        manager
+            .validate_action_execution_context("task-1", "command-1")
+            .unwrap(),
+        "session-1"
+    );
+    assert_eq!(
+        manager
+            .get_task("task-1")
+            .unwrap()
+            .unwrap()
+            .context_captured_at,
+        refreshed.context_captured_at
     );
 }
 

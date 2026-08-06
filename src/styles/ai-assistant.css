@@ -1640,3 +1640,10 @@
   font-size: 12px;
   line-height: 18px;
 }
+
+.ai-token-budget-tooltip-heading {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--color-border-2);
+  font-weight: 500;
+}

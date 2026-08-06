@@ -65,6 +65,8 @@ pub(super) fn supported_tool(name: &str) -> bool {
             | "list_processes"
             | "get_current_directory"
             | "get_network_connections"
+            | "inspect_service"
+            | "read_service_logs"
             | "ping_target"
             | "trace_route"
             | "propose_terminal_command"
@@ -96,6 +98,8 @@ pub(super) fn enabled_diagnostic_tools(
             "list_processes",
             "get_current_directory",
             "get_network_connections",
+            "inspect_service",
+            "read_service_logs",
             "ping_target",
             "trace_route",
         ]
@@ -103,7 +107,7 @@ pub(super) fn enabled_diagnostic_tools(
         .map(str::to_string)
         .collect());
     }
-    if values.len() > 6 {
+    if values.len() > 8 {
         return Err("AI 只读工具权限数量无效".to_string());
     }
     let mut enabled = HashSet::new();
@@ -154,6 +158,41 @@ pub(super) fn valid_network_target(target: &str) -> bool {
         && target.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | ':')
         })
+}
+
+pub(super) fn valid_service_name(service: &str) -> bool {
+    let service = service.trim();
+    !service.is_empty()
+        && service.len() <= 128
+        && !service.starts_with('-')
+        && service.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | '@' | ':')
+        })
+}
+
+fn valid_service_diagnostic_metadata(
+    arguments: &serde_json::Map<String, Value>,
+    allow_lines: bool,
+) -> bool {
+    let Some(service) = arguments.get("service").and_then(Value::as_str) else {
+        return false;
+    };
+    if !valid_service_name(service) {
+        return false;
+    }
+    if allow_lines
+        && arguments.get("lines").is_some_and(|value| {
+            !value
+                .as_u64()
+                .is_some_and(|lines| (1..=200).contains(&lines))
+        })
+    {
+        return false;
+    }
+    let mut metadata = arguments.clone();
+    metadata.remove("service");
+    metadata.remove("lines");
+    valid_diagnostic_metadata(&metadata, false)
 }
 
 pub(super) fn valid_diagnostic_metadata(
@@ -219,6 +258,7 @@ pub(super) fn diagnostic_call_identity(call: &AiToolCall) -> Option<String> {
     let arguments = serde_json::from_str::<Value>(&call.arguments).ok()?;
     let target = arguments
         .get("target")
+        .or_else(|| arguments.get("service"))
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_ascii_lowercase();
@@ -269,6 +309,8 @@ pub(super) fn valid_tool_arguments(name: &str, arguments: &str) -> bool {
         | "list_processes"
         | "get_current_directory"
         | "get_network_connections" => valid_diagnostic_metadata(&arguments, false),
+        "inspect_service" => valid_service_diagnostic_metadata(&arguments, false),
+        "read_service_logs" => valid_service_diagnostic_metadata(&arguments, true),
         "ping_target" | "trace_route" => valid_diagnostic_metadata(&arguments, true),
         "propose_file_edit" => {
             arguments.len() == 2
@@ -331,16 +373,7 @@ pub(super) fn valid_tool_arguments(name: &str, arguments: &str) -> bool {
                 && arguments
                     .get("command")
                     .and_then(Value::as_str)
-                    .is_some_and(|command| {
-                        let command = command.trim();
-                        !command.is_empty()
-                            && command.chars().count() <= MAX_TERMINAL_COMMAND_CHARS
-                            && !command.chars().any(|character| {
-                                character == '\r'
-                                    || character == '\n'
-                                    || (character.is_control() && character != '\t')
-                            })
-                    })
+                    .is_some_and(crate::agent_actions::valid_command)
                 && arguments
                     .get("purpose")
                     .and_then(Value::as_str)
@@ -366,6 +399,67 @@ pub(super) fn valid_tool_arguments(name: &str, arguments: &str) -> bool {
         }
         _ => false,
     }
+}
+
+fn tool_call_argument_error(call: &AiToolCall) -> Option<String> {
+    if call.arguments.chars().count() > MAX_TOOL_ARGUMENT_CHARS {
+        return Some("AI 工具调用参数超过长度限制".to_string());
+    }
+    if diagnostic_tool(&call.name) {
+        return (!valid_tool_arguments(&call.name, &call.arguments))
+            .then(|| "AI 只读工具参数不符合工具定义".to_string());
+    }
+    proposal_action_intent(&call.id, &call.name, &call.arguments)
+        .err()
+        .or_else(|| {
+            (!valid_tool_arguments(&call.name, &call.arguments))
+                .then(|| "AI 动作工具参数不符合工具定义".to_string())
+        })
+}
+
+pub(super) fn invalid_tool_call_round(
+    calls: &[AiToolCall],
+    content: &str,
+    reasoning_content: Option<&str>,
+) -> Option<AiToolRound> {
+    let mut errors = calls
+        .iter()
+        .map(tool_call_argument_error)
+        .collect::<Vec<_>>();
+    let plan_error = validate_diagnostic_plan_calls(calls).err();
+    if errors.iter().all(Option::is_none) && plan_error.is_none() {
+        return None;
+    }
+
+    let retry_instruction = "Correct the tool arguments and return the complete tool call set again. Do not claim that any rejected call was executed.";
+    let results = calls
+        .iter()
+        .zip(errors.iter_mut())
+        .map(|(call, error)| {
+            let error = error
+                .take()
+                .or_else(|| plan_error.clone())
+                .unwrap_or_else(|| "同一响应中包含无效工具调用，因此本调用未执行".to_string());
+            AiToolResult {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                content: json!({
+                    "ok": false,
+                    "error": sanitize_context(&error).chars().take(300).collect::<String>(),
+                    "retryable": true,
+                    "instruction": retry_instruction,
+                })
+                .to_string(),
+            }
+        })
+        .collect();
+
+    Some(AiToolRound {
+        calls: calls.to_vec(),
+        content: (!content.trim().is_empty()).then(|| content.trim().to_string()),
+        reasoning_content: reasoning_content.map(str::to_string),
+        results,
+    })
 }
 
 pub(super) fn validate_tool_rounds(

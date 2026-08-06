@@ -185,6 +185,26 @@ pub(crate) struct ServerProcessListResult {
     truncated: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServiceInspectionResult {
+    service: String,
+    description: Option<String>,
+    load_state: String,
+    active_state: String,
+    sub_state: String,
+    unit_file_state: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServiceLogsResult {
+    service: String,
+    lines: u16,
+    output: String,
+    truncated: bool,
+}
+
 fn parse_number<T: std::str::FromStr>(value: Option<&str>, field: &str) -> Result<T, String> {
     value
         .map(str::trim)
@@ -232,6 +252,20 @@ fn validate_ping_target(target: &str) -> Result<&str, String> {
         return Err("Ping 目标格式无效".to_string());
     }
     Ok(target)
+}
+
+fn validate_service_name(service: &str) -> Result<&str, String> {
+    let service = service.trim();
+    if service.is_empty()
+        || service.len() > 128
+        || service.starts_with('-')
+        || !service.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | '@' | ':')
+        })
+    {
+        return Err("systemd 服务名称格式无效".to_string());
+    }
+    Ok(service)
 }
 
 fn parse_packet_count(value: &str) -> Option<u32> {
@@ -633,6 +667,79 @@ pub(crate) fn collect_processes(session: &Session) -> Result<ServerProcessListRe
     Ok(parse_process_list(&output))
 }
 
+pub(crate) fn inspect_service(
+    session: &Session,
+    service: &str,
+) -> Result<ServiceInspectionResult, String> {
+    let service = validate_service_name(service)?;
+    let command = format!(
+        "LC_ALL=C\nif ! command -v systemctl >/dev/null 2>&1; then printf '__FINESHELL_SYSTEMCTL_MISSING__\\n'; exit 127; fi\nsystemctl show --no-pager --property=Description,LoadState,ActiveState,SubState,UnitFileState {service} 2>&1"
+    );
+    let (output, exit_status) = execute_remote_command(session, &command, "服务状态检查")?;
+    parse_service_inspection(service, &output, exit_status)
+}
+
+fn parse_service_inspection(
+    service: &str,
+    output: &str,
+    exit_status: i32,
+) -> Result<ServiceInspectionResult, String> {
+    if exit_status == 127 || output.contains("__FINESHELL_SYSTEMCTL_MISSING__") {
+        return Err("远程服务器未安装 systemctl 命令".to_string());
+    }
+    if exit_status != 0 {
+        return Err(format!("服务状态检查命令异常退出：{exit_status}"));
+    }
+    let values = output
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect::<std::collections::HashMap<_, _>>();
+    let state = |key: &str| {
+        values
+            .get(key)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    Ok(ServiceInspectionResult {
+        service: service.to_string(),
+        description: state("Description"),
+        load_state: state("LoadState").unwrap_or_else(|| "unknown".to_string()),
+        active_state: state("ActiveState").unwrap_or_else(|| "unknown".to_string()),
+        sub_state: state("SubState").unwrap_or_else(|| "unknown".to_string()),
+        unit_file_state: state("UnitFileState"),
+    })
+}
+
+pub(crate) fn read_service_logs(
+    session: &Session,
+    service: &str,
+    lines: u16,
+) -> Result<ServiceLogsResult, String> {
+    let service = validate_service_name(service)?;
+    let lines = lines.clamp(1, 200);
+    let command = format!(
+        "LC_ALL=C\nif ! command -v journalctl >/dev/null 2>&1; then printf '__FINESHELL_JOURNALCTL_MISSING__\\n'; exit 127; fi\njournalctl --no-pager --output=short-iso -n {lines} -u {service} 2>&1"
+    );
+    let (output, exit_status) = execute_remote_command(session, &command, "服务日志读取")?;
+    if exit_status == 127 || output.contains("__FINESHELL_JOURNALCTL_MISSING__") {
+        return Err("远程服务器未安装 journalctl 命令".to_string());
+    }
+    if exit_status != 0 {
+        return Err(format!("服务日志读取命令异常退出：{exit_status}"));
+    }
+    let mut bounded = output.chars().take(32_001).collect::<String>();
+    let truncated = bounded.chars().count() > 32_000;
+    if truncated {
+        bounded = bounded.chars().take(32_000).collect();
+    }
+    Ok(ServiceLogsResult {
+        service: service.to_string(),
+        lines,
+        output: bounded,
+        truncated,
+    })
+}
+
 fn process_list_error(output: &str, exit_status: i32) -> Option<String> {
     let has_marker = |marker: &str| output.lines().any(|line| line.trim() == marker);
     if has_marker("__FINESHELL_PS_MISSING__") {
@@ -674,9 +781,10 @@ pub(crate) fn signal_process(session: &Session, pid: u32, force: bool) -> Result
 mod tests {
     use super::{
         parse_monitor_output, parse_network_connections, parse_ping_output, parse_process_list,
-        parse_trace_output, process_list_error, process_signal_command, validate_ping_target,
-        NetworkConnection, NetworkConnectionsResult, NetworkPingResult, NetworkRouteHop,
-        NetworkTraceResult, ServerMonitorSnapshot, ServerProcess, ServerProcessListResult,
+        parse_service_inspection, parse_trace_output, process_list_error, process_signal_command,
+        validate_ping_target, validate_service_name, NetworkConnection, NetworkConnectionsResult,
+        NetworkPingResult, NetworkRouteHop, NetworkTraceResult, ServerMonitorSnapshot,
+        ServerProcess, ServerProcessListResult, ServiceInspectionResult,
     };
 
     #[test]
@@ -763,6 +871,29 @@ rtt min/avg/max/mdev = 4.800/5.100/5.400/0.245 ms
         assert!(validate_ping_target("2001:db8::1").is_ok());
         assert!(validate_ping_target("-c 100").is_err());
         assert!(validate_ping_target("example.com; reboot").is_err());
+    }
+
+    #[test]
+    fn validates_service_names_and_parses_structured_status() {
+        assert!(validate_service_name("nginx.service").is_ok());
+        assert!(validate_service_name("user@1000.service").is_ok());
+        assert!(validate_service_name("nginx.service; reboot").is_err());
+        assert_eq!(
+            parse_service_inspection(
+                "nginx.service",
+                "Description=Nginx\nLoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled\n",
+                0,
+            )
+            .unwrap(),
+            ServiceInspectionResult {
+                service: "nginx.service".to_string(),
+                description: Some("Nginx".to_string()),
+                load_state: "loaded".to_string(),
+                active_state: "active".to_string(),
+                sub_state: "running".to_string(),
+                unit_file_state: Some("enabled".to_string()),
+            }
+        );
     }
 
     #[test]

@@ -111,6 +111,8 @@ function agentTask(
   return {
     activeStepId: null,
     approvalMode: "on_request",
+    contextCapturedAt: Date.now(),
+    contextVersion: 1,
     conversationId: "conversation-1",
     currentDirectory: null,
     createdAt: 1,
@@ -260,7 +262,21 @@ describe("useAiRequestOrchestrator", () => {
         const request = args?.request as (typeof requests)[number];
         requests.push(request);
         if (request.toolRounds.length) {
-          return { content: "命令执行成功，当前内存状态正常。", toolCalls: [] };
+          return {
+            content: "命令执行成功，当前内存状态正常。",
+            telemetry: {
+              durationMs: 450,
+              requestCount: 1,
+              usage: {
+                cachedInputTokens: 20,
+                inputTokens: 200,
+                outputTokens: 40,
+                reasoningTokens: 10,
+                totalTokens: 240,
+              },
+            },
+            toolCalls: [],
+          };
         }
         return {
           actionIntents: [
@@ -275,6 +291,17 @@ describe("useAiRequestOrchestrator", () => {
           ],
           content: "需要执行一项终端操作。",
           reasoningContent: "inspect service state before continuing",
+          telemetry: {
+            durationMs: 300,
+            requestCount: 2,
+            usage: {
+              cachedInputTokens: 10,
+              inputTokens: 100,
+              outputTokens: 20,
+              reasoningTokens: 5,
+              totalTokens: 120,
+            },
+          },
           toolCalls: [
             {
               arguments: JSON.stringify({
@@ -349,6 +376,115 @@ describe("useAiRequestOrchestrator", () => {
     expect(callbacks.current().messages[1]?.content).toBe(
       "命令执行成功，当前内存状态正常。",
     );
+    expect(callbacks.current().messages[1]?.telemetry).toEqual({
+      durationMs: 750,
+      requestCount: 3,
+      usage: {
+        cachedInputTokens: 30,
+        inputTokens: 300,
+        outputTokens: 60,
+        reasoningTokens: 15,
+        totalTokens: 360,
+      },
+    });
+    expect(result.current.sending).toBe(false);
+  });
+
+  test("continues the agent turn with bounded revision feedback after approval is rejected", async () => {
+    const requests: Array<{
+      toolRounds: Array<{ results: Array<{ content: string }> }>;
+    }> = [];
+    const invoke = mock(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command !== "ai_chat_start") {
+          throw new Error(`unexpected command: ${command}`);
+        }
+        const request = args?.request as (typeof requests)[number];
+        requests.push(request);
+        if (request.toolRounds.length) {
+          return {
+            content: "已按你的要求调整为只读检查，不会重启服务。",
+            toolCalls: [],
+          };
+        }
+        return {
+          actionIntents: [
+            {
+              arguments: {
+                command: "systemctl restart nginx",
+                purpose: "重启 Nginx",
+              },
+              expectedEffect: "重启 Nginx 服务",
+              id: "command-revision-1",
+              reason: "尝试恢复服务",
+              risk: "elevated",
+              tool: "execute_terminal_command",
+            },
+          ],
+          content: "需要执行一项终端操作。",
+          toolCalls: [
+            {
+              arguments: JSON.stringify({
+                command: "systemctl restart nginx",
+                purpose: "重启 Nginx",
+                risk: "caution",
+                risk_reason: "会重启正在运行的服务",
+              }),
+              id: "command-revision-1",
+              name: "propose_terminal_command",
+            },
+          ],
+        };
+      },
+    ) as unknown as AiRequestInvoke;
+    const callbacks = createConversationCallbacks();
+    const { result } = renderHook(() =>
+      useAiRequestOrchestrator({
+        invoke,
+        listenToStream: async () => () => undefined,
+        persistConversation: async () => undefined,
+        sessionId: "session-1",
+        settings: aiSettings,
+        setDraft: () => undefined,
+        updateConversation: callbacks.updateConversation,
+        updateMessages: callbacks.updateMessages,
+      }),
+    );
+
+    let send!: Promise<AiConversation | undefined>;
+    act(() => {
+      send = result.current.sendMessage(baseSendOptions);
+    });
+    await waitFor(() =>
+      expect(callbacks.current().messages[1]?.commandProposals).toHaveLength(1),
+    );
+
+    act(() => {
+      expect(
+        result.current.decideCommandProposal("command-revision-1", {
+          feedback: "不要重启服务，只检查当前状态",
+          kind: "revision_requested",
+        }),
+      ).toBe(true);
+    });
+    await act(async () => {
+      await send;
+    });
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(requests[1]!.toolRounds[0]!.results[0]!.content)).toEqual(
+      expect.objectContaining({
+        decision: "revision_requested",
+        feedback: "不要重启服务，只检查当前状态",
+        ok: false,
+      }),
+    );
+    expect(callbacks.current().messages[1]).toEqual(
+      expect.objectContaining({
+        content: "已按你的要求调整为只读检查，不会重启服务。",
+        failed: false,
+      }),
+    );
     expect(result.current.sending).toBe(false);
   });
 
@@ -403,6 +539,8 @@ describe("useAiRequestOrchestrator", () => {
       task: {
         approvalMode: string;
         conversationId: string;
+        contextCapturedAt: number;
+        contextVersion: number;
         currentDirectory: string;
         fileOperationDirectory?: string;
         hostId: string;
@@ -418,6 +556,8 @@ describe("useAiRequestOrchestrator", () => {
     expect(request.task).toEqual({
       approvalMode: "auto_safe",
       conversationId: "conversation-1",
+      contextCapturedAt: expect.any(Number),
+      contextVersion: 1,
       currentDirectory: "/root",
       fileOperationDirectory: undefined,
       hostId: "host-1",

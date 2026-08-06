@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { AiRequestTelemetry } from "../tauri-protocol";
 import AiComposer from "./AiComposer";
 
 const textareaStyles = document.createElement("style");
@@ -32,7 +33,9 @@ function renderComposer({
   onChange = mock(() => undefined),
   onSend = mock(() => undefined),
   prompt = "检查系统状态",
+  lastTelemetry,
 }: {
+  lastTelemetry?: AiRequestTelemetry;
   onChange?: ReturnType<typeof mock>;
   onSend?: ReturnType<typeof mock>;
   prompt?: string;
@@ -59,6 +62,7 @@ function renderComposer({
           },
         ]}
         editableRemoteFileCount={1}
+        lastTelemetry={lastTelemetry}
         model="deepseek-chat"
         onApprovalModeChange={() => undefined}
         onCancel={onCancel}
@@ -174,6 +178,31 @@ describe("AiComposer", () => {
         screen.getByRole("button", { name: "发送" }),
       ) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  test("shows actual usage from the previous response in the budget tooltip", async () => {
+    renderComposer({
+      lastTelemetry: {
+        durationMs: 1_250,
+        requestCount: 2,
+        usage: {
+          cachedInputTokens: 100,
+          inputTokens: 1_500,
+          outputTokens: 320,
+          reasoningTokens: 80,
+          totalTokens: 1_820,
+        },
+      },
+    });
+
+    fireEvent.mouseEnter(
+      screen.getByLabelText("本次请求约 2020 Token，上下文占用 25%"),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("上次响应")).not.toBeNull(),
+    );
+    expect(screen.getByText(/实际 1.8k Token/)).not.toBeNull();
+    expect(screen.getByText("2 次请求 · 1.3 秒")).not.toBeNull();
   });
 
   test("places the approval mode selector in the composer footer", () => {

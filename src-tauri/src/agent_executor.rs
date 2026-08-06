@@ -373,6 +373,18 @@ pub(crate) async fn ai_task_action_execute(
     request: AgentActionExecutionRequest,
 ) -> CommandResult<AgentActionExecutionResult> {
     let operation = "ai_task_action_execute";
+    let bound_session_id = task_manager
+        .validate_action_execution_context(&request.task_id, &request.action_id)
+        .map_err(|error| CommandError::from_message(operation, error))?;
+    if !ssh_manager
+        .is_connected(&bound_session_id)
+        .map_err(|error| CommandError::from_message(operation, error))?
+    {
+        return Err(CommandError::from_message(
+            operation,
+            "AI 任务绑定的终端会话已断开，请重新连接后发起新任务",
+        ));
+    }
     let (action, events) = task_manager
         .authorize_action_execution(
             &request.task_id,

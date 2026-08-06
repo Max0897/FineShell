@@ -38,6 +38,7 @@ impl AgentTaskManager {
         if task.status.is_terminal() {
             return Err("AI 任务已经结束".to_string());
         }
+        task.refresh_context(context);
         task.status = AgentTaskStatus::Running;
         task.model_completed = false;
         task.iteration = task.iteration.saturating_add(1);

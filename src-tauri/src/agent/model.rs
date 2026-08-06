@@ -412,6 +412,8 @@ pub(crate) struct AgentTaskDiagnostics {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentTaskContext {
+    pub(super) context_version: u16,
+    pub(super) context_captured_at: u64,
     pub(super) id: String,
     pub(super) conversation_id: String,
     pub(super) host_id: String,
@@ -428,6 +430,10 @@ pub(crate) struct AgentTaskContext {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentTask {
+    #[serde(default = "agent_context_version")]
+    pub(super) context_version: u16,
+    #[serde(default)]
+    pub(super) context_captured_at: u64,
     pub(super) id: String,
     pub(super) conversation_id: String,
     pub(super) host_id: String,

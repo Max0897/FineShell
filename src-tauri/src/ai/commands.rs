@@ -191,6 +191,21 @@ pub(crate) async fn ai_chat_start(
                 }
             }
 
+            if let Some(round) = invalid_tool_call_round(
+                &response.tool_calls,
+                &response.content,
+                response.reasoning_content.as_deref(),
+            ) {
+                if let Some(context) = task_context.as_ref() {
+                    let events = task_manager
+                        .finish_model_turn(context.id(), true)
+                        .map_err(|error| structured(operation, error))?;
+                    agent::emit_task_events(&app, events);
+                }
+                tool_rounds.push(round);
+                continue;
+            }
+
             response.action_intents = response
                 .tool_calls
                 .iter()

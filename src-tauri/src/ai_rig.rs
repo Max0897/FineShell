@@ -297,6 +297,29 @@ pub(crate) struct RigTurnResult {
     pub content: String,
     pub reasoning_content: Option<String>,
     pub tool_calls: Vec<AiToolCall>,
+    pub request_count: u32,
+    pub usage: Option<RigTokenUsage>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RigTokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub reasoning_tokens: u64,
+}
+
+impl From<Usage> for RigTokenUsage {
+    fn from(usage: Usage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+            cached_input_tokens: usage.cached_input_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -715,6 +738,8 @@ pub(crate) async fn request_turn(
         request_id: request.request_id,
         round_index,
     };
+    let mut aggregate_usage = Usage::new();
+    let mut request_count = 0_u32;
     let (mut content, reasoning_content) = loop {
         let streamed = stream_model_turn(
             &model,
@@ -731,6 +756,8 @@ pub(crate) async fn request_turn(
             reasoning_content,
             usage,
         } = streamed;
+        request_count = request_count.saturating_add(1);
+        aggregate_usage += usage;
         match run
             .model_response(ModelTurn::new(
                 message_id,
@@ -793,6 +820,10 @@ pub(crate) async fn request_turn(
         content,
         reasoning_content,
         tool_calls,
+        request_count,
+        usage: aggregate_usage
+            .has_values()
+            .then(|| RigTokenUsage::from(aggregate_usage)),
     })
 }
 

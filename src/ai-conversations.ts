@@ -15,6 +15,7 @@ import {
   type AiCommandRecord,
 } from "./ai-command-proposals";
 import { redactAiContext } from "./ai-utils";
+import type { AiRequestTelemetry, AiTokenUsage } from "./tauri-protocol";
 
 const DATABASE_NAME = "fineshell.ai";
 const DATABASE_VERSION = 1;
@@ -34,6 +35,7 @@ export interface AiConversationMessageRecord {
   id: string;
   role: "user" | "assistant";
   taskId?: string;
+  telemetry?: AiRequestTelemetry;
   toolRuns?: AiToolRun[];
 }
 
@@ -101,6 +103,68 @@ function boundedLineCount(value: unknown) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0
     ? Math.min(value, 1_000_000)
     : undefined;
+}
+
+function boundedNonNegativeInteger(value: unknown, maximum: number) {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0
+    ? Math.min(value, maximum)
+    : undefined;
+}
+
+function sanitizeTokenUsage(value: unknown): AiTokenUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  const inputTokens = boundedNonNegativeInteger(
+    value.inputTokens,
+    Number.MAX_SAFE_INTEGER,
+  );
+  const outputTokens = boundedNonNegativeInteger(
+    value.outputTokens,
+    Number.MAX_SAFE_INTEGER,
+  );
+  const totalTokens = boundedNonNegativeInteger(
+    value.totalTokens,
+    Number.MAX_SAFE_INTEGER,
+  );
+  const cachedInputTokens = boundedNonNegativeInteger(
+    value.cachedInputTokens,
+    Number.MAX_SAFE_INTEGER,
+  );
+  const reasoningTokens = boundedNonNegativeInteger(
+    value.reasoningTokens,
+    Number.MAX_SAFE_INTEGER,
+  );
+  if (
+    inputTokens === undefined ||
+    outputTokens === undefined ||
+    totalTokens === undefined ||
+    cachedInputTokens === undefined ||
+    reasoningTokens === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    cachedInputTokens,
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+    totalTokens,
+  };
+}
+
+function sanitizeRequestTelemetry(
+  value: unknown,
+): AiRequestTelemetry | undefined {
+  if (!isRecord(value)) return undefined;
+  const durationMs = boundedNonNegativeInteger(value.durationMs, 86_400_000);
+  const requestCount = boundedNonNegativeInteger(value.requestCount, 10_000);
+  if (durationMs === undefined || requestCount === undefined) return undefined;
+  return {
+    durationMs,
+    requestCount,
+    usage: sanitizeTokenUsage(value.usage),
+  };
 }
 
 function fileChangeOperation(value: unknown): AiFileChangeOperation {
@@ -312,6 +376,7 @@ function sanitizeMessage(
     ...(role === "assistant"
       ? {
           taskId: boundedText(value.taskId, 160),
+          telemetry: sanitizeRequestTelemetry(value.telemetry),
           toolRuns,
           diagnosticPlans,
           fileChanges,

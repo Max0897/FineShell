@@ -17,6 +17,7 @@ import type {
 import type { AiFileOperationProposal } from "../ai-file-operations";
 import type { AiDiagnosticPlan } from "../ai-diagnostic-plans";
 import type { AiToolRun } from "../ai-tools";
+import type { AiRequestTelemetry } from "../tauri-protocol";
 
 export interface AiMessage {
   commandProposals?: AiCommandProposal[];
@@ -34,6 +35,7 @@ export interface AiMessage {
   reasoning?: string;
   role: "user" | "assistant";
   taskId?: string;
+  telemetry?: AiRequestTelemetry;
   toolRuns?: AiToolRun[];
 }
 

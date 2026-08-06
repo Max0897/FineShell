@@ -22,6 +22,15 @@ impl AgentTaskContext {
     }
 
     pub(super) fn validate(&self) -> Result<(), String> {
+        let now = timestamp_ms();
+        if self.context_version != AGENT_CONTEXT_VERSION {
+            return Err("AI 任务上下文版本不受支持，请重新发起任务".to_string());
+        }
+        if self.context_captured_at > now.saturating_add(MAX_AGENT_CONTEXT_CLOCK_SKEW_MS)
+            || now.saturating_sub(self.context_captured_at) > MAX_AGENT_CONTEXT_AGE_MS
+        {
+            return Err("AI 任务上下文已过期，请重新发起任务".to_string());
+        }
         if !valid_identifier(&self.id)
             || !valid_identifier(&self.conversation_id)
             || !valid_identifier(&self.host_id)
@@ -73,7 +82,8 @@ impl AgentTaskContext {
     }
 
     pub(super) fn matches(&self, task: &AgentTask) -> bool {
-        self.id == task.id
+        self.context_version == task.context_version
+            && self.id == task.id
             && self.conversation_id == task.conversation_id
             && self.host_id == task.host_id
             && self.terminal_session_id == task.terminal_session_id
@@ -89,6 +99,8 @@ impl AgentTask {
     pub(super) fn from_context(context: &AgentTaskContext) -> Self {
         let now = timestamp_ms();
         Self {
+            context_version: context.context_version,
+            context_captured_at: context.context_captured_at,
             id: context.id.clone(),
             conversation_id: context.conversation_id.clone(),
             host_id: context.host_id.clone(),
@@ -114,6 +126,22 @@ impl AgentTask {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    pub(super) fn refresh_context(&mut self, context: &AgentTaskContext) {
+        self.context_captured_at = context.context_captured_at;
+    }
+
+    pub(super) fn validate_execution_context(&self) -> Result<&str, String> {
+        if self.context_version != AGENT_CONTEXT_VERSION {
+            return Err("AI 任务上下文版本不受支持，请重新发起任务".to_string());
+        }
+        if timestamp_ms().saturating_sub(self.context_captured_at) > MAX_AGENT_CONTEXT_AGE_MS {
+            return Err("AI 任务上下文已过期，请重新发起分析".to_string());
+        }
+        self.terminal_session_id
+            .as_deref()
+            .ok_or_else(|| "AI 动作缺少绑定会话".to_string())
     }
 
     pub(super) fn redacted_for_persistence(&self) -> Self {

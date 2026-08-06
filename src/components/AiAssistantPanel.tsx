@@ -753,6 +753,10 @@ function AiAssistantPanel({
     contextPayload,
     settings.aiContextMaxChars,
   );
+  const lastTelemetry = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.telemetry)
+    ?.telemetry;
   const selectedRemoteFiles = remoteFiles.filter((file) =>
     selectedContextIds.includes(aiRemoteFileContextSource(file).id),
   );
@@ -1146,6 +1150,7 @@ function AiAssistantPanel({
           contextSources={availableContextSources}
           editableRemoteFileCount={editableRemoteFiles.length}
           fileEditEligibility={fileEditEligibility ?? undefined}
+          lastTelemetry={lastTelemetry}
           model={settings.aiModel}
           onApprovalModeChange={setApprovalMode}
           onCancel={cancelRequest}

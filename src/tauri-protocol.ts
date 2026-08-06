@@ -264,6 +264,8 @@ export interface AgentTaskDiagnostics {
 }
 
 export interface AgentTaskContext {
+  contextVersion: number;
+  contextCapturedAt: number;
   id: string;
   conversationId: string;
   hostId: string;
@@ -280,6 +282,8 @@ export interface AgentTaskContext {
 }
 
 export interface AgentTask {
+  contextVersion: number;
+  contextCapturedAt: number;
   id: string;
   conversationId: string;
   hostId: string;
@@ -329,6 +333,21 @@ export interface AiChatResult {
   actionIntents?: AgentActionIntent[];
   diagnosticPlans?: AgentPlan[];
   diagnosticToolRounds?: AiToolRound[];
+  telemetry?: AiRequestTelemetry;
+}
+
+export interface AiTokenUsage {
+  cachedInputTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+}
+
+export interface AiRequestTelemetry {
+  durationMs: number;
+  requestCount: number;
+  usage?: AiTokenUsage;
 }
 
 export interface AiToolCall {

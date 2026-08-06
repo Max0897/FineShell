@@ -48,6 +48,8 @@ const TOOL_LABELS: Record<AiReadOnlyToolName, string> = {
   list_processes: "读取进程列表",
   get_current_directory: "读取当前目录",
   get_network_connections: "读取网络连接",
+  inspect_service: "检查服务状态",
+  read_service_logs: "读取服务日志",
   ping_target: "Ping",
   trace_route: "路由追踪",
 };
@@ -207,6 +209,19 @@ export function aiToolResultSummary(
       summary = `连接总数：${finiteNumber(value.total) ?? "-"} · 返回：${finiteNumber(value.returned) ?? connections.length}${stateSummary ? `\n状态：${stateSummary}` : ""}`;
       break;
     }
+    case "inspect_service":
+      summary = [
+        `服务：${boundedSafeText(value.service, 128) ?? "-"}`,
+        `状态：${boundedSafeText(value.activeState, 40) ?? "unknown"} / ${boundedSafeText(value.subState, 40) ?? "unknown"}`,
+        `加载：${boundedSafeText(value.loadState, 40) ?? "unknown"} · 启用：${boundedSafeText(value.unitFileState, 40) ?? "-"}`,
+      ].join("\n");
+      break;
+    case "read_service_logs":
+      summary = [
+        `服务：${boundedSafeText(value.service, 128) ?? "-"}`,
+        boundedSafeText(value.output, 3_500) ?? "暂无日志",
+      ].join("\n");
+      break;
     case "ping_target":
       summary = [
         `目标：${boundedSafeText(value.target, 253) ?? aiToolTarget(call) ?? "-"}`,

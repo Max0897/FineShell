@@ -350,6 +350,52 @@ impl SshSessionManager {
         .map_err(|error| format!("进程采集任务异常结束：{error}"))?
     }
 
+    pub(crate) async fn inspect_service(
+        &self,
+        session_id: &str,
+        service: String,
+    ) -> Result<crate::monitor::ServiceInspectionResult, String> {
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        self.send(
+            session_id,
+            SessionCommand::InspectService {
+                service,
+                response: response_sender,
+            },
+        )?;
+        tauri::async_runtime::spawn_blocking(move || {
+            response_receiver
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|error| format!("等待服务状态失败：{error}"))?
+        })
+        .await
+        .map_err(|error| format!("服务状态检查任务异常结束：{error}"))?
+    }
+
+    pub(crate) async fn service_logs(
+        &self,
+        session_id: &str,
+        service: String,
+        lines: u16,
+    ) -> Result<crate::monitor::ServiceLogsResult, String> {
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        self.send(
+            session_id,
+            SessionCommand::ServiceLogs {
+                service,
+                lines,
+                response: response_sender,
+            },
+        )?;
+        tauri::async_runtime::spawn_blocking(move || {
+            response_receiver
+                .recv_timeout(Duration::from_secs(15))
+                .map_err(|error| format!("等待服务日志失败：{error}"))?
+        })
+        .await
+        .map_err(|error| format!("服务日志读取任务异常结束：{error}"))?
+    }
+
     pub(crate) async fn verify_agent_condition(
         &self,
         session_id: &str,

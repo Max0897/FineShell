@@ -22,20 +22,21 @@ pub(super) struct AiTurnOptions<'a> {
 
 pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult<AiChatResult> {
     let operation = "ai_chat_start";
+    let started_at = Instant::now();
+    let mut failed_provider_attempts = 0_u32;
     let definitions = if options.any_tools_enabled {
-        let value = filter_tool_definitions(
+        filter_tool_definitions(
             tool_definitions(
                 options.tools_enabled,
                 options.file_edit_enabled,
                 options.command_proposal_enabled,
             ),
             options.enabled_tools,
-        );
-        crate::ai_rig::tool_definitions(value).map_err(|error| structured(operation, error))?
+        )
     } else {
-        Vec::new()
+        Value::Array(Vec::new())
     };
-    let request = crate::ai_rig::RigTurnRequest {
+    let request = ProviderTurnRequest {
         app: options.app,
         request_id: options.request_id,
         client: options.client,
@@ -43,20 +44,19 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
         api_key: options.api_key,
         model: options.model,
         messages: options.messages,
-        tool_rounds: options.tool_rounds,
-        tools: definitions,
+        tool_rounds: options.tool_rounds.to_vec(),
+        tool_definitions: definitions,
         cancellation: options.cancellation,
     };
-    let response = match crate::ai_rig::request_turn(request).await {
+    let response = match request_provider_turn(request).await {
         Ok(response) => response,
         Err(error)
             if options.any_tools_enabled
                 && options.allow_tool_fallback
-                && error
-                    .status
-                    .is_some_and(|status| is_tool_unsupported_error(status, &error.message)) =>
+                && error.is_tool_unsupported() =>
         {
-            crate::ai_rig::request_turn(crate::ai_rig::RigTurnRequest {
+            failed_provider_attempts = failed_provider_attempts.saturating_add(1);
+            request_provider_turn(ProviderTurnRequest {
                 app: options.app,
                 request_id: options.request_id,
                 client: options.client,
@@ -64,8 +64,8 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
                 api_key: options.api_key,
                 model: options.model,
                 messages: options.fallback_messages,
-                tool_rounds: &[],
-                tools: Vec::new(),
+                tool_rounds: Vec::new(),
+                tool_definitions: Value::Array(Vec::new()),
                 cancellation: options.cancellation,
             })
             .await
@@ -108,5 +108,12 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
         action_intents: Vec::new(),
         diagnostic_plans: Vec::new(),
         diagnostic_tool_rounds: Vec::new(),
+        telemetry: AiRequestTelemetry {
+            duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            request_count: response
+                .request_count
+                .saturating_add(failed_provider_attempts),
+            usage: response.usage,
+        },
     })
 }

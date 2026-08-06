@@ -5,6 +5,8 @@ pub(super) fn diagnostic_tool_label(name: &str) -> &'static str {
         "get_server_status" => "读取服务器状态",
         "list_processes" => "读取进程列表",
         "get_current_directory" => "读取当前目录",
+        "inspect_service" => "检查服务状态",
+        "read_service_logs" => "读取服务日志",
         "get_network_connections" => "读取网络连接",
         "ping_target" => "Ping",
         "trace_route" => "路由追踪",
@@ -31,6 +33,7 @@ pub(super) fn create_diagnostic_plan(
             let arguments = diagnostic_arguments(call);
             let detail = arguments
                 .get("target")
+                .or_else(|| arguments.get("service"))
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -298,6 +301,23 @@ pub(super) fn tool_summary(call: &AiToolCall, value: &Value) -> String {
             "当前目录：{}",
             value.get("path").and_then(Value::as_str).unwrap_or("-")
         ),
+        "inspect_service" => format!(
+            "{}：{} / {}",
+            value.get("service").and_then(Value::as_str).unwrap_or("-"),
+            value
+                .get("activeState")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            value
+                .get("subState")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ),
+        "read_service_logs" => format!(
+            "已读取 {} 的最近 {} 行日志",
+            value.get("service").and_then(Value::as_str).unwrap_or("-"),
+            value.get("lines").and_then(Value::as_u64).unwrap_or(0)
+        ),
         "get_network_connections" => format!(
             "已返回 {} 条网络连接",
             value.get("returned").and_then(Value::as_u64).unwrap_or(0)
@@ -353,6 +373,35 @@ pub(super) async fn execute_diagnostic_tool(
             .await
             .and_then(bounded_serialized_value)
             .map(network_connections_value),
+        "inspect_service" => {
+            let service = diagnostic_arguments(call)
+                .get("service")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "AI 未提供服务名称".to_string())?
+                .to_string();
+            ssh_manager
+                .inspect_service(session_id, service)
+                .await
+                .and_then(bounded_serialized_value)
+                .map(insert_ok)
+        }
+        "read_service_logs" => {
+            let arguments = diagnostic_arguments(call);
+            let service = arguments
+                .get("service")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "AI 未提供服务名称".to_string())?
+                .to_string();
+            let lines = arguments
+                .get("lines")
+                .and_then(Value::as_u64)
+                .unwrap_or(100) as u16;
+            ssh_manager
+                .service_logs(session_id, service, lines)
+                .await
+                .and_then(bounded_serialized_value)
+                .map(insert_ok)
+        }
         "ping_target" => {
             let target = diagnostic_arguments(call)
                 .get("target")

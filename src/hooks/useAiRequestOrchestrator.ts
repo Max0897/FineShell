@@ -22,6 +22,7 @@ import {
   type AgentTaskRecoveryContext,
   type AgentTaskRecoveryDecision,
   type AiChatResult,
+  type AiRequestTelemetry,
   type AiStreamPayload,
   type AiToolRound,
   type TauriCommand,
@@ -124,6 +125,48 @@ const defaultStreamListener: AiStreamListener = (callback) =>
 
 const defaultTaskListener: AiTaskListener = (callback) =>
   listenProtocolEvent("ai-task", ({ payload }) => callback(payload));
+
+function addSafeIntegers(left: number, right: number) {
+  return Math.min(Number.MAX_SAFE_INTEGER, left + right);
+}
+
+export function mergeAiRequestTelemetry(
+  current: AiRequestTelemetry | undefined,
+  next: AiRequestTelemetry | undefined,
+): AiRequestTelemetry | undefined {
+  if (!next) return current;
+  if (!current) return next;
+  const usage =
+    current.usage || next.usage
+      ? {
+          cachedInputTokens: addSafeIntegers(
+            current.usage?.cachedInputTokens ?? 0,
+            next.usage?.cachedInputTokens ?? 0,
+          ),
+          inputTokens: addSafeIntegers(
+            current.usage?.inputTokens ?? 0,
+            next.usage?.inputTokens ?? 0,
+          ),
+          outputTokens: addSafeIntegers(
+            current.usage?.outputTokens ?? 0,
+            next.usage?.outputTokens ?? 0,
+          ),
+          reasoningTokens: addSafeIntegers(
+            current.usage?.reasoningTokens ?? 0,
+            next.usage?.reasoningTokens ?? 0,
+          ),
+          totalTokens: addSafeIntegers(
+            current.usage?.totalTokens ?? 0,
+            next.usage?.totalTokens ?? 0,
+          ),
+        }
+      : undefined;
+  return {
+    durationMs: addSafeIntegers(current.durationMs, next.durationMs),
+    requestCount: addSafeIntegers(current.requestCount, next.requestCount),
+    usage,
+  };
+}
 
 export function useAiRequestOrchestrator({
   approvalMode = "on_request",
@@ -492,6 +535,7 @@ export function useAiRequestOrchestrator({
       setActiveTask(undefined);
       setSending(true);
       cancelledRequestsRef.current.delete(requestId);
+      let requestTelemetry: AiRequestTelemetry | undefined;
 
       try {
         const requestMessages = [
@@ -525,6 +569,8 @@ export function useAiRequestOrchestrator({
               commandProposalEnabled: terminalProposalEnabled,
               toolRounds,
               task: {
+                contextVersion: 1,
+                contextCapturedAt: Date.now(),
                 id: requestId,
                 conversationId: targetConversationId,
                 hostId: targetHostId,
@@ -541,6 +587,10 @@ export function useAiRequestOrchestrator({
               },
             },
           });
+          requestTelemetry = mergeAiRequestTelemetry(
+            requestTelemetry,
+            result.telemetry,
+          );
           for (const plan of result.diagnosticPlans ?? []) {
             backendDiagnosticPlanTasksRef.current.set(plan.id, requestId);
             updateMessages(targetHostId, targetConversationId, (current) =>
@@ -571,6 +621,7 @@ export function useAiRequestOrchestrator({
                         content: responseParts.join("\n\n"),
                         error: undefined,
                         failed: false,
+                        telemetry: requestTelemetry,
                       }
                     : message,
                 ),
@@ -682,6 +733,7 @@ export function useAiRequestOrchestrator({
                             : proposal,
                         ),
                       failed: true,
+                      telemetry: requestTelemetry,
                       error: cancelled
                         ? "已停止生成"
                         : commandErrorMessage(error),

@@ -123,6 +123,18 @@ pub(super) fn run_session(
                     let _ = response.send(monitor::collect_processes(&session));
                     active = true;
                 }
+                Ok(SessionCommand::InspectService { service, response }) => {
+                    let _ = response.send(monitor::inspect_service(&session, &service));
+                    active = true;
+                }
+                Ok(SessionCommand::ServiceLogs {
+                    service,
+                    lines,
+                    response,
+                }) => {
+                    let _ = response.send(monitor::read_service_logs(&session, &service, lines));
+                    active = true;
+                }
                 Ok(SessionCommand::AgentVerify {
                     verification,
                     response,
