@@ -23,19 +23,18 @@ pub(super) struct AiTurnOptions<'a> {
 pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult<AiChatResult> {
     let operation = "ai_chat_start";
     let definitions = if options.any_tools_enabled {
-        let value = filter_tool_definitions(
+        filter_tool_definitions(
             tool_definitions(
                 options.tools_enabled,
                 options.file_edit_enabled,
                 options.command_proposal_enabled,
             ),
             options.enabled_tools,
-        );
-        crate::ai_rig::tool_definitions(value).map_err(|error| structured(operation, error))?
+        )
     } else {
-        Vec::new()
+        Value::Array(Vec::new())
     };
-    let request = crate::ai_rig::RigTurnRequest {
+    let request = ProviderTurnRequest {
         app: options.app,
         request_id: options.request_id,
         client: options.client,
@@ -44,19 +43,17 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
         model: options.model,
         messages: options.messages,
         tool_rounds: options.tool_rounds,
-        tools: definitions,
+        tool_definitions: definitions,
         cancellation: options.cancellation,
     };
-    let response = match crate::ai_rig::request_turn(request).await {
+    let response = match request_provider_turn(request).await {
         Ok(response) => response,
         Err(error)
             if options.any_tools_enabled
                 && options.allow_tool_fallback
-                && error
-                    .status
-                    .is_some_and(|status| is_tool_unsupported_error(status, &error.message)) =>
+                && error.is_tool_unsupported() =>
         {
-            crate::ai_rig::request_turn(crate::ai_rig::RigTurnRequest {
+            request_provider_turn(ProviderTurnRequest {
                 app: options.app,
                 request_id: options.request_id,
                 client: options.client,
@@ -65,7 +62,7 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
                 model: options.model,
                 messages: options.fallback_messages,
                 tool_rounds: &[],
-                tools: Vec::new(),
+                tool_definitions: Value::Array(Vec::new()),
                 cancellation: options.cancellation,
             })
             .await

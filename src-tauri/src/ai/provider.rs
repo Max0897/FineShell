@@ -1,5 +1,106 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ProviderErrorKind {
+    Authentication,
+    RateLimited,
+    ToolUnsupported,
+    Service,
+    Protocol,
+}
+
+pub(super) struct ProviderTurnRequest<'a> {
+    pub(super) app: &'a AppHandle,
+    pub(super) request_id: &'a str,
+    pub(super) client: &'a Client,
+    pub(super) base_url: &'a str,
+    pub(super) api_key: Option<&'a str>,
+    pub(super) model: &'a str,
+    pub(super) messages: Vec<AiChatMessage>,
+    pub(super) tool_rounds: &'a [AiToolRound],
+    pub(super) tool_definitions: Value,
+    pub(super) cancellation: &'a mut watch::Receiver<bool>,
+}
+
+pub(super) struct ProviderTurnResult {
+    pub(super) content: String,
+    pub(super) reasoning_content: Option<String>,
+    pub(super) tool_calls: Vec<AiToolCall>,
+}
+
+#[derive(Debug)]
+pub(super) struct ProviderTurnError {
+    pub(super) message: String,
+    pub(super) kind: ProviderErrorKind,
+}
+
+impl ProviderTurnError {
+    fn from_rig(error: crate::ai_rig::RigTurnError) -> Self {
+        let kind = classify_provider_error(error.status, &error.message);
+        Self {
+            message: error.message,
+            kind,
+        }
+    }
+
+    pub(super) fn is_tool_unsupported(&self) -> bool {
+        self.kind == ProviderErrorKind::ToolUnsupported
+    }
+}
+
+fn classify_provider_error(status: Option<u16>, message: &str) -> ProviderErrorKind {
+    match status {
+        Some(401 | 403) => ProviderErrorKind::Authentication,
+        Some(429) => ProviderErrorKind::RateLimited,
+        Some(status) if is_tool_unsupported_error(status, message) => {
+            ProviderErrorKind::ToolUnsupported
+        }
+        Some(_) => ProviderErrorKind::Service,
+        None => ProviderErrorKind::Protocol,
+    }
+}
+
+pub(super) async fn request_provider_turn(
+    request: ProviderTurnRequest<'_>,
+) -> Result<ProviderTurnResult, ProviderTurnError> {
+    OpenAiCompatibleProvider::request_turn(request).await
+}
+
+struct OpenAiCompatibleProvider;
+
+impl OpenAiCompatibleProvider {
+    async fn request_turn(
+        request: ProviderTurnRequest<'_>,
+    ) -> Result<ProviderTurnResult, ProviderTurnError> {
+        let tools =
+            crate::ai_rig::tool_definitions(request.tool_definitions).map_err(|message| {
+                ProviderTurnError {
+                    message,
+                    kind: ProviderErrorKind::Protocol,
+                }
+            })?;
+        crate::ai_rig::request_turn(crate::ai_rig::RigTurnRequest {
+            app: request.app,
+            request_id: request.request_id,
+            client: request.client,
+            base_url: request.base_url,
+            api_key: request.api_key,
+            model: request.model,
+            messages: request.messages,
+            tool_rounds: request.tool_rounds,
+            tools,
+            cancellation: request.cancellation,
+        })
+        .await
+        .map(|response| ProviderTurnResult {
+            content: response.content,
+            reasoning_content: response.reasoning_content,
+            tool_calls: response.tool_calls,
+        })
+        .map_err(ProviderTurnError::from_rig)
+    }
+}
+
 pub(super) fn structured(operation: &'static str, error: impl Into<String>) -> CommandError {
     CommandError::from_message(operation, error)
 }
@@ -329,5 +430,34 @@ pub(super) async fn probe_tools(
         }
         Ok(_) => AiCapability::unknown("服务接受了工具参数，但模型未返回工具调用"),
         Err(error) => AiCapability::unknown(format!("工具调用响应格式不兼容：{error}")),
+    }
+}
+
+#[cfg(test)]
+mod adapter_tests {
+    use super::{classify_provider_error, ProviderErrorKind};
+
+    #[test]
+    fn normalizes_openai_compatible_provider_errors() {
+        assert_eq!(
+            classify_provider_error(Some(401), "invalid api key"),
+            ProviderErrorKind::Authentication
+        );
+        assert_eq!(
+            classify_provider_error(Some(429), "rate limit exceeded"),
+            ProviderErrorKind::RateLimited
+        );
+        assert_eq!(
+            classify_provider_error(Some(400), "tool calling is unsupported"),
+            ProviderErrorKind::ToolUnsupported
+        );
+        assert_eq!(
+            classify_provider_error(Some(503), "service unavailable"),
+            ProviderErrorKind::Service
+        );
+        assert_eq!(
+            classify_provider_error(None, "invalid response payload"),
+            ProviderErrorKind::Protocol
+        );
     }
 }
