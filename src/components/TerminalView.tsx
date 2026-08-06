@@ -416,6 +416,9 @@ function TerminalView({
           data: Array.from(new TextEncoder().encode(suffix)),
         }).catch(() => undefined);
       },
+      onSynchronizeInput: (commandLine) => {
+        inputStateRef.current = { reliable: true, value: commandLine };
+      },
     });
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
