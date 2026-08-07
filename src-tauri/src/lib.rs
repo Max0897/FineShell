@@ -113,6 +113,7 @@ pub fn run() {
             ai::ai_task_action_results,
             agent::ai_task_get,
             agent::ai_task_events_since,
+            agent::ai_task_sync,
             agent::ai_task_recovery_decide,
             agent::ai_task_plan_decide,
             agent::ai_task_action_transition,

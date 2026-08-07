@@ -657,14 +657,16 @@ describe("useAiRequestOrchestrator", () => {
     const restoredTask = agentTask("task-restored", "completed", 5);
     const replayedTask = agentTask("task-restored", "failed", 6);
     const invoke = mock(async (command: string) => {
-      if (command === "ai_task_get") return restoredTask;
-      if (command === "ai_task_events_since") {
-        return [{
+      if (command === "ai_task_sync") {
+        return {
+          task: restoredTask,
+          events: [{
           kind: "task_failed",
           protocolVersion: PROTOCOL_VERSION,
           sequence: 6,
           task: replayedTask,
-        }];
+          }],
+        };
       }
       throw new Error(`unexpected command: ${command}`);
     }) as unknown as AiRequestInvoke;
@@ -703,8 +705,9 @@ describe("useAiRequestOrchestrator", () => {
   test("drops a restored task when the terminal session changes", async () => {
     const restoredTask = agentTask("task-restored", "paused", 5);
     const invoke = mock(async (command: string) => {
-      if (command === "ai_task_get") return restoredTask;
-      if (command === "ai_task_events_since") return [];
+      if (command === "ai_task_sync") {
+        return { task: restoredTask, events: [] };
+      }
       throw new Error(`unexpected command: ${command}`);
     }) as unknown as AiRequestInvoke;
     const callbacks = createConversationCallbacks();

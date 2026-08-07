@@ -203,6 +203,9 @@ fn persists_only_redacted_snapshots_and_replays_bounded_events() {
             .collect::<Vec<_>>(),
         vec![2, 3]
     );
+    let sync = restored.sync_task("task-1", 1).unwrap();
+    assert_eq!(sync.task.unwrap().id, "task-1");
+    assert_eq!(sync.events.len(), 2);
     assert_eq!(
         restored.begin_model_turn(&task_context).unwrap_err(),
         "应用重启前的 AI 任务仅供查看，请发起新任务"

@@ -530,6 +530,13 @@ pub(crate) struct AgentTaskEvent {
     pub(super) task: AgentTask,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentTaskSync {
+    pub(super) task: Option<AgentTask>,
+    pub(super) events: Vec<AgentTaskEvent>,
+}
+
 pub(crate) struct AgentTaskManager {
     pub(super) tasks: Mutex<HashMap<String, AgentTask>>,
     pub(super) events: Mutex<HashMap<String, VecDeque<AgentTaskEvent>>>,

@@ -1,5 +1,5 @@
 {
-  "version": 33,
+  "version": 34,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -29,6 +29,7 @@
     "ai_task_action_results": true,
     "ai_task_get": true,
     "ai_task_events_since": true,
+    "ai_task_sync": true,
     "ai_task_recovery_decide": true,
     "ai_task_plan_decide": true,
     "ai_task_action_transition": true,
