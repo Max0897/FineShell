@@ -135,6 +135,8 @@ pub(crate) struct AiChatResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<String>,
     tool_calls: Vec<AiToolCall>,
+    #[serde(skip)]
+    pre_resolved_tool_results: Vec<AiToolResult>,
     action_intents: Vec<AgentActionIntent>,
     diagnostic_plans: Vec<AgentPlan>,
     diagnostic_tool_rounds: Vec<AiToolRound>,

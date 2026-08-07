@@ -26,13 +26,12 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;
 
 use crate::{
-    ai::{AiChatMessage, AiToolCall, AiToolRound},
+    ai::{AiChatMessage, AiToolCall, AiToolResult, AiToolRound},
     protocol::AI_STREAM_EVENT,
 };
 
 const MAX_DSML_TOOL_CALLS: usize = 8;
 const MAX_DSML_ARGUMENT_CHARS: usize = 400_000;
-const MAX_INVALID_TOOL_CALL_RETRIES: usize = 1;
 const DSML_TOOL_CALLS_OPEN: &str = "<|DSML|tool_calls>";
 const DSML_TOOL_CALLS_CLOSE: &str = "</|DSML|tool_calls>";
 const DSML_INVOKE_CLOSE: &str = "</|DSML|invoke>";
@@ -297,6 +296,7 @@ pub(crate) struct RigTurnResult {
     pub content: String,
     pub reasoning_content: Option<String>,
     pub tool_calls: Vec<AiToolCall>,
+    pub pre_resolved_tool_results: Vec<AiToolResult>,
     pub request_count: u32,
     pub usage: Option<RigTokenUsage>,
 }
@@ -426,12 +426,7 @@ fn prepare_turn(
     // history instead of imposing a global turn limit on the task.
     let mut run = AgentRun::new(prompt)
         .with_history(messages)
-        .max_turns(
-            rounds
-                .len()
-                .saturating_add(1 + MAX_INVALID_TOOL_CALL_RETRIES),
-        )
-        .max_invalid_tool_call_retries(MAX_INVALID_TOOL_CALL_RETRIES);
+        .max_turns(rounds.len().saturating_add(1));
 
     for round in rounds {
         match run
@@ -568,15 +563,26 @@ struct ModelTurnStreamContext<'a> {
     round_index: usize,
 }
 
-fn invalid_tool_retry_feedback(context: &InvalidToolCallContext) -> String {
+fn invalid_tool_result(context: &InvalidToolCallContext) -> String {
     if context.allowed_tools.is_empty() {
-        return "No tools are available for this turn. Do not emit function calls or DSML tool markup. Reply with a plain-text final answer using only the evidence already available."
-            .to_string();
+        return serde_json::json!({
+            "ok": false,
+            "error": "No tools are available for this turn",
+            "retryable": true,
+            "instruction": "Do not emit function calls or DSML tool markup. Reply with a plain-text final answer using only the evidence already available."
+        })
+        .to_string();
     }
-    format!(
-        "Your previous tool call is unavailable. You may call only these tools: {}. Retry this turn using an allowed tool, or answer without tools. Do not invent or rename tools.",
-        context.allowed_tools.join(", ")
-    )
+    serde_json::json!({
+        "ok": false,
+        "error": format!("Tool `{}` is unavailable for this turn", invalid_tool_display_name(&context.tool_name)),
+        "retryable": true,
+        "instruction": format!(
+            "You may call only these tools: {}. Retry using an allowed tool, or answer without tools. Do not invent or rename tools.",
+            context.allowed_tools.join(", ")
+        )
+    })
+    .to_string()
 }
 
 fn invalid_tool_display_name(name: &str) -> String {
@@ -592,22 +598,14 @@ fn invalid_tool_display_name(name: &str) -> String {
     }
 }
 
-fn retry_invalid_tool_call(
+fn skip_invalid_tool_call(
     run: &mut AgentRun,
     context: &InvalidToolCallContext,
-) -> Result<(), RigTurnError> {
-    let invalid_name = invalid_tool_display_name(&context.tool_name);
-    match run.resolve_invalid_tool_call(InvalidToolCallHookAction::retry(
-        invalid_tool_retry_feedback(context),
-    )) {
-        Ok(ModelTurnOutcome::TurnRetried) => Ok(()),
-        Ok(_) => Err(RigTurnError::protocol(
-            "AI Agent 未正确恢复不可用的工具调用",
-        )),
-        Err(_) => Err(RigTurnError::protocol(format!(
-            "AI 连续调用不可用工具：{invalid_name}",
-        ))),
-    }
+) -> Result<ModelTurnOutcome, RigTurnError> {
+    run.resolve_invalid_tool_call(InvalidToolCallHookAction::skip(invalid_tool_result(
+        context,
+    )))
+    .map_err(|error| RigTurnError::protocol(error.to_string()))
 }
 
 async fn stream_model_turn<M: CompletionModel>(
@@ -753,8 +751,8 @@ pub(crate) async fn request_turn(
     let names = tool_names(&request.tools);
     let PreparedTurn {
         mut run,
-        mut prompt,
-        mut history,
+        prompt,
+        history,
     } = prepare_turn(request.messages, request.tool_rounds, &names)?;
     let rig_client = openai::CompletionsClient::builder()
         .api_key(request.api_key.unwrap_or("fineshell-local"))
@@ -773,77 +771,82 @@ pub(crate) async fn request_turn(
     };
     let mut aggregate_usage = Usage::new();
     let mut request_count = 0_u32;
-    let (mut content, reasoning_content) = loop {
-        let streamed = stream_model_turn(
-            &model,
-            prompt,
-            history,
-            &stream_context,
-            request.cancellation,
-        )
-        .await?;
-        let StreamedModelTurn {
-            choice,
-            content,
+    let streamed = stream_model_turn(
+        &model,
+        prompt,
+        history,
+        &stream_context,
+        request.cancellation,
+    )
+    .await?;
+    let StreamedModelTurn {
+        choice,
+        mut content,
+        message_id,
+        reasoning_content,
+        usage,
+    } = streamed;
+    request_count = request_count.saturating_add(1);
+    aggregate_usage += usage;
+    let mut outcome = run
+        .model_response(ModelTurn::new(
             message_id,
-            reasoning_content,
+            choice,
             usage,
-        } = streamed;
-        request_count = request_count.saturating_add(1);
-        aggregate_usage += usage;
-        match run
-            .model_response(ModelTurn::new(
-                message_id,
-                choice,
-                usage,
-                names.clone(),
-                names.clone(),
-            ))
-            .map_err(|error| RigTurnError::protocol(error.to_string()))?
-        {
-            ModelTurnOutcome::Continue { .. } => break (content, reasoning_content),
+            names.clone(),
+            names.clone(),
+        ))
+        .map_err(|error| RigTurnError::protocol(error.to_string()))?;
+    loop {
+        match outcome {
+            ModelTurnOutcome::Continue { .. } => break,
             ModelTurnOutcome::NeedsResolution(context) => {
-                retry_invalid_tool_call(&mut run, &context)?;
-                match run
-                    .next_step()
-                    .map_err(|error| RigTurnError::protocol(error.to_string()))?
-                {
-                    AgentRunStep::CallModel {
-                        prompt: next_prompt,
-                        history: next_history,
-                        ..
-                    } => {
-                        prompt = next_prompt;
-                        history = next_history;
-                    }
-                    _ => {
-                        return Err(RigTurnError::protocol("AI Agent 未进入工具调用纠正回合"));
-                    }
-                }
+                outcome = skip_invalid_tool_call(&mut run, &context)?;
             }
             ModelTurnOutcome::TurnRetried => {
                 return Err(RigTurnError::protocol("AI 工具调用状态无效"));
             }
         }
-    };
-    let tool_calls = match run
+    }
+    let (tool_calls, pre_resolved_tool_results) = match run
         .next_step()
         .map_err(|error| RigTurnError::protocol(error.to_string()))?
     {
-        AgentRunStep::CallTools { calls } => calls
-            .into_iter()
-            .enumerate()
-            .map(|(call_index, call)| AiToolCall {
-                id: agent_tool_call_id(request.request_id, round_index, call_index),
-                name: call.tool_call.function.name,
-                arguments: call.tool_call.function.arguments.to_string(),
-            })
-            .collect(),
+        AgentRunStep::CallTools { calls } => {
+            let mut tool_calls = Vec::with_capacity(calls.len());
+            let mut pre_resolved_tool_results = Vec::new();
+            for (call_index, call) in calls.into_iter().enumerate() {
+                let id = agent_tool_call_id(request.request_id, round_index, call_index);
+                let name = call.tool_call.function.name;
+                if let Some(UserContent::ToolResult(result)) = call.preresolved_result {
+                    let content = result
+                        .content
+                        .into_iter()
+                        .filter_map(|content| match content {
+                            ToolResultContent::Text(text) => Some(text.text),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    pre_resolved_tool_results.push(AiToolResult {
+                        call_id: id.clone(),
+                        name: name.clone(),
+                        content,
+                    });
+                }
+                tool_calls.push(AiToolCall {
+                    id,
+                    name,
+                    arguments: call.tool_call.function.arguments.to_string(),
+                });
+            }
+            (tool_calls, pre_resolved_tool_results)
+        }
         AgentRunStep::Done(response) => {
             if content.is_empty() {
                 content = response.output;
             }
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
         AgentRunStep::CallModel { .. } => {
             return Err(RigTurnError::protocol("AI Agent 意外请求了额外模型回合"));
@@ -853,6 +856,7 @@ pub(crate) async fn request_turn(
         content,
         reasoning_content,
         tool_calls,
+        pre_resolved_tool_results,
         request_count,
         usage: aggregate_usage
             .has_values()
@@ -873,8 +877,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        extract_reasoning_content, invalid_tool_retry_feedback, parse_dsml_response, prepare_turn,
-        reasoning_stream_delta, resolve_tool_protocol, retry_invalid_tool_call, tool_definitions,
+        extract_reasoning_content, invalid_tool_result, parse_dsml_response, prepare_turn,
+        reasoning_stream_delta, resolve_tool_protocol, skip_invalid_tool_call, tool_definitions,
         DsmlStreamFilter, StreamKind, StreamPayload,
     };
     use crate::ai::{AiChatMessage, AiToolCall, AiToolResult, AiToolRound};
@@ -927,10 +931,8 @@ mod tests {
     }
 
     #[test]
-    fn retries_one_unknown_tool_without_executing_it() {
-        let mut run = AgentRun::new("inspect")
-            .max_turns(2)
-            .max_invalid_tool_call_retries(1);
+    fn turns_one_unknown_tool_into_a_pre_resolved_result() {
+        let mut run = AgentRun::new("inspect").max_turns(2);
         expect_model_turn(&mut run);
         let context = unknown_tool_context(
             &mut run,
@@ -938,39 +940,31 @@ mod tests {
             BTreeSet::from(["get_server_status".to_string()]),
         );
 
-        assert!(invalid_tool_retry_feedback(&context).contains("get_server_status"));
-        retry_invalid_tool_call(&mut run, &context).unwrap();
-        expect_model_turn(&mut run);
+        assert!(invalid_tool_result(&context).contains("get_server_status"));
+        assert!(matches!(
+            skip_invalid_tool_call(&mut run, &context).unwrap(),
+            ModelTurnOutcome::Continue { .. }
+        ));
+        let AgentRunStep::CallTools { calls } = run.next_step().unwrap() else {
+            panic!("skipped tool must produce a tool-result round");
+        };
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].preresolved_result.is_some());
     }
 
     #[test]
-    fn asks_for_plain_text_when_no_tools_are_available() {
-        let mut run = AgentRun::new("summarize")
-            .max_turns(2)
-            .max_invalid_tool_call_retries(1);
+    fn asks_for_plain_text_through_a_tool_result_when_no_tools_are_available() {
+        let mut run = AgentRun::new("summarize").max_turns(2);
         expect_model_turn(&mut run);
         let context = unknown_tool_context(&mut run, "stale_tool", BTreeSet::new());
 
-        let feedback = invalid_tool_retry_feedback(&context);
+        let feedback = invalid_tool_result(&context);
         assert!(feedback.contains("No tools are available"));
         assert!(feedback.contains("plain-text final answer"));
-        retry_invalid_tool_call(&mut run, &context).unwrap();
-        expect_model_turn(&mut run);
-    }
-
-    #[test]
-    fn reports_a_clear_error_after_the_unknown_tool_retry_is_exhausted() {
-        let mut run = AgentRun::new("inspect")
-            .max_turns(2)
-            .max_invalid_tool_call_retries(1);
-        expect_model_turn(&mut run);
-        let first = unknown_tool_context(&mut run, "first_unknown", BTreeSet::new());
-        retry_invalid_tool_call(&mut run, &first).unwrap();
-        expect_model_turn(&mut run);
-        let repeated = unknown_tool_context(&mut run, "second_unknown", BTreeSet::new());
-
-        let error = retry_invalid_tool_call(&mut run, &repeated).unwrap_err();
-        assert_eq!(error.message, "AI 连续调用不可用工具：second_unknown");
+        assert!(matches!(
+            skip_invalid_tool_call(&mut run, &context).unwrap(),
+            ModelTurnOutcome::Continue { .. }
+        ));
     }
 
     #[test]

@@ -76,6 +76,7 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
     let content = response.content;
     let reasoning_content = response.reasoning_content;
     let tool_calls = response.tool_calls;
+    let pre_resolved_tool_results = response.pre_resolved_tool_results;
     if content.chars().count() > MAX_RESPONSE_CHARS {
         return Err(structured(operation, "AI 响应内容过长"));
     }
@@ -88,16 +89,6 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
     if options.finalize_reason.is_some() && !tool_calls.is_empty() {
         return Err(structured(operation, "AI 收尾响应不应包含工具调用"));
     }
-    if tool_calls.iter().any(|call| {
-        !tool_allowed(
-            &call.name,
-            options.tools_enabled,
-            options.file_edit_enabled,
-            options.command_proposal_enabled,
-        ) || (diagnostic_tool(&call.name) && !options.enabled_tools.contains(&call.name))
-    }) {
-        return Err(structured(operation, "AI 返回了未启用的工具调用"));
-    }
     if content.trim().is_empty() && tool_calls.is_empty() {
         return Err(structured(operation, "AI 服务没有返回内容"));
     }
@@ -105,6 +96,7 @@ pub(super) async fn request_ai_turn(options: AiTurnOptions<'_>) -> CommandResult
         content,
         reasoning_content,
         tool_calls,
+        pre_resolved_tool_results,
         action_intents: Vec::new(),
         diagnostic_plans: Vec::new(),
         diagnostic_tool_rounds: Vec::new(),

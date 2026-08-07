@@ -372,6 +372,23 @@ pub(crate) async fn ai_chat_start(
                 }
             }
 
+            if !response.pre_resolved_tool_results.is_empty() {
+                if let Some(context) = task_context.as_ref() {
+                    let events = task_manager
+                        .finish_model_turn(context.id(), true)
+                        .map_err(|error| structured(operation, error))?;
+                    agent::emit_task_events(&app, events);
+                }
+                tool_rounds.push(AiToolRound {
+                    calls: response.tool_calls.clone(),
+                    content: (!response.content.trim().is_empty())
+                        .then(|| response.content.trim().to_string()),
+                    reasoning_content: response.reasoning_content.clone(),
+                    results: std::mem::take(&mut response.pre_resolved_tool_results),
+                });
+                continue;
+            }
+
             if let Some(round) = invalid_tool_call_round(
                 &response.tool_calls,
                 &response.content,
