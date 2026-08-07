@@ -300,6 +300,19 @@ pub(super) fn validate_diagnostic_plan_calls(calls: &[AiToolCall]) -> Result<(),
     Ok(())
 }
 
+fn validate_tool_call_composition(calls: &[AiToolCall]) -> Result<(), String> {
+    let has_diagnostic = calls.iter().any(|call| diagnostic_tool(&call.name));
+    let has_action = calls
+        .iter()
+        .any(|call| file_mutation_tool(&call.name) || command_proposal_tool(&call.name));
+    if has_diagnostic && has_action {
+        return Err(
+            "AI 同一响应不能同时包含诊断工具和操作提案，请先完成诊断再提出操作".to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn valid_tool_arguments(name: &str, arguments: &str) -> bool {
     let Ok(Value::Object(arguments)) = serde_json::from_str::<Value>(arguments) else {
         return false;
@@ -426,19 +439,28 @@ pub(super) fn invalid_tool_call_round(
         .iter()
         .map(tool_call_argument_error)
         .collect::<Vec<_>>();
-    let plan_error = validate_diagnostic_plan_calls(calls).err();
-    if errors.iter().all(Option::is_none) && plan_error.is_none() {
+    let batch_error = validate_tool_call_composition(calls)
+        .and_then(|_| validate_diagnostic_plan_calls(calls))
+        .err();
+    if errors.iter().all(Option::is_none) && batch_error.is_none() {
         return None;
     }
 
-    let retry_instruction = "Correct the tool arguments and return the complete tool call set again. Do not claim that any rejected call was executed.";
+    let retry_instruction = if batch_error
+        .as_deref()
+        .is_some_and(|error| error.contains("同时包含诊断工具和操作提案"))
+    {
+        "Return either diagnostic calls or action proposals in this response, never both. Complete diagnostics first, consume their results, then propose actions in a later response."
+    } else {
+        "Correct the tool arguments and return the complete tool call set again. Do not claim that any rejected call was executed."
+    };
     let results = calls
         .iter()
         .zip(errors.iter_mut())
         .map(|(call, error)| {
             let error = error
                 .take()
-                .or_else(|| plan_error.clone())
+                .or_else(|| batch_error.clone())
                 .unwrap_or_else(|| "同一响应中包含无效工具调用，因此本调用未执行".to_string());
             AiToolResult {
                 call_id: call.id.clone(),

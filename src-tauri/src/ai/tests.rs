@@ -857,6 +857,41 @@ fn turns_invalid_command_arguments_into_a_retryable_tool_round() {
 }
 
 #[test]
+fn turns_mixed_diagnostic_and_action_calls_into_a_retryable_tool_round() {
+    let calls = vec![
+        AiToolCall {
+            id: "call-status".to_string(),
+            name: "get_server_status".to_string(),
+            arguments: r#"{"reason":"Inspect current usage"}"#.to_string(),
+        },
+        AiToolCall {
+            id: "call-command".to_string(),
+            name: "propose_service_action".to_string(),
+            arguments: r#"{"service":"nginx.service","action":"restart"}"#.to_string(),
+        },
+    ];
+
+    let round = invalid_tool_call_round(&calls, "I will inspect and restart it.", None).unwrap();
+    assert_eq!(round.calls.len(), calls.len());
+    assert_eq!(round.calls[0].id, calls[0].id);
+    assert_eq!(round.calls[1].id, calls[1].id);
+    assert_eq!(round.results.len(), 2);
+    for result in round.results {
+        let value = serde_json::from_str::<Value>(&result.content).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["retryable"], true);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("不能同时包含诊断工具和操作提案"));
+        assert!(value["instruction"]
+            .as_str()
+            .unwrap()
+            .contains("never both"));
+    }
+}
+
+#[test]
 fn falls_back_only_when_a_provider_rejects_tool_calling() {
     assert!(is_tool_unsupported_error(
         400,
