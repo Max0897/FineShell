@@ -1,22 +1,23 @@
-export const AI_READ_ONLY_TOOL_OPTIONS = [
-  { label: "服务器状态", value: "get_server_status" },
-  { label: "进程列表", value: "list_processes" },
-  { label: "当前目录", value: "get_current_directory" },
-  { label: "网络连接", value: "get_network_connections" },
-  { label: "服务状态", value: "inspect_service" },
-  { label: "服务日志", value: "read_service_logs" },
-  { label: "Ping", value: "ping_target" },
-  { label: "路由追踪", value: "trace_route" },
-] as const;
+import toolCatalog from "./ai-tool-catalog.json";
 
-export type AiReadOnlyToolName =
-  (typeof AI_READ_ONLY_TOOL_OPTIONS)[number]["value"];
+export type AiReadOnlyToolName = keyof typeof toolCatalog.diagnostic;
+
+export const AI_READ_ONLY_TOOL_OPTIONS = Object.entries(
+  toolCatalog.diagnostic,
+).map(([value, definition]) => ({
+  label: definition.label,
+  value: value as AiReadOnlyToolName,
+}));
 
 export const ALL_AI_READ_ONLY_TOOLS = AI_READ_ONLY_TOOL_OPTIONS.map(
   ({ value }) => value,
 );
 
 const AI_READ_ONLY_TOOL_SET = new Set<string>(ALL_AI_READ_ONLY_TOOLS);
+
+export function aiReadOnlyToolLabel(name: AiReadOnlyToolName) {
+  return toolCatalog.diagnostic[name].label;
+}
 
 export function isAiReadOnlyToolName(
   value: string,

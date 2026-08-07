@@ -17,13 +17,76 @@ use super::{
     diagnostic_policy_evaluations, diagnostic_tool_requires_connection, enabled_diagnostic_tools,
     filter_tool_definitions, http_messages, invalid_tool_call_round, is_local_endpoint,
     is_tool_unsupported_error, normalize_models, sanitize_context, service_endpoint, stream_delta,
-    stream_tool_call_deltas, tool_allowed, tool_definitions, tool_loop_finalize_reason,
-    tool_probe_supported, valid_stream_probe_event, valid_tool_arguments,
-    validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls, validate_service_url,
-    validate_tool_rounds, AiActionRoundDecision, AiActionRoundDecisionKind, AiCapabilityKind,
-    AiCapabilityState, AiChatMessage, AiFinalizeReason, AiModelEntry, AiToolCall, AiToolResult,
-    AiToolRound, SseParser,
+    stream_tool_call_deltas, supported_tool_names, tool_allowed, tool_definitions,
+    tool_loop_finalize_reason, tool_probe_supported, valid_stream_probe_event,
+    valid_tool_arguments, validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls,
+    validate_service_url, validate_tool_rounds, AiActionRoundDecision, AiActionRoundDecisionKind,
+    AiCapabilityKind, AiCapabilityState, AiChatMessage, AiFinalizeReason, AiModelEntry, AiToolCall,
+    AiToolResult, AiToolRound, SseParser,
 };
+
+#[test]
+fn shared_tool_catalog_matches_provider_schemas_and_argument_validators() {
+    let definitions = tool_definitions(true, true, true);
+    let definition_names = definitions
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|definition| {
+            assert_eq!(definition["type"], "function");
+            assert_eq!(
+                definition["function"]["parameters"]["additionalProperties"],
+                false
+            );
+            definition["function"]["name"].as_str().unwrap()
+        })
+        .collect::<HashSet<_>>();
+    let catalog_names = supported_tool_names().collect::<HashSet<_>>();
+    assert_eq!(definition_names, catalog_names);
+
+    let valid_samples = [
+        ("get_server_status", r#"{}"#),
+        ("list_processes", r#"{}"#),
+        ("get_current_directory", r#"{}"#),
+        ("get_network_connections", r#"{}"#),
+        ("inspect_service", r#"{"service":"nginx.service"}"#),
+        (
+            "read_service_logs",
+            r#"{"service":"nginx.service","lines":20}"#,
+        ),
+        ("ping_target", r#"{"target":"example.com"}"#),
+        ("trace_route", r#"{"target":"example.com"}"#),
+        (
+            "propose_file_edit",
+            r#"{"path":"/srv/app.conf","content":"enabled=true"}"#,
+        ),
+        (
+            "propose_file_operation",
+            r#"{"operation":"delete","path":"/srv/app.conf"}"#,
+        ),
+        (
+            "propose_terminal_command",
+            r#"{"command":"pwd","purpose":"Inspect directory","risk":"safe","risk_reason":"Reads the current directory"}"#,
+        ),
+        (
+            "propose_service_action",
+            r#"{"service":"nginx.service","action":"status"}"#,
+        ),
+    ];
+    assert_eq!(
+        valid_samples
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<HashSet<_>>(),
+        catalog_names
+    );
+    for (name, arguments) in valid_samples {
+        assert!(
+            valid_tool_arguments(name, arguments),
+            "shared tool `{name}` must have a matching argument validator"
+        );
+    }
+}
 
 #[test]
 fn action_round_result_uses_the_authoritative_command_snapshot() {

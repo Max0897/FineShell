@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Mutex,
+    sync::{LazyLock, Mutex},
     time::{Duration, Instant},
 };
 

@@ -11,6 +11,7 @@ import type {
 } from "./tauri-protocol";
 import { redactAiContext } from "./ai-utils";
 import {
+  aiReadOnlyToolLabel,
   isAiReadOnlyToolName,
   type AiReadOnlyToolName,
 } from "./ai-permissions";
@@ -42,17 +43,6 @@ export interface AiToolRun {
   startedAt: number;
   status: AiToolRunStatus;
 }
-
-const TOOL_LABELS: Record<AiReadOnlyToolName, string> = {
-  get_server_status: "读取服务器状态",
-  list_processes: "读取进程列表",
-  get_current_directory: "读取当前目录",
-  get_network_connections: "读取网络连接",
-  inspect_service: "检查服务状态",
-  read_service_logs: "读取服务日志",
-  ping_target: "Ping",
-  trace_route: "路由追踪",
-};
 
 const TARGET_TOOLS = new Set<AiReadOnlyToolName>([
   "ping_target",
@@ -112,7 +102,9 @@ export function aiToolTarget(call: AiToolCall): string | undefined {
 }
 
 export function aiToolLabel(name: string) {
-  return isAiReadOnlyToolName(name) ? TOOL_LABELS[name] : "未知只读工具";
+  return isAiReadOnlyToolName(name)
+    ? aiReadOnlyToolLabel(name)
+    : "未知只读工具";
 }
 
 export function finishAiToolRun(
@@ -282,7 +274,7 @@ export function sanitizePersistedAiToolRuns(value: unknown): AiToolRun[] | undef
             ? undefined
             : Math.min(60_000, Math.max(0, Math.round(duration))),
         error: boundedSafeText(item.error, 300),
-        label: TOOL_LABELS[name],
+        label: aiReadOnlyToolLabel(name),
         name,
         optional: item.optional === true || undefined,
         planId,

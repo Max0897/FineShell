@@ -1,17 +1,7 @@
 use super::*;
 
 pub(super) fn diagnostic_tool_label(name: &str) -> &'static str {
-    match name {
-        "get_server_status" => "读取服务器状态",
-        "list_processes" => "读取进程列表",
-        "get_current_directory" => "读取当前目录",
-        "inspect_service" => "检查服务状态",
-        "read_service_logs" => "读取服务日志",
-        "get_network_connections" => "读取网络连接",
-        "ping_target" => "Ping",
-        "trace_route" => "路由追踪",
-        _ => "未知只读工具",
-    }
+    tool_label(name).unwrap_or("未知只读工具")
 }
 
 pub(super) fn diagnostic_arguments(call: &AiToolCall) -> serde_json::Map<String, Value> {

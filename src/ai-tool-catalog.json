@@ -1,0 +1,20 @@
+{
+  "diagnostic": {
+    "get_server_status": { "label": "读取服务器状态" },
+    "list_processes": { "label": "读取进程列表" },
+    "get_current_directory": { "label": "读取当前目录" },
+    "get_network_connections": { "label": "读取网络连接" },
+    "inspect_service": { "label": "检查服务状态" },
+    "read_service_logs": { "label": "读取服务日志" },
+    "ping_target": { "label": "Ping" },
+    "trace_route": { "label": "路由追踪" }
+  },
+  "fileMutation": {
+    "propose_file_edit": { "label": "文件修改提案" },
+    "propose_file_operation": { "label": "文件操作提案" }
+  },
+  "commandProposal": {
+    "propose_terminal_command": { "label": "终端命令提案" },
+    "propose_service_action": { "label": "服务操作提案" }
+  }
+}
