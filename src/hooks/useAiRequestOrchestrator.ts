@@ -21,6 +21,7 @@ import {
   type AgentTaskEventPayload,
   type AgentTaskRecoveryContext,
   type AgentTaskRecoveryDecision,
+  type AgentTaskSync,
   type AiChatResult,
   type AiRequestTelemetry,
   type AiStreamPayload,
@@ -32,6 +33,10 @@ import {
   agentTaskIsTerminal,
   mergeAgentPlanIntoMessage,
 } from "./ai-agent-plan-presentation";
+import {
+  applyAgentTaskEvent,
+  reconcileAgentTaskSync,
+} from "./agent-task-event-state";
 import {
   aiProposalRoundHasPendingApprovals,
   prepareAiProposalRound,
@@ -186,6 +191,7 @@ export function useAiRequestOrchestrator({
 }: UseAiRequestOrchestratorOptions) {
   const [sending, setSending] = useState(false);
   const [activeTask, setActiveTask] = useState<AgentTask>();
+  const activeTaskRef = useRef<AgentTask>();
   const activeRequestRef = useRef<ActiveAiRequest>();
   const trackedTaskIdRef = useRef<string>();
   const cancelledRequestsRef = useRef(new Set<string>());
@@ -222,6 +228,39 @@ export function useAiRequestOrchestrator({
     waitForCommandApproval,
     waitForFileApproval,
   } = useAiProposalApprovals();
+
+  const commitActiveTask = useCallback((task: AgentTask | undefined) => {
+    activeTaskRef.current = task;
+    setActiveTask(task);
+  }, []);
+
+  const projectTaskPlan = useCallback(
+    (task: AgentTask, activeRequest: ActiveAiRequest | undefined) => {
+      const plan = task.plan;
+      if (!plan || !activeRequest) return;
+      backendDiagnosticPlanTasksRef.current.set(plan.id, task.id);
+      activeDiagnosticPlansRef.current.set(plan.id, {
+        conversationId: activeRequest.conversationId,
+        hostId: activeRequest.hostId,
+        messageId: activeRequest.assistantId,
+      });
+      callbacksRef.current.updateMessages(
+        activeRequest.hostId,
+        activeRequest.conversationId,
+        (messages) =>
+          messages.map((message) =>
+            message.id === activeRequest.assistantId
+              ? mergeAgentPlanIntoMessage(message, plan)
+              : message,
+          ),
+      );
+      if (["completed", "partial", "cancelled"].includes(plan.status)) {
+        activeDiagnosticPlansRef.current.delete(plan.id);
+        stoppedDiagnosticPlansRef.current.delete(plan.id);
+      }
+    },
+    [],
+  );
 
   const cancelRequest = useCallback(async () => {
     const requestId = activeRequestRef.current?.requestId;
@@ -341,12 +380,13 @@ export function useAiRequestOrchestrator({
     activeDiagnosticPlansRef.current.clear();
     backendDiagnosticPlanTasksRef.current.clear();
     stoppedDiagnosticPlansRef.current.clear();
-    setActiveTask(undefined);
+    commitActiveTask(undefined);
     setSending(false);
   }, [
     invoke,
     rejectPendingCommandApprovals,
     rejectPendingFileApprovals,
+    commitActiveTask,
     sessionId,
   ]);
 
@@ -387,40 +427,15 @@ export function useAiRequestOrchestrator({
     void listenToTaskEvents((payload) => {
       const activeRequest = activeRequestRef.current;
       const trackedTaskId = activeRequest?.requestId ?? trackedTaskIdRef.current;
-      if (!trackedTaskId || payload.task.id !== trackedTaskId) return;
-      setActiveTask((current) => {
-        if (
-          current?.id === payload.task.id &&
-          current.lastEventSequence >= payload.sequence
-        ) {
-          return current;
-        }
-        return payload.task;
-      });
-      const plan = payload.task.plan;
-      if (plan && activeRequest) {
-        backendDiagnosticPlanTasksRef.current.set(plan.id, payload.task.id);
-        activeDiagnosticPlansRef.current.set(plan.id, {
-          conversationId: activeRequest.conversationId,
-          hostId: activeRequest.hostId,
-          messageId: activeRequest.assistantId,
-        });
-        callbacksRef.current.updateMessages(
-          activeRequest.hostId,
-          activeRequest.conversationId,
-          (messages) =>
-            messages.map((message) =>
-              message.id === activeRequest.assistantId
-                ? mergeAgentPlanIntoMessage(message, plan)
-                : message,
-            ),
-        );
-        if (["completed", "partial", "cancelled"].includes(plan.status)) {
-          activeDiagnosticPlansRef.current.delete(plan.id);
-          stoppedDiagnosticPlansRef.current.delete(plan.id);
-        }
-      }
-      if (agentTaskIsTerminal(payload.task)) setSending(false);
+      const next = applyAgentTaskEvent(
+        activeTaskRef.current,
+        trackedTaskId,
+        payload,
+      );
+      if (!next || next === activeTaskRef.current) return;
+      commitActiveTask(next);
+      projectTaskPlan(next, activeRequest);
+      if (agentTaskIsTerminal(next)) setSending(false);
     })
       .then((unlisten) => {
         if (disposed) unlisten();
@@ -431,50 +446,42 @@ export function useAiRequestOrchestrator({
       disposed = true;
       stopTaskEvents?.();
     };
-  }, [listenToTaskEvents]);
+  }, [commitActiveTask, listenToTaskEvents, projectTaskPlan]);
 
   useEffect(() => {
     if (!restoreTaskId) {
       if (!activeRequestRef.current) {
         trackedTaskIdRef.current = undefined;
-        setActiveTask(undefined);
+        commitActiveTask(undefined);
       }
       return;
     }
     trackedTaskIdRef.current = restoreTaskId;
     let disposed = false;
-    void invoke<AgentTask | null>("ai_task_get", { taskId: restoreTaskId })
-      .then(async (task) => {
-        if (!task) return null;
-        let replayed: AgentTaskEventPayload[];
-        try {
-          replayed = await invoke<AgentTaskEventPayload[]>(
-            "ai_task_events_since",
-            { taskId: task.id, afterSequence: task.lastEventSequence },
-          );
-        } catch {
-          return task;
-        }
-        return replayed.reduce(
-          (latest, event) =>
-            event.sequence > latest.lastEventSequence ? event.task : latest,
-          task,
+    const currentSequence =
+      activeTaskRef.current?.id === restoreTaskId
+        ? activeTaskRef.current.lastEventSequence
+        : 0;
+    void invoke<AgentTaskSync>("ai_task_sync", {
+      taskId: restoreTaskId,
+      afterSequence: currentSequence,
+    })
+      .then((sync) => {
+        if (disposed || trackedTaskIdRef.current !== restoreTaskId) return;
+        const next = reconcileAgentTaskSync(
+          activeTaskRef.current,
+          restoreTaskId,
+          sync,
         );
-      })
-      .then((task) => {
-        if (disposed || !task || trackedTaskIdRef.current !== task.id) return;
-        setActiveTask((current) =>
-          current?.id === task.id &&
-          current.lastEventSequence > task.lastEventSequence
-            ? current
-            : task,
-        );
+        if (!next || next === activeTaskRef.current) return;
+        commitActiveTask(next);
+        projectTaskPlan(next, activeRequestRef.current);
       })
       .catch(() => undefined);
     return () => {
       disposed = true;
     };
-  }, [invoke, restoreTaskId]);
+  }, [commitActiveTask, invoke, projectTaskPlan, restoreTaskId]);
 
   const sendMessage = useCallback(
     async ({
@@ -532,7 +539,7 @@ export function useAiRequestOrchestrator({
         messages: [...history, userMessage, assistantMessage],
       }));
       setDraft(targetConversationId, "");
-      setActiveTask(undefined);
+      commitActiveTask(undefined);
       setSending(true);
       cancelledRequestsRef.current.delete(requestId);
       let requestTelemetry: AiRequestTelemetry | undefined;
@@ -670,10 +677,20 @@ export function useAiRequestOrchestrator({
           if (aiProposalRoundHasPendingApprovals(proposalRound)) {
             await persistConversation(proposalConversation);
           }
-          const toolResults = await resolveAiProposalRound(
+          const decisions = await resolveAiProposalRound(
             result.toolCalls,
             proposalRound,
             () => cancelledRequestsRef.current.has(requestId),
+          );
+          const toolResults = await invoke<AiToolRound["results"]>(
+            "ai_task_action_results",
+            {
+              request: {
+                taskId: requestId,
+                calls: result.toolCalls,
+                decisions,
+              },
+            },
           );
           toolRounds.push({
             calls: result.toolCalls,
@@ -769,6 +786,7 @@ export function useAiRequestOrchestrator({
     },
     [
       approvalMode,
+      commitActiveTask,
       invoke,
       persistConversation,
       queueConversationSummary,

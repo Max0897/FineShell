@@ -284,6 +284,31 @@ pub(crate) struct AgentActionState {
     pub(super) command_submission_id: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct AgentActionResultSnapshot {
+    pub(crate) id: String,
+    pub(crate) tool: String,
+    pub(crate) status: AgentActionStatus,
+    pub(crate) summary: Option<String>,
+    pub(crate) error: Option<String>,
+    pub(crate) duration_ms: Option<u64>,
+    pub(crate) command: Option<AgentCommandResultSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AgentCommandResultSnapshot {
+    pub(crate) phase: AgentCommandExecutionPhase,
+    pub(crate) output: Option<String>,
+    pub(crate) output_truncated: bool,
+    pub(crate) stdout: Option<String>,
+    pub(crate) stdout_truncated: bool,
+    pub(crate) stderr: Option<String>,
+    pub(crate) stderr_truncated: bool,
+    pub(crate) exit_code: Option<u16>,
+    pub(crate) duration_ms: Option<u64>,
+    pub(crate) reason: Option<String>,
+}
+
 impl AgentActionState {
     pub(super) fn from_intent(intent: AgentActionIntent) -> Self {
         Self {
@@ -503,6 +528,13 @@ pub(crate) struct AgentTaskEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) action_id: Option<String>,
     pub(super) task: AgentTask,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentTaskSync {
+    pub(super) task: Option<AgentTask>,
+    pub(super) events: Vec<AgentTaskEvent>,
 }
 
 pub(crate) struct AgentTaskManager {

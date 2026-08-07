@@ -316,6 +316,11 @@ export interface AgentTaskEventPayload {
   task: AgentTask;
 }
 
+export interface AgentTaskSync {
+  task: AgentTask | null;
+  events: AgentTaskEventPayload[];
+}
+
 export interface AgentTaskRecoveryContext {
   previousTaskId: string;
   hostId: string;

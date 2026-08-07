@@ -187,6 +187,16 @@ impl AgentTaskManager {
             .cloned()
             .collect())
     }
+
+    pub(super) fn sync_task(
+        &self,
+        task_id: &str,
+        after_sequence: u64,
+    ) -> Result<AgentTaskSync, String> {
+        let task = self.get_task(task_id)?;
+        let events = self.events_since(task_id, after_sequence)?;
+        Ok(AgentTaskSync { task, events })
+    }
 }
 
 pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {

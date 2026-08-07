@@ -208,4 +208,48 @@ impl AgentTaskManager {
         let tasks = self.lock_tasks()?;
         Ok(tasks.get(task_id).cloned())
     }
+
+    pub(crate) fn action_result_snapshot(
+        &self,
+        task_id: &str,
+        action_id: &str,
+    ) -> Result<AgentActionResultSnapshot, String> {
+        if !valid_identifier(task_id) || !valid_identifier(action_id) {
+            return Err("AI 动作作用域无效".to_string());
+        }
+        let tasks = self.lock_tasks()?;
+        let task = tasks
+            .get(task_id)
+            .ok_or_else(|| "AI 任务不存在".to_string())?;
+        let action = task
+            .actions
+            .iter()
+            .find(|action| action.id == action_id)
+            .ok_or_else(|| "AI 动作不存在".to_string())?;
+        let command =
+            action
+                .command_execution
+                .as_ref()
+                .map(|execution| AgentCommandResultSnapshot {
+                    phase: execution.phase,
+                    output: execution.output_excerpt.clone(),
+                    output_truncated: execution.output_truncated,
+                    stdout: execution.stdout_excerpt.clone(),
+                    stdout_truncated: execution.stdout_truncated,
+                    stderr: execution.stderr_excerpt.clone(),
+                    stderr_truncated: execution.stderr_truncated,
+                    exit_code: execution.exit_code,
+                    duration_ms: execution.duration_ms,
+                    reason: execution.reason.clone(),
+                });
+        Ok(AgentActionResultSnapshot {
+            id: action.id.clone(),
+            tool: action.tool.clone(),
+            status: action.status,
+            summary: action.summary.clone(),
+            error: action.error.clone(),
+            duration_ms: action.duration_ms,
+            command,
+        })
+    }
 }

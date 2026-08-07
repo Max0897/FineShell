@@ -47,16 +47,14 @@ describe("AI proposal rounds", () => {
       status: "pending",
     });
 
-    const results = await resolveAiProposalRound(
+    const decisions = await resolveAiProposalRound(
       [commandCall],
       round,
       () => false,
     );
-    expect(JSON.parse(results[0]!.content)).toMatchObject({
-      decision: "approved_and_completed",
-      exitCode: 0,
-      ok: true,
-      output: "active",
+    expect(decisions[0]).toEqual({
+      callId: "command-1",
+      kind: "execution_completed",
     });
   });
 
@@ -66,8 +64,9 @@ describe("AI proposal rounds", () => {
     const duplicate = prepare([commandCall], proposedCommands);
 
     expect(duplicate.commandProposals).toHaveLength(0);
-    expect(JSON.parse(duplicate.proposalResults.get(commandCall.id)!.content))
-      .toMatchObject({ ok: false, error: "AI 重复返回了同一条终端命令" });
+    expect(duplicate.proposalErrors.get(commandCall.id)).toBe(
+      "AI 重复返回了同一条终端命令",
+    );
   });
 
   test("rejects tool calls outside the proposal protocol", () => {

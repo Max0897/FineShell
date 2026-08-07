@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { CSSProperties } from "react";
 import {
   Button,
   Empty,
@@ -146,6 +153,7 @@ interface HostManagerPanelProps {
 }
 
 function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
+  const hostTableContainerRef = useRef<HTMLDivElement>(null);
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [history, setHistory] = useState<ConnectionHistoryRecord[]>([]);
   const [proxies, setProxies] = useState<ProxyRecord[]>([]);
@@ -157,6 +165,31 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingHost, setEditingHost] = useState<HostRecord | null>(null);
   const [historyVisible, setHistoryVisible] = useState(false);
+  const [hostTableBodyHeight, setHostTableBodyHeight] = useState(1);
+
+  useLayoutEffect(() => {
+    const container = hostTableContainerRef.current;
+    if (!container) return;
+
+    const updateTableBodyHeight = () => {
+      const header =
+        container.querySelector<HTMLElement>(".arco-table-header") ??
+        container.querySelector<HTMLElement>("thead");
+      const headerHeight = header?.getBoundingClientRect().height ?? 0;
+      const nextHeight = Math.max(
+        1,
+        Math.floor(container.getBoundingClientRect().height - headerHeight),
+      );
+      setHostTableBodyHeight((currentHeight) =>
+        currentHeight === nextHeight ? currentHeight : nextHeight,
+      );
+    };
+
+    updateTableBodyHeight();
+    const resizeObserver = new ResizeObserver(updateTableBodyHeight);
+    resizeObserver.observe(container);
+    return () => resizeObserver.disconnect();
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -808,7 +841,15 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
             </Tooltip>
           </div>
         </div>
-        <div className="host-tree-table-container">
+        <div
+          className="host-tree-table-container"
+          ref={hostTableContainerRef}
+          style={
+            {
+              "--host-table-body-height": `${hostTableBodyHeight}px`,
+            } as CSSProperties
+          }
+        >
           <Table
             border={false}
             className="host-tree-table"
@@ -843,6 +884,7 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
                 : "host-table-host-row"
             }
             rowKey="id"
+            scroll={{ y: hostTableBodyHeight }}
             size="small"
           />
         </div>

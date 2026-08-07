@@ -1,5 +1,198 @@
 use super::*;
 
+fn bounded_round_message(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim().chars().take(500).collect::<String>();
+        (!value.is_empty()).then_some(value)
+    })
+}
+
+pub(super) fn take_pre_resolved_tool_round(response: &mut AiChatResult) -> Option<AiToolRound> {
+    if response.pre_resolved_tool_results.is_empty() {
+        return None;
+    }
+    Some(AiToolRound {
+        calls: response.tool_calls.clone(),
+        content: (!response.content.trim().is_empty()).then(|| response.content.trim().to_string()),
+        reasoning_content: response.reasoning_content.clone(),
+        results: std::mem::take(&mut response.pre_resolved_tool_results),
+    })
+}
+
+pub(super) fn action_round_result(
+    call: &AiToolCall,
+    decision: &AiActionRoundDecision,
+    snapshot: crate::agent::AgentActionResultSnapshot,
+) -> Result<AiToolResult, String> {
+    if snapshot.id != call.id {
+        return Err("AI 动作结果与工具调用不匹配".to_string());
+    }
+    let is_command = matches!(
+        call.name.as_str(),
+        "propose_terminal_command" | "propose_service_action"
+    );
+    if is_command != (snapshot.tool == "execute_terminal_command") {
+        return Err("AI 动作类型与工具调用不匹配".to_string());
+    }
+    let content = if decision.kind == AiActionRoundDecisionKind::RevisionRequested {
+        json!({
+            "ok": false,
+            "decision": "revision_requested",
+            "feedback": bounded_round_message(decision.feedback.clone()).unwrap_or_else(|| "请重新调整提案".to_string()),
+            "message": "用户拒绝了当前动作，并要求按反馈重新提案"
+        })
+    } else if decision.kind == AiActionRoundDecisionKind::Invalid {
+        json!({
+            "ok": false,
+            "decision": "invalid_proposal",
+            "error": bounded_round_message(decision.error.clone()).unwrap_or_else(|| "动作提案未通过客户端展示校验".to_string())
+        })
+    } else {
+        match snapshot.status {
+            AgentActionStatus::Rejected | AgentActionStatus::Cancelled => json!({
+                "ok": false,
+                "decision": "rejected",
+                "message": snapshot.summary.unwrap_or_else(|| "用户拒绝了当前动作，不得执行".to_string())
+            }),
+            AgentActionStatus::Succeeded if is_command => {
+                let command = snapshot
+                    .command
+                    .ok_or_else(|| "AI 命令缺少可信执行结果".to_string())?;
+                if command.phase != AgentCommandExecutionPhase::Completed {
+                    return Err("AI 命令成功状态与执行阶段不一致".to_string());
+                }
+                let exit_code = command
+                    .exit_code
+                    .ok_or_else(|| "AI 命令缺少退出码".to_string())?;
+                json!({
+                    "ok": exit_code == 0,
+                    "decision": "approved_and_completed",
+                    "durationMs": command.duration_ms.or(snapshot.duration_ms),
+                    "exitCode": exit_code,
+                    "output": command.output.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+                    "outputTruncated": command.output_truncated.then_some(true),
+                    "stdout": command.stdout.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+                    "stdoutTruncated": command.stdout_truncated.then_some(true),
+                    "stderr": command.stderr.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+                    "stderrTruncated": command.stderr_truncated.then_some(true),
+                    "message": "命令已获批准，后台 SSH 执行器已完成执行"
+                })
+            }
+            AgentActionStatus::Failed if is_command => {
+                if let Some(command) = snapshot
+                    .command
+                    .as_ref()
+                    .filter(|command| command.exit_code.is_some())
+                {
+                    if command.phase != AgentCommandExecutionPhase::Failed {
+                        return Err("AI 命令失败状态与执行阶段不一致".to_string());
+                    }
+                    let exit_code = command.exit_code.unwrap_or_default();
+                    json!({
+                        "ok": false,
+                        "decision": "approved_and_completed",
+                        "durationMs": command.duration_ms.or(snapshot.duration_ms),
+                        "exitCode": exit_code,
+                        "output": command.output.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+                        "outputTruncated": command.output_truncated.then_some(true),
+                        "stdout": command.stdout.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+                        "stdoutTruncated": command.stdout_truncated.then_some(true),
+                        "stderr": command.stderr.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+                        "stderrTruncated": command.stderr_truncated.then_some(true),
+                        "message": "命令已获批准，但后台执行返回非零退出码"
+                    })
+                } else {
+                    let reason = snapshot
+                        .command
+                        .and_then(|command| command.reason)
+                        .or(snapshot.error)
+                        .unwrap_or_else(|| "无法获取可靠的命令结束状态".to_string());
+                    json!({
+                        "ok": false,
+                        "decision": "execution_result_unavailable",
+                        "durationMs": snapshot.duration_ms,
+                        "error": reason,
+                        "message": "命令已获批准，但后台执行器未能返回可靠结果"
+                    })
+                }
+            }
+            AgentActionStatus::Succeeded => json!({
+                "ok": true,
+                "decision": "approved_and_completed",
+                "message": snapshot.summary.unwrap_or_else(|| "远程文件动作已完成".to_string())
+            }),
+            AgentActionStatus::Conflict | AgentActionStatus::Failed => json!({
+                "ok": false,
+                "decision": "execution_failed",
+                "error": snapshot.error.unwrap_or_else(|| "远程文件动作执行失败".to_string()),
+                "message": "文件动作已获批准，但执行失败"
+            }),
+            AgentActionStatus::Pending
+            | AgentActionStatus::Approved
+            | AgentActionStatus::Running
+            | AgentActionStatus::RollingBack => {
+                return Err("AI 动作尚未结束，不能进入下一轮模型调用".to_string());
+            }
+            AgentActionStatus::RolledBack
+            | AgentActionStatus::RollbackConflict
+            | AgentActionStatus::RollbackFailed => {
+                return Err("AI 动作处于回滚流程，不能作为当前提案结果".to_string());
+            }
+        }
+    };
+    Ok(AiToolResult {
+        call_id: call.id.clone(),
+        name: call.name.clone(),
+        content: content.to_string(),
+    })
+}
+
+#[tauri::command]
+pub(crate) fn ai_task_action_results(
+    app: AppHandle,
+    manager: State<'_, AgentTaskManager>,
+    request: AiActionRoundResolutionRequest,
+) -> CommandResult<Vec<AiToolResult>> {
+    let operation = "ai_task_action_results";
+    if request.calls.is_empty() || request.calls.len() != request.decisions.len() {
+        return Err(CommandError::from_message(
+            operation,
+            "AI 动作轮次结果不完整",
+        ));
+    }
+    let decisions = request
+        .decisions
+        .iter()
+        .map(|decision| (decision.call_id.as_str(), decision))
+        .collect::<HashMap<_, _>>();
+    request
+        .calls
+        .iter()
+        .map(|call| {
+            let decision = decisions
+                .get(call.id.as_str())
+                .ok_or_else(|| CommandError::from_message(operation, "AI 动作缺少用户决定"))?;
+            if decision.kind == AiActionRoundDecisionKind::Invalid {
+                let events = manager
+                    .transition_action(crate::agent::AgentActionTransitionRequest {
+                        task_id: request.task_id.clone(),
+                        action_id: call.id.clone(),
+                        transition: crate::agent::AgentActionTransition::Reject,
+                        summary: bounded_round_message(decision.error.clone()),
+                        error: None,
+                    })
+                    .map_err(|error| CommandError::from_message(operation, error))?;
+                agent::emit_task_events(&app, events);
+            }
+            let snapshot = manager
+                .action_result_snapshot(&request.task_id, &call.id)
+                .map_err(|error| CommandError::from_message(operation, error))?;
+            action_round_result(call, decision, snapshot)
+                .map_err(|error| CommandError::from_message(operation, error))
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub(crate) async fn ai_list_models(request: AiModelsRequest) -> CommandResult<Vec<AiModelInfo>> {
     let operation = "ai_list_models";
@@ -189,6 +382,17 @@ pub(crate) async fn ai_chat_start(
                     finalize_reason = Some(reason);
                     continue;
                 }
+            }
+
+            if let Some(round) = take_pre_resolved_tool_round(&mut response) {
+                if let Some(context) = task_context.as_ref() {
+                    let events = task_manager
+                        .finish_model_turn(context.id(), true)
+                        .map_err(|error| structured(operation, error))?;
+                    agent::emit_task_events(&app, events);
+                }
+                tool_rounds.push(round);
+                continue;
             }
 
             if let Some(round) = invalid_tool_call_round(

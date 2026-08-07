@@ -3,20 +3,209 @@ use std::collections::HashSet;
 use reqwest::Url;
 use serde_json::{json, Value};
 
-use crate::{agent::AgentTaskContext, agent_policy::PolicyDecision};
+use crate::{
+    agent::{
+        AgentActionResultSnapshot, AgentActionStatus, AgentCommandExecutionPhase,
+        AgentCommandResultSnapshot, AgentTaskContext,
+    },
+    agent_policy::PolicyDecision,
+};
 
 use super::{
-    apply_finalization_instruction, apply_tool_call_delta, build_request_messages,
-    capability_http_failure, complete_tool_calls, create_diagnostic_plan,
+    action_round_result, apply_finalization_instruction, apply_tool_call_delta,
+    build_request_messages, capability_http_failure, complete_tool_calls, create_diagnostic_plan,
     diagnostic_policy_evaluations, diagnostic_tool_requires_connection, enabled_diagnostic_tools,
     filter_tool_definitions, http_messages, invalid_tool_call_round, is_local_endpoint,
     is_tool_unsupported_error, normalize_models, sanitize_context, service_endpoint, stream_delta,
-    stream_tool_call_deltas, tool_allowed, tool_definitions, tool_loop_finalize_reason,
-    tool_probe_supported, valid_stream_probe_event, valid_tool_arguments,
-    validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls, validate_service_url,
-    validate_tool_rounds, AiCapabilityKind, AiCapabilityState, AiChatMessage, AiFinalizeReason,
-    AiModelEntry, AiToolCall, AiToolResult, AiToolRound, SseParser,
+    stream_tool_call_deltas, supported_tool_names, take_pre_resolved_tool_round, tool_allowed,
+    tool_definitions, tool_loop_finalize_reason, tool_probe_supported, valid_stream_probe_event,
+    valid_tool_arguments, validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls,
+    validate_service_url, validate_tool_rounds, AiActionRoundDecision, AiActionRoundDecisionKind,
+    AiCapabilityKind, AiCapabilityState, AiChatMessage, AiChatResult, AiFinalizeReason,
+    AiModelEntry, AiRequestTelemetry, AiToolCall, AiToolResult, AiToolRound, SseParser,
 };
+
+#[test]
+fn shared_tool_catalog_matches_provider_schemas_and_argument_validators() {
+    let definitions = tool_definitions(true, true, true);
+    let definition_names = definitions
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|definition| {
+            assert_eq!(definition["type"], "function");
+            assert_eq!(
+                definition["function"]["parameters"]["additionalProperties"],
+                false
+            );
+            definition["function"]["name"].as_str().unwrap()
+        })
+        .collect::<HashSet<_>>();
+    let catalog_names = supported_tool_names().collect::<HashSet<_>>();
+    assert_eq!(definition_names, catalog_names);
+
+    let valid_samples = [
+        ("get_server_status", r#"{}"#),
+        ("list_processes", r#"{}"#),
+        ("get_current_directory", r#"{}"#),
+        ("get_network_connections", r#"{}"#),
+        ("inspect_service", r#"{"service":"nginx.service"}"#),
+        (
+            "read_service_logs",
+            r#"{"service":"nginx.service","lines":20}"#,
+        ),
+        ("ping_target", r#"{"target":"example.com"}"#),
+        ("trace_route", r#"{"target":"example.com"}"#),
+        (
+            "propose_file_edit",
+            r#"{"path":"/srv/app.conf","content":"enabled=true"}"#,
+        ),
+        (
+            "propose_file_operation",
+            r#"{"operation":"delete","path":"/srv/app.conf"}"#,
+        ),
+        (
+            "propose_terminal_command",
+            r#"{"command":"pwd","purpose":"Inspect directory","risk":"safe","risk_reason":"Reads the current directory"}"#,
+        ),
+        (
+            "propose_service_action",
+            r#"{"service":"nginx.service","action":"status"}"#,
+        ),
+    ];
+    assert_eq!(
+        valid_samples
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<HashSet<_>>(),
+        catalog_names
+    );
+    for (name, arguments) in valid_samples {
+        assert!(
+            valid_tool_arguments(name, arguments),
+            "shared tool `{name}` must have a matching argument validator"
+        );
+    }
+}
+
+#[test]
+fn pre_resolved_tool_results_are_returned_to_the_next_model_round() {
+    let call = AiToolCall {
+        id: "call-unknown".to_string(),
+        name: "unknown_tool".to_string(),
+        arguments: r#"{"value":true}"#.to_string(),
+    };
+    let result = AiToolResult {
+        call_id: call.id.clone(),
+        name: call.name.clone(),
+        content: r#"{"ok":false,"error":"tool_not_enabled"}"#.to_string(),
+    };
+    let mut response = AiChatResult {
+        content: "  I will retry with an enabled tool.  ".to_string(),
+        reasoning_content: Some("Select a supported diagnostic.".to_string()),
+        tool_calls: vec![call.clone()],
+        pre_resolved_tool_results: vec![result.clone()],
+        action_intents: Vec::new(),
+        diagnostic_plans: Vec::new(),
+        diagnostic_tool_rounds: Vec::new(),
+        telemetry: AiRequestTelemetry {
+            duration_ms: 10,
+            request_count: 1,
+            usage: None,
+        },
+    };
+
+    let round = take_pre_resolved_tool_round(&mut response).unwrap();
+    assert_eq!(round.calls.len(), 1);
+    assert_eq!(round.calls[0].id, call.id);
+    assert_eq!(
+        round.content.as_deref(),
+        Some("I will retry with an enabled tool.")
+    );
+    assert_eq!(
+        round.reasoning_content.as_deref(),
+        Some("Select a supported diagnostic.")
+    );
+    assert_eq!(round.results.len(), 1);
+    assert_eq!(round.results[0].call_id, result.call_id);
+    assert!(response.pre_resolved_tool_results.is_empty());
+    assert!(take_pre_resolved_tool_round(&mut response).is_none());
+}
+
+#[test]
+fn action_round_result_uses_the_authoritative_command_snapshot() {
+    let call = AiToolCall {
+        id: "command-1".to_string(),
+        name: "propose_terminal_command".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let decision = AiActionRoundDecision {
+        call_id: call.id.clone(),
+        kind: AiActionRoundDecisionKind::ExecutionCompleted,
+        feedback: None,
+        error: None,
+    };
+    let result = action_round_result(
+        &call,
+        &decision,
+        AgentActionResultSnapshot {
+            id: call.id.clone(),
+            tool: "execute_terminal_command".to_string(),
+            status: AgentActionStatus::Succeeded,
+            summary: Some("终端命令执行成功".to_string()),
+            error: None,
+            duration_ms: Some(41),
+            command: Some(AgentCommandResultSnapshot {
+                phase: AgentCommandExecutionPhase::Completed,
+                output: Some("active".to_string()),
+                output_truncated: false,
+                stdout: Some("active".to_string()),
+                stdout_truncated: false,
+                stderr: Some(String::new()),
+                stderr_truncated: false,
+                exit_code: Some(0),
+                duration_ms: Some(41),
+                reason: None,
+            }),
+        },
+    )
+    .unwrap();
+    let content: Value = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(content["decision"], "approved_and_completed");
+    assert_eq!(content["exitCode"], 0);
+    assert_eq!(content["output"], "active");
+}
+
+#[test]
+fn action_round_result_preserves_revision_feedback_without_execution_data() {
+    let call = AiToolCall {
+        id: "command-2".to_string(),
+        name: "propose_terminal_command".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let result = action_round_result(
+        &call,
+        &AiActionRoundDecision {
+            call_id: call.id.clone(),
+            kind: AiActionRoundDecisionKind::RevisionRequested,
+            feedback: Some("只检查状态".to_string()),
+            error: None,
+        },
+        AgentActionResultSnapshot {
+            id: call.id.clone(),
+            tool: "execute_terminal_command".to_string(),
+            status: AgentActionStatus::Rejected,
+            summary: Some("用户拒绝了该动作".to_string()),
+            error: None,
+            duration_ms: None,
+            command: None,
+        },
+    )
+    .unwrap();
+    let content: Value = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(content["decision"], "revision_requested");
+    assert_eq!(content["feedback"], "只检查状态");
+}
 
 fn policy_context(mode: &str) -> AgentTaskContext {
     serde_json::from_value(json!({
@@ -854,6 +1043,41 @@ fn turns_invalid_command_arguments_into_a_retryable_tool_round() {
         .as_str()
         .unwrap()
         .contains("本调用未执行"));
+}
+
+#[test]
+fn turns_mixed_diagnostic_and_action_calls_into_a_retryable_tool_round() {
+    let calls = vec![
+        AiToolCall {
+            id: "call-status".to_string(),
+            name: "get_server_status".to_string(),
+            arguments: r#"{"reason":"Inspect current usage"}"#.to_string(),
+        },
+        AiToolCall {
+            id: "call-command".to_string(),
+            name: "propose_service_action".to_string(),
+            arguments: r#"{"service":"nginx.service","action":"restart"}"#.to_string(),
+        },
+    ];
+
+    let round = invalid_tool_call_round(&calls, "I will inspect and restart it.", None).unwrap();
+    assert_eq!(round.calls.len(), calls.len());
+    assert_eq!(round.calls[0].id, calls[0].id);
+    assert_eq!(round.calls[1].id, calls[1].id);
+    assert_eq!(round.results.len(), 2);
+    for result in round.results {
+        let value = serde_json::from_str::<Value>(&result.content).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["retryable"], true);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("不能同时包含诊断工具和操作提案"));
+        assert!(value["instruction"]
+            .as_str()
+            .unwrap()
+            .contains("never both"));
+    }
 }
 
 #[test]

@@ -39,6 +39,21 @@ pub(crate) fn ai_task_get(
 }
 
 #[tauri::command]
+pub(crate) fn ai_task_sync(
+    manager: State<'_, AgentTaskManager>,
+    task_id: String,
+    after_sequence: u64,
+) -> CommandResult<AgentTaskSync> {
+    let operation = "ai_task_sync";
+    if !valid_identifier(&task_id) {
+        return Err(CommandError::from_message(operation, "AI 任务标识无效"));
+    }
+    manager
+        .sync_task(&task_id, after_sequence)
+        .map_err(|error| CommandError::from_message(operation, error))
+}
+
+#[tauri::command]
 pub(crate) fn ai_task_recovery_decide(
     app: AppHandle,
     manager: State<'_, AgentTaskManager>,

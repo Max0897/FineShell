@@ -1,5 +1,81 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+enum AiToolKind {
+    Diagnostic,
+    FileMutation,
+    CommandProposal,
+}
+
+#[derive(Debug, Deserialize)]
+struct AiToolCatalogEntry {
+    label: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiToolCatalogGroups {
+    diagnostic: HashMap<String, AiToolCatalogEntry>,
+    file_mutation: HashMap<String, AiToolCatalogEntry>,
+    command_proposal: HashMap<String, AiToolCatalogEntry>,
+}
+
+static AI_TOOL_CATALOG: LazyLock<HashMap<String, (AiToolKind, String)>> = LazyLock::new(|| {
+    let groups: AiToolCatalogGroups =
+        serde_json::from_str(include_str!("../../../src/ai-tool-catalog.json"))
+            .expect("shared AI tool catalog must be valid");
+    let mut catalog = HashMap::new();
+    for (name, entry) in groups.diagnostic {
+        assert!(
+            catalog
+                .insert(name, (AiToolKind::Diagnostic, entry.label))
+                .is_none(),
+            "shared AI tool names must be unique"
+        );
+    }
+    for (name, entry) in groups.file_mutation {
+        assert!(
+            catalog
+                .insert(name, (AiToolKind::FileMutation, entry.label))
+                .is_none(),
+            "shared AI tool names must be unique"
+        );
+    }
+    for (name, entry) in groups.command_proposal {
+        assert!(
+            catalog
+                .insert(name, (AiToolKind::CommandProposal, entry.label))
+                .is_none(),
+            "shared AI tool names must be unique"
+        );
+    }
+    catalog
+});
+
+fn tool_kind(name: &str) -> Option<AiToolKind> {
+    AI_TOOL_CATALOG.get(name).map(|(kind, _)| *kind)
+}
+
+pub(super) fn tool_label(name: &str) -> Option<&'static str> {
+    AI_TOOL_CATALOG.get(name).map(|(_, label)| label.as_str())
+}
+
+pub(super) fn diagnostic_tool_names() -> impl Iterator<Item = &'static str> {
+    AI_TOOL_CATALOG
+        .iter()
+        .filter_map(|(name, (kind, _))| (*kind == AiToolKind::Diagnostic).then_some(name.as_str()))
+}
+
+#[cfg(test)]
+pub(super) fn supported_tool_names() -> impl Iterator<Item = &'static str> {
+    AI_TOOL_CATALOG.keys().map(String::as_str)
+}
+
+#[cfg(test)]
+pub(super) fn supported_tool(name: &str) -> bool {
+    tool_kind(name).is_some()
+}
+
 pub(super) fn private_key_regex() -> Regex {
     Regex::new(r"(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----")
         .expect("private key regex must be valid")
@@ -58,34 +134,16 @@ pub(super) fn validate_messages(
     Ok(messages)
 }
 
-pub(super) fn supported_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "get_server_status"
-            | "list_processes"
-            | "get_current_directory"
-            | "get_network_connections"
-            | "inspect_service"
-            | "read_service_logs"
-            | "ping_target"
-            | "trace_route"
-            | "propose_terminal_command"
-            | "propose_service_action"
-            | "propose_file_edit"
-            | "propose_file_operation"
-    )
-}
-
 pub(super) fn file_mutation_tool(name: &str) -> bool {
-    matches!(name, "propose_file_edit" | "propose_file_operation")
+    tool_kind(name) == Some(AiToolKind::FileMutation)
 }
 
 pub(super) fn command_proposal_tool(name: &str) -> bool {
-    matches!(name, "propose_terminal_command" | "propose_service_action")
+    tool_kind(name) == Some(AiToolKind::CommandProposal)
 }
 
 pub(super) fn diagnostic_tool(name: &str) -> bool {
-    !file_mutation_tool(name) && !command_proposal_tool(name) && supported_tool(name)
+    tool_kind(name) == Some(AiToolKind::Diagnostic)
 }
 
 pub(super) fn enabled_diagnostic_tools(
@@ -93,21 +151,9 @@ pub(super) fn enabled_diagnostic_tools(
     legacy_enabled: bool,
 ) -> Result<HashSet<String>, String> {
     if values.is_empty() && legacy_enabled {
-        return Ok([
-            "get_server_status",
-            "list_processes",
-            "get_current_directory",
-            "get_network_connections",
-            "inspect_service",
-            "read_service_logs",
-            "ping_target",
-            "trace_route",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect());
+        return Ok(diagnostic_tool_names().map(str::to_string).collect());
     }
-    if values.len() > 8 {
+    if values.len() > diagnostic_tool_names().count() {
         return Err("AI 只读工具权限数量无效".to_string());
     }
     let mut enabled = HashSet::new();
@@ -300,6 +346,19 @@ pub(super) fn validate_diagnostic_plan_calls(calls: &[AiToolCall]) -> Result<(),
     Ok(())
 }
 
+fn validate_tool_call_composition(calls: &[AiToolCall]) -> Result<(), String> {
+    let has_diagnostic = calls.iter().any(|call| diagnostic_tool(&call.name));
+    let has_action = calls
+        .iter()
+        .any(|call| file_mutation_tool(&call.name) || command_proposal_tool(&call.name));
+    if has_diagnostic && has_action {
+        return Err(
+            "AI 同一响应不能同时包含诊断工具和操作提案，请先完成诊断再提出操作".to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn valid_tool_arguments(name: &str, arguments: &str) -> bool {
     let Ok(Value::Object(arguments)) = serde_json::from_str::<Value>(arguments) else {
         return false;
@@ -426,19 +485,28 @@ pub(super) fn invalid_tool_call_round(
         .iter()
         .map(tool_call_argument_error)
         .collect::<Vec<_>>();
-    let plan_error = validate_diagnostic_plan_calls(calls).err();
-    if errors.iter().all(Option::is_none) && plan_error.is_none() {
+    let batch_error = validate_tool_call_composition(calls)
+        .and_then(|_| validate_diagnostic_plan_calls(calls))
+        .err();
+    if errors.iter().all(Option::is_none) && batch_error.is_none() {
         return None;
     }
 
-    let retry_instruction = "Correct the tool arguments and return the complete tool call set again. Do not claim that any rejected call was executed.";
+    let retry_instruction = if batch_error
+        .as_deref()
+        .is_some_and(|error| error.contains("同时包含诊断工具和操作提案"))
+    {
+        "Return either diagnostic calls or action proposals in this response, never both. Complete diagnostics first, consume their results, then propose actions in a later response."
+    } else {
+        "Correct the tool arguments and return the complete tool call set again. Do not claim that any rejected call was executed."
+    };
     let results = calls
         .iter()
         .zip(errors.iter_mut())
         .map(|(call, error)| {
             let error = error
                 .take()
-                .or_else(|| plan_error.clone())
+                .or_else(|| batch_error.clone())
                 .unwrap_or_else(|| "同一响应中包含无效工具调用，因此本调用未执行".to_string());
             AiToolResult {
                 call_id: call.id.clone(),

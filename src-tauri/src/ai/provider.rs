@@ -26,6 +26,7 @@ pub(super) struct ProviderTurnResult {
     pub(super) content: String,
     pub(super) reasoning_content: Option<String>,
     pub(super) tool_calls: Vec<AiToolCall>,
+    pub(super) pre_resolved_tool_results: Vec<AiToolResult>,
     pub(super) request_count: u32,
     pub(super) usage: Option<AiTokenUsage>,
 }
@@ -198,6 +199,7 @@ impl OpenAiCompatibleProvider {
             content: response.content,
             reasoning_content: response.reasoning_content,
             tool_calls: response.tool_calls,
+            pre_resolved_tool_results: response.pre_resolved_tool_results,
             request_count: response.request_count,
             usage: response.usage.map(|usage| AiTokenUsage {
                 input_tokens: usage.input_tokens,
