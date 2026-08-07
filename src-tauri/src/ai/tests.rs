@@ -3,20 +3,102 @@ use std::collections::HashSet;
 use reqwest::Url;
 use serde_json::{json, Value};
 
-use crate::{agent::AgentTaskContext, agent_policy::PolicyDecision};
+use crate::{
+    agent::{
+        AgentActionResultSnapshot, AgentActionStatus, AgentCommandExecutionPhase,
+        AgentCommandResultSnapshot, AgentTaskContext,
+    },
+    agent_policy::PolicyDecision,
+};
 
 use super::{
-    apply_finalization_instruction, apply_tool_call_delta, build_request_messages,
-    capability_http_failure, complete_tool_calls, create_diagnostic_plan,
+    action_round_result, apply_finalization_instruction, apply_tool_call_delta,
+    build_request_messages, capability_http_failure, complete_tool_calls, create_diagnostic_plan,
     diagnostic_policy_evaluations, diagnostic_tool_requires_connection, enabled_diagnostic_tools,
     filter_tool_definitions, http_messages, invalid_tool_call_round, is_local_endpoint,
     is_tool_unsupported_error, normalize_models, sanitize_context, service_endpoint, stream_delta,
     stream_tool_call_deltas, tool_allowed, tool_definitions, tool_loop_finalize_reason,
     tool_probe_supported, valid_stream_probe_event, valid_tool_arguments,
     validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls, validate_service_url,
-    validate_tool_rounds, AiCapabilityKind, AiCapabilityState, AiChatMessage, AiFinalizeReason,
-    AiModelEntry, AiToolCall, AiToolResult, AiToolRound, SseParser,
+    validate_tool_rounds, AiActionRoundDecision, AiActionRoundDecisionKind, AiCapabilityKind,
+    AiCapabilityState, AiChatMessage, AiFinalizeReason, AiModelEntry, AiToolCall, AiToolResult,
+    AiToolRound, SseParser,
 };
+
+#[test]
+fn action_round_result_uses_the_authoritative_command_snapshot() {
+    let call = AiToolCall {
+        id: "command-1".to_string(),
+        name: "propose_terminal_command".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let decision = AiActionRoundDecision {
+        call_id: call.id.clone(),
+        kind: AiActionRoundDecisionKind::ExecutionCompleted,
+        feedback: None,
+        error: None,
+    };
+    let result = action_round_result(
+        &call,
+        &decision,
+        AgentActionResultSnapshot {
+            id: call.id.clone(),
+            tool: "execute_terminal_command".to_string(),
+            status: AgentActionStatus::Succeeded,
+            summary: Some("终端命令执行成功".to_string()),
+            error: None,
+            duration_ms: Some(41),
+            command: Some(AgentCommandResultSnapshot {
+                phase: AgentCommandExecutionPhase::Completed,
+                output: Some("active".to_string()),
+                output_truncated: false,
+                stdout: Some("active".to_string()),
+                stdout_truncated: false,
+                stderr: Some(String::new()),
+                stderr_truncated: false,
+                exit_code: Some(0),
+                duration_ms: Some(41),
+                reason: None,
+            }),
+        },
+    )
+    .unwrap();
+    let content: Value = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(content["decision"], "approved_and_completed");
+    assert_eq!(content["exitCode"], 0);
+    assert_eq!(content["output"], "active");
+}
+
+#[test]
+fn action_round_result_preserves_revision_feedback_without_execution_data() {
+    let call = AiToolCall {
+        id: "command-2".to_string(),
+        name: "propose_terminal_command".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let result = action_round_result(
+        &call,
+        &AiActionRoundDecision {
+            call_id: call.id.clone(),
+            kind: AiActionRoundDecisionKind::RevisionRequested,
+            feedback: Some("只检查状态".to_string()),
+            error: None,
+        },
+        AgentActionResultSnapshot {
+            id: call.id.clone(),
+            tool: "execute_terminal_command".to_string(),
+            status: AgentActionStatus::Rejected,
+            summary: Some("用户拒绝了该动作".to_string()),
+            error: None,
+            duration_ms: None,
+            command: None,
+        },
+    )
+    .unwrap();
+    let content: Value = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(content["decision"], "revision_requested");
+    assert_eq!(content["feedback"], "只检查状态");
+}
 
 fn policy_context(mode: &str) -> AgentTaskContext {
     serde_json::from_value(json!({

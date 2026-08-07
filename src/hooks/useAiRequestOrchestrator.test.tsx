@@ -149,6 +149,20 @@ describe("useAiRequestOrchestrator", () => {
     const requests: Array<{ toolRounds: unknown[] }> = [];
     const invokeMock = mock(
       async (command: string, args?: Record<string, unknown>) => {
+        if (command === "ai_task_action_results") {
+          const request = args?.request as {
+            calls: Array<{ id: string; name: string }>;
+          };
+          return request.calls.map((call) => ({
+            callId: call.id,
+            content: JSON.stringify({
+              decision: "approved_and_completed",
+              message: "远程文件已更新",
+              ok: true,
+            }),
+            name: call.name,
+          }));
+        }
         if (command !== "ai_chat_start") {
           throw new Error(`unexpected command: ${command}`);
         }
@@ -256,6 +270,20 @@ describe("useAiRequestOrchestrator", () => {
     }> = [];
     const invoke = mock(
       async (command: string, args?: Record<string, unknown>) => {
+        if (command === "ai_task_action_results") {
+          return [
+            {
+              callId: "command-approval-1",
+              content: JSON.stringify({
+                decision: "approved_and_completed",
+                exitCode: 0,
+                ok: true,
+                output: "Mem: 1.8Gi used, 2.0Gi free",
+              }),
+              name: "propose_terminal_command",
+            },
+          ];
+        }
         if (command !== "ai_chat_start") {
           throw new Error(`unexpected command: ${command}`);
         }
@@ -362,7 +390,7 @@ describe("useAiRequestOrchestrator", () => {
       await send;
     });
 
-    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke).toHaveBeenCalledTimes(3);
     expect(requests[1]!.toolRounds[0]!.reasoningContent).toBe(
       "inspect service state before continuing",
     );
@@ -396,6 +424,22 @@ describe("useAiRequestOrchestrator", () => {
     }> = [];
     const invoke = mock(
       async (command: string, args?: Record<string, unknown>) => {
+        if (command === "ai_task_action_results") {
+          const request = args?.request as {
+            decisions: Array<{ feedback?: string }>;
+          };
+          return [
+            {
+              callId: "command-revision-1",
+              content: JSON.stringify({
+                decision: "revision_requested",
+                feedback: request.decisions[0]?.feedback,
+                ok: false,
+              }),
+              name: "propose_terminal_command",
+            },
+          ];
+        }
         if (command !== "ai_chat_start") {
           throw new Error(`unexpected command: ${command}`);
         }
@@ -471,7 +515,7 @@ describe("useAiRequestOrchestrator", () => {
       await send;
     });
 
-    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke).toHaveBeenCalledTimes(3);
     expect(JSON.parse(requests[1]!.toolRounds[0]!.results[0]!.content)).toEqual(
       expect.objectContaining({
         decision: "revision_requested",

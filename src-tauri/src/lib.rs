@@ -110,6 +110,7 @@ pub fn run() {
             ai::ai_probe_capabilities,
             ai::ai_chat_start,
             ai::ai_chat_cancel,
+            ai::ai_task_action_results,
             agent::ai_task_get,
             agent::ai_task_events_since,
             agent::ai_task_recovery_decide,

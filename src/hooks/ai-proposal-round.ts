@@ -1,23 +1,18 @@
 import {
-  aiCommandApprovalToolResult,
-  aiCommandProposalToolResult,
   createAiCommandProposal,
   isAiCommandProposalToolCall,
   type AiCommandApprovalDecision,
   type AiCommandProposal,
 } from "../ai-command-proposals";
 import {
-  aiFileApprovalToolResult,
   type AiFileApprovalDecision,
 } from "../ai-file-approvals";
 import {
-  aiFileEditToolResult,
   createAiFileEditProposal,
   isAiFileEditToolCall,
   type AiFileEditProposal,
 } from "../ai-file-edits";
 import {
-  aiFileOperationToolResult,
   createAiFileOperationProposal,
   isAiFileOperationToolCall,
   type AiFileOperationProposal,
@@ -26,7 +21,6 @@ import type { AiRemoteFileContext } from "../ai-utils";
 import {
   commandErrorMessage,
   type AiToolCall,
-  type AiToolResult,
 } from "../tauri-protocol";
 
 interface PrepareAiProposalRoundOptions {
@@ -59,7 +53,17 @@ export interface AiPreparedProposalRound {
   fileApprovalDecisions: Map<string, Promise<AiFileApprovalDecision>>;
   fileEditProposals: AiFileEditProposal[];
   fileOperationProposals: AiFileOperationProposal[];
-  proposalResults: Map<string, AiToolResult>;
+  proposalErrors: Map<string, string>;
+}
+
+export interface AiActionRoundDecision {
+  callId: string;
+  kind:
+    | AiCommandApprovalDecision["kind"]
+    | AiFileApprovalDecision["kind"]
+    | "invalid";
+  feedback?: string;
+  error?: string;
 }
 
 function assertSupportedProposalCalls(calls: AiToolCall[]) {
@@ -98,7 +102,7 @@ export function prepareAiProposalRound({
     fileApprovalDecisions: new Map(),
     fileEditProposals: [],
     fileOperationProposals: [],
-    proposalResults: new Map(),
+    proposalErrors: new Map(),
   };
 
   for (const call of calls.filter(isAiFileEditToolCall)) {
@@ -124,10 +128,7 @@ export function prepareAiProposalRound({
     } catch (error) {
       proposalError = commandErrorMessage(error);
     }
-    round.proposalResults.set(
-      call.id,
-      aiFileEditToolResult(call, proposalError),
-    );
+    if (proposalError) round.proposalErrors.set(call.id, proposalError);
   }
 
   for (const call of calls.filter(isAiFileOperationToolCall)) {
@@ -157,10 +158,7 @@ export function prepareAiProposalRound({
     } catch (error) {
       proposalError = commandErrorMessage(error);
     }
-    round.proposalResults.set(
-      call.id,
-      aiFileOperationToolResult(call, proposalError),
-    );
+    if (proposalError) round.proposalErrors.set(call.id, proposalError);
   }
 
   for (const call of calls.filter(isAiCommandProposalToolCall)) {
@@ -187,10 +185,7 @@ export function prepareAiProposalRound({
       proposalError = commandErrorMessage(error);
     }
     if (proposalError) {
-      round.proposalResults.set(
-        call.id,
-        aiCommandProposalToolResult(call, proposalError),
-      );
+      round.proposalErrors.set(call.id, proposalError);
     }
   }
 
@@ -211,49 +206,79 @@ export async function resolveAiProposalRound(
   round: AiPreparedProposalRound,
   isCancelled: () => boolean,
 ) {
-  const toolResults: AiToolResult[] = [];
+  const decisions: AiActionRoundDecision[] = [];
 
   for (const call of calls) {
     if (isCancelled()) throw new Error("AI 请求已取消");
 
     if (isAiFileEditToolCall(call)) {
       const decision = round.fileApprovalDecisions.get(call.id);
-      toolResults.push(
-        decision
-          ? aiFileApprovalToolResult(call, await decision)
-          : (round.proposalResults.get(call.id) ??
-              aiFileEditToolResult(call, "文件修改建议未通过本地校验")),
+      const resolved = decision ? await decision : null;
+      decisions.push(
+        resolved
+          ? {
+              callId: call.id,
+              kind: resolved.kind,
+              ...(resolved.kind === "revision_requested"
+                ? { feedback: resolved.feedback }
+                : {}),
+            }
+          : {
+              callId: call.id,
+              error:
+                round.proposalErrors.get(call.id) ??
+                "文件修改建议未通过本地校验",
+              kind: "invalid",
+            },
       );
       continue;
     }
     if (isAiFileOperationToolCall(call)) {
       const decision = round.fileApprovalDecisions.get(call.id);
-      toolResults.push(
-        decision
-          ? aiFileApprovalToolResult(call, await decision)
-          : (round.proposalResults.get(call.id) ??
-              aiFileOperationToolResult(
-                call,
+      const resolved = decision ? await decision : null;
+      decisions.push(
+        resolved
+          ? {
+              callId: call.id,
+              kind: resolved.kind,
+              ...(resolved.kind === "revision_requested"
+                ? { feedback: resolved.feedback }
+                : {}),
+            }
+          : {
+              callId: call.id,
+              error:
+                round.proposalErrors.get(call.id) ??
                 "文件操作建议未通过本地校验",
-              )),
+              kind: "invalid",
+            },
       );
       continue;
     }
     if (isAiCommandProposalToolCall(call)) {
       const decision = round.commandApprovalDecisions.get(call.id);
-      toolResults.push(
-        decision
-          ? aiCommandApprovalToolResult(call, await decision)
-          : (round.proposalResults.get(call.id) ??
-              aiCommandProposalToolResult(
-                call,
+      const resolved = decision ? await decision : null;
+      decisions.push(
+        resolved
+          ? {
+              callId: call.id,
+              kind: resolved.kind,
+              ...(resolved.kind === "revision_requested"
+                ? { feedback: resolved.feedback }
+                : {}),
+            }
+          : {
+              callId: call.id,
+              error:
+                round.proposalErrors.get(call.id) ??
                 "终端命令建议未通过本地校验",
-              )),
+              kind: "invalid",
+            },
       );
       continue;
     }
     throw new Error(`AI 请求了不支持的工具：${call.name}`);
   }
 
-  return toolResults;
+  return decisions;
 }

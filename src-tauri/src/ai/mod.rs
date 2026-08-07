@@ -14,8 +14,9 @@ use tokio::sync::watch;
 
 use crate::{
     agent::{
-        self, timestamp_ms, AgentActionIntent, AgentPlan, AgentPlanDecision, AgentPlanStatus,
-        AgentPlanStep, AgentPlanStepStatus, AgentTaskContext, AgentTaskManager,
+        self, timestamp_ms, AgentActionIntent, AgentActionStatus, AgentCommandExecutionPhase,
+        AgentPlan, AgentPlanDecision, AgentPlanStatus, AgentPlanStep, AgentPlanStepStatus,
+        AgentTaskContext, AgentTaskManager,
     },
     agent_actions::{
         normalize_remote_action_path, proposal_action_intent, MAX_COMMAND_PURPOSE_CHARS,
@@ -184,6 +185,34 @@ pub(crate) struct AiToolRound {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reasoning_content: Option<String>,
     pub(crate) results: Vec<AiToolResult>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiActionRoundResolutionRequest {
+    task_id: String,
+    calls: Vec<AiToolCall>,
+    decisions: Vec<AiActionRoundDecision>,
+}
+
+#[derive(Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum AiActionRoundDecisionKind {
+    ExecutionCompleted,
+    ExecutionFailed,
+    ExecutionUnavailable,
+    Rejected,
+    RevisionRequested,
+    Invalid,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiActionRoundDecision {
+    call_id: String,
+    kind: AiActionRoundDecisionKind,
+    feedback: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Serialize)]

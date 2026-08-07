@@ -670,10 +670,20 @@ export function useAiRequestOrchestrator({
           if (aiProposalRoundHasPendingApprovals(proposalRound)) {
             await persistConversation(proposalConversation);
           }
-          const toolResults = await resolveAiProposalRound(
+          const decisions = await resolveAiProposalRound(
             result.toolCalls,
             proposalRound,
             () => cancelledRequestsRef.current.has(requestId),
+          );
+          const toolResults = await invoke<AiToolRound["results"]>(
+            "ai_task_action_results",
+            {
+              request: {
+                taskId: requestId,
+                calls: result.toolCalls,
+                decisions,
+              },
+            },
           );
           toolRounds.push({
             calls: result.toolCalls,

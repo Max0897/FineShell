@@ -1,5 +1,5 @@
 {
-  "version": 32,
+  "version": 33,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -26,6 +26,7 @@
     "ai_probe_capabilities": true,
     "ai_chat_start": true,
     "ai_chat_cancel": true,
+    "ai_task_action_results": true,
     "ai_task_get": true,
     "ai_task_events_since": true,
     "ai_task_recovery_decide": true,
