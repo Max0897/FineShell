@@ -369,6 +369,34 @@ fn extract_reasoning_content(choice: &OneOrMany<AssistantContent>) -> Option<Str
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
+fn has_native_tool_calls(choice: &OneOrMany<AssistantContent>) -> bool {
+    choice
+        .iter()
+        .any(|item| matches!(item, AssistantContent::ToolCall(_)))
+}
+
+fn resolve_tool_protocol(
+    content: &str,
+    choice: &OneOrMany<AssistantContent>,
+    request_id: &str,
+    round_index: usize,
+) -> Result<(String, Option<ParsedDsmlResponse>), RigTurnError> {
+    if has_native_tool_calls(choice) {
+        let visible = DSML_TOOL_CALLS_START
+            .find(content)
+            .map_or(content, |marker| &content[..marker.start()])
+            .trim_end()
+            .to_string();
+        return Ok((visible, None));
+    }
+
+    let parsed = parse_dsml_response(content, request_id, round_index)?;
+    let visible = parsed
+        .as_ref()
+        .map_or_else(|| content.to_string(), |parsed| parsed.content.clone());
+    Ok((visible, parsed))
+}
+
 struct PreparedTurn {
     run: AgentRun,
     prompt: Message,
@@ -675,9 +703,14 @@ async fn stream_model_turn<M: CompletionModel>(
             StreamKind::Reasoning,
         );
     }
-    let parsed_dsml = parse_dsml_response(&content, context.request_id, context.round_index)?;
+    let (resolved_content, parsed_dsml) = resolve_tool_protocol(
+        &content,
+        &original_choice,
+        context.request_id,
+        context.round_index,
+    )?;
+    content = resolved_content;
     let choice = if let Some(parsed) = parsed_dsml {
-        content = parsed.content;
         let mut response = Vec::new();
         if let Some(reasoning) = reasoning_content.as_deref() {
             response.push(AssistantContent::reasoning(reasoning));
@@ -841,8 +874,8 @@ mod tests {
 
     use super::{
         extract_reasoning_content, invalid_tool_retry_feedback, parse_dsml_response, prepare_turn,
-        reasoning_stream_delta, retry_invalid_tool_call, tool_definitions, DsmlStreamFilter,
-        StreamKind, StreamPayload,
+        reasoning_stream_delta, resolve_tool_protocol, retry_invalid_tool_call, tool_definitions,
+        DsmlStreamFilter, StreamKind, StreamPayload,
     };
     use crate::ai::{AiChatMessage, AiToolCall, AiToolResult, AiToolRound};
 
@@ -968,6 +1001,44 @@ mod tests {
         );
         assert_eq!(arguments["purpose"], "搜索 Nginx 配置文件");
         assert_eq!(arguments["metadata"]["source"], "agent");
+    }
+
+    #[test]
+    fn native_tool_calls_take_precedence_over_dsml_fallback_markup() {
+        let choice = OneOrMany::many(vec![
+            AssistantContent::text("Use the native call."),
+            AssistantContent::ToolCall(ToolCall::new(
+                "native-call".to_string(),
+                ToolFunction::new("get_server_status".to_string(), json!({})),
+            )),
+        ])
+        .unwrap();
+        let content = r#"Use the native call.
+<|DSML|tool_calls><|DSML|invoke name="get_server_status"><|DSML|parameter name="reason" string="true">duplicate</|DSML|parameter></|DSML|invoke></|DSML|tool_calls>"#;
+
+        let (visible, fallback) =
+            resolve_tool_protocol(content, &choice, "request-native", 0).unwrap();
+
+        assert_eq!(visible, "Use the native call.");
+        assert!(fallback.is_none());
+        assert!(choice
+            .iter()
+            .any(|item| matches!(item, AssistantContent::ToolCall(_))));
+    }
+
+    #[test]
+    fn dsml_is_used_only_when_native_tool_calls_are_absent() {
+        let choice = OneOrMany::one(AssistantContent::text("compatibility response"));
+        let content = r#"Checking.
+<|DSML|tool_calls><|DSML|invoke name="get_server_status"><|DSML|parameter name="reason" string="true">inspect</|DSML|parameter></|DSML|invoke></|DSML|tool_calls>"#;
+
+        let (visible, fallback) =
+            resolve_tool_protocol(content, &choice, "request-fallback", 0).unwrap();
+
+        assert_eq!(visible, "Checking.");
+        let fallback = fallback.expect("DSML fallback must be parsed without native calls");
+        assert_eq!(fallback.calls.len(), 1);
+        assert_eq!(fallback.calls[0].name, "get_server_status");
     }
 
     #[test]
