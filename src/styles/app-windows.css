@@ -779,18 +779,11 @@
 .host-tree-table-container {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
 }
 
-.host-tree-table .arco-table-content-scroll {
-  overflow: visible;
-}
-
-.host-tree-table thead > .arco-table-tr > .arco-table-th {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  background: var(--color-fill-1);
+.host-tree-table .arco-table-body {
+  height: var(--host-table-body-height);
 }
 
 .manager-toolbar-actions {
