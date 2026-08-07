@@ -7,6 +7,18 @@ fn bounded_round_message(value: Option<String>) -> Option<String> {
     })
 }
 
+pub(super) fn take_pre_resolved_tool_round(response: &mut AiChatResult) -> Option<AiToolRound> {
+    if response.pre_resolved_tool_results.is_empty() {
+        return None;
+    }
+    Some(AiToolRound {
+        calls: response.tool_calls.clone(),
+        content: (!response.content.trim().is_empty()).then(|| response.content.trim().to_string()),
+        reasoning_content: response.reasoning_content.clone(),
+        results: std::mem::take(&mut response.pre_resolved_tool_results),
+    })
+}
+
 pub(super) fn action_round_result(
     call: &AiToolCall,
     decision: &AiActionRoundDecision,
@@ -372,20 +384,14 @@ pub(crate) async fn ai_chat_start(
                 }
             }
 
-            if !response.pre_resolved_tool_results.is_empty() {
+            if let Some(round) = take_pre_resolved_tool_round(&mut response) {
                 if let Some(context) = task_context.as_ref() {
                     let events = task_manager
                         .finish_model_turn(context.id(), true)
                         .map_err(|error| structured(operation, error))?;
                     agent::emit_task_events(&app, events);
                 }
-                tool_rounds.push(AiToolRound {
-                    calls: response.tool_calls.clone(),
-                    content: (!response.content.trim().is_empty())
-                        .then(|| response.content.trim().to_string()),
-                    reasoning_content: response.reasoning_content.clone(),
-                    results: std::mem::take(&mut response.pre_resolved_tool_results),
-                });
+                tool_rounds.push(round);
                 continue;
             }
 

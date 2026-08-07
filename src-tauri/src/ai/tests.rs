@@ -17,12 +17,12 @@ use super::{
     diagnostic_policy_evaluations, diagnostic_tool_requires_connection, enabled_diagnostic_tools,
     filter_tool_definitions, http_messages, invalid_tool_call_round, is_local_endpoint,
     is_tool_unsupported_error, normalize_models, sanitize_context, service_endpoint, stream_delta,
-    stream_tool_call_deltas, supported_tool_names, tool_allowed, tool_definitions,
-    tool_loop_finalize_reason, tool_probe_supported, valid_stream_probe_event,
+    stream_tool_call_deltas, supported_tool_names, take_pre_resolved_tool_round, tool_allowed,
+    tool_definitions, tool_loop_finalize_reason, tool_probe_supported, valid_stream_probe_event,
     valid_tool_arguments, validate_diagnostic_plan_calls, validate_enabled_diagnostic_calls,
     validate_service_url, validate_tool_rounds, AiActionRoundDecision, AiActionRoundDecisionKind,
-    AiCapabilityKind, AiCapabilityState, AiChatMessage, AiFinalizeReason, AiModelEntry, AiToolCall,
-    AiToolResult, AiToolRound, SseParser,
+    AiCapabilityKind, AiCapabilityState, AiChatMessage, AiChatResult, AiFinalizeReason,
+    AiModelEntry, AiRequestTelemetry, AiToolCall, AiToolResult, AiToolRound, SseParser,
 };
 
 #[test]
@@ -86,6 +86,50 @@ fn shared_tool_catalog_matches_provider_schemas_and_argument_validators() {
             "shared tool `{name}` must have a matching argument validator"
         );
     }
+}
+
+#[test]
+fn pre_resolved_tool_results_are_returned_to_the_next_model_round() {
+    let call = AiToolCall {
+        id: "call-unknown".to_string(),
+        name: "unknown_tool".to_string(),
+        arguments: r#"{"value":true}"#.to_string(),
+    };
+    let result = AiToolResult {
+        call_id: call.id.clone(),
+        name: call.name.clone(),
+        content: r#"{"ok":false,"error":"tool_not_enabled"}"#.to_string(),
+    };
+    let mut response = AiChatResult {
+        content: "  I will retry with an enabled tool.  ".to_string(),
+        reasoning_content: Some("Select a supported diagnostic.".to_string()),
+        tool_calls: vec![call.clone()],
+        pre_resolved_tool_results: vec![result.clone()],
+        action_intents: Vec::new(),
+        diagnostic_plans: Vec::new(),
+        diagnostic_tool_rounds: Vec::new(),
+        telemetry: AiRequestTelemetry {
+            duration_ms: 10,
+            request_count: 1,
+            usage: None,
+        },
+    };
+
+    let round = take_pre_resolved_tool_round(&mut response).unwrap();
+    assert_eq!(round.calls.len(), 1);
+    assert_eq!(round.calls[0].id, call.id);
+    assert_eq!(
+        round.content.as_deref(),
+        Some("I will retry with an enabled tool.")
+    );
+    assert_eq!(
+        round.reasoning_content.as_deref(),
+        Some("Select a supported diagnostic.")
+    );
+    assert_eq!(round.results.len(), 1);
+    assert_eq!(round.results[0].call_id, result.call_id);
+    assert!(response.pre_resolved_tool_results.is_empty());
+    assert!(take_pre_resolved_tool_round(&mut response).is_none());
 }
 
 #[test]

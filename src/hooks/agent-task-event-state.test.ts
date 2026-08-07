@@ -40,6 +40,30 @@ describe("agent task event state", () => {
         task: task("task-1", 6),
       }),
     ).toBe(next);
+    expect(
+      applyAgentTaskEvent(next, "task-1", {
+        kind: "plan_updated",
+        protocolVersion: PROTOCOL_VERSION,
+        sequence: 6,
+        task: task("task-2", 6),
+      }),
+    ).toBe(next);
+    expect(
+      applyAgentTaskEvent(next, "task-1", {
+        kind: "plan_updated",
+        protocolVersion: PROTOCOL_VERSION,
+        sequence: 7,
+        task: task("task-1", 6),
+      }),
+    ).toBe(next);
+    expect(
+      applyAgentTaskEvent(next, undefined, {
+        kind: "plan_updated",
+        protocolVersion: PROTOCOL_VERSION,
+        sequence: 6,
+        task: task("task-1", 6),
+      }),
+    ).toBe(next);
   });
 
   test("reconciles a snapshot with later events", () => {
@@ -56,5 +80,57 @@ describe("agent task event state", () => {
         }],
       }),
     ).toBe(replayed);
+  });
+
+  test("keeps the newest task across stale snapshots and unordered replay", () => {
+    const current = task("task-1", 8);
+    const newest = task("task-1", 10);
+    expect(
+      reconcileAgentTaskSync(current, "task-1", {
+        task: task("task-1", 3),
+        events: [
+          {
+            kind: "task_completed",
+            protocolVersion: PROTOCOL_VERSION,
+            sequence: 10,
+            task: newest,
+          },
+          {
+            kind: "plan_updated",
+            protocolVersion: PROTOCOL_VERSION,
+            sequence: 9,
+            task: task("task-1", 9),
+          },
+          {
+            kind: "task_completed",
+            protocolVersion: PROTOCOL_VERSION,
+            sequence: 11,
+            task: task("task-2", 11),
+          },
+          {
+            kind: "task_completed",
+            protocolVersion: PROTOCOL_VERSION + 1,
+            sequence: 12,
+            task: task("task-1", 12),
+          },
+        ],
+      }),
+    ).toBe(newest);
+  });
+
+  test("drops unrelated local state before applying the tracked snapshot", () => {
+    const snapshot = task("task-1", 2);
+    expect(
+      reconcileAgentTaskSync(task("task-2", 20), "task-1", {
+        task: snapshot,
+        events: [],
+      }),
+    ).toBe(snapshot);
+    expect(
+      reconcileAgentTaskSync(task("task-2", 20), "task-1", {
+        task: task("task-2", 21),
+        events: [],
+      }),
+    ).toBeUndefined();
   });
 });
