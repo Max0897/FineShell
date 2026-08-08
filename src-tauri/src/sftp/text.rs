@@ -66,13 +66,13 @@ pub(super) fn remote_text_temporary_path(remote_path: &Path) -> Result<PathBuf, 
         .map_err(|error| format!("无法生成远程临时文件名：{error}"))?
         .as_nanos();
     remote_upload_temporary_path(
-        remote_path,
+        &remote_path_text(remote_path),
         &format!("edit-{}-{suffix}", std::process::id()),
     )
 }
 
 pub(super) fn remote_text_backup_path(remote_path: &Path) -> Result<PathBuf, String> {
-    remote_upload_temporary_path(remote_path, "fineshell-edit-backup")
+    remote_upload_temporary_path(&remote_path_text(remote_path), "fineshell-edit-backup")
 }
 
 pub(super) fn replace_remote_text_file(
@@ -218,7 +218,7 @@ pub(super) fn ai_file_operation_temporary_path(
         .map_err(|error| format!("无法生成 AI 文件操作临时路径：{error}"))?
         .as_nanos();
     remote_upload_temporary_path(
-        path,
+        &remote_path_text(path),
         &format!("ai-{action}-{}-{suffix}", std::process::id()),
     )
 }

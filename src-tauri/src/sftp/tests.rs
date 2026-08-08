@@ -130,7 +130,7 @@ fn rejects_unsafe_archive_entries_and_names() {
 fn sanitizes_archive_download_temporary_directories() {
     assert_eq!(
         remote_archive_temporary_directory("transfer/../../123"),
-        Path::new("/tmp/.fineshell-archive-transfer123")
+        "/tmp/.fineshell-archive-transfer123"
     );
 }
 
@@ -181,7 +181,7 @@ fn keeps_partial_downloads_next_to_the_selected_file() {
 #[test]
 fn keeps_partial_uploads_next_to_the_remote_target() {
     let target = Path::new("/srv/releases/archive.zip");
-    let temporary = remote_upload_temporary_path(target, "transfer-123").unwrap();
+    let temporary = remote_upload_temporary_path(target.to_str().unwrap(), "transfer-123").unwrap();
     assert_eq!(
         temporary,
         Path::new("/srv/releases/.archive.zip.transfer-123.part")

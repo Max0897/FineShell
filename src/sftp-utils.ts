@@ -1,14 +1,15 @@
 export function remoteParentPath(path: string) {
-  const normalized = path.replace(/\/+$/, "") || "/";
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   if (normalized === "/") return "/";
   const separator = normalized.lastIndexOf("/");
   return separator <= 0 ? "/" : normalized.slice(0, separator);
 }
 
 export function normalizeRemoteDirectoryPath(path: string) {
-  const trimmed = path.trim();
+  const trimmed = path.trim().replace(/\\/g, "/");
   if (!trimmed.startsWith("/")) return null;
-  return trimmed === "/" ? "/" : trimmed.replace(/\/+$/, "");
+  const normalized = trimmed.replace(/\/+/g, "/");
+  return normalized === "/" ? "/" : normalized.replace(/\/+$/, "");
 }
 
 export interface RemotePathBreadcrumb {
@@ -70,13 +71,18 @@ export function matchRemoteDirectoryPaths(
 }
 
 export function remoteJoinPath(directory: string, name: string) {
-  if (directory === "/") return `/${name}`;
-  return `${directory.replace(/\/+$/, "")}/${name}`;
+  const normalizedDirectory =
+    normalizeRemoteDirectoryPath(directory) ??
+    directory.replace(/\\/g, "/").replace(/\/+/g, "/");
+  if (normalizedDirectory === "/") return `/${name}`;
+  return `${normalizedDirectory.replace(/\/+$/, "")}/${name}`;
 }
 
 export function isRemotePathDescendant(parent: string, candidate: string) {
-  const normalizedParent = parent.replace(/\/+$/, "") || "/";
-  const normalizedCandidate = candidate.replace(/\/+$/, "") || "/";
+  const normalizedParent =
+    parent.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+  const normalizedCandidate =
+    candidate.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   if (normalizedParent === "/") {
     return normalizedCandidate !== "/" && normalizedCandidate.startsWith("/");
   }

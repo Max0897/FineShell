@@ -77,7 +77,7 @@ pub fn run() {
         .menu(native_menu::build_chinese_menu)
         .on_menu_event(native_menu::handle_menu_event);
 
-    builder
+    let app = builder
         .invoke_handler(tauri::generate_handler![
             protocol::protocol_version,
             #[cfg(desktop)]
@@ -176,6 +176,14 @@ pub fn run() {
             sftp::sftp_cancel_transfer,
             sftp::sftp_disconnect,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        native_menu::handle_run_event(app, event);
+
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app, event);
+    });
 }

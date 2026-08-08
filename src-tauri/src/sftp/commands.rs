@@ -497,18 +497,18 @@ pub(crate) async fn sftp_download_archive(
                     .sftp()
                     .map_err(|error| format!("无法建立打包下载通道：{error}"))?;
                 let temporary_directory = remote_archive_temporary_directory(&task_transfer_id);
-                let remote_archive_path = temporary_directory.join(archive_name);
+                let remote_archive_path = remote_join_path(&temporary_directory, archive_name)?;
                 let result = (|| -> Result<(), String> {
                     wait_for_transfer(&control, &reporter, 0)?;
-                    let _ = sftp.unlink(&remote_archive_path);
-                    let _ = sftp.rmdir(&temporary_directory);
-                    sftp.mkdir(&temporary_directory, 0o700)
+                    let _ = sftp.unlink(Path::new(&remote_archive_path));
+                    let _ = sftp.rmdir(Path::new(&temporary_directory));
+                    sftp.mkdir(Path::new(&temporary_directory), 0o700)
                         .map_err(|error| format!("无法创建远程打包临时目录：{error}"))?;
                     create_archive(
                         &session,
                         &sftp,
                         &source_paths,
-                        &remote_path_text(&remote_archive_path),
+                        &remote_archive_path,
                         format,
                         false,
                     )?;
@@ -519,15 +519,13 @@ pub(crate) async fn sftp_download_archive(
                         control: &control,
                         transfer_id: &task_transfer_id,
                         local_path: &local_path,
-                        remote_path: remote_archive_path
-                            .to_str()
-                            .ok_or_else(|| "远程打包临时路径无效".to_string())?,
+                        remote_path: &remote_archive_path,
                         overwrite,
                     };
                     download_file(&sftp, &task)
                 })();
-                let _ = sftp.unlink(&remote_archive_path);
-                let _ = sftp.rmdir(&temporary_directory);
+                let _ = sftp.unlink(Path::new(&remote_archive_path));
+                let _ = sftp.rmdir(Path::new(&temporary_directory));
                 let _ = sftp.shutdown();
                 result
             })();

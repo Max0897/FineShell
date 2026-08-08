@@ -23,9 +23,13 @@ pub(super) fn run_session(
                 let _ = reply.send(list_directory(&session, &sftp, &path, &mut identity_cache));
             }
             SftpCommand::CreateDirectory { path, reply } => {
-                let result = sftp
-                    .mkdir(Path::new(&path), 0o755)
-                    .map_err(|error| format!("新建远程目录失败：{error}"));
+                let result = normalize_remote_operation_path(&path).and_then(|path| {
+                    if path == "/" {
+                        return Err("禁止将远程根目录作为新建目录".to_string());
+                    }
+                    sftp.mkdir(Path::new(&path), 0o755)
+                        .map_err(|error| format!("新建远程目录失败：{error}"))
+                });
                 let _ = reply.send(result);
             }
             SftpCommand::EnsureUploadDirectories {
