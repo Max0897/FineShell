@@ -113,7 +113,8 @@ pub(super) struct TransferTaskContext<'a> {
 
 pub(super) fn upload_file(sftp: &Sftp, task: &TransferTaskContext<'_>) -> Result<(), String> {
     let local_path = Path::new(task.local_path);
-    let remote_path = Path::new(task.remote_path);
+    let remote_path_text = normalize_remote_operation_path(task.remote_path)?;
+    let remote_path = Path::new(&remote_path_text);
     let metadata = local_path
         .metadata()
         .map_err(|error| format!("无法读取本地文件信息：{error}"))?;
@@ -124,7 +125,7 @@ pub(super) fn upload_file(sftp: &Sftp, task: &TransferTaskContext<'_>) -> Result
     if remote_exists(sftp, remote_path) && !task.overwrite {
         return Err("远程目标已存在，需要确认覆盖".to_string());
     }
-    let temporary_path = remote_upload_temporary_path(remote_path, task.transfer_id)?;
+    let temporary_path = remote_upload_temporary_path(&remote_path_text, task.transfer_id)?;
     if remote_exists(sftp, &temporary_path) {
         sftp.unlink(&temporary_path)
             .map_err(|error| format!("无法清理上次未完成的上传文件：{error}"))?;
@@ -183,13 +184,12 @@ pub(super) fn upload_file(sftp: &Sftp, task: &TransferTaskContext<'_>) -> Result
 }
 
 pub(super) fn remote_upload_temporary_path(
-    remote_path: &Path,
+    remote_path: &str,
     transfer_id: &str,
 ) -> Result<PathBuf, String> {
-    let file_name = remote_path
-        .file_name()
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| "上传目标缺少文件名".to_string())?;
+    let remote_path = normalize_remote_operation_path(remote_path)?;
+    let file_name =
+        remote_file_name(&remote_path).ok_or_else(|| "上传目标缺少文件名".to_string())?;
     let safe_transfer_id: String = transfer_id
         .chars()
         .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
@@ -200,14 +200,16 @@ pub(super) fn remote_upload_temporary_path(
     } else {
         &safe_transfer_id
     };
-    let mut temporary_name = OsString::from(".");
-    temporary_name.push(file_name);
-    temporary_name.push(format!(".{safe_transfer_id}.part"));
-    Ok(remote_path.with_file_name(temporary_name))
+    let temporary_name = format!(".{file_name}.{safe_transfer_id}.part");
+    Ok(PathBuf::from(remote_sibling_path(
+        &remote_path,
+        &temporary_name,
+    )?))
 }
 
 pub(super) fn download_file(sftp: &Sftp, task: &TransferTaskContext<'_>) -> Result<(), String> {
-    let remote_path = Path::new(task.remote_path);
+    let remote_path_text = normalize_remote_operation_path(task.remote_path)?;
+    let remote_path = Path::new(&remote_path_text);
     let local_path = Path::new(task.local_path);
     if local_path.is_dir() {
         return Err("下载目标不能是文件夹".to_string());
@@ -313,7 +315,7 @@ pub(super) fn download_temporary_path(
     Ok(local_path.with_file_name(temporary_name))
 }
 
-pub(super) fn remote_archive_temporary_directory(transfer_id: &str) -> PathBuf {
+pub(super) fn remote_archive_temporary_directory(transfer_id: &str) -> String {
     let safe_transfer_id: String = transfer_id
         .chars()
         .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
@@ -324,7 +326,7 @@ pub(super) fn remote_archive_temporary_directory(transfer_id: &str) -> PathBuf {
     } else {
         &safe_transfer_id
     };
-    PathBuf::from(format!("/tmp/.fineshell-archive-{safe_transfer_id}"))
+    format!("/tmp/.fineshell-archive-{safe_transfer_id}")
 }
 
 pub(super) fn replace_download_file(

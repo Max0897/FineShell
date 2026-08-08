@@ -56,17 +56,10 @@ pub(super) fn archive_source_parts(
     let mut names = Vec::with_capacity(source_paths.len());
     for source_path in source_paths {
         let normalized = normalize_remote_operation_path(source_path)?;
-        let path = Path::new(&normalized);
-        let parent = path
-            .parent()
-            .ok_or_else(|| "归档源路径缺少父目录".to_string())?;
-        let name = path
-            .file_name()
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| "不能直接归档远程根目录".to_string())?
-            .to_string_lossy()
-            .into_owned();
-        let parent = remote_path_text(parent);
+        let parent =
+            remote_parent_path(&normalized).ok_or_else(|| "归档源路径缺少父目录".to_string())?;
+        let name =
+            remote_file_name(&normalized).ok_or_else(|| "不能直接归档远程根目录".to_string())?;
         if let Some(expected_parent) = &parent_directory {
             if expected_parent != &parent {
                 return Err("只能归档同一目录下的远程项目".to_string());
@@ -96,23 +89,19 @@ pub(super) fn validate_archive_file_name(name: &str) -> Result<&str, String> {
     Ok(name)
 }
 
-pub(super) fn remote_archive_creation_temporary_path(
-    target_path: &Path,
-) -> Result<PathBuf, String> {
-    let parent = target_path
-        .parent()
-        .ok_or_else(|| "归档目标缺少父目录".to_string())?;
-    let file_name = target_path
-        .file_name()
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| "归档目标缺少文件名".to_string())?;
+pub(super) fn remote_archive_creation_temporary_path(target_path: &str) -> Result<PathBuf, String> {
+    let target_path = normalize_remote_operation_path(target_path)?;
+    let file_name =
+        remote_file_name(&target_path).ok_or_else(|| "归档目标缺少文件名".to_string())?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let mut temporary_name = OsString::from(format!(".fineshell-{nonce}-"));
-    temporary_name.push(file_name);
-    Ok(parent.join(temporary_name))
+    let temporary_name = format!(".fineshell-{nonce}-{file_name}");
+    Ok(PathBuf::from(remote_sibling_path(
+        &target_path,
+        &temporary_name,
+    )?))
 }
 
 pub(super) fn archive_create_command(
@@ -162,10 +151,7 @@ pub(super) fn create_archive(
     let target_path = normalize_remote_operation_path(target_path)?;
     let target = Path::new(&target_path);
     validate_archive_file_name(
-        target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "归档目标缺少有效文件名".to_string())?,
+        &remote_file_name(&target_path).ok_or_else(|| "归档目标缺少有效文件名".to_string())?,
     )?;
     if remote_exists(sftp, target) && !overwrite {
         return Err("归档目标已存在，需要确认覆盖".to_string());
@@ -175,7 +161,7 @@ pub(super) fn create_archive(
         RemoteArchiveFormat::Tar => require_remote_commands(session, &["tar"])?,
         RemoteArchiveFormat::Zip => require_remote_commands(session, &["zip"])?,
     }
-    let temporary_path = remote_archive_creation_temporary_path(target)?;
+    let temporary_path = remote_archive_creation_temporary_path(&target_path)?;
     let temporary_path_text = remote_path_text(&temporary_path);
     let command = archive_create_command(source_paths, &temporary_path_text, format)?;
     let result = execute_remote_command(session, &command, "压缩远程项目").and_then(|_| {

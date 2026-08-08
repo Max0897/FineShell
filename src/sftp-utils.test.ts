@@ -37,6 +37,9 @@ describe("SFTP path helpers", () => {
   test("joins names without duplicating separators", () => {
     expect(remoteJoinPath("/", "tmp")).toBe("/tmp");
     expect(remoteJoinPath("/var/", "log")).toBe("/var/log");
+    expect(remoteJoinPath("\\var\\log", "app.log")).toBe(
+      "/var/log/app.log",
+    );
   });
 
   test("builds clickable breadcrumb paths for every directory level", () => {
@@ -82,6 +85,7 @@ describe("SFTP path helpers", () => {
 
   test("normalizes, deduplicates and limits directory history", () => {
     expect(normalizeRemoteDirectoryPath(" /var/log/// ")).toBe("/var/log");
+    expect(normalizeRemoteDirectoryPath(" \\var\\log\\ ")).toBe("/var/log");
     expect(normalizeRemoteDirectoryPath("relative/path")).toBeNull();
     expect(addRemotePathHistory(["/tmp", "/var/log"], "/tmp/", 2)).toEqual([
       "/tmp",

@@ -271,6 +271,7 @@ impl TransferControl {
 mod archive;
 mod manager;
 mod operations;
+mod remote_path;
 mod session;
 mod text;
 mod transfer;
@@ -278,6 +279,7 @@ mod transfer;
 use archive::*;
 pub(crate) use manager::SftpSessionManager;
 use operations::*;
+use remote_path::*;
 use session::*;
 use text::*;
 use transfer::*;
