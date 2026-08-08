@@ -8,7 +8,7 @@ use tauri::{
         AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
         WINDOW_SUBMENU_ID,
     },
-    Emitter,
+    Emitter, RunEvent,
 };
 use tauri::{AppHandle, Manager, Runtime, Window, WindowEvent};
 #[cfg(not(target_os = "windows"))]
@@ -32,9 +32,14 @@ struct SelectAllMenuPayload {
 
 const SETTINGS_WINDOW_LABEL: &str = "settings";
 const SHORTCUT_GUIDE_WINDOW_LABEL: &str = "shortcut-guide";
+const MAIN_WINDOW_LABEL: &str = "main";
 
 fn is_auxiliary_window(label: &str) -> bool {
     matches!(label, SETTINGS_WINDOW_LABEL | SHORTCUT_GUIDE_WINDOW_LABEL)
+}
+
+fn should_hide_on_close(label: &str, is_macos: bool) -> bool {
+    is_auxiliary_window(label) || is_macos && label == MAIN_WINDOW_LABEL
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -97,7 +102,17 @@ fn show_auxiliary_window<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+    use super::should_hide_on_close;
     use serde_json::Value;
+
+    #[test]
+    fn keeps_macos_main_and_auxiliary_windows_available_after_close() {
+        assert!(should_hide_on_close("main", true));
+        assert!(should_hide_on_close("settings", true));
+        assert!(should_hide_on_close("shortcut-guide", true));
+        assert!(!should_hide_on_close("main", false));
+        assert!(!should_hide_on_close("unknown", true));
+    }
 
     #[test]
     fn base_configuration_only_preloads_the_main_window() {
@@ -146,18 +161,98 @@ pub async fn open_shortcut_guide_window(app: AppHandle) -> Result<(), String> {
     show_shortcut_guide_window(&app)
 }
 
+#[cfg(target_os = "macos")]
+fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let configuration = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|configuration| configuration.label == MAIN_WINDOW_LABEL)
+        .cloned()
+        .ok_or_else(|| "应用配置中缺少主窗口".to_string())?;
+    WebviewWindowBuilder::from_config(app, &configuration)
+        .map_err(|error| error.to_string())?
+        .build()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn restore_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
+    app.show().map_err(|error| error.to_string())?;
+    let created = app.get_webview_window(MAIN_WINDOW_LABEL).is_none();
+    if created {
+        create_main_window(app)?;
+    }
+    let window = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .ok_or_else(|| "主窗口不可用".to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    Ok(created)
+}
+
+#[cfg(target_os = "macos")]
+pub fn handle_run_event<R: Runtime>(app: &AppHandle<R>, event: RunEvent) {
+    let RunEvent::Reopen {
+        has_visible_windows,
+        ..
+    } = event
+    else {
+        return;
+    };
+
+    match restore_main_window(app) {
+        Ok(created) => crate::diagnostics::record_native_info(
+            app,
+            "window",
+            "Dock 已恢复主窗口",
+            Some(serde_json::json!({
+                "created": created,
+                "hadVisibleWindows": has_visible_windows,
+            })),
+        ),
+        Err(error) => crate::diagnostics::record_native_error(
+            app,
+            "window",
+            "Dock 无法恢复主窗口",
+            Some(serde_json::json!({
+                "error": error,
+                "hadVisibleWindows": has_visible_windows,
+            })),
+        ),
+    }
+}
+
 pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     if let WindowEvent::CloseRequested { api, .. } = event {
-        if is_auxiliary_window(window.label()) {
+        let hides_instead_of_closing =
+            should_hide_on_close(window.label(), cfg!(target_os = "macos"));
+
+        if hides_instead_of_closing {
             api.prevent_close();
-            let _ = window.hide();
-            if let Some(main_window) = window.app_handle().get_webview_window("main") {
-                let _ = main_window.set_focus();
+            if let Err(error) = window.hide() {
+                crate::diagnostics::record_native_error(
+                    window.app_handle(),
+                    "window",
+                    "无法隐藏窗口",
+                    Some(serde_json::json!({
+                        "error": error.to_string(),
+                        "label": window.label(),
+                    })),
+                );
+            }
+            if let Some(main_window) = window.app_handle().get_webview_window(MAIN_WINDOW_LABEL) {
+                if main_window.is_visible().unwrap_or(false) {
+                    let _ = main_window.set_focus();
+                }
             }
         }
 
         #[cfg(not(target_os = "macos"))]
-        if window.label() == "main" {
+        if window.label() == MAIN_WINDOW_LABEL {
             window.app_handle().exit(0);
         }
     }
