@@ -325,7 +325,6 @@ pub(crate) fn record_native_info<R: Runtime>(
     record_native(app, DiagnosticLogLevel::Info, scope, message, context);
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn record_native_error<R: Runtime>(
     app: &AppHandle<R>,
     scope: &str,
