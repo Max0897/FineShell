@@ -1,7 +1,3 @@
-pub(super) fn remote_path_text(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
 pub(super) fn entry_kind(stat: &FileStat) -> &'static str {
     match stat.file_type() {
         FileType::Directory => "directory",
@@ -109,8 +105,9 @@ pub(super) fn list_directory(
     path: &str,
     identity_cache: &mut RemoteIdentityCache,
 ) -> Result<SftpListResult, String> {
+    let path = normalize_remote_operation_path(path)?;
     let canonical_path = sftp
-        .realpath(Path::new(path))
+        .realpath(Path::new(&path))
         .map_err(|error| format!("无法解析远程目录：{error}"))?;
     let raw_entries = sftp
         .readdir(&canonical_path)
@@ -120,13 +117,10 @@ pub(super) fn list_directory(
         .into_iter()
         .map(|(entry_path, stat)| {
             let path_text = remote_path_text(&entry_path);
+            let name = remote_file_name(&path_text).unwrap_or_else(|| path_text.clone());
             SftpEntry {
                 id: path_text.clone(),
-                name: entry_path
-                    .file_name()
-                    .unwrap_or(entry_path.as_os_str())
-                    .to_string_lossy()
-                    .into_owned(),
+                name,
                 path: path_text,
                 kind: entry_kind(&stat),
                 size: stat.size.unwrap_or(0),
@@ -288,22 +282,21 @@ pub(super) fn ensure_upload_directories(
     let base_path = normalize_remote_operation_path(base_path)?;
     let mut ensured = HashSet::new();
     for relative_path in relative_paths {
-        let mut current = PathBuf::from(&base_path);
+        let mut current = base_path.clone();
         for segment in relative_path.split('/') {
             if segment.is_empty() || matches!(segment, "." | "..") || segment.contains('\0') {
                 return Err("本地目录包含无法上传的路径".to_string());
             }
-            current.push(segment);
-            let current_text = remote_path_text(&current);
-            if !ensured.insert(current_text.clone()) {
+            current = remote_join_path(&current, segment)?;
+            if !ensured.insert(current.clone()) {
                 continue;
             }
-            match sftp.lstat(&current) {
+            match sftp.lstat(Path::new(&current)) {
                 Ok(stat) if stat.is_dir() => {}
-                Ok(_) => return Err(format!("远程目标已存在同名文件：{current_text}")),
+                Ok(_) => return Err(format!("远程目标已存在同名文件：{current}")),
                 Err(_) => sftp
-                    .mkdir(&current, 0o755)
-                    .map_err(|error| format!("无法创建远程目录 {current_text}：{error}"))?,
+                    .mkdir(Path::new(&current), 0o755)
+                    .map_err(|error| format!("无法创建远程目录 {current}：{error}"))?,
             }
         }
     }
@@ -311,8 +304,12 @@ pub(super) fn ensure_upload_directories(
 }
 
 pub(super) fn create_empty_file(sftp: &Sftp, path: &str) -> Result<(), String> {
+    let path = normalize_remote_operation_path(path)?;
+    if path == "/" {
+        return Err("禁止将远程根目录作为新建文件".to_string());
+    }
     sftp.open_mode(
-        Path::new(path),
+        Path::new(&path),
         OpenFlags::WRITE | OpenFlags::EXCLUSIVE,
         0o644,
         OpenType::File,
@@ -435,26 +432,6 @@ pub(super) fn set_owner(
     Ok(())
 }
 
-pub(super) fn normalize_remote_operation_path(path: &str) -> Result<String, String> {
-    if path.contains('\0') || !path.starts_with('/') {
-        return Err("文件操作只允许使用有效的远程绝对路径".to_string());
-    }
-
-    let mut segments = Vec::new();
-    for segment in path.split('/') {
-        match segment {
-            "" => {}
-            "." | ".." => return Err("文件操作路径不能包含相对路径片段".to_string()),
-            value => segments.push(value),
-        }
-    }
-    Ok(if segments.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}", segments.join("/"))
-    })
-}
-
 pub(super) fn is_remote_descendant(parent: &str, candidate: &str) -> bool {
     candidate
         .strip_prefix(parent)
@@ -480,8 +457,9 @@ pub(super) fn copy_remote_file(
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("无法生成远程复制临时文件名：{error}"))?
         .as_nanos();
+    let target_path_text = remote_path_text(target_path);
     let temporary_path = remote_upload_temporary_path(
-        target_path,
+        &target_path_text,
         &format!("copy-{}-{suffix}", std::process::id()),
     )?;
     if remote_exists(sftp, &temporary_path) {
@@ -572,14 +550,21 @@ pub(super) fn copy_remote_directory(
         .readdir(source_path)
         .map_err(|error| format!("无法读取待复制的远程目录：{error}"))?;
     for (child_source, child_stat) in entries {
-        let Some(name) = child_source.file_name() else {
+        let child_source_text = remote_path_text(&child_source);
+        let Some(name) = remote_file_name(&child_source_text) else {
             continue;
         };
         if name == "." || name == ".." {
             continue;
         }
-        let child_target = target_path.join(name);
-        copy_remote_entry_inner(sftp, &child_source, &child_target, &child_stat, overwrite)?;
+        let child_target = remote_join_path(&remote_path_text(target_path), &name)?;
+        copy_remote_entry_inner(
+            sftp,
+            Path::new(&child_source_text),
+            Path::new(&child_target),
+            &child_stat,
+            overwrite,
+        )?;
     }
     sftp.setstat(
         target_path,
@@ -676,13 +661,14 @@ pub(super) fn remove_remote_entry_recursive(sftp: &Sftp, path: &Path) -> Result<
         .readdir(path)
         .map_err(|error| format!("无法读取待移除的远程目录：{error}"))?;
     for (child_path, _) in entries {
-        let Some(name) = child_path.file_name() else {
+        let child_path = remote_path_text(&child_path);
+        let Some(name) = remote_file_name(&child_path) else {
             continue;
         };
         if name == "." || name == ".." {
             continue;
         }
-        remove_remote_entry_recursive(sftp, &child_path)?;
+        remove_remote_entry_recursive(sftp, Path::new(&child_path))?;
     }
     sftp.rmdir(path)
         .map_err(|error| format!("无法移除远程目录：{error}"))
