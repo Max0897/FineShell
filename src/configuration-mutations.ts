@@ -122,6 +122,22 @@ export function importConfiguration(
   }));
 }
 
+export function restoreCredentialReferences(
+  references: CredentialReferenceRecord[],
+) {
+  return updateConfiguration((current) => ({
+    ...current,
+    credentialReferences: [
+      ...new Map(
+        [...current.credentialReferences, ...references]
+          .map(sanitizeCredentialReference)
+          .filter((item): item is CredentialReferenceRecord => Boolean(item))
+          .map((item) => [item.id, item]),
+      ).values(),
+    ],
+  }));
+}
+
 export function restoreConfigurationBackup(backupId: string) {
   return updateConfiguration((current) => {
     const backup = current.backups.find((item) => item.id === backupId);
@@ -138,11 +154,7 @@ export function restoreConfigurationBackup(backupId: string) {
       sftpLocations: backup.sftpLocations,
       knownHosts:
         backup.knownHosts ??
-        deriveKnownHostRecords(
-          backup.hosts,
-          backup.history,
-          backup.createdAt,
-        ),
+        deriveKnownHostRecords(backup.hosts, backup.history, backup.createdAt),
       settings: backup.settings ?? current.settings,
       backups: [
         createBackup(current, "恢复配置前自动备份"),
@@ -208,9 +220,7 @@ export function moveHostToTrash(hostId: string) {
 
 export function restoreDeletedHost(deletedHostId: string) {
   return updateConfiguration((current) => {
-    const deletedHost = current.trash.find(
-      (item) => item.id === deletedHostId,
-    );
+    const deletedHost = current.trash.find((item) => item.id === deletedHostId);
     if (!deletedHost) throw new Error("回收站记录不存在或已过期");
     if (current.hosts.some((item) => item.id === deletedHost.host.id)) {
       throw new Error("当前主机列表中已存在同一主机，无法恢复");
@@ -278,9 +288,7 @@ export function upsertSftpLocation(location: SftpLocationRecord) {
     ...current,
     sftpLocations:
       sanitized.bookmarks.length || sanitized.history.length
-        ? current.sftpLocations.some(
-            (item) => item.hostId === sanitized.hostId,
-          )
+        ? current.sftpLocations.some((item) => item.hostId === sanitized.hostId)
           ? current.sftpLocations.map((item) =>
               item.hostId === sanitized.hostId ? sanitized : item,
             )
@@ -308,9 +316,7 @@ export function deleteProxy(proxyId: string) {
       host.proxyId === proxyId ? { ...host, proxyId: undefined } : host,
     ),
     history: current.history.map((record) =>
-      record.proxyId === proxyId
-        ? { ...record, proxyId: undefined }
-        : record,
+      record.proxyId === proxyId ? { ...record, proxyId: undefined } : record,
     ),
   }));
 }
@@ -339,9 +345,7 @@ export function deleteSshKey(sshKeyId: string) {
     return {
       ...current,
       sshKeys: current.sshKeys.filter((item) => item.id !== sshKeyId),
-      history: current.history.filter(
-        (record) => record.sshKeyId !== sshKeyId,
-      ),
+      history: current.history.filter((record) => record.sshKeyId !== sshKeyId),
     };
   });
 }

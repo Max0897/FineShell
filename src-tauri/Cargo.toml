@@ -19,13 +19,20 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+argon2 = "0.5.3"
+aws-credential-types = "1"
+aws-sdk-s3 = "1"
+aws-smithy-runtime-api = "1"
+aws-smithy-types = "1"
 base64 = "0.22.1"
+chacha20poly1305 = "0.10.1"
 fast-socks5 = "1.0.0"
 futures-util = "0.3.31"
 keyring = "4.1.5"
 log = "0.4"
 notify = "8.2.0"
 regex = "1.11.1"
+rand = "0.8.5"
 httparse = "1.10.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 rig-core = { version = "0.40.0", default-features = false, features = ["reqwest", "rustls"] }

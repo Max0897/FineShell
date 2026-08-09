@@ -6,6 +6,7 @@ mod agent_policy;
 mod agent_verification;
 mod ai;
 mod ai_rig;
+mod cloud_backup;
 mod config_files;
 mod credentials;
 mod diagnostics;
@@ -46,6 +47,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(ai::AiRequestManager::default())
         .manage(agent::AgentTaskManager::default())
+        .manage(cloud_backup::CloudBackupManager::default())
         .manage(sftp::SftpSessionManager::default())
         .manage(diagnostics::DiagnosticLogState::default())
         .manage(external_edit::ExternalEditManager::default())
@@ -94,6 +96,19 @@ pub fn run() {
             updater::application_update_test_route,
             config_files::read_config_file,
             config_files::write_config_file,
+            cloud_backup::cloud_backup_store_s3_credentials,
+            cloud_backup::cloud_backup_delete_s3_credentials,
+            cloud_backup::cloud_backup_s3_credential_status,
+            cloud_backup::cloud_backup_test_connection,
+            cloud_backup::cloud_backup_repository_status,
+            cloud_backup::cloud_backup_initialize_repository,
+            cloud_backup::cloud_backup_unlock_repository,
+            cloud_backup::cloud_backup_list_snapshots,
+            cloud_backup::cloud_backup_create_snapshot,
+            cloud_backup::cloud_backup_download_snapshot,
+            cloud_backup::cloud_backup_apply_credentials,
+            cloud_backup::cloud_backup_discard_restore,
+            cloud_backup::cloud_backup_delete_snapshot,
             credentials::store_host_password,
             credentials::delete_host_password,
             credentials::copy_host_credentials,

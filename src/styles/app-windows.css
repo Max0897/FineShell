@@ -142,6 +142,107 @@
   margin: 0;
 }
 
+.cloud-backup-settings {
+  width: 100%;
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.cloud-backup-section {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.cloud-backup-section + .cloud-backup-section {
+  padding-top: 28px;
+  border-top: 1px solid var(--color-border-2);
+}
+
+.cloud-backup-section-heading {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.cloud-backup-section-heading .arco-typography {
+  margin: 0;
+}
+
+.cloud-backup-section-heading > div:first-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cloud-backup-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.45fr);
+  gap: 18px 20px;
+}
+
+.cloud-backup-form-grid label {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--color-text-2);
+}
+
+.cloud-backup-options {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.cloud-backup-options {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding: 14px 0;
+  border-top: 1px solid var(--color-border-2);
+  border-bottom: 1px solid var(--color-border-2);
+}
+
+.cloud-backup-initialize,
+.cloud-backup-unlock {
+  max-width: 620px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.cloud-backup-initialize > .arco-input-group-wrapper,
+.cloud-backup-initialize > .arco-input-wrapper,
+.cloud-backup-unlock > .arco-space,
+.cloud-backup-unlock > .arco-alert {
+  width: 100%;
+}
+
+.cloud-backup-unlock .arco-input-group-wrapper {
+  min-width: 320px;
+}
+
+.cloud-backup-recovery-key .arco-typography {
+  margin-bottom: 12px;
+}
+
+@media (max-width: 780px) {
+  .cloud-backup-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cloud-backup-section-heading {
+    flex-direction: column;
+  }
+}
+
 .settings-label-with-description {
   min-width: 0;
   display: flex;

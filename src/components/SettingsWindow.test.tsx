@@ -14,7 +14,9 @@ describe("SettingsWindow", () => {
     expect(screen.getByLabelText("终端日志目录")).not.toBeNull();
     expect(screen.getByLabelText("选择终端日志目录")).not.toBeNull();
     expect(screen.getByLabelText("打开终端日志目录")).not.toBeNull();
-    expect(screen.getByRole("combobox", { name: "终端日志格式" })).not.toBeNull();
+    expect(
+      screen.getByRole("combobox", { name: "终端日志格式" }),
+    ).not.toBeNull();
     const submenuHeaders = Array.from(
       view.container.querySelectorAll(
         ".settings-sidebar .arco-menu-inline-header",
@@ -42,6 +44,7 @@ describe("SettingsWindow", () => {
       "AI 助手",
       "隐私与清理",
       "备份与恢复",
+      "云备份",
       "回收站",
       "高级",
       "关于",
