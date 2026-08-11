@@ -290,11 +290,14 @@
 .terminal-host {
   width: 100%;
   height: 100%;
+  overflow: hidden;
+  background: var(--terminal-background, #191b20);
 }
 
 .terminal-view .xterm {
+  box-sizing: border-box;
   height: 100%;
-  padding: 8px 0 4px 8px;
+  padding: calc(8px + var(--terminal-grid-extra-top, 0px)) 0 4px 8px;
   background-color: var(--terminal-background, #191b20) !important;
 }
 
