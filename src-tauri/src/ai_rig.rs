@@ -1,7 +1,10 @@
 use std::{
     collections::{hash_map::DefaultHasher, BTreeSet},
     hash::{Hash, Hasher},
-    sync::LazyLock,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        LazyLock,
+    },
 };
 
 use futures_util::StreamExt;
@@ -52,6 +55,8 @@ static DSML_PARAMETER_OPEN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"^<\|DSML\|parameter\s+name=\"([^\"]+)\"\s+string=\"(true|false)\"\s*>$"#)
         .expect("valid DSML parameter regex")
 });
+// Hidden corrective turns are not mirrored to the UI, so IDs cannot depend on visible rounds.
+static AGENT_TOOL_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,21 +158,16 @@ fn read_dsml_tag(value: &str, cursor: usize) -> Result<(&str, usize), RigTurnErr
     Ok((&remaining[..=end], cursor + end + 1))
 }
 
-fn agent_tool_call_id(request_id: &str, round_index: usize, call_index: usize) -> String {
+fn agent_tool_call_id(request_id: &str) -> String {
     let mut hasher = DefaultHasher::new();
     request_id.hash(&mut hasher);
-    format!(
-        "agent-{:016x}-{}-{}",
-        hasher.finish(),
-        round_index.saturating_add(1),
-        call_index.saturating_add(1),
-    )
+    let sequence = AGENT_TOOL_CALL_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("agent-{:016x}-{sequence:016x}", hasher.finish(),)
 }
 
 fn parse_dsml_response(
     value: &str,
     request_id: &str,
-    round_index: usize,
 ) -> Result<Option<ParsedDsmlResponse>, RigTurnError> {
     let normalized = normalize_dsml_tags(value);
     let Some(start) = normalized.find(DSML_TOOL_CALLS_OPEN) else {
@@ -235,7 +235,7 @@ fn parse_dsml_response(
             return Err(RigTurnError::protocol("AI 返回的 DSML 工具参数过长"));
         }
         calls.push(AiToolCall {
-            id: agent_tool_call_id(request_id, round_index, calls.len()),
+            id: agent_tool_call_id(request_id),
             name,
             arguments,
         });
@@ -379,7 +379,6 @@ fn resolve_tool_protocol(
     content: &str,
     choice: &OneOrMany<AssistantContent>,
     request_id: &str,
-    round_index: usize,
 ) -> Result<(String, Option<ParsedDsmlResponse>), RigTurnError> {
     if has_native_tool_calls(choice) {
         let visible = DSML_TOOL_CALLS_START
@@ -390,7 +389,7 @@ fn resolve_tool_protocol(
         return Ok((visible, None));
     }
 
-    let parsed = parse_dsml_response(content, request_id, round_index)?;
+    let parsed = parse_dsml_response(content, request_id)?;
     let visible = parsed
         .as_ref()
         .map_or_else(|| content.to_string(), |parsed| parsed.content.clone());
@@ -560,7 +559,6 @@ struct ModelTurnStreamContext<'a> {
     names: &'a BTreeSet<String>,
     app: &'a AppHandle,
     request_id: &'a str,
-    round_index: usize,
 }
 
 fn invalid_tool_result(context: &InvalidToolCallContext) -> String {
@@ -701,12 +699,8 @@ async fn stream_model_turn<M: CompletionModel>(
             StreamKind::Reasoning,
         );
     }
-    let (resolved_content, parsed_dsml) = resolve_tool_protocol(
-        &content,
-        &original_choice,
-        context.request_id,
-        context.round_index,
-    )?;
+    let (resolved_content, parsed_dsml) =
+        resolve_tool_protocol(&content, &original_choice, context.request_id)?;
     content = resolved_content;
     let choice = if let Some(parsed) = parsed_dsml {
         let mut response = Vec::new();
@@ -761,13 +755,11 @@ pub(crate) async fn request_turn(
         .build()
         .map_err(|error| RigTurnError::protocol(format!("创建 AI 客户端失败：{error}")))?;
     let model = rig_client.completion_model(request.model);
-    let round_index = request.tool_rounds.len();
     let stream_context = ModelTurnStreamContext {
         tools: &request.tools,
         names: &names,
         app: request.app,
         request_id: request.request_id,
-        round_index,
     };
     let mut aggregate_usage = Usage::new();
     let mut request_count = 0_u32;
@@ -815,8 +807,8 @@ pub(crate) async fn request_turn(
         AgentRunStep::CallTools { calls } => {
             let mut tool_calls = Vec::with_capacity(calls.len());
             let mut pre_resolved_tool_results = Vec::new();
-            for (call_index, call) in calls.into_iter().enumerate() {
-                let id = agent_tool_call_id(request.request_id, round_index, call_index);
+            for call in calls {
+                let id = agent_tool_call_id(request.request_id);
                 let name = call.tool_call.function.name;
                 if let Some(UserContent::ToolResult(result)) = call.preresolved_result {
                     let content = result
@@ -979,7 +971,6 @@ mod tests {
 </｜DSML｜invoke>
 </｜DSML｜tool_calls>"#,
             "request-1",
-            0,
         )
         .unwrap()
         .unwrap();
@@ -1011,7 +1002,7 @@ mod tests {
 <|DSML|tool_calls><|DSML|invoke name="get_server_status"><|DSML|parameter name="reason" string="true">duplicate</|DSML|parameter></|DSML|invoke></|DSML|tool_calls>"#;
 
         let (visible, fallback) =
-            resolve_tool_protocol(content, &choice, "request-native", 0).unwrap();
+            resolve_tool_protocol(content, &choice, "request-native").unwrap();
 
         assert_eq!(visible, "Use the native call.");
         assert!(fallback.is_none());
@@ -1027,7 +1018,7 @@ mod tests {
 <|DSML|tool_calls><|DSML|invoke name="get_server_status"><|DSML|parameter name="reason" string="true">inspect</|DSML|parameter></|DSML|invoke></|DSML|tool_calls>"#;
 
         let (visible, fallback) =
-            resolve_tool_protocol(content, &choice, "request-fallback", 0).unwrap();
+            resolve_tool_protocol(content, &choice, "request-fallback").unwrap();
 
         assert_eq!(visible, "Checking.");
         let fallback = fallback.expect("DSML fallback must be parsed without native calls");
@@ -1040,7 +1031,6 @@ mod tests {
         let parsed = parse_dsml_response(
             r#"<||DSML||tool_calls><||DSML||invoke name="get_server_status"><||DSML||parameter name="scope" string="true">network</||DSML||parameter></||DSML||invoke></||DSML||tool_calls>"#,
             "request-2",
-            0,
         )
         .unwrap()
         .unwrap();
@@ -1059,7 +1049,6 @@ mod tests {
         let parsed = parse_dsml_response(
             r#"< | | DSML | | tool_calls>< | | DSML | | invoke name="read_status">< | | DSML | | parameter name="scope" string="true">network</ | | DSML | | parameter></ | | DSML | | invoke></ | | DSML | | tool_calls>"#,
             "request-spaced",
-            0,
         )
         .unwrap()
         .unwrap();
@@ -1123,7 +1112,6 @@ mod tests {
         let result = parse_dsml_response(
             r#"<｜DSML｜tool_calls><｜DSML｜invoke name="read_status"><｜DSML｜parameter name="scope" string="true">one</｜DSML｜parameter><｜DSML｜parameter name="scope" string="true">two</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"#,
             "request-3",
-            0,
         );
         let error = match result {
             Err(error) => error,
@@ -1134,20 +1122,21 @@ mod tests {
     }
 
     #[test]
-    fn scopes_compatibility_tool_call_ids_to_the_agent_round() {
+    fn allocates_unique_tool_call_ids_when_visible_round_state_repeats() {
         let response = r#"<｜DSML｜tool_calls><｜DSML｜invoke name="get_server_status"><｜DSML｜parameter name="scope" string="true">all</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"#;
-        let first = parse_dsml_response(response, "request-stable", 0)
+        let first = parse_dsml_response(response, "request-stable")
             .unwrap()
             .unwrap();
-        let retried = parse_dsml_response(response, "request-stable", 0)
+        let hidden_retry = parse_dsml_response(response, "request-stable")
             .unwrap()
             .unwrap();
-        let next = parse_dsml_response(response, "request-stable", 1)
+        let next = parse_dsml_response(response, "request-stable")
             .unwrap()
             .unwrap();
 
-        assert_eq!(first.calls[0].id, retried.calls[0].id);
+        assert_ne!(first.calls[0].id, hidden_retry.calls[0].id);
         assert_ne!(first.calls[0].id, next.calls[0].id);
+        assert_ne!(hidden_retry.calls[0].id, next.calls[0].id);
     }
 
     #[test]
