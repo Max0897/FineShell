@@ -58,6 +58,7 @@ import AdvancedSettings from "./AdvancedSettings";
 import AiSettings from "./AiSettings";
 import AboutSettings from "./AboutSettings";
 import ConfigurationMaintenance from "./ConfigurationMaintenance";
+import CloudBackupSettings from "./CloudBackupSettings";
 import KnownHostSettings from "./KnownHostSettings";
 import PrivacySettings from "./PrivacySettings";
 import ProxySettings from "./ProxySettings";
@@ -78,6 +79,7 @@ type SettingsSection =
   | "advanced"
   | "proxies"
   | "backups"
+  | "cloudBackup"
   | "trash"
   | "about";
 
@@ -92,6 +94,7 @@ const NESTED_SECTION_TITLES: Partial<Record<SettingsSection, string>> = {
   knownHosts: "已知主机",
   privacy: "隐私与清理",
   backups: "备份与恢复",
+  cloudBackup: "云备份",
   trash: "回收站",
 };
 
@@ -154,8 +157,7 @@ function SettingsWindow() {
           try {
             resolvedSettings = {
               ...resolvedSettings,
-              terminalLogDirectory:
-                await resolveDefaultTerminalLogDirectory(),
+              terminalLogDirectory: await resolveDefaultTerminalLogDirectory(),
             };
           } catch (error) {
             recordDiagnostic(
@@ -781,6 +783,15 @@ function SettingsWindow() {
             section="backups"
           />
         );
+      case "cloudBackup":
+        return (
+          <CloudBackupSettings
+            onConfigurationImported={(importedSettings) => {
+              setSettings(importedSettings);
+              setSavedSettings(importedSettings);
+            }}
+          />
+        );
       case "trash":
         return <ConfigurationMaintenance section="trash" />;
       case "about":
@@ -867,6 +878,7 @@ function SettingsWindow() {
           >
             <Menu.Item key="privacy">隐私与清理</Menu.Item>
             <Menu.Item key="backups">备份与恢复</Menu.Item>
+            <Menu.Item key="cloudBackup">云备份</Menu.Item>
             <Menu.Item key="trash">回收站</Menu.Item>
           </Menu.SubMenu>
           <Menu.Item key="advanced">

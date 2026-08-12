@@ -59,6 +59,7 @@ import {
   type ShellIntegrationEchoFilter,
 } from "../shell-integration";
 import { TERMINAL_THEMES } from "../terminal-themes";
+import { balancedTerminalGridTopInset } from "../terminal-layout";
 import {
   terminalFontZoomKeyboardAction,
   terminalFontZoomWheelAction,
@@ -88,6 +89,38 @@ interface TerminalViewProps {
 }
 
 type ShellIntegrationMutation = "install" | "uninstall";
+
+const TERMINAL_GRID_INSET_PROPERTY = "--terminal-grid-extra-top";
+
+function fitTerminalGrid(
+  container: HTMLDivElement,
+  terminal: Terminal,
+  fitAddon: FitAddon,
+) {
+  container.style.setProperty(TERMINAL_GRID_INSET_PROPERTY, "0px");
+  fitAddon.fit();
+
+  const terminalElement = terminal.element;
+  const screenElement = terminalElement?.querySelector<HTMLElement>(
+    ".xterm-screen",
+  );
+  if (!terminalElement || !screenElement) return;
+
+  const terminalStyle = window.getComputedStyle(terminalElement);
+  const paddingTop = Number.parseFloat(terminalStyle.paddingTop) || 0;
+  const paddingBottom = Number.parseFloat(terminalStyle.paddingBottom) || 0;
+  const extraTop = balancedTerminalGridTopInset({
+    containerHeight: container.clientHeight,
+    paddingBottom,
+    paddingTop,
+    screenHeight: screenElement.getBoundingClientRect().height,
+  });
+  container.style.setProperty(
+    TERMINAL_GRID_INSET_PROPERTY,
+    `${extraTop}px`,
+  );
+  if (extraTop > 0) fitAddon.fit();
+}
 
 const SHELL_INTEGRATION_TIMEOUT_MS = 8_000;
 
@@ -459,7 +492,7 @@ function TerminalView({
     const fit = () => {
       if (container.clientWidth === 0 || container.clientHeight === 0) return;
       try {
-        fitAddon.fit();
+        fitTerminalGrid(container, terminal, fitAddon);
       } catch {
         // The tab may be transitioning between visible and hidden states.
       }
@@ -626,6 +659,7 @@ function TerminalView({
       selectionDisposable.dispose();
       shellIntegrationDisposable.dispose();
       terminal.dispose();
+      container.style.removeProperty(TERMINAL_GRID_INSET_PROPERTY);
       terminalRef.current = null;
       historyCompletionRef.current = null;
       fitAddonRef.current = null;
@@ -689,6 +723,9 @@ function TerminalView({
     const fitAddon = fitAddonRef.current;
     if (!terminal || !fitAddon) return;
 
+    const wasAtBottom =
+      terminal.buffer.active.viewportY === terminal.buffer.active.baseY;
+
     terminal.options.cursorBlink = settings.terminalCursorBlink;
     terminal.options.cursorStyle = settings.terminalCursorStyle;
     terminal.options.cursorWidth = 1;
@@ -701,7 +738,10 @@ function TerminalView({
       TERMINAL_THEMES[settings.terminalColorScheme].theme;
     requestAnimationFrame(() => {
       try {
-        fitAddon.fit();
+        const container = containerRef.current;
+        if (!container) return;
+        fitTerminalGrid(container, terminal, fitAddon);
+        if (wasAtBottom) terminal.scrollToBottom();
         historyCompletionRef.current?.refresh();
       } catch {
         // The terminal can be hidden while another tab is active.
@@ -726,7 +766,9 @@ function TerminalView({
 
     requestAnimationFrame(() => {
       try {
-        fitAddon.fit();
+        const container = containerRef.current;
+        if (!container) return;
+        fitTerminalGrid(container, terminal, fitAddon);
       } catch {
         return;
       }

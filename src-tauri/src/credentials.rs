@@ -41,6 +41,45 @@ fn proxy_password_entry(proxy_id: &str) -> Result<keyring::Entry, String> {
         .map_err(|error| format!("无法访问系统凭据库：{error}"))
 }
 
+fn backup_credential_entry(kind: &str, owner_id: &str) -> Result<keyring::Entry, String> {
+    match kind {
+        "hostPassword" => password_entry(owner_id),
+        "privateKeyPassphrase" => private_key_passphrase_entry(owner_id),
+        "proxyPassword" => proxy_password_entry(owner_id),
+        _ => Err("不支持的凭据类型".to_string()),
+    }
+}
+
+pub(crate) fn read_backup_credential(kind: &str, owner_id: &str) -> Result<Option<String>, String> {
+    let entry = backup_credential_entry(kind, owner_id)?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("读取系统凭据失败：{error}")),
+    }
+}
+
+pub(crate) fn restore_backup_credential(
+    kind: &str,
+    owner_id: &str,
+    value: &str,
+) -> Result<(), String> {
+    if owner_id.trim().is_empty() || value.is_empty() {
+        return Err("凭据归属标识和值不能为空".to_string());
+    }
+    let entry = backup_credential_entry(kind, owner_id)?;
+    entry
+        .set_password(value)
+        .map_err(|error| format!("恢复系统凭据失败：{error}"))
+}
+
+pub(crate) fn delete_backup_credential(kind: &str, owner_id: &str) -> Result<(), String> {
+    match backup_credential_entry(kind, owner_id)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("删除系统凭据失败：{error}")),
+    }
+}
+
 fn ai_api_key_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(AI_API_KEY_SERVICE, AI_API_KEY_ACCOUNT)
         .map_err(|error| format!("无法访问系统凭据库：{error}"))

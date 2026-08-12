@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-pub(crate) const PROTOCOL_VERSION: u16 = 34;
+pub(crate) const PROTOCOL_VERSION: u16 = 35;
 
 pub(crate) const SSH_OUTPUT_EVENT: &str = "ssh-output";
 pub(crate) const SSH_STATUS_EVENT: &str = "ssh-status";
