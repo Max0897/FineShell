@@ -91,6 +91,16 @@ fn parse_arguments<T: for<'de> Deserialize<'de>>(
         .map_err(|_| "AI 动作的可信执行参数无效".to_string())
 }
 
+fn validate_generated_file_content(content: &str) -> Result<(), String> {
+    if ["[已隐藏]", "[已隐藏私钥]", "[已隐藏密钥]"]
+        .iter()
+        .any(|marker| content.contains(marker))
+    {
+        return Err("AI 文件内容包含脱敏占位符，已阻止写入远程文件".to_string());
+    }
+    Ok(())
+}
+
 fn operation_request(
     arguments: &FileOperationArguments,
     rollback: bool,
@@ -144,6 +154,9 @@ async fn execute_action(
             } else {
                 (arguments.content, arguments.original_content)
             };
+            if !action.rollback {
+                validate_generated_file_content(&content)?;
+            }
             let file = agent_write_text_file(
                 sftp_manager,
                 action.session_id.clone(),
@@ -163,6 +176,14 @@ async fn execute_action(
         }
         "propose_file_operation" => {
             let arguments: FileOperationArguments = parse_arguments(action)?;
+            if !action.rollback && arguments.operation == AiSftpFileOperationKind::Create {
+                validate_generated_file_content(
+                    arguments
+                        .content
+                        .as_deref()
+                        .ok_or_else(|| "AI 新建文件动作缺少可信内容".to_string())?,
+                )?;
+            }
             let request = operation_request(&arguments, action.rollback)?;
             let result =
                 agent_apply_file_operation(sftp_manager, action.session_id.clone(), request)
@@ -449,7 +470,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        operation_request, parse_arguments, FileOperationArguments, TerminalCommandArguments,
+        operation_request, parse_arguments, validate_generated_file_content,
+        FileOperationArguments, TerminalCommandArguments,
     };
     use crate::agent::{AgentActionExecutionKind, AuthorizedAgentAction};
     use crate::agent_verification::AgentBusinessVerification;
@@ -483,6 +505,16 @@ mod tests {
             serde_json::to_value(delete.content).unwrap(),
             json!("original")
         );
+    }
+
+    #[test]
+    fn rejects_redaction_markers_at_the_trusted_write_boundary() {
+        assert!(validate_generated_file_content("enabled=true\n").is_ok());
+        assert_eq!(
+            validate_generated_file_content("password=[已隐藏]\n").unwrap_err(),
+            "AI 文件内容包含脱敏占位符，已阻止写入远程文件"
+        );
+        assert!(validate_generated_file_content("key=[已隐藏密钥]\n").is_err());
     }
 
     #[test]

@@ -13,10 +13,10 @@ use super::{
     entry_kind, fast_delete_command, inspect_upload_paths, is_remote_descendant,
     normalize_remote_operation_path, parse_identity_names, remote_archive_temporary_directory,
     remote_text_backup_path, remote_text_temporary_path, remote_upload_temporary_path,
-    replace_download_file, shell_quote, validate_ai_file_operation_content,
-    validate_archive_file_name, AiSftpFileOperationKind, AiSftpFileOperationRequest,
-    RemoteArchiveFormat, RemoteIdentityCache, SftpCommand, SftpSessionManager,
-    REMOTE_TEXT_MAX_BYTES,
+    replace_download_file, replace_remote_upload_file, shell_quote,
+    validate_ai_file_operation_content, validate_archive_file_name, AiSftpFileOperationKind,
+    AiSftpFileOperationRequest, RemoteArchiveFormat, RemoteIdentityCache, SftpCommand,
+    SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
 };
 use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
 
@@ -408,6 +408,7 @@ fn completes_a_live_sftp_round_trip() -> Result<(), String> {
     let directory = format!("/tmp/fineshell-live-{}-{suffix}", std::process::id());
     let source_path = format!("{directory}/source.txt");
     let copied_path = format!("{directory}/copied.txt");
+    let overwritten_path = format!("{directory}/overwritten.txt");
     let renamed_path = format!("{directory}/renamed.txt");
     let source_directory = format!("{directory}/source-dir");
     let source_nested_path = format!("{source_directory}/nested.txt");
@@ -467,6 +468,34 @@ fn completes_a_live_sftp_round_trip() -> Result<(), String> {
             return Err("复制到同名目标时没有阻止未确认的覆盖".to_string());
         }
 
+        let overwrite_temporary_path =
+            remote_upload_temporary_path(&overwritten_path, "live-overwrite")?;
+        let mut overwritten = sftp
+            .create(Path::new(&overwritten_path))
+            .map_err(|error| format!("创建待覆盖测试文件失败：{error}"))?;
+        overwritten
+            .write_all(b"old content\n")
+            .map_err(|error| format!("写入待覆盖测试文件失败：{error}"))?;
+        drop(overwritten);
+        let mut overwrite_temporary = sftp
+            .create(&overwrite_temporary_path)
+            .map_err(|error| format!("创建覆盖测试临时文件失败：{error}"))?;
+        overwrite_temporary
+            .write_all(b"new content\n")
+            .map_err(|error| format!("写入覆盖测试临时文件失败：{error}"))?;
+        drop(overwrite_temporary);
+        replace_remote_upload_file(
+            &sftp,
+            &overwrite_temporary_path,
+            Path::new(&overwritten_path),
+            true,
+            "live-overwrite",
+        )?;
+        let overwritten = super::read_remote_text_file(&sftp, &overwritten_path)?;
+        if overwritten.content != "new content\n" {
+            return Err("同名上传覆盖后的远程文件内容不一致".to_string());
+        }
+
         sftp.mkdir(Path::new(&source_directory), 0o750)
             .map_err(|error| format!("创建待复制目录失败：{error}"))?;
         let mut nested = sftp
@@ -510,6 +539,7 @@ fn completes_a_live_sftp_round_trip() -> Result<(), String> {
     let _ = sftp.unlink(Path::new(&source_path));
     let _ = sftp.unlink(Path::new(&copied_path));
     let _ = sftp.unlink(Path::new(&renamed_path));
+    let _ = sftp.unlink(Path::new(&overwritten_path));
     let _ = sftp.unlink(Path::new(&source_nested_path));
     let _ = sftp.unlink(Path::new(&copied_nested_path));
     let _ = sftp.rmdir(Path::new(&source_directory));

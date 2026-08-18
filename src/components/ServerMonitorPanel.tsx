@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -160,18 +160,29 @@ function ServerMonitorPanel({
   );
   const [traceLoading, setTraceLoading] = useState(false);
   const [traceError, setTraceError] = useState<string>();
+  const diagnosticsGenerationRef = useRef(0);
+  const pingRequestRef = useRef(0);
+  const connectionsRequestRef = useRef(0);
+  const traceRequestRef = useRef(0);
 
   useEffect(() => {
+    diagnosticsGenerationRef.current += 1;
+    pingRequestRef.current += 1;
+    connectionsRequestRef.current += 1;
+    traceRequestRef.current += 1;
     setSnapshot(null);
     onSnapshotChange(session?.id ?? null, null);
     setHistory([]);
     setError(undefined);
     setPingResult(null);
+    setPingLoading(false);
     setPingError(undefined);
     setConnectionsResult(null);
+    setConnectionsLoading(false);
     setConnectionsError(undefined);
     setConnectionFilter("all");
     setTraceResult(null);
+    setTraceLoading(false);
     setTraceError(undefined);
     setDiagnosticsVisible(false);
     setProcessDrawerVisible(false);
@@ -216,6 +227,11 @@ function ServerMonitorPanel({
   const runPing = async (target = pingTarget) => {
     if (!session) return;
     const nextTarget = target.trim();
+    const generation = diagnosticsGenerationRef.current;
+    const requestId = ++pingRequestRef.current;
+    const isCurrentRequest = () =>
+      generation === diagnosticsGenerationRef.current &&
+      requestId === pingRequestRef.current;
     setPingTarget(nextTarget);
     setPingLoading(true);
     setPingError(undefined);
@@ -224,17 +240,24 @@ function ServerMonitorPanel({
         sessionId: session.id,
         target: nextTarget,
       });
+      if (!isCurrentRequest()) return;
       setPingResult(result);
     } catch (pingFailure) {
+      if (!isCurrentRequest()) return;
       setPingResult(null);
       setPingError(commandErrorMessage(pingFailure));
     } finally {
-      setPingLoading(false);
+      if (isCurrentRequest()) setPingLoading(false);
     }
   };
 
   const loadNetworkConnections = async () => {
     if (!session) return;
+    const generation = diagnosticsGenerationRef.current;
+    const requestId = ++connectionsRequestRef.current;
+    const isCurrentRequest = () =>
+      generation === diagnosticsGenerationRef.current &&
+      requestId === connectionsRequestRef.current;
     setConnectionsLoading(true);
     setConnectionsError(undefined);
     try {
@@ -242,12 +265,14 @@ function ServerMonitorPanel({
         "ssh_network_connections",
         { sessionId: session.id },
       );
+      if (!isCurrentRequest()) return;
       setConnectionsResult(result);
     } catch (connectionFailure) {
+      if (!isCurrentRequest()) return;
       setConnectionsResult(null);
       setConnectionsError(commandErrorMessage(connectionFailure));
     } finally {
-      setConnectionsLoading(false);
+      if (isCurrentRequest()) setConnectionsLoading(false);
     }
   };
 
@@ -263,6 +288,11 @@ function ServerMonitorPanel({
   const runTraceRoute = async () => {
     if (!session) return;
     const target = pingTarget.trim();
+    const generation = diagnosticsGenerationRef.current;
+    const requestId = ++traceRequestRef.current;
+    const isCurrentRequest = () =>
+      generation === diagnosticsGenerationRef.current &&
+      requestId === traceRequestRef.current;
     setTraceLoading(true);
     setTraceError(undefined);
     try {
@@ -270,13 +300,22 @@ function ServerMonitorPanel({
         sessionId: session.id,
         target,
       });
+      if (!isCurrentRequest()) return;
       setTraceResult(result);
     } catch (traceFailure) {
+      if (!isCurrentRequest()) return;
       setTraceResult(null);
       setTraceError(commandErrorMessage(traceFailure));
     } finally {
-      setTraceLoading(false);
+      if (isCurrentRequest()) setTraceLoading(false);
     }
+  };
+
+  const updateDiagnosticsTarget = (value: string) => {
+    setPingTarget(value);
+    const nextTarget = value.trim();
+    if (pingResult?.target !== nextTarget) setPingResult(null);
+    if (traceResult?.target !== nextTarget) setTraceResult(null);
   };
 
   const utilizationData = useMemo(
@@ -426,7 +465,15 @@ function ServerMonitorPanel({
     ? "正在重新连接服务器"
     : error || session?.error || "服务器连接已断开";
   const sendNetworkToAi = () => {
-    if (!session || (!pingResult && !traceResult && !connectionsResult)) return;
+    if (
+      !session ||
+      pingLoading ||
+      traceLoading ||
+      connectionsLoading ||
+      (!pingResult && !traceResult && !connectionsResult)
+    ) {
+      return;
+    }
     onSendToAi(
       session.id,
       createNetworkAiHandoff({
@@ -692,7 +739,12 @@ function ServerMonitorPanel({
           <div className="network-diagnostics-drawer-title">
             <span>网络诊断</span>
             <Button
-              disabled={!pingResult && !traceResult && !connectionsResult}
+              disabled={
+                pingLoading ||
+                traceLoading ||
+                connectionsLoading ||
+                (!pingResult && !traceResult && !connectionsResult)
+              }
               icon={<IconRobot />}
               onClick={sendNetworkToAi}
               size="small"
@@ -709,7 +761,7 @@ function ServerMonitorPanel({
           <Typography.Text bold>Ping</Typography.Text>
           <Input.Search
             loading={pingLoading}
-            onChange={setPingTarget}
+            onChange={updateDiagnosticsTarget}
             onSearch={(value) => void runPing(value)}
             placeholder="域名或 IP 地址"
             searchButton="测试"

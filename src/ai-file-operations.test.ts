@@ -56,6 +56,21 @@ describe("AI file operation proposals", () => {
     ).toThrow("当前远程目录");
   });
 
+  test("rejects new files that still contain redaction placeholders", () => {
+    expect(() =>
+      createAiFileOperationProposal(
+        operationCall({
+          operation: "create",
+          path: "/etc/generated.conf",
+          content: "password=[已隐藏]\n",
+        }),
+        [],
+        "/etc",
+        "session-1",
+      ),
+    ).toThrow("脱敏占位符");
+  });
+
   test("requires complete selected files for rename and delete", () => {
     const renamed = createAiFileOperationProposal(
       operationCall({

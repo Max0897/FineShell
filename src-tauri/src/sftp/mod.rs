@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
     fs::{self, File as LocalFile, OpenOptions},
-    io::{Read, Write},
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -10,7 +10,7 @@ use std::{
         Arc, Condvar, Mutex,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,10 @@ use crate::ssh::{connect_authenticated_session, JumpHostConfig, SshAuthConfig, S
 use crate::transport::ProxyConfig;
 
 const TRANSFER_BUFFER_SIZE: usize = 64 * 1024;
+const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const TRANSFER_WAITING_NOTICE: Duration = Duration::from_secs(2);
+const TRANSFER_RETRY_DELAY: Duration = Duration::from_millis(20);
+const TRANSFER_SESSION_TIMEOUT_MS: u32 = 120_000;
 const TRANSFER_CANCELLED_ERROR: &str = "传输已取消";
 pub(crate) const REMOTE_TEXT_MAX_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const REMOTE_TEXT_CONFLICT_ERROR: &str = "远程文件已被其他程序修改";

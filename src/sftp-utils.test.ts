@@ -23,6 +23,7 @@ import {
   resolveNativeDropPoint,
   selectAllSftpEntryKeys,
   invertSftpEntryKeys,
+  isActiveSftpTransfer,
   setRemotePathBookmark,
   summarizeSftpTransferBatch,
 } from "./sftp-utils";
@@ -37,9 +38,7 @@ describe("SFTP path helpers", () => {
   test("joins names without duplicating separators", () => {
     expect(remoteJoinPath("/", "tmp")).toBe("/tmp");
     expect(remoteJoinPath("/var/", "log")).toBe("/var/log");
-    expect(remoteJoinPath("\\var\\log", "app.log")).toBe(
-      "/var/log/app.log",
-    );
+    expect(remoteJoinPath("\\var\\log", "app.log")).toBe("/var/log/app.log");
   });
 
   test("builds clickable breadcrumb paths for every directory level", () => {
@@ -73,9 +72,7 @@ describe("SFTP path helpers", () => {
     expect(nextAvailableRemoteName("archive", new Set(["archive"]))).toBe(
       "archive (1)",
     );
-    expect(nextAvailableRemoteName(".env", new Set([".env"]))).toBe(
-      ".env (1)",
-    );
+    expect(nextAvailableRemoteName(".env", new Set([".env"]))).toBe(".env (1)");
   });
 
   test("extracts file names from Unix and Windows paths", () => {
@@ -102,9 +99,9 @@ describe("SFTP path helpers", () => {
       "/var/www",
       "/tmp",
     ]);
-    expect(setRemotePathBookmark(["/tmp", "/var/www"], "/tmp", false, 2)).toEqual([
-      "/var/www",
-    ]);
+    expect(
+      setRemotePathBookmark(["/tmp", "/var/www"], "/tmp", false, 2),
+    ).toEqual(["/var/www"]);
     expect(
       matchRemoteDirectoryPaths(
         ["/var/www"],
@@ -125,11 +122,7 @@ describe("SFTP path helpers", () => {
 
 describe("SFTP selection helpers", () => {
   test("selects all visible entries in display order", () => {
-    expect(selectAllSftpEntryKeys(["a", "b", "c"])).toEqual([
-      "a",
-      "b",
-      "c",
-    ]);
+    expect(selectAllSftpEntryKeys(["a", "b", "c"])).toEqual(["a", "b", "c"]);
   });
 
   test("inverts only the currently visible entries", () => {
@@ -141,17 +134,18 @@ describe("SFTP selection helpers", () => {
 });
 
 describe("SFTP transfer batches", () => {
-  test("keeps a batch active while any transfer is queued or running", () => {
+  test("keeps a batch active while any transfer is queued, running, or waiting", () => {
     expect(
-      summarizeSftpTransferBatch(["completed", "running", "queued"]),
+      summarizeSftpTransferBatch(["completed", "running", "waiting", "queued"]),
     ).toEqual({
-      total: 3,
+      total: 4,
       completed: 1,
       failed: 0,
       cancelled: 0,
-      active: 2,
+      active: 3,
       finished: false,
     });
+    expect(isActiveSftpTransfer("waiting")).toBe(true);
   });
 
   test("summarizes all terminal results when a batch finishes", () => {
@@ -181,14 +175,14 @@ describe("SFTP native drop coordinates", () => {
   const bounds = { left: 500, right: 1_200, top: 400, bottom: 800 };
 
   test("keeps AppKit logical coordinates on a Retina display", () => {
-    expect(
-      resolveNativeDropPoint({ x: 900, y: 650 }, 2, bounds, true),
-    ).toEqual({
-      x: 900,
-      y: 650,
-      inside: true,
-      coordinateMode: "logical",
-    });
+    expect(resolveNativeDropPoint({ x: 900, y: 650 }, 2, bounds, true)).toEqual(
+      {
+        x: 900,
+        y: 650,
+        inside: true,
+        coordinateMode: "logical",
+      },
+    );
   });
 
   test("converts physical coordinates when that is the matching coordinate space", () => {

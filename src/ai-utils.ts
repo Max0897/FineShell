@@ -219,22 +219,64 @@ export function combineAiTerminalCommandAssessment(
 const PRIVATE_KEY_PATTERN =
   /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gi;
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b(api[_-]?key|access[_-]?token|auth(?:orization)?|password|passwd|secret|token)\b["']?(\s*[:=]\s*)["']?([^\s,"';&|}]+)/gi;
+  /\b(api[_-]?key|access[_-]?(?:key|token)|auth(?:orization)?|client[_-]?secret|password|passwd|private[_-]?key|secret(?:[_-]?access[_-]?key)?|token)\b["']?(\s*[:=]\s*)["']?([^\s,"';&|}]+)/gi;
 const BEARER_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi;
 const SECRET_TOKEN_PATTERN =
   /\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b/g;
 const SECRET_ARGUMENT_PATTERN =
-  /(^|[\s"'\\])(--?(?:password|passphrase|api[_-]?key|access[_-]?token|secret|token)\s+)["']?([^\s,"';&|}]+)/gi;
-const CREDENTIAL_URL_PATTERN = /\b(https?:\/\/[^\s/:@]+:)([^\s/@]+)(@)/gi;
+  /(^|[\s"'\\])(--?(?:password|passphrase|api[_-]?key|access[_-]?(?:key|token)|client[_-]?secret|secret|token|database[_-]?url|redis[_-]?url|mongodb?[_-]?(?:url|uri)|connection[_-]?string|dsn)\s+)["']?([^\s,"';&|}]+)/gi;
+const SENSITIVE_ENV_ASSIGNMENT_PATTERN =
+  /(^|[\s;])((?:export\s+)?[A-Za-z_][A-Za-z0-9_]*(?:PASSWORD|PASSWD|PASSPHRASE|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET|DATABASE_URL|REDIS_URL|MONGODB_URL|MONGODB_URI|CONNECTION_STRING|DSN)[A-Za-z0-9_]*\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s#;&|\r\n]+)/gim;
+const CREDENTIAL_URL_PATTERN =
+  /\b([a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)([^\s/@]+)(@)/gi;
+const AI_REDACTION_MARKER_PATTERN = /\[已隐藏(?:私钥|密钥)?\]/;
+
+const SENSITIVE_REMOTE_FILE_PATTERNS: Array<{
+  label: string;
+  pattern: RegExp;
+}> = [
+  { label: "环境变量文件", pattern: /^\.env(?:\..+)?$/i },
+  {
+    label: "SSH 私钥文件",
+    pattern: /^id_(?:rsa|dsa|ecdsa|ed25519)(?:\..+)?$/i,
+  },
+  { label: "私钥文件", pattern: /\.(?:key|p12|pfx)$/i },
+  {
+    label: "云凭据文件",
+    pattern: /^(?:credentials|application_default_credentials\.json)$/i,
+  },
+  { label: "Kubernetes 配置", pattern: /^kubeconfig$/i },
+  { label: "包管理器凭据文件", pattern: /^\.(?:npmrc|pypirc|netrc)$/i },
+];
 
 export function redactAiContext(value: string) {
   return value
     .replace(PRIVATE_KEY_PATTERN, "[已隐藏私钥]")
+    .replace(SENSITIVE_ENV_ASSIGNMENT_PATTERN, "$1$2[已隐藏]")
     .replace(BEARER_PATTERN, "$1[已隐藏]")
     .replace(SECRET_ASSIGNMENT_PATTERN, "$1$2[已隐藏]")
     .replace(SECRET_ARGUMENT_PATTERN, "$1$2[已隐藏]")
     .replace(SECRET_TOKEN_PATTERN, "[已隐藏密钥]")
     .replace(CREDENTIAL_URL_PATTERN, "$1[已隐藏]$3");
+}
+
+export function containsAiRedactionMarker(value: string) {
+  return AI_REDACTION_MARKER_PATTERN.test(value);
+}
+
+export function aiRemoteFileSensitivityWarning(path: string, content: string) {
+  const name = path.split(/[\\/]/).pop() ?? path;
+  const normalizedPath = path.replace(/\\/g, "/");
+  const fileType = normalizedPath.toLowerCase().endsWith("/.kube/config")
+    ? "Kubernetes 配置"
+    : SENSITIVE_REMOTE_FILE_PATTERNS.find(({ pattern }) => pattern.test(name))
+        ?.label;
+  const containsCredentials = redactAiContext(content) !== content;
+  if (!fileType && !containsCredentials) return null;
+  if (fileType && containsCredentials) {
+    return `${fileType}，且检测到可能的凭据内容`;
+  }
+  return fileType ?? "检测到可能的凭据内容";
 }
 
 export function buildAiContextPayloadResult(

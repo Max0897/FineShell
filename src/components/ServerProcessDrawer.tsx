@@ -332,7 +332,10 @@ function ServerProcessDrawer({
             />
             <Typography.Text>自动刷新</Typography.Text>
           </span>
-          <Tooltip content="刷新进程列表">
+          <Tooltip
+            content="刷新进程列表"
+            getPopupContainer={() => document.body}
+          >
             <Button
               aria-label="刷新进程列表"
               icon={<IconRefresh />}

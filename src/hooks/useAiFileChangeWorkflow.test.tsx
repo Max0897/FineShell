@@ -51,6 +51,19 @@ function appliedCreateOperation(
   };
 }
 
+function pendingCreateOperation(
+  content: string,
+): AiFileOperationProposal {
+  return {
+    content,
+    id: "operation-pending",
+    operation: "create",
+    path: "/srv/generated.conf",
+    sessionId: "session-1",
+    status: "pending",
+  };
+}
+
 function assistantMessage(
   edits: AiFileEditProposal[] = [],
   operations: AiFileOperationProposal[] = [],
@@ -224,6 +237,46 @@ describe("useAiFileChangeWorkflow", () => {
     );
     expect(result.current.workflow.fileChangeReview).toBeNull();
     expect(onNotice).toHaveBeenCalledWith("success", "已更新 app.conf");
+  });
+
+  test("blocks persisted redaction placeholders before executing file writes", async () => {
+    const edit = {
+      ...fileEditProposal(),
+      content: "password=[已隐藏]\n",
+    };
+    const create = pendingCreateOperation("token=[已隐藏密钥]\n");
+    const executeAction = mock(async () =>
+      executionResult("unexpected", "file_edit", null)
+    );
+    const { result } = renderHook(() =>
+      useWorkflowHarness({
+        initialMessages: [assistantMessage([edit], [create])],
+        onExecuteAction: executeAction,
+        onConfirm: () => undefined,
+        onNotice: () => undefined,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.workflow.approveFileEditProposal(
+        "assistant-1",
+        edit,
+      );
+      await result.current.workflow.approveFileOperationProposal(
+        "assistant-1",
+        create,
+      );
+    });
+
+    expect(executeAction).not.toHaveBeenCalled();
+    expect(result.current.messages[0]?.fileEditProposals?.[0]).toMatchObject({
+      error: expect.stringContaining("脱敏占位符"),
+      status: "failed",
+    });
+    expect(result.current.messages[0]?.fileOperationProposals?.[0]).toMatchObject({
+      error: expect.stringContaining("脱敏占位符"),
+      status: "failed",
+    });
   });
 
   test("marks a stale remote file as conflicted without claiming success", async () => {

@@ -62,6 +62,10 @@ impl<'a> TransferReporter<'a> {
         self.emit(transferred_bytes, "paused", None);
     }
 
+    pub(super) fn waiting(&self, transferred_bytes: u64) {
+        self.emit(transferred_bytes, "waiting", None);
+    }
+
     pub(super) fn cancelled(&self) {
         self.emit(0, "cancelled", None);
     }
@@ -111,7 +115,127 @@ pub(super) struct TransferTaskContext<'a> {
     pub(super) overwrite: bool,
 }
 
-pub(super) fn upload_file(sftp: &Sftp, task: &TransferTaskContext<'_>) -> Result<(), String> {
+struct NonblockingSessionGuard<'a> {
+    session: &'a Session,
+}
+
+impl<'a> NonblockingSessionGuard<'a> {
+    fn new(session: &'a Session) -> Self {
+        session.set_blocking(false);
+        Self { session }
+    }
+}
+
+impl Drop for NonblockingSessionGuard<'_> {
+    fn drop(&mut self) {
+        self.session.set_blocking(true);
+    }
+}
+
+fn verified_upload_resume_offset(
+    sftp: &Sftp,
+    source: &mut LocalFile,
+    temporary_path: &Path,
+    total: u64,
+) -> Result<u64, String> {
+    if !remote_exists(sftp, temporary_path) {
+        return Ok(0);
+    }
+    let stat = sftp
+        .lstat(temporary_path)
+        .map_err(|error| format!("无法读取未完成上传文件：{error}"))?;
+    if stat.is_dir() {
+        return Err("远程上传临时路径被目录占用".to_string());
+    }
+    let remote_size = stat.size.unwrap_or(0);
+    if remote_size == 0 {
+        return Ok(0);
+    }
+    if remote_size > total {
+        sftp.unlink(temporary_path)
+            .map_err(|error| format!("无法清理无效的未完成上传文件：{error}"))?;
+        return Ok(0);
+    }
+
+    // A retry uses the same transfer id. Compare the trailing block before
+    // resuming so a locally changed file cannot be appended to stale data.
+    let verify_size = remote_size.min(TRANSFER_BUFFER_SIZE as u64) as usize;
+    let verify_start = remote_size - verify_size as u64;
+    let mut local_tail = vec![0_u8; verify_size];
+    source
+        .seek(SeekFrom::Start(verify_start))
+        .and_then(|_| source.read_exact(&mut local_tail))
+        .map_err(|error| format!("无法校验本地续传数据：{error}"))?;
+    let mut remote = sftp
+        .open(temporary_path)
+        .map_err(|error| format!("无法打开未完成上传文件：{error}"))?;
+    let mut remote_tail = vec![0_u8; verify_size];
+    remote
+        .seek(SeekFrom::Start(verify_start))
+        .and_then(|_| remote.read_exact(&mut remote_tail))
+        .map_err(|error| format!("无法校验远程续传数据：{error}"))?;
+    drop(remote);
+    if local_tail != remote_tail {
+        sftp.unlink(temporary_path)
+            .map_err(|error| format!("无法清理不匹配的未完成上传文件：{error}"))?;
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| format!("无法重置本地上传文件：{error}"))?;
+        return Ok(0);
+    }
+    source
+        .seek(SeekFrom::Start(remote_size))
+        .map_err(|error| format!("无法定位本地续传位置：{error}"))?;
+    Ok(remote_size)
+}
+
+fn write_upload_buffer(
+    target: &mut ssh2::File,
+    buffer: &[u8],
+    task: &TransferTaskContext<'_>,
+    reporter: &TransferReporter<'_>,
+    transferred: &mut u64,
+) -> Result<(), String> {
+    let mut offset = 0;
+    let mut last_progress = Instant::now();
+    let mut waiting_reported = false;
+    while offset < buffer.len() {
+        wait_for_transfer(task.control, reporter, *transferred)?;
+        match target.write(&buffer[offset..]) {
+            Ok(0) => {}
+            Ok(written) => {
+                offset += written;
+                *transferred += written as u64;
+                last_progress = Instant::now();
+                waiting_reported = false;
+                reporter.running(*transferred);
+                continue;
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+            Err(error) => return Err(format!("写入远程文件失败：{error}")),
+        }
+
+        let stalled_for = last_progress.elapsed();
+        if stalled_for >= TRANSFER_IDLE_TIMEOUT {
+            return Err(format!(
+                "上传连续 {} 秒无进度，可能是网络中断或远程磁盘响应缓慢，可重试并继续上传",
+                TRANSFER_IDLE_TIMEOUT.as_secs()
+            ));
+        }
+        if !waiting_reported && stalled_for >= TRANSFER_WAITING_NOTICE {
+            reporter.waiting(*transferred);
+            waiting_reported = true;
+        }
+        thread::sleep(TRANSFER_RETRY_DELAY);
+    }
+    Ok(())
+}
+
+pub(super) fn upload_file(
+    session: &Session,
+    sftp: &Sftp,
+    task: &TransferTaskContext<'_>,
+) -> Result<(), String> {
     let local_path = Path::new(task.local_path);
     let remote_path_text = normalize_remote_operation_path(task.remote_path)?;
     let remote_path = Path::new(&remote_path_text);
@@ -126,10 +250,6 @@ pub(super) fn upload_file(sftp: &Sftp, task: &TransferTaskContext<'_>) -> Result
         return Err("远程目标已存在，需要确认覆盖".to_string());
     }
     let temporary_path = remote_upload_temporary_path(&remote_path_text, task.transfer_id)?;
-    if remote_exists(sftp, &temporary_path) {
-        sftp.unlink(&temporary_path)
-            .map_err(|error| format!("无法清理上次未完成的上传文件：{error}"))?;
-    }
 
     let reporter = TransferReporter::new(
         task.app,
@@ -139,14 +259,39 @@ pub(super) fn upload_file(sftp: &Sftp, task: &TransferTaskContext<'_>) -> Result
         local_path,
         total,
     );
-    reporter.running(0);
     let mut transferred = 0_u64;
     let result = (|| -> Result<(), String> {
         let mut source =
             LocalFile::open(local_path).map_err(|error| format!("无法打开本地文件：{error}"))?;
-        let mut target = sftp
-            .create(&temporary_path)
-            .map_err(|error| format!("无法创建远程临时文件：{error}"))?;
+        transferred = verified_upload_resume_offset(sftp, &mut source, &temporary_path, total)?;
+        reporter.running(transferred);
+        if transferred == total {
+            return replace_remote_upload_file(
+                sftp,
+                &temporary_path,
+                remote_path,
+                task.overwrite,
+                task.transfer_id,
+            );
+        }
+        let mut target = if transferred == 0 {
+            sftp.create(&temporary_path)
+                .map_err(|error| format!("无法创建远程临时文件：{error}"))?
+        } else {
+            let mut target = sftp
+                .open_mode(
+                    &temporary_path,
+                    OpenFlags::WRITE | OpenFlags::CREATE,
+                    0o644,
+                    OpenType::File,
+                )
+                .map_err(|error| format!("无法打开未完成上传文件：{error}"))?;
+            target
+                .seek(SeekFrom::Start(transferred))
+                .map_err(|error| format!("无法定位远程续传位置：{error}"))?;
+            target
+        };
+        let nonblocking = NonblockingSessionGuard::new(session);
         let mut buffer = vec![0_u8; TRANSFER_BUFFER_SIZE];
         loop {
             wait_for_transfer(task.control, &reporter, transferred)?;
@@ -156,30 +301,99 @@ pub(super) fn upload_file(sftp: &Sftp, task: &TransferTaskContext<'_>) -> Result
             if size == 0 {
                 break;
             }
-            target
-                .write_all(&buffer[..size])
-                .map_err(|error| format!("写入远程文件失败：{error}"))?;
-            transferred += size as u64;
-            reporter.running(transferred);
+            write_upload_buffer(
+                &mut target,
+                &buffer[..size],
+                task,
+                &reporter,
+                &mut transferred,
+            )?;
         }
         wait_for_transfer(task.control, &reporter, transferred)?;
+        drop(nonblocking);
         target
             .flush()
             .map_err(|error| format!("刷新远程文件失败：{error}"))?;
         drop(target);
-        let flags = if task.overwrite {
-            RenameFlags::OVERWRITE
-        } else {
-            RenameFlags::empty()
-        };
-        sftp.rename(&temporary_path, remote_path, Some(flags))
-            .map_err(|error| format!("无法保存上传文件：{error}"))
+        replace_remote_upload_file(
+            sftp,
+            &temporary_path,
+            remote_path,
+            task.overwrite,
+            task.transfer_id,
+        )
     })();
     if let Err(error) = result {
-        let _ = sftp.unlink(&temporary_path);
+        // Keep a non-empty part for retry. The next attempt verifies its
+        // trailing block before resuming, so this does not depend on
+        // server-specific timeout or disconnect error messages.
+        if error == TRANSFER_CANCELLED_ERROR || transferred == 0 {
+            let _ = sftp.unlink(&temporary_path);
+        }
         return Err(error);
     }
     reporter.completed(transferred);
+    Ok(())
+}
+
+pub(super) fn replace_remote_upload_file(
+    sftp: &Sftp,
+    temporary_path: &Path,
+    remote_path: &Path,
+    overwrite: bool,
+    transfer_id: &str,
+) -> Result<(), String> {
+    let remote_path_text = remote_path_text(remote_path);
+    let backup_path = remote_upload_temporary_path(
+        &remote_path_text,
+        &format!("{transfer_id}-overwrite-backup"),
+    )?;
+
+    // A retry may follow a process interruption after the original file was
+    // moved aside but before the temporary upload was promoted.
+    if !remote_exists(sftp, remote_path) && remote_exists(sftp, &backup_path) {
+        sftp.rename(&backup_path, remote_path, Some(RenameFlags::empty()))
+            .map_err(|error| {
+                format!(
+                    "检测到未完成的覆盖操作，但无法从 {} 恢复原文件：{error}",
+                    backup_path.display()
+                )
+            })?;
+    }
+
+    let target_stat = sftp.lstat(remote_path).ok();
+    if target_stat.as_ref().is_some_and(FileStat::is_dir) {
+        return Err("无法用文件覆盖同名目录".to_string());
+    }
+    if target_stat.is_none() {
+        return sftp
+            .rename(temporary_path, remote_path, Some(RenameFlags::empty()))
+            .map_err(|error| format!("无法保存上传文件：{error}"));
+    }
+    if !overwrite {
+        return Err("远程目标已存在，需要确认覆盖".to_string());
+    }
+
+    if remote_exists(sftp, &backup_path) {
+        sftp.unlink(&backup_path)
+            .map_err(|error| format!("无法清理上次上传备份：{error}"))?;
+    }
+    sftp.rename(remote_path, &backup_path, Some(RenameFlags::empty()))
+        .map_err(|error| format!("无法备份原远程文件：{error}"))?;
+
+    if let Err(save_error) = sftp.rename(temporary_path, remote_path, Some(RenameFlags::empty())) {
+        return match sftp.rename(&backup_path, remote_path, Some(RenameFlags::empty())) {
+            Ok(()) => Err(format!("无法保存上传文件：{save_error}")),
+            Err(restore_error) => Err(format!(
+                "无法保存上传文件：{save_error}；原文件保留在 {}，自动恢复失败：{restore_error}",
+                backup_path.display()
+            )),
+        };
+    }
+
+    // The uploaded file is already in place. A stale hidden backup should not
+    // make the completed transfer look failed to the user.
+    let _ = sftp.unlink(&backup_path);
     Ok(())
 }
 

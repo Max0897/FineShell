@@ -9,6 +9,7 @@ import {
 } from "../ai-file-edits";
 import {
   aiFileOperationDisplayName,
+  aiFileOperationContentError,
   aiFileOperationLabel,
   aiFileOperationRollbackEligibilityError,
   markAiFileOperationApplied,
@@ -241,6 +242,11 @@ export function useAiFileChangeWorkflow({
     userConfirmed = true,
   ): Promise<ApplyResult> => {
     try {
+      const contentError = proposedFileContentError(
+        content,
+        proposal.originalFile.content,
+      );
+      if (contentError) throw new Error(contentError);
       const execution = userConfirmed
         ? await onExecuteAction(messageId, proposal.id, false, content)
         : await onExecuteAction(
@@ -319,6 +325,10 @@ export function useAiFileChangeWorkflow({
     userConfirmed = true,
   ): Promise<ApplyResult> => {
     try {
+      if (proposal.operation === "create") {
+        const contentError = aiFileOperationContentError(proposal.content ?? "");
+        if (contentError) throw new Error(contentError);
+      }
       const execution = userConfirmed
         ? await onExecuteAction(messageId, proposal.id)
         : await onExecuteAction(

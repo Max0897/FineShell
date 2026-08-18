@@ -36,6 +36,7 @@ interface SftpToolbarProps {
   currentPathBookmarked: boolean;
   history: string[];
   inputPath: string;
+  aiFileReadProgress?: { completed: number; total: number };
   loading: boolean;
   operationLoading: boolean;
   pathSuggestions: string[];
@@ -62,6 +63,7 @@ export default function SftpToolbar({
   currentPathBookmarked,
   history,
   inputPath,
+  aiFileReadProgress,
   loading,
   operationLoading,
   pathSuggestions,
@@ -176,9 +178,13 @@ export default function SftpToolbar({
             />
           </div>
         )}
-        <Tooltip content={currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"}>
+        <Tooltip
+          content={currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"}
+        >
           <Button
-            aria-label={currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"}
+            aria-label={
+              currentPathBookmarked ? "取消收藏当前目录" : "收藏当前目录"
+            }
             className={currentPathBookmarked ? "is-active" : undefined}
             disabled={!ready}
             icon={currentPathBookmarked ? <IconStarFill /> : <IconStar />}
@@ -193,7 +199,10 @@ export default function SftpToolbar({
               <Menu.ItemGroup title="快速目录">
                 {bookmarks.length ? (
                   bookmarks.map((path) => (
-                    <Menu.Item key={`bookmark:${path}`} onClick={() => onNavigate(path)}>
+                    <Menu.Item
+                      key={`bookmark:${path}`}
+                      onClick={() => onNavigate(path)}
+                    >
                       <span className="sftp-location-menu-item">
                         <IconStarFill />
                         <span className="sftp-location-path">{path}</span>
@@ -219,7 +228,10 @@ export default function SftpToolbar({
               <Menu.ItemGroup title="最近访问">
                 {history.length ? (
                   history.map((path) => (
-                    <Menu.Item key={`history:${path}`} onClick={() => onNavigate(path)}>
+                    <Menu.Item
+                      key={`history:${path}`}
+                      onClick={() => onNavigate(path)}
+                    >
                       <span className="sftp-location-menu-item">
                         <IconHistory />
                         <span className="sftp-location-path">{path}</span>
@@ -255,6 +267,12 @@ export default function SftpToolbar({
           </Tooltip>
         </Dropdown>
       </div>
+      {aiFileReadProgress && (
+        <span className="sftp-ai-read-progress">
+          读取 AI 上下文 {aiFileReadProgress.completed}/
+          {aiFileReadProgress.total}
+        </span>
+      )}
       <Space size="mini">
         <Dropdown.Button
           buttonProps={{ icon: <IconFolderAdd /> }}
@@ -262,7 +280,9 @@ export default function SftpToolbar({
           droplist={
             <Menu
               className="sftp-create-menu"
-              onClickMenuItem={(key) => onCreate(key === "file" ? "file" : "directory")}
+              onClickMenuItem={(key) =>
+                onCreate(key === "file" ? "file" : "directory")
+              }
               selectable={false}
             >
               <Menu.Item key="file">

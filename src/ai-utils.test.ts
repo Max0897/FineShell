@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   aiContextMentionIds,
   aiRemoteFileContextError,
+  aiRemoteFileSensitivityWarning,
   aiRemoteFileContextSource,
   aiRemoteFileContextSourceId,
   appendAiContextMentions,
@@ -77,6 +78,11 @@ describe("AI terminal command safety", () => {
         "worker --password process-secret",
         "Authorization: Bearer secret-token",
         "OPENAI_API_KEY=sk-12345678901234567890",
+        "AWS_SECRET_ACCESS_KEY=aws-secret-value",
+        "env SERVICE_API_TOKEN=inline-env-secret app-server",
+        '{"secretAccessKey":"camel-case-secret"}',
+        "DATABASE_URL=postgres://admin:dbpass@example.com/app",
+        "redis-cli --url redis://default:redispass@example.com/0",
         "https://max:private@example.com/api",
         "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----",
       ].join("\n"),
@@ -87,8 +93,34 @@ describe("AI terminal command safety", () => {
     expect(redacted).not.toContain("process-secret");
     expect(redacted).not.toContain("secret-token");
     expect(redacted).not.toContain("sk-12345678901234567890");
+    expect(redacted).not.toContain("aws-secret-value");
+    expect(redacted).not.toContain("inline-env-secret");
+    expect(redacted).not.toContain("camel-case-secret");
+    expect(redacted).not.toContain("dbpass");
+    expect(redacted).not.toContain("redispass");
     expect(redacted).not.toContain("max:private@");
     expect(redacted).not.toContain("\nsecret\n");
+  });
+
+  test("warns before sensitive remote files are attached", () => {
+    expect(aiRemoteFileSensitivityWarning("/srv/app/.env", "PORT=3000")).toBe(
+      "环境变量文件",
+    );
+    expect(
+      aiRemoteFileSensitivityWarning(
+        "/srv/app/settings.txt",
+        "AWS_SECRET_ACCESS_KEY=secret-value",
+      ),
+    ).toBe("检测到可能的凭据内容");
+    expect(
+      aiRemoteFileSensitivityWarning("/srv/app/readme.md", "hello"),
+    ).toBeNull();
+    expect(
+      aiRemoteFileSensitivityWarning("/srv/app/config", "server=true"),
+    ).toBeNull();
+    expect(
+      aiRemoteFileSensitivityWarning("/home/max/.kube/config", "clusters: []"),
+    ).toBe("Kubernetes 配置");
   });
 
   test("builds only selected context sections within the configured limit", () => {
@@ -230,14 +262,17 @@ describe("AI terminal command safety", () => {
       ),
     ).toThrow("最多可同时添加 8 个");
     expect(() =>
-      mergeAiRemoteFileContexts([], [
-        {
-          content: "x",
-          name: "large.txt",
-          path: "/tmp/large.txt",
-          size: 512 * 1024 + 1,
-        },
-      ]),
+      mergeAiRemoteFileContexts(
+        [],
+        [
+          {
+            content: "x",
+            name: "large.txt",
+            path: "/tmp/large.txt",
+            size: 512 * 1024 + 1,
+          },
+        ],
+      ),
     ).toThrow("512 KiB");
   });
 
@@ -282,11 +317,10 @@ describe("AI terminal command safety", () => {
     ];
 
     expect(
-      appendAiContextMentions(
-        "分析故障\n\n@最近终端输出",
-        sources,
-        ["terminal-output", "sftp-path"],
-      ),
+      appendAiContextMentions("分析故障\n\n@最近终端输出", sources, [
+        "terminal-output",
+        "sftp-path",
+      ]),
     ).toBe("分析故障\n\n@最近终端输出\n\n@当前远程目录");
   });
 
@@ -318,9 +352,9 @@ describe("AI terminal command safety", () => {
         size: 1,
       }),
     ];
-    expect(
-      separateAiContextMentions("@文件:/srv/a/b继续", nestedSources),
-    ).toBe("@文件:/srv/a/b 继续");
+    expect(separateAiContextMentions("@文件:/srv/a/b继续", nestedSources)).toBe(
+      "@文件:/srv/a/b 继续",
+    );
   });
 
   test("removes known context mentions from the submitted question", () => {
@@ -330,10 +364,7 @@ describe("AI terminal command safety", () => {
     ];
 
     expect(
-      stripAiContextMentions(
-        "请分析 @最近终端输出\n\n@当前远程目录",
-        sources,
-      ),
+      stripAiContextMentions("请分析 @最近终端输出\n\n@当前远程目录", sources),
     ).toBe("请分析");
     expect(stripAiContextMentions("联系 @max", sources)).toBe("联系 @max");
   });
@@ -343,9 +374,9 @@ describe("AI terminal command safety", () => {
       canInsert: true,
       risk: "safe",
     });
-    expect(assessAiTerminalCommand("sudo systemctl restart nginx")).toMatchObject(
-      { canInsert: true, risk: "caution" },
-    );
+    expect(
+      assessAiTerminalCommand("sudo systemctl restart nginx"),
+    ).toMatchObject({ canInsert: true, risk: "caution" });
     expect(assessAiTerminalCommand("rm -rf /tmp/cache")).toMatchObject({
       canInsert: true,
       risk: "danger",

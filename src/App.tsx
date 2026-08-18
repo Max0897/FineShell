@@ -12,6 +12,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import {
   IconClose,
   IconCloseCircle,
+  IconPlus,
   IconPoweroff,
   IconRefresh,
 } from "@arco-design/web-react/icon";
@@ -43,21 +44,17 @@ import {
   mergeAiRemoteFileContexts,
   formatAiServerContext,
 } from "./ai-utils";
-import {
-  createSftpSelectionAiHandoff,
-  type AiHandoffRequest,
-} from "./ai-handoff";
+import { createSftpSelectionAiHandoff } from "./ai-handoff";
 import { AI_SIDEBAR_DEFAULT_WIDTH } from "./ai-sidebar";
 import { useAiSidebarController } from "./hooks/useAiSidebarController";
+import useAiHandoffController from "./hooks/useAiHandoffController";
 import {
   applicationUpdater,
   checkForApplicationUpdateOnStartup,
   restoreApplicationFocusAfterUpdateRelaunch,
   setApplicationUpdateNotice,
 } from "./app-updater";
-import {
-  isTerminalSessionOperational,
-} from "./terminal-utils";
+import { isTerminalSessionOperational } from "./terminal-utils";
 import {
   nextTerminalFontSizeOffset,
   terminalFontSize,
@@ -165,6 +162,8 @@ function App() {
     syncKnownHostFingerprints,
     updatePortForwardStatus,
   } = useTerminalSessions({ onSessionsClosed: handleSessionsClosed });
+  const activeSessionIdRef = useRef(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
   const {
     active: aiAssistantActive,
     close: closeAiSidebar,
@@ -191,6 +190,41 @@ function App() {
     },
     sidebarWidth: aiSidebarWidth,
   });
+  const openAiAssistant = useCallback(
+    async (
+      sessionId: string,
+      prompt = "",
+      contextIds: AiContextSourceId[] = [],
+    ) => {
+      if (activeSessionIdRef.current !== sessionId) return false;
+      await loadAiAssistantPanel();
+      if (activeSessionIdRef.current !== sessionId) return false;
+      setAiInitialPrompt(prompt);
+      setAiInitialContextIds(contextIds);
+      setAiInitialPromptRequest((current) => current + 1);
+      await openAiSidebar();
+      return true;
+    },
+    [openAiSidebar],
+  );
+  const showAiHandoffNotice = useCallback(
+    (type: "error" | "warning", content: string) => {
+      Message[type](content);
+    },
+    [],
+  );
+  const { handoffContext, handoffRemoteFiles, handoffTerminalSelection } =
+    useAiHandoffController({
+      activeSession,
+      businessContexts: aiBusinessContexts,
+      onNotice: showAiHandoffNotice,
+      openAssistant: openAiAssistant,
+      remoteFileContexts: aiRemoteFileContexts,
+      setBusinessContexts: setAiBusinessContexts,
+      setRemoteFileContexts: setAiRemoteFileContexts,
+      setTerminalSelections,
+      terminalSelections,
+    });
   const previousAiSidebarPhaseRef = useRef(aiSidebarPhase);
 
   const runtimeTerminalFontSize = terminalFontSize(
@@ -534,39 +568,6 @@ function App() {
     }));
   }
 
-  async function openAiAssistant(
-    prompt = "",
-    contextIds: AiContextSourceId[] = [],
-  ) {
-    if (!activeSession) {
-      Message.warning("请先打开终端会话");
-      return;
-    }
-    setAiInitialPrompt(prompt);
-    setAiInitialContextIds(contextIds);
-    setAiInitialPromptRequest((current) => current + 1);
-    await loadAiAssistantPanel();
-    await openAiSidebar();
-  }
-
-  async function handoffToAi(sessionId: string, request: AiHandoffRequest) {
-    if (sessionId !== activeSessionId) {
-      Message.warning("当前会话已切换，请重新选择要分析的内容");
-      return;
-    }
-    setAiBusinessContexts((current) => {
-      const sources = current[sessionId] ?? [];
-      return {
-        ...current,
-        [sessionId]: [
-          ...sources.filter((source) => source.id !== request.source.id),
-          request.source,
-        ],
-      };
-    });
-    await openAiAssistant(request.prompt, [request.source.id]);
-  }
-
   async function toggleAiAssistant() {
     if (!activeSession) {
       Message.warning("请先打开终端会话");
@@ -592,10 +593,18 @@ function App() {
 
     return [
       {
+        key: "open-new-session",
+        label: "新开会话",
+        icon: <IconPlus />,
+        onClick: () =>
+          openSession(session.host, session.proxy, session.jumpHost),
+      },
+      {
         key: "disconnect",
         label: "断开连接",
         icon: <IconPoweroff />,
         disabled: !canDisconnect,
+        dividerBefore: true,
         onClick: () => disconnectSession(session.id),
       },
       {
@@ -648,7 +657,7 @@ function App() {
               if (activeSession) reconnectSession(activeSession);
             }}
             onSendToAi={(sessionId, request) =>
-              void handoffToAi(sessionId, request)
+              void handoffContext(sessionId, request)
             }
             onSnapshotChange={updateMonitorSnapshot}
             onPortForwardStatusChange={(status) =>
@@ -686,11 +695,7 @@ function App() {
               session={session}
               terminalFontSize={runtimeTerminalFontSize}
               onAskAi={(selection) => {
-                setTerminalSelections((current) => ({
-                  ...current,
-                  [session.id]: selection,
-                }));
-                openAiAssistant("请解释这段终端输出，并给出排查建议。");
+                void handoffTerminalSelection(session.id, selection);
               }}
               onCurrentDirectoryChange={updateTerminalCurrentDirectory}
               onReconnect={() => reconnectSession(session)}
@@ -745,28 +750,14 @@ function App() {
         if (activeSession) reconnectSession(activeSession);
       }}
       onSendFilesToAi={async (sessionId, files) => {
-        if (sessionId !== activeSessionId) {
-          throw new Error("当前会话已切换，请重新选择文件");
-        }
-        const nextFiles = mergeAiRemoteFileContexts(
-          aiRemoteFileContexts[sessionId] ?? [],
-          files,
-        );
-        setAiRemoteFileContexts((current) => ({
-          ...current,
-          [sessionId]: nextFiles,
-        }));
-        await openAiAssistant(
-          "",
-          files.map((file) => aiRemoteFileContextSource(file).id),
-        );
+        await handoffRemoteFiles(sessionId, files);
       }}
-      onSendSelectionToAi={(sessionId, currentDirectory, entries) =>
-        handoffToAi(
+      onSendSelectionToAi={async (sessionId, currentDirectory, entries) => {
+        await handoffContext(
           sessionId,
           createSftpSelectionAiHandoff(currentDirectory, entries),
-        )
-      }
+        );
+      }}
       refreshRequest={
         activeSessionId ? (sftpRefreshRequests[activeSessionId] ?? 0) : 0
       }
