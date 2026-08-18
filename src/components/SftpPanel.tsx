@@ -30,6 +30,7 @@ import {
   MAX_AI_REMOTE_FILES,
   MAX_AI_REMOTE_FILES_BYTES,
   aiRemoteFileContextError,
+  aiRemoteFileSensitivityWarning,
   type AiRemoteFileContext,
 } from "../ai-utils";
 import {
@@ -52,9 +53,7 @@ import {
   commandErrorMessage,
   type ExternalEditPayload,
 } from "../tauri-protocol";
-import {
-  externalEditStatusMeta,
-} from "./TransferActivityList";
+import { externalEditStatusMeta } from "./TransferActivityList";
 import {
   ArchiveDialog,
   CreateEntryDialog,
@@ -158,6 +157,10 @@ function SftpPanel({
   const [browsers, setBrowsers] = useState<Record<string, BrowserState>>({});
   const [transferDrawerVisible, setTransferDrawerVisible] = useState(false);
   const [operationLoading, setOperationLoading] = useState(false);
+  const [aiFileReadProgress, setAiFileReadProgress] = useState<{
+    completed: number;
+    total: number;
+  }>();
   const [retryingSessionId, setRetryingSessionId] = useState<string>();
   const [selectedEntryKeys, setSelectedEntryKeys] = useState<string[]>([]);
   const connectingRef = useRef(new Set<string>());
@@ -399,9 +402,9 @@ function SftpPanel({
   const reconnecting = session?.status === "reconnecting" || sftpReconnecting;
   const sessionUnavailable = Boolean(
     session &&
-      (session.status === "failed" ||
-        session.status === "disconnected" ||
-        reconnecting),
+    (session.status === "failed" ||
+      session.status === "disconnected" ||
+      reconnecting),
   );
   const sftpUnavailable = Boolean(connected && browser?.status === "failed");
   const connectionUnavailable = sessionUnavailable || sftpUnavailable;
@@ -521,7 +524,13 @@ function SftpPanel({
     if (browser.path !== terminalDirectory.path) {
       void loadDirectory(session.id, terminalDirectory.path);
     }
-  }, [browser?.path, browser?.status, loadDirectory, session, terminalDirectory]);
+  }, [
+    browser?.path,
+    browser?.status,
+    loadDirectory,
+    session,
+    terminalDirectory,
+  ]);
 
   useEffect(() => {
     onCurrentPathChange(
@@ -830,6 +839,7 @@ function SftpPanel({
 
     const targetSessionId = session.id;
     setOperationLoading(true);
+    setAiFileReadProgress({ completed: 0, total: files.length });
     try {
       const contexts: AiRemoteFileContext[] = [];
       for (const entry of files) {
@@ -847,11 +857,36 @@ function SftpPanel({
           path: document.path,
           size: document.size,
         });
+        setAiFileReadProgress({
+          completed: contexts.length,
+          total: files.length,
+        });
+      }
+      const sensitiveFiles = contexts
+        .map((file) => ({
+          file,
+          warning: aiRemoteFileSensitivityWarning(file.path, file.content),
+        }))
+        .filter(
+          (item): item is { file: AiRemoteFileContext; warning: string } =>
+            Boolean(item.warning),
+        );
+      if (sensitiveFiles.length) {
+        const confirmed = await confirmBatchOverwrite(
+          "发送敏感文件给 AI？",
+          `${sensitiveFiles
+            .map(({ file, warning }) => `${file.name}：${warning}`)
+            .join(
+              "\n",
+            )}\n\n发送请求时会自动隐藏已识别的凭据，但仍建议确认文件内容适合交给当前 AI 服务。`,
+        );
+        if (!confirmed) return;
       }
       await onSendFilesToAi(targetSessionId, contexts);
     } catch (error) {
       handleOperationError(error);
     } finally {
+      setAiFileReadProgress(undefined);
       setOperationLoading(false);
     }
   }
@@ -952,6 +987,7 @@ function SftpPanel({
       tabIndex={-1}
     >
       <SftpToolbar
+        aiFileReadProgress={aiFileReadProgress}
         bookmarks={currentLocation.bookmarks}
         clipboardEntryCount={currentClipboard?.entries.length ?? 0}
         connected={Boolean(connected)}

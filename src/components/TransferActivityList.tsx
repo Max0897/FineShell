@@ -28,8 +28,10 @@ import {
   type SftpTransferStatus,
 } from "../sftp-utils";
 
-export interface TransferActivityRecord
-  extends Omit<SftpTransferPayload, "status"> {
+export interface TransferActivityRecord extends Omit<
+  SftpTransferPayload,
+  "status"
+> {
   status: SftpTransferStatus;
   localPath: string;
   remotePath: string;
@@ -125,9 +127,11 @@ function TransferActivityList({
                 ? "已取消"
                 : transfer.status === "paused"
                   ? "已暂停"
-                  : transfer.status === "queued"
-                    ? "等待中"
-                    : formatTransferSpeed(transfer.bytesPerSecond);
+                  : transfer.status === "waiting"
+                    ? "等待远程响应"
+                    : transfer.status === "queued"
+                      ? "等待中"
+                      : formatTransferSpeed(transfer.bytesPerSecond);
 
         return (
           <div className="sftp-transfer-row" key={transfer.transferId}>
@@ -176,7 +180,8 @@ function TransferActivityList({
               )}
             </div>
             <div className="sftp-transfer-actions">
-              {transfer.status === "running" && (
+              {(transfer.status === "running" ||
+                transfer.status === "waiting") && (
                 <Tooltip content="暂停">
                   <Button
                     aria-label={`暂停 ${transfer.fileName}`}
@@ -229,10 +234,7 @@ function TransferActivityList({
           edit.status === "conflict" || edit.status === "failed";
         const updatedAt = formatExternalEditTime(edit.updatedAt);
         return (
-          <div
-            className="sftp-transfer-row sftp-sync-row"
-            key={edit.editId}
-          >
+          <div className="sftp-transfer-row sftp-sync-row" key={edit.editId}>
             <span
               className={`sftp-transfer-direction sftp-transfer-direction-sync sftp-transfer-direction-sync-${status.tone}`}
             >

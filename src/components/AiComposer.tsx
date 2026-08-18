@@ -25,10 +25,7 @@ import {
   type AiRemoteFileContext,
   type AiRequestTokenBudget,
 } from "../ai-utils";
-import type {
-  AgentApprovalMode,
-  AiRequestTelemetry,
-} from "../tauri-protocol";
+import type { AgentApprovalMode, AiRequestTelemetry } from "../tauri-protocol";
 
 const AI_APPROVAL_MODE_OPTIONS = [
   { label: "请求审批", value: "on_request" },
@@ -151,7 +148,9 @@ function AiComposer({
           </span>
         }
         onChange={(value) =>
-          onChange(separateAiContextMentions(value, contextSources).slice(0, 4_000))
+          onChange(
+            separateAiContextMentions(value, contextSources).slice(0, 4_000),
+          )
         }
         onKeyDownCapture={(event) => {
           if (
@@ -163,7 +162,8 @@ function AiComposer({
           }
 
           const textarea = event.currentTarget;
-          const selectionStart = textarea.selectionStart ?? textarea.value.length;
+          const selectionStart =
+            textarea.selectionStart ?? textarea.value.length;
           const selectionEnd = textarea.selectionEnd ?? selectionStart;
           const textBeforeCursor = textarea.value.slice(0, selectionStart);
           const mentionIndex = textBeforeCursor.lastIndexOf("@");
@@ -252,6 +252,15 @@ function AiComposer({
               </Tag>
             </Tooltip>
           )}
+          {tokenBudget.contextTruncated && (
+            <Tooltip
+              content={`已按 ${tokenBudget.contextLimitChars.toLocaleString()} 字符上限截断，部分上下文不会进入本次请求`}
+            >
+              <Tag color="orange" size="small">
+                上下文已截断
+              </Tag>
+            </Tooltip>
+          )}
         </span>
         <span className="ai-assistant-composer-submit">
           <Tooltip content={model || "未配置模型"}>
@@ -266,9 +275,16 @@ function AiComposer({
           <Tooltip
             content={
               <div className="ai-token-budget-tooltip">
-                <div>对话历史：约 {formatTokenCount(tokenBudget.historyTokens)} Token</div>
-                <div>当前输入：约 {formatTokenCount(tokenBudget.inputTokens)} Token</div>
-                <div>上下文：约 {formatTokenCount(tokenBudget.contextTokens)} Token</div>
+                <div>
+                  对话历史：约 {formatTokenCount(tokenBudget.historyTokens)}{" "}
+                  Token
+                </div>
+                <div>
+                  当前输入：约 {formatTokenCount(tokenBudget.inputTokens)} Token
+                </div>
+                <div>
+                  上下文：约 {formatTokenCount(tokenBudget.contextTokens)} Token
+                </div>
                 {tokenBudget.contextTruncated && (
                   <div>上下文已按设置上限截断</div>
                 )}
@@ -279,8 +295,10 @@ function AiComposer({
                     </div>
                     {lastTelemetry.usage ? (
                       <div>
-                        实际 {formatTokenCount(lastTelemetry.usage.totalTokens)} Token
-                        （输入 {formatTokenCount(lastTelemetry.usage.inputTokens)} / 输出{" "}
+                        实际 {formatTokenCount(lastTelemetry.usage.totalTokens)}{" "}
+                        Token （输入{" "}
+                        {formatTokenCount(lastTelemetry.usage.inputTokens)} /
+                        输出{" "}
                         {formatTokenCount(lastTelemetry.usage.outputTokens)}）
                       </div>
                     ) : (

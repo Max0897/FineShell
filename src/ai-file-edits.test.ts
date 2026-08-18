@@ -86,6 +86,23 @@ describe("AI file edit proposals", () => {
     ).toThrow("当前上下文不一致");
   });
 
+  test("rejects sensitive source snapshots even when called without UI filtering", () => {
+    expect(() =>
+      createAiFileEditProposal(
+        {
+          id: "call-sensitive-source",
+          name: "propose_file_edit",
+          arguments: JSON.stringify({
+            path: FILE.path,
+            content: "password=[已隐藏]\nport=8080\n",
+          }),
+        },
+        { ...FILE, content: "password=real-secret\nport=80\n" },
+        "session-1",
+      ),
+    ).toThrow("只能分析");
+  });
+
   test("matches proposals against any eligible file in a batch", () => {
     const secondFile = {
       content: "enabled=false\n",
@@ -141,6 +158,9 @@ describe("AI file edit proposals", () => {
       "相同",
     );
     expect(proposedFileContentError("a\0b", FILE.content)).toContain("二进制");
+    expect(
+      proposedFileContentError("password=[已隐藏]\n", FILE.content),
+    ).toContain("脱敏占位符");
     expect(proposedFileContentError("x".repeat(60_001), FILE.content)).toContain(
       "60000",
     );

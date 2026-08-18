@@ -65,7 +65,8 @@ export function matchRemoteDirectoryPaths(
     .filter(
       (path, index, paths) =>
         paths.indexOf(path) === index &&
-        (!normalizedQuery || path.toLocaleLowerCase().includes(normalizedQuery)),
+        (!normalizedQuery ||
+          path.toLocaleLowerCase().includes(normalizedQuery)),
     )
     .slice(0, limit);
 }
@@ -190,13 +191,19 @@ export function invertSftpEntryKeys(
 export type SftpTransferStatus =
   | "queued"
   | "running"
+  | "waiting"
   | "paused"
   | "completed"
   | "failed"
   | "cancelled";
 
 export function isActiveSftpTransfer(status: SftpTransferStatus) {
-  return status === "queued" || status === "running" || status === "paused";
+  return (
+    status === "queued" ||
+    status === "running" ||
+    status === "waiting" ||
+    status === "paused"
+  );
 }
 
 export interface SftpTransferBatchSummary {
@@ -300,9 +307,8 @@ export function remoteArchiveExtension(format: RemoteArchiveFormat) {
 export function remoteArchiveFormatFromName(name: string) {
   const normalized = name.toLocaleLowerCase();
   return (
-    REMOTE_ARCHIVE_SUFFIXES.find(({ suffix }) =>
-      normalized.endsWith(suffix),
-    )?.format ?? null
+    REMOTE_ARCHIVE_SUFFIXES.find(({ suffix }) => normalized.endsWith(suffix))
+      ?.format ?? null
   );
 }
 

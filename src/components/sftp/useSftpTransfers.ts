@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Message } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
-import { diagnosticInvoke as invoke, recordDiagnostic } from "../../diagnostics";
-import { isActiveSftpTransfer, summarizeSftpTransferBatch } from "../../sftp-utils";
+import {
+  diagnosticInvoke as invoke,
+  recordDiagnostic,
+} from "../../diagnostics";
+import {
+  isActiveSftpTransfer,
+  summarizeSftpTransferBatch,
+} from "../../sftp-utils";
 import { commandErrorMessage, listenProtocolEvent } from "../../tauri-protocol";
 import type { RemoteArchiveFormat } from "../../sftp-utils";
 import type { TransferActivityRecord } from "../TransferActivityList";
-import {
-  isSftpSessionFailure,
-  isSftpTransferCancellation,
-} from "./sftpErrors";
+import { isSftpSessionFailure, isSftpTransferCancellation } from "./sftpErrors";
 
 const MAX_CONCURRENT_TRANSFERS = 2;
 
@@ -83,7 +86,10 @@ export default function useSftpTransfers({
         if (previous.status === "cancelled" && payload.status !== "cancelled") {
           return current;
         }
-        if (previous.status === "paused" && payload.status === "running") {
+        if (
+          previous.status === "paused" &&
+          (payload.status === "running" || payload.status === "waiting")
+        ) {
           return current;
         }
         const now = Date.now();
@@ -101,7 +107,9 @@ export default function useSftpTransfers({
             Math.max(elapsedSeconds, 0.001)
           : previous.bytesPerSecond;
         const bytesPerSecond =
-          payload.status === "paused" || payload.status === "cancelled"
+          payload.status === "paused" ||
+          payload.status === "waiting" ||
+          payload.status === "cancelled"
             ? 0
             : shouldSample
               ? previous.bytesPerSecond > 0
@@ -206,7 +214,8 @@ export default function useSftpTransfers({
     }
 
     for (const batchId of finalizedUploadBatchesRef.current) {
-      if (!batches.has(batchId)) finalizedUploadBatchesRef.current.delete(batchId);
+      if (!batches.has(batchId))
+        finalizedUploadBatchesRef.current.delete(batchId);
     }
 
     for (const [batchId, batch] of batches) {
@@ -235,7 +244,11 @@ export default function useSftpTransfers({
     if (!isTauri()) return;
     const activeCounts = new Map<string, number>();
     for (const transfer of Object.values(transfers)) {
-      if (transfer.status === "running" || transfer.status === "paused") {
+      if (
+        transfer.status === "running" ||
+        transfer.status === "waiting" ||
+        transfer.status === "paused"
+      ) {
         activeCounts.set(
           transfer.sessionId,
           (activeCounts.get(transfer.sessionId) ?? 0) + 1,
@@ -342,7 +355,7 @@ export default function useSftpTransfers({
   );
 
   const pause = useCallback(async (transfer: TransferActivityRecord) => {
-    if (transfer.status !== "running") return;
+    if (transfer.status !== "running" && transfer.status !== "waiting") return;
     try {
       await invoke("sftp_pause_transfer", {
         sessionId: transfer.sessionId,
@@ -350,7 +363,12 @@ export default function useSftpTransfers({
       });
       setTransfers((current) => {
         const previous = current[transfer.transferId];
-        if (!previous || previous.status !== "running") return current;
+        if (
+          !previous ||
+          (previous.status !== "running" && previous.status !== "waiting")
+        ) {
+          return current;
+        }
         return {
           ...current,
           [transfer.transferId]: {
@@ -403,7 +421,13 @@ export default function useSftpTransfers({
       }));
       return;
     }
-    if (transfer.status !== "running" && transfer.status !== "paused") return;
+    if (
+      transfer.status !== "running" &&
+      transfer.status !== "waiting" &&
+      transfer.status !== "paused"
+    ) {
+      return;
+    }
     try {
       await invoke("sftp_cancel_transfer", {
         sessionId: transfer.sessionId,

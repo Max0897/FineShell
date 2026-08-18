@@ -18,6 +18,7 @@ import {
 } from "@arco-design/web-react";
 import type { TableColumnProps } from "@arco-design/web-react";
 import { isTauri } from "@tauri-apps/api/core";
+import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   diagnosticInvoke as invoke,
@@ -29,6 +30,7 @@ import {
   listenProtocolEvent,
 } from "../tauri-protocol";
 import {
+  IconCopy,
   IconFolder,
   IconHistory,
   IconPlus,
@@ -121,6 +123,15 @@ function formatTime(value?: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+async function copyText(value: string) {
+  if (isTauri()) {
+    await writeClipboardText(value);
+    return;
+  }
+  if (!navigator.clipboard) throw new Error("当前环境无法写入剪贴板");
+  await navigator.clipboard.writeText(value);
 }
 
 function isInteractiveRowTarget(target: EventTarget | null) {
@@ -554,6 +565,15 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
     }
   }
 
+  async function copyHostAddress(host: HostRecord) {
+    try {
+      await copyText(host.address);
+      Message.success("主机 IP 已复制");
+    } catch (error) {
+      Message.error(String(error));
+    }
+  }
+
   async function sendConnection(host: HostRecord) {
     let connectionSshKeys = sshKeys;
     const proxy = host.proxyId
@@ -766,9 +786,24 @@ function HostManagerPanel({ onConnect, settings }: HostManagerPanelProps) {
         ) : (
           <div className="host-name-cell">
             <Typography.Text bold>{row.host.name}</Typography.Text>
-            <Typography.Text type="secondary">
-              {row.host.username}@{row.host.address}:{row.host.port}
-            </Typography.Text>
+            <div className="host-address-cell">
+              <Typography.Text type="secondary">
+                {row.host.username}@{row.host.address}:{row.host.port}
+              </Typography.Text>
+              <Tooltip content="复制 IP">
+                <Button
+                  aria-label={`复制 ${row.host.name} IP`}
+                  className="host-address-copy-button"
+                  icon={<IconCopy />}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void copyHostAddress(row.host);
+                  }}
+                  size="mini"
+                  type="text"
+                />
+              </Tooltip>
+            </div>
           </div>
         ),
     },

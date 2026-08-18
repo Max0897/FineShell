@@ -62,6 +62,7 @@ describe("TransferActivityList", () => {
     const onOpenExternalEdit = mock(() => undefined);
     const onResolveExternalEdit = mock(() => undefined);
     const running = transfer("running", "upload");
+    const waiting = transfer("waiting", "waiting");
     const paused = transfer("paused", "paused");
     const failed = transfer("failed", "failed");
 
@@ -74,16 +75,18 @@ describe("TransferActivityList", () => {
         onResolveExternalEdit={onResolveExternalEdit}
         onResume={onResume}
         onRetry={onRetry}
-        transfers={[running, paused, failed]}
+        transfers={[running, waiting, paused, failed]}
       />,
     );
 
     expect(screen.getByText("1.00 KB/s")).not.toBeNull();
+    expect(screen.getByText("等待远程响应")).not.toBeNull();
     expect(screen.getByText("已暂停")).not.toBeNull();
     expect(screen.getByText("传输失败")).not.toBeNull();
     expect(screen.getByText("同步冲突")).not.toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "暂停 upload.zip" }));
+    fireEvent.click(screen.getByRole("button", { name: "暂停 waiting.zip" }));
     fireEvent.click(screen.getByRole("button", { name: "继续 paused.zip" }));
     fireEvent.click(screen.getByRole("button", { name: "取消 upload.zip" }));
     fireEvent.click(screen.getByRole("button", { name: "重试 failed.zip" }));
@@ -95,6 +98,7 @@ describe("TransferActivityList", () => {
     );
 
     expect(onPause).toHaveBeenCalledWith(running);
+    expect(onPause).toHaveBeenCalledWith(waiting);
     expect(onResume).toHaveBeenCalledWith(paused);
     expect(onCancel).toHaveBeenCalledWith(running);
     expect(onRetry).toHaveBeenCalledWith(failed);

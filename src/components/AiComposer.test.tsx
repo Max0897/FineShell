@@ -34,11 +34,13 @@ function renderComposer({
   onSend = mock(() => undefined),
   prompt = "检查系统状态",
   lastTelemetry,
+  requestTokenBudget = tokenBudget,
 }: {
   lastTelemetry?: AiRequestTelemetry;
   onChange?: ReturnType<typeof mock>;
   onSend?: ReturnType<typeof mock>;
   prompt?: string;
+  requestTokenBudget?: typeof tokenBudget;
 } = {}) {
   const onCancel = mock(() => undefined);
   const onRemoveRemoteFile = mock(() => undefined);
@@ -75,7 +77,7 @@ function renderComposer({
         selectedContextIds={[]}
         sendEnabled
         sending={false}
-        tokenBudget={tokenBudget}
+        tokenBudget={requestTokenBudget}
       />,
     ),
   };
@@ -180,6 +182,18 @@ describe("AiComposer", () => {
     ).toBeTruthy();
   });
 
+  test("keeps truncated context visible next to the composer controls", () => {
+    renderComposer({
+      requestTokenBudget: {
+        ...tokenBudget,
+        contextTruncated: true,
+        contextUsagePercent: 100,
+      },
+    });
+
+    expect(screen.getByText("上下文已截断")).not.toBeNull();
+  });
+
   test("shows actual usage from the previous response in the budget tooltip", async () => {
     renderComposer({
       lastTelemetry: {
@@ -198,9 +212,7 @@ describe("AiComposer", () => {
     fireEvent.mouseEnter(
       screen.getByLabelText("本次请求约 2020 Token，上下文占用 25%"),
     );
-    await waitFor(() =>
-      expect(screen.getByText("上次响应")).not.toBeNull(),
-    );
+    await waitFor(() => expect(screen.getByText("上次响应")).not.toBeNull());
     expect(screen.getByText(/实际 1.8k Token/)).not.toBeNull();
     expect(screen.getByText("2 次请求 · 1.3 秒")).not.toBeNull();
   });
@@ -208,6 +220,8 @@ describe("AiComposer", () => {
   test("places the approval mode selector in the composer footer", () => {
     renderComposer();
 
-    expect(screen.getByRole("combobox", { name: "AI 审批模式" })).not.toBeNull();
+    expect(
+      screen.getByRole("combobox", { name: "AI 审批模式" }),
+    ).not.toBeNull();
   });
 });

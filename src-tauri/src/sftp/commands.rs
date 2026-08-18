@@ -1,6 +1,18 @@
 use super::*;
 use tauri::State;
 
+fn connect_transfer_session(
+    auth: &SshAuthConfig,
+    cancelled: &AtomicBool,
+) -> Result<Session, String> {
+    let (session, _) = connect_authenticated_session(auth, cancelled)?;
+    // The host connection timeout only governs TCP/SSH setup. Transfers use
+    // an independent timeout for their remaining blocking setup operations;
+    // bulk upload writes switch to a cancellable non-blocking loop.
+    session.set_timeout(TRANSFER_SESSION_TIMEOUT_MS);
+    Ok(session)
+}
+
 async fn dispatch<T, F>(
     manager: SftpSessionManager,
     session_id: String,
@@ -387,7 +399,7 @@ pub(crate) async fn sftp_upload(
                 0,
             );
             let result = (|| -> Result<(), String> {
-                let (session, _) = connect_authenticated_session(&auth, &control.cancelled)?;
+                let session = connect_transfer_session(&auth, &control.cancelled)?;
                 let mut sftp = session
                     .sftp()
                     .map_err(|error| format!("无法建立上传通道：{error}"))?;
@@ -400,7 +412,7 @@ pub(crate) async fn sftp_upload(
                     remote_path: &remote_path,
                     overwrite,
                 };
-                let result = upload_file(&sftp, &task);
+                let result = upload_file(&session, &sftp, &task);
                 let _ = sftp.shutdown();
                 result
             })();
@@ -438,7 +450,7 @@ pub(crate) async fn sftp_download(
                 0,
             );
             let result = (|| -> Result<(), String> {
-                let (session, _) = connect_authenticated_session(&auth, &control.cancelled)?;
+                let session = connect_transfer_session(&auth, &control.cancelled)?;
                 let mut sftp = session
                     .sftp()
                     .map_err(|error| format!("无法建立下载通道：{error}"))?;
@@ -492,7 +504,7 @@ pub(crate) async fn sftp_download_archive(
             );
             let result = (|| -> Result<(), String> {
                 let archive_name = validate_archive_file_name(&archive_name)?;
-                let (session, _) = connect_authenticated_session(&auth, &control.cancelled)?;
+                let session = connect_transfer_session(&auth, &control.cancelled)?;
                 let mut sftp = session
                     .sftp()
                     .map_err(|error| format!("无法建立打包下载通道：{error}"))?;

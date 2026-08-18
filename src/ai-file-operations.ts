@@ -6,6 +6,7 @@ import {
 import type { AiToolCall, AiToolResult } from "./tauri-protocol";
 import {
   MAX_AI_REMOTE_FILE_BYTES,
+  containsAiRedactionMarker,
   type AiRemoteFileContext,
 } from "./ai-utils";
 
@@ -84,8 +85,11 @@ export function aiRemoteFileName(path: string) {
   return normalized === "/" ? "/" : normalized.slice(normalized.lastIndexOf("/") + 1);
 }
 
-function operationContentError(content: string) {
+export function aiFileOperationContentError(content: string) {
   if (content.includes("\0")) return "新建文件内容包含无效的二进制字符";
+  if (containsAiRedactionMarker(content)) {
+    return "新建文件内容包含脱敏占位符，已阻止写入远程文件";
+  }
   if (content.length > MAX_AI_FILE_EDIT_CHARS) {
     return "新建文件内容超过 60000 字符";
   }
@@ -136,7 +140,7 @@ export function createAiFileOperationProposal(
     if (typeof args.content !== "string") {
       throw new Error("AI 返回的新建文件内容无效");
     }
-    const contentError = operationContentError(args.content);
+    const contentError = aiFileOperationContentError(args.content);
     if (contentError) throw new Error(contentError);
     return {
       content: args.content,
@@ -284,6 +288,8 @@ export function aiFileOperationApplyRequest(
   proposal: AiFileOperationProposal,
 ): AiFileOperationExecutionRequest {
   if (proposal.operation === "create") {
+    const contentError = aiFileOperationContentError(proposal.content ?? "");
+    if (contentError) throw new Error(contentError);
     return {
       content: proposal.content ?? "",
       operation: "create",

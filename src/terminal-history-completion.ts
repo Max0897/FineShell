@@ -6,6 +6,7 @@ import type {
   Terminal,
 } from "@xterm/xterm";
 import type { TerminalCommandHistoryRecord } from "./models";
+import { isApplePlatform } from "./platform-utils";
 import { findTerminalHistoryCompletion } from "./terminal-command-history";
 
 export interface TerminalHistoryCompletionOptions {
@@ -14,6 +15,7 @@ export interface TerminalHistoryCompletionOptions {
   onAccept: (suffix: string) => void;
   onSynchronizeInput?: (commandLine: string) => void;
   ghostTextColor?: string;
+  platform?: string;
 }
 
 const INPUT_RESYNC_DELAY_MS = 32;
@@ -101,22 +103,40 @@ export class TerminalHistoryCompletionAddon implements ITerminalAddon {
   }
 
   public handleKeyEvent(event: KeyboardEvent) {
-    if (
-      event.type !== "keydown" ||
-      event.altKey ||
-      event.ctrlKey ||
-      event.metaKey ||
-      event.shiftKey
-    ) {
-      return true;
-    }
-    if (event.key === "Tab" && this.suggestionValue) {
+    if (event.type !== "keydown") return true;
+
+    const hasSuggestion = Boolean(this.suggestionValue);
+    const acceptAll =
+      hasSuggestion &&
+      event.key === "ArrowRight" &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey;
+    const acceptSegment =
+      hasSuggestion &&
+      event.key === "ArrowRight" &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      (isApplePlatform(this.options.platform)
+        ? event.altKey && !event.ctrlKey
+        : event.ctrlKey && !event.altKey);
+
+    if (acceptAll || acceptSegment) {
       event.preventDefault();
       event.stopPropagation();
-      this.accept();
+      if (acceptSegment) this.acceptNextSegment();
+      else this.accept();
       return false;
     }
-    if (event.key === "Escape" && this.suggestionValue) {
+    if (
+      event.key === "Escape" &&
+      hasSuggestion &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey
+    ) {
       event.preventDefault();
       event.stopPropagation();
       this.cancel();
@@ -125,17 +145,22 @@ export class TerminalHistoryCompletionAddon implements ITerminalAddon {
     if (NATIVE_LINE_EDIT_KEYS.has(event.key)) {
       this.requestInputResync();
     }
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+      return true;
+    }
     return true;
   }
 
   public accept() {
     const suffix = this.suggestionValue;
     if (!suffix) return undefined;
-    this.commandLine += suffix;
-    this.suggestionValue = undefined;
-    this.clearVisual();
-    this.options.onAccept(suffix);
-    return suffix;
+    return this.acceptSuffix(suffix);
+  }
+
+  public acceptNextSegment() {
+    const suffix = this.suggestionValue;
+    if (!suffix) return undefined;
+    return this.acceptSuffix(nextCompletionSegment(suffix));
   }
 
   public cancel() {
@@ -240,11 +265,16 @@ export class TerminalHistoryCompletionAddon implements ITerminalAddon {
     if (inputStartLine < anchor.marker.line) return undefined;
 
     let commandLine = "";
-    for (let lineIndex = inputStartLine; lineIndex <= cursorLine; lineIndex += 1) {
+    for (
+      let lineIndex = inputStartLine;
+      lineIndex <= cursorLine;
+      lineIndex += 1
+    ) {
       const line = buffer.getLine(lineIndex);
       if (!line) return undefined;
       const startColumn = lineIndex === inputStartLine ? anchor.x : 0;
-      const endColumn = lineIndex === cursorLine ? buffer.cursorX : terminal.cols;
+      const endColumn =
+        lineIndex === cursorLine ? buffer.cursorX : terminal.cols;
       if (endColumn < startColumn) return undefined;
       commandLine += line.translateToString(true, startColumn, endColumn);
     }
@@ -273,6 +303,14 @@ export class TerminalHistoryCompletionAddon implements ITerminalAddon {
       commandLine: this.commandLine,
       cwd: this.options.getCurrentDirectory(),
     })?.suffix;
+  }
+
+  private acceptSuffix(suffix: string) {
+    this.commandLine += suffix;
+    this.updateSuggestion();
+    this.clearVisual();
+    this.options.onAccept(suffix);
+    return suffix;
   }
 
   private refreshDecoration() {
@@ -338,6 +376,24 @@ export class TerminalHistoryCompletionAddon implements ITerminalAddon {
     this.marker?.dispose();
     this.marker = undefined;
   }
+}
+
+export function nextCompletionSegment(suffix: string) {
+  if (!suffix) return "";
+
+  let index = 0;
+  while (index < suffix.length && /\s/u.test(suffix[index] ?? "")) {
+    index += 1;
+  }
+  while (index < suffix.length) {
+    const character = suffix[index] ?? "";
+    if (character === "/" || character === "\\") {
+      return suffix.slice(0, index + 1);
+    }
+    if (/\s/u.test(character)) return suffix.slice(0, index);
+    index += 1;
+  }
+  return suffix;
 }
 
 function characterCellWidth(character: string) {

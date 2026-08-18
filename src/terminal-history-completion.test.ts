@@ -7,19 +7,24 @@ function disposable(onDispose = () => undefined): IDisposable {
   return { dispose: onDispose };
 }
 
-function keyboardEvent(key: string) {
+function keyboardEvent(
+  key: string,
+  modifiers: Partial<
+    Pick<KeyboardEvent, "altKey" | "ctrlKey" | "metaKey" | "shiftKey">
+  > = {},
+) {
   let prevented = false;
   let stopped = false;
   return {
     event: {
-      altKey: false,
-      ctrlKey: false,
+      altKey: modifiers.altKey ?? false,
+      ctrlKey: modifiers.ctrlKey ?? false,
       key,
-      metaKey: false,
+      metaKey: modifiers.metaKey ?? false,
       preventDefault: () => {
         prevented = true;
       },
-      shiftKey: false,
+      shiftKey: modifiers.shiftKey ?? false,
       stopPropagation: () => {
         stopped = true;
       },
@@ -141,7 +146,7 @@ const HISTORY: TerminalCommandHistoryRecord[] = [
 ];
 
 describe("TerminalHistoryCompletionAddon", () => {
-  test("renders a suggestion at the cursor and accepts only its suffix", () => {
+  test("renders a suggestion at the cursor and accepts it with ArrowRight", () => {
     const accepted: string[] = [];
     const fake = fakeTerminal();
     const addon = new TerminalHistoryCompletionAddon({
@@ -152,6 +157,8 @@ describe("TerminalHistoryCompletionAddon", () => {
     addon.activate(fake.terminal);
     addon.setHistory(HISTORY);
     addon.setPromptReady(true);
+    fake.setLine(0, "$   ");
+    fake.callbacks.writeParsed?.();
     addon.synchronizeInput("git st", true);
     fake.callbacks.writeParsed?.();
 
@@ -159,23 +166,21 @@ describe("TerminalHistoryCompletionAddon", () => {
     expect(fake.decorationOptions()).toMatchObject({ x: 4, layer: "top" });
     expect(fake.element.textContent).toBe("atus --short");
     expect(fake.classes.has("terminal-history-completion")).toBe(true);
-    expect(fake.element.style.fontFamily).toBe(
-      '"JetBrains Mono", monospace',
-    );
+    expect(fake.element.style.fontFamily).toBe('"JetBrains Mono", monospace');
     expect(fake.element.style.fontSize).toBe("14px");
     expect(fake.element.style.fontWeight).toBe("500");
     expect(fake.element.style.letterSpacing).toBe("1px");
     expect(fake.element.style.lineHeight).toBe("1.2");
 
-    const tab = keyboardEvent("Tab");
-    expect(addon.handleKeyEvent(tab.event)).toBe(false);
-    expect(tab.prevented()).toBe(true);
-    expect(tab.stopped()).toBe(true);
+    const arrowRight = keyboardEvent("ArrowRight");
+    expect(addon.handleKeyEvent(arrowRight.event)).toBe(false);
+    expect(arrowRight.prevented()).toBe(true);
+    expect(arrowRight.stopped()).toBe(true);
     expect(accepted).toEqual(["atus --short"]);
     expect(addon.suggestion).toBeUndefined();
   });
 
-  test("leaves native Tab untouched when there is no suggestion", () => {
+  test("always leaves native Tab completion untouched", () => {
     const fake = fakeTerminal();
     const addon = new TerminalHistoryCompletionAddon({
       hostId: "host-1",
@@ -183,12 +188,68 @@ describe("TerminalHistoryCompletionAddon", () => {
       onAccept: () => undefined,
     });
     addon.activate(fake.terminal);
+    addon.setHistory(HISTORY);
     addon.setPromptReady(true);
-    addon.synchronizeInput("unknown", true);
+    fake.setLine(0, "$   ");
+    fake.callbacks.writeParsed?.();
+    addon.synchronizeInput("git st", true);
 
     const tab = keyboardEvent("Tab");
     expect(addon.handleKeyEvent(tab.event)).toBe(true);
     expect(tab.prevented()).toBe(false);
+    expect(addon.suggestion).toBeUndefined();
+  });
+
+  test("accepts the next semantic segment with Option+ArrowRight on macOS", () => {
+    const accepted: string[] = [];
+    const fake = fakeTerminal();
+    const addon = new TerminalHistoryCompletionAddon({
+      hostId: "host-1",
+      getCurrentDirectory: () => "/srv/app",
+      onAccept: (suffix) => accepted.push(suffix),
+      platform: "MacIntel",
+    });
+    addon.activate(fake.terminal);
+    addon.setHistory(HISTORY);
+    addon.setPromptReady(true);
+    addon.synchronizeInput("git st", true);
+
+    const first = keyboardEvent("ArrowRight", { altKey: true });
+    expect(addon.handleKeyEvent(first.event)).toBe(false);
+    expect(accepted).toEqual(["atus"]);
+    expect(addon.suggestion).toBe(" --short");
+
+    const second = keyboardEvent("ArrowRight", { altKey: true });
+    expect(addon.handleKeyEvent(second.event)).toBe(false);
+    expect(accepted).toEqual(["atus", " --short"]);
+    expect(addon.suggestion).toBeUndefined();
+  });
+
+  test("accepts path segments with Ctrl+ArrowRight on Windows and Linux", () => {
+    const accepted: string[] = [];
+    const fake = fakeTerminal();
+    const addon = new TerminalHistoryCompletionAddon({
+      hostId: "host-1",
+      getCurrentDirectory: () => "/srv/app",
+      onAccept: (suffix) => accepted.push(suffix),
+      platform: "Win32",
+    });
+    addon.activate(fake.terminal);
+    addon.setHistory([
+      {
+        ...HISTORY[0],
+        command: "cd /usr/local/bin",
+      },
+    ]);
+    addon.setPromptReady(true);
+    addon.synchronizeInput("cd /us", true);
+
+    for (const expected of ["r/", "local/", "bin"]) {
+      const event = keyboardEvent("ArrowRight", { ctrlKey: true });
+      expect(addon.handleKeyEvent(event.event)).toBe(false);
+      expect(accepted[accepted.length - 1]).toBe(expected);
+    }
+    expect(addon.suggestion).toBeUndefined();
   });
 
   test("cancels with Escape and hides suggestions in alternate buffers", () => {

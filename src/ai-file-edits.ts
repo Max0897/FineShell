@@ -5,6 +5,7 @@ import {
   aiRemoteFileContextError,
   aiRemoteFileContextSource,
   buildAiContextPayload,
+  containsAiRedactionMarker,
   redactAiContext,
   type AiRemoteFileContext,
 } from "./ai-utils";
@@ -99,9 +100,8 @@ export function aiFileEditEligibilityError(
   if (!file) return "请先从文件管理器将文件发送给 AI";
   const sizeError = aiRemoteFileContextError(file.size);
   if (sizeError) return sizeError;
-  if (redactAiContext(file.content) !== file.content) {
-    return "文件包含疑似密钥、令牌或口令，只能分析，不能生成可直接应用的修改";
-  }
+  const safetyError = aiFileEditSourceSafetyError(file);
+  if (safetyError) return safetyError;
   const source = aiRemoteFileContextSource(file);
   const completeContext = buildAiContextPayload(
     [source],
@@ -123,11 +123,24 @@ export function aiFileEditEligibilityError(
   return null;
 }
 
+export function aiFileEditSourceSafetyError(file: AiRemoteFileContext) {
+  if (redactAiContext(file.content) !== file.content) {
+    return "文件包含疑似密钥、令牌或口令，只能分析，不能生成可直接应用的修改";
+  }
+  if (containsAiRedactionMarker(file.content)) {
+    return "文件包含脱敏占位符，只能分析，不能生成可直接应用的修改";
+  }
+  return null;
+}
+
 export function proposedFileContentError(
   content: string,
   originalContent: string,
 ) {
   if (content.includes("\0")) return "建议内容包含无效的二进制字符";
+  if (containsAiRedactionMarker(content)) {
+    return "建议内容包含脱敏占位符，已阻止写入远程文件";
+  }
   if (content.length > MAX_AI_FILE_EDIT_CHARS) {
     return "建议内容超过 60000 字符，无法安全应用";
   }
@@ -161,6 +174,8 @@ export function createAiFileEditProposal(
   if (typeof content !== "string") {
     throw new Error("AI 返回的文件内容无效");
   }
+  const sourceSafetyError = aiFileEditSourceSafetyError(file);
+  if (sourceSafetyError) throw new Error(sourceSafetyError);
   const contentError = proposedFileContentError(content, file.content);
   if (contentError) throw new Error(contentError);
   return {

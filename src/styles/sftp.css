@@ -2,6 +2,13 @@
   gap: 10px;
 }
 
+.sftp-ai-read-progress {
+  flex: none;
+  color: var(--color-text-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .sftp-panel:focus {
   outline: none;
 }
