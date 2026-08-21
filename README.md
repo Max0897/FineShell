@@ -153,6 +153,8 @@ bun run tauri dev
 bun run tauri build
 ```
 
+Windows 7 32 位兼容包需要在 Windows x64 构建机上单独生成，详见 [Windows 7 32 位构建说明](docs/windows7-x86-build.md)。
+
 ## 开发与测试
 
 ```bash
