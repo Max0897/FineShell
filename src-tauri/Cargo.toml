@@ -67,3 +67,9 @@ panic = "abort"
 [profile.size-analysis]
 inherits = "release"
 strip = "none"
+
+[patch.crates-io]
+# dtor 0.3.0 only recognizes the conventional `pc` Windows vendor. Rust's
+# Win7 Tier 3 targets use `target_vendor = "win7"`, so use the upstream
+# target_os-based compatibility fix until tauri-utils moves to ctor/dtor 1.x.
+dtor = { path = "vendor/dtor" }
