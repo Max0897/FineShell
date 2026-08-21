@@ -22,6 +22,8 @@ FineShell 的常规 Windows 构建面向 x64 和 ARM64。Windows 7 32 位兼容�
 
 Rust 的普通 `i686-pc-windows-msvc` 当前以 Windows 10 为最低运行环境。Win7 必须使用 Tier 3 的 `i686-win7-windows-msvc`；该目标没有随 Rustup 分发预编译标准库，构建脚本会通过 nightly 的 `build-std` 编译标准库。
 
+Tauri CLI 会在构建前使用 `rustup target list` 校验目标，而 Rustup 不列出 Tier 3 的 Win7 目标。因此脚本会直接调用 Cargo 编译 Win7 二进制，再通过 ABI 相同的 `i686-pc-windows-msvc` 目标路径调用 Tauri `bundle` 生成 NSIS 安装器。标准目标仅用于通过打包器的架构识别，不会替换已编译的 Win7 二进制。
+
 ## WebView2 安装方式
 
 安装器使用 Tauri 的 `embedBootstrapper` 模式。Bootstrapper 会打进 setup 安装包，但 WebView2 Runtime 本体会在安装时联网下载，因此：

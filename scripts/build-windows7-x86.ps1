@@ -2,6 +2,7 @@ param([switch]$NoSign)
 
 $ErrorActionPreference = "Stop"
 $Target = "i686-win7-windows-msvc"
+$BundleTarget = "i686-pc-windows-msvc"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
 function Require-Command {
@@ -37,6 +38,7 @@ Push-Location $RepoRoot
 try {
     Write-Host "Preparing Rust nightly with rust-src..."
     Invoke-Checked "rustup" @("toolchain", "install", "nightly", "--profile", "minimal", "--component", "rust-src")
+    Invoke-Checked "rustup" @("target", "add", $BundleTarget, "--toolchain", "nightly")
 
     $TargetList = (& rustc +nightly --print target-list) -join "`n"
     if ($LASTEXITCODE -ne 0 -or $TargetList -notmatch "(?m)^$([regex]::Escape($Target))$") {
@@ -64,6 +66,7 @@ try {
 
     Write-Host "Installing frontend dependencies..."
     Invoke-Checked "bun" @("install", "--frozen-lockfile")
+    Invoke-Checked "bun" @("run", "build")
 
     $PreviousToolchain = $env:RUSTUP_TOOLCHAIN
     $TargetRustFlagsName = "CARGO_TARGET_I686_WIN7_WINDOWS_MSVC_RUSTFLAGS"
@@ -73,26 +76,42 @@ try {
     [Environment]::SetEnvironmentVariable($TargetRustFlagsName, $TargetRustFlags, "Process")
 
     try {
-        $Arguments = @("tauri", "build")
+        Write-Host "Building FineShell for Windows 7 x86..."
+        Invoke-Checked "cargo" @(
+            "+nightly",
+            "build",
+            "--manifest-path", (Join-Path $RepoRoot "src-tauri/Cargo.toml"),
+            "--target", $Target,
+            "--release",
+            "-Z", "build-std=std,panic_abort"
+        )
+
+        # Tauri CLI validates targets against `rustup target list` before bundling.
+        # The Win7 Tier 3 target is built into rustc but is not distributed by rustup,
+        # so bundle the compatible i686 binary through the standard MSVC target path.
+        $CompiledDir = Join-Path $RepoRoot "src-tauri/target/$Target/release"
+        $BundleBinaryDir = Join-Path $RepoRoot "src-tauri/target/$BundleTarget/release"
+        New-Item -ItemType Directory -Force -Path $BundleBinaryDir | Out-Null
+        Copy-Item -LiteralPath (Join-Path $CompiledDir "fineshell.exe") -Destination (Join-Path $BundleBinaryDir "fineshell.exe") -Force
+
+        $Arguments = @("tauri", "bundle")
         if ($NoSign) {
             $Arguments += "--no-sign"
         }
         $Arguments += @(
-            "--target", $Target,
+            "--target", $BundleTarget,
             "--bundles", "nsis",
-            "--config", $GeneratedConfig,
-            "--",
-            "-Z", "build-std=std,panic_abort"
+            "--config", $GeneratedConfig
         )
 
-        Write-Host "Building FineShell for Windows 7 x86..."
+        Write-Host "Bundling FineShell Windows 7 x86 installer..."
         Invoke-Checked "bun" $Arguments
     } finally {
         $env:RUSTUP_TOOLCHAIN = $PreviousToolchain
         [Environment]::SetEnvironmentVariable($TargetRustFlagsName, $PreviousTargetRustFlags, "Process")
     }
 
-    $BundleDir = Join-Path $RepoRoot "src-tauri/target/$Target/release/bundle/nsis"
+    $BundleDir = Join-Path $RepoRoot "src-tauri/target/$BundleTarget/release/bundle/nsis"
     $Installer = Get-ChildItem -LiteralPath $BundleDir -Filter "*.exe" -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $Installer) {
         throw "The build completed but no NSIS installer was found in '$BundleDir'."
