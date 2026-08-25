@@ -7,6 +7,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "analyze:size": "bun scripts/analyze-size.ts all",
+    "analyze:frontend": "bun scripts/analyze-size.ts frontend",
+    "analyze:rust": "bun scripts/analyze-size.ts rust",
+    "analyze:artifacts": "bun scripts/analyze-size.ts artifacts",
+    "build:win7-x86": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows7-x86.ps1",
     "test": "bun test",
     "test:components": "bun test src/components/*.test.tsx",
     "check": "bun test && bun run build",
@@ -46,6 +51,7 @@
     "@types/react-dom": "18",
     "@vitejs/plugin-react": "^4.6.0",
     "happy-dom": "^20.11.1",
+    "rollup-plugin-visualizer": "^7.1.1",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
   }

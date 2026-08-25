@@ -14,6 +14,8 @@ dist-ssr
 TODO.md
 FEATURES.md
 /dev-docs/
+/reports/size/
+/vendor/webview2/
 
 # Editor directories and files
 .vscode/*

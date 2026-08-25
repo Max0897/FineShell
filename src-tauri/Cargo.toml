@@ -50,8 +50,26 @@ vte = "0.15.0"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(any(target_os = "macos", all(target_os = "windows", target_arch = "x86")))'.dependencies]
 ssh2 = { version = "0.9.6", features = ["vendored-openssl"] }
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+[target.'cfg(not(any(target_os = "macos", all(target_os = "windows", target_arch = "x86"))))'.dependencies]
 ssh2 = "0.9.6"
+
+# Optimize distributable binaries for size without sacrificing runtime speed.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+# Keep symbols available for cargo-bloat while matching release optimizations.
+[profile.size-analysis]
+inherits = "release"
+strip = "none"
+
+[patch.crates-io]
+# ctor 0.8.0 only recognizes the conventional `pc` Windows vendor. Rust's
+# Win7 Tier 3 targets use `target_vendor = "win7"`, so use the upstream
+# target_os-based compatibility fix until tauri-utils moves to ctor 1.x.
+ctor = { path = "vendor/ctor" }
