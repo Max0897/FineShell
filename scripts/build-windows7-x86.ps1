@@ -83,6 +83,9 @@ try {
             "--manifest-path", (Join-Path $RepoRoot "src-tauri/Cargo.toml"),
             "--target", $Target,
             "--release",
+            # This script bypasses `tauri build`, so enable Tauri's production
+            # asset protocol explicitly instead of loading the Vite dev URL.
+            "--features", "tauri/custom-protocol",
             "-Z", "build-std=std,panic_abort"
         )
 
