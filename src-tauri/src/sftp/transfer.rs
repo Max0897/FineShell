@@ -415,35 +415,6 @@ pub(super) fn upload_file(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn throttles_intermediate_running_progress_events() {
-        let now = Instant::now();
-        assert!(should_emit_running_progress(None, now, 1, 100));
-        assert!(!should_emit_running_progress(
-            Some(now),
-            now + TRANSFER_PROGRESS_INTERVAL / 2,
-            50,
-            100,
-        ));
-        assert!(should_emit_running_progress(
-            Some(now),
-            now + TRANSFER_PROGRESS_INTERVAL,
-            50,
-            100,
-        ));
-    }
-
-    #[test]
-    fn always_emits_final_running_progress() {
-        let now = Instant::now();
-        assert!(should_emit_running_progress(Some(now), now, 100, 100));
-    }
-}
-
 pub(super) fn replace_remote_upload_file(
     sftp: &Sftp,
     temporary_path: &Path,
@@ -666,3 +637,32 @@ pub(super) fn replace_download_file(
     fs::rename(temporary_path, local_path).map_err(|error| format!("无法保存下载文件：{error}"))
 }
 use super::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn throttles_intermediate_running_progress_events() {
+        let now = Instant::now();
+        assert!(should_emit_running_progress(None, now, 1, 100));
+        assert!(!should_emit_running_progress(
+            Some(now),
+            now + TRANSFER_PROGRESS_INTERVAL / 2,
+            50,
+            100,
+        ));
+        assert!(should_emit_running_progress(
+            Some(now),
+            now + TRANSFER_PROGRESS_INTERVAL,
+            50,
+            100,
+        ));
+    }
+
+    #[test]
+    fn always_emits_final_running_progress() {
+        let now = Instant::now();
+        assert!(should_emit_running_progress(Some(now), now, 100, 100));
+    }
+}
