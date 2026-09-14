@@ -318,8 +318,8 @@ mod session;
 
 use agent::*;
 pub(crate) use agent::{AgentCommandExecutionContext, AgentCommandExecutionResult};
-pub(crate) use auth::connect_authenticated_session;
 use auth::*;
+pub(crate) use auth::{connect_authenticated_session, connect_authenticated_session_with_stream};
 use events::*;
 use forwarding::*;
 pub(crate) use manager::SshSessionManager;

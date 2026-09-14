@@ -1,8 +1,10 @@
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
     ffi::OsString,
     fs::{self, File as LocalFile, OpenOptions},
     io::{ErrorKind, Read, Seek, SeekFrom, Write},
+    net::TcpStream,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -13,22 +15,59 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use polling::{Event, Events, Poller};
 use serde::{Deserialize, Serialize};
-use ssh2::{FileStat, FileType, OpenFlags, OpenType, RenameFlags, Session, Sftp};
+use ssh2::{BlockDirections, FileStat, FileType, OpenFlags, OpenType, RenameFlags, Session, Sftp};
 use tauri::{AppHandle, Emitter};
 
 use crate::protocol::SFTP_TRANSFER_EVENT;
-use crate::ssh::{connect_authenticated_session, JumpHostConfig, SshAuthConfig, SshAuthMethod};
+use crate::ssh::{
+    connect_authenticated_session, connect_authenticated_session_with_stream, JumpHostConfig,
+    SshAuthConfig, SshAuthMethod,
+};
 use crate::transport::ProxyConfig;
 
 const TRANSFER_BUFFER_SIZE: usize = 64 * 1024;
+const UPLOAD_BUFFER_SIZE: usize = 256 * 1024;
 const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const TRANSFER_WAITING_NOTICE: Duration = Duration::from_secs(2);
-const TRANSFER_RETRY_DELAY: Duration = Duration::from_millis(20);
+const TRANSFER_SOCKET_WAIT: Duration = Duration::from_millis(100);
+const TRANSFER_UNDIRECTED_RETRY_DELAY: Duration = Duration::from_millis(1);
+const TRANSFER_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const TRANSFER_SESSION_TIMEOUT_MS: u32 = 120_000;
+const TRANSFER_CONNECTION_HEALTH_TIMEOUT_MS: u32 = 3_000;
+const TRANSFER_CONNECTION_HEALTH_GRACE: Duration = Duration::from_secs(5);
+const MAX_REUSABLE_UPLOAD_CONNECTIONS: usize = 2;
 const TRANSFER_CANCELLED_ERROR: &str = "传输已取消";
 pub(crate) const REMOTE_TEXT_MAX_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const REMOTE_TEXT_CONFLICT_ERROR: &str = "远程文件已被其他程序修改";
+
+pub(super) struct UploadConnection {
+    session: Session,
+    sftp: Sftp,
+    readiness_socket: TcpStream,
+    last_used_at: Instant,
+}
+
+impl UploadConnection {
+    fn is_healthy(&self) -> bool {
+        if self.last_used_at.elapsed() <= TRANSFER_CONNECTION_HEALTH_GRACE {
+            return true;
+        }
+        self.session
+            .set_timeout(TRANSFER_CONNECTION_HEALTH_TIMEOUT_MS);
+        let healthy = self.sftp.realpath(Path::new(".")).is_ok();
+        self.session.set_timeout(TRANSFER_SESSION_TIMEOUT_MS);
+        healthy
+    }
+
+    fn shutdown(mut self) {
+        let _ = self.sftp.shutdown();
+        let _ = self
+            .session
+            .disconnect(None, "FineShell upload connection closed", None);
+    }
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

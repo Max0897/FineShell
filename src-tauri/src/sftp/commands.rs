@@ -13,6 +13,39 @@ fn connect_transfer_session(
     Ok(session)
 }
 
+fn connect_upload_session(
+    auth: &SshAuthConfig,
+    cancelled: &AtomicBool,
+) -> Result<UploadConnection, String> {
+    let (session, _, readiness_socket) =
+        connect_authenticated_session_with_stream(auth, cancelled)?;
+    session.set_timeout(TRANSFER_SESSION_TIMEOUT_MS);
+    let sftp = session
+        .sftp()
+        .map_err(|error| format!("无法建立上传通道：{error}"))?;
+    Ok(UploadConnection {
+        session,
+        sftp,
+        readiness_socket,
+        last_used_at: Instant::now(),
+    })
+}
+
+fn acquire_upload_connection(
+    manager: &SftpSessionManager,
+    session_id: &str,
+    auth: &SshAuthConfig,
+    cancelled: &AtomicBool,
+) -> Result<UploadConnection, String> {
+    while let Some(connection) = manager.take_upload_connection(session_id) {
+        if connection.is_healthy() {
+            return Ok(connection);
+        }
+        connection.shutdown();
+    }
+    connect_upload_session(auth, cancelled)
+}
+
 async fn dispatch<T, F>(
     manager: SftpSessionManager,
     session_id: String,
@@ -383,6 +416,7 @@ pub(crate) async fn sftp_upload(
     remote_path: String,
     overwrite: bool,
 ) -> Result<(), String> {
+    let transfer_manager = manager.inner().clone();
     let task_session_id = session_id.clone();
     let task_transfer_id = transfer_id.clone();
     run_transfer_task(
@@ -399,10 +433,12 @@ pub(crate) async fn sftp_upload(
                 0,
             );
             let result = (|| -> Result<(), String> {
-                let session = connect_transfer_session(&auth, &control.cancelled)?;
-                let mut sftp = session
-                    .sftp()
-                    .map_err(|error| format!("无法建立上传通道：{error}"))?;
+                let connection = acquire_upload_connection(
+                    &transfer_manager,
+                    &task_session_id,
+                    &auth,
+                    &control.cancelled,
+                )?;
                 let task = TransferTaskContext {
                     app: &app,
                     session_id: &task_session_id,
@@ -412,8 +448,21 @@ pub(crate) async fn sftp_upload(
                     remote_path: &remote_path,
                     overwrite,
                 };
-                let result = upload_file(&session, &sftp, &task);
-                let _ = sftp.shutdown();
+                let readiness_socket = connection
+                    .readiness_socket
+                    .try_clone()
+                    .map_err(|error| format!("无法复制上传 socket：{error}"))?;
+                let result = upload_file(
+                    &connection.session,
+                    readiness_socket,
+                    &connection.sftp,
+                    &task,
+                );
+                if result.is_ok() {
+                    transfer_manager.return_upload_connection(&task_session_id, connection);
+                } else {
+                    connection.shutdown();
+                }
                 result
             })();
             report_transfer_result(&reporter, &control, &result);
