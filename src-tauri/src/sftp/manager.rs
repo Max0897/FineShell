@@ -4,6 +4,7 @@ use super::*;
 pub(crate) struct SftpSessionManager {
     sessions: Arc<Mutex<HashMap<String, SftpHandle>>>,
     transfers: Arc<Mutex<TransferRegistry>>,
+    upload_connections: Arc<Mutex<HashMap<String, Vec<UploadConnection>>>>,
 }
 
 type TransferKey = (String, String);
@@ -112,6 +113,7 @@ impl SftpSessionManager {
             .remove(session_id)
             .ok_or_else(|| "SFTP 会话不存在或已关闭".to_string())?;
         self.cancel_session_transfers(session_id);
+        self.clear_upload_connections(session_id);
         match handle {
             SftpHandle::Connecting(cancelled) => {
                 cancelled.store(true, Ordering::Release);
@@ -128,6 +130,7 @@ impl SftpSessionManager {
             sessions.remove(session_id);
         }
         self.cancel_session_transfers(session_id);
+        self.clear_upload_connections(session_id);
     }
 
     pub(super) fn begin_transfer(
@@ -173,6 +176,52 @@ impl SftpSessionManager {
     pub(super) fn finish_transfer(&self, session_id: &str, transfer_id: &str) {
         if let Ok(mut transfers) = self.transfers.lock() {
             transfers.remove(&(session_id.to_string(), transfer_id.to_string()));
+        }
+    }
+
+    pub(super) fn take_upload_connection(&self, session_id: &str) -> Option<UploadConnection> {
+        self.upload_connections
+            .lock()
+            .ok()?
+            .get_mut(session_id)?
+            .pop()
+    }
+
+    pub(super) fn return_upload_connection(
+        &self,
+        session_id: &str,
+        mut connection: UploadConnection,
+    ) {
+        let connected = self.sessions.lock().ok().is_some_and(|sessions| {
+            matches!(sessions.get(session_id), Some(SftpHandle::Connected { .. }))
+        });
+        if !connected {
+            connection.shutdown();
+            return;
+        }
+        let Ok(mut connections) = self.upload_connections.lock() else {
+            connection.shutdown();
+            return;
+        };
+        let pool = connections.entry(session_id.to_string()).or_default();
+        if pool.len() >= MAX_REUSABLE_UPLOAD_CONNECTIONS {
+            connection.shutdown();
+        } else {
+            connection.last_used_at = Instant::now();
+            pool.push(connection);
+        }
+    }
+
+    fn clear_upload_connections(&self, session_id: &str) {
+        let connections = self
+            .upload_connections
+            .lock()
+            .ok()
+            .and_then(|mut pools| pools.remove(session_id));
+        if let Some(connections) = connections {
+            for connection in connections {
+                connection.shutdown();
+            }
         }
     }
 

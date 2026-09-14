@@ -9,6 +9,7 @@ pub(super) struct TransferReporter<'a> {
     direction: &'static str,
     file_name: String,
     total_bytes: u64,
+    last_running_emit: Cell<Option<Instant>>,
 }
 
 impl<'a> TransferReporter<'a> {
@@ -31,6 +32,7 @@ impl<'a> TransferReporter<'a> {
                 .to_string_lossy()
                 .into_owned(),
             total_bytes,
+            last_running_emit: Cell::new(None),
         }
     }
 
@@ -51,7 +53,17 @@ impl<'a> TransferReporter<'a> {
     }
 
     pub(super) fn running(&self, transferred_bytes: u64) {
-        self.emit(transferred_bytes, "running", None);
+        let now = Instant::now();
+        let should_emit = should_emit_running_progress(
+            self.last_running_emit.get(),
+            now,
+            transferred_bytes,
+            self.total_bytes,
+        );
+        if should_emit {
+            self.last_running_emit.set(Some(now));
+            self.emit(transferred_bytes, "running", None);
+        }
     }
 
     pub(super) fn completed(&self, transferred_bytes: u64) {
@@ -59,10 +71,12 @@ impl<'a> TransferReporter<'a> {
     }
 
     pub(super) fn paused(&self, transferred_bytes: u64) {
+        self.last_running_emit.set(None);
         self.emit(transferred_bytes, "paused", None);
     }
 
     pub(super) fn waiting(&self, transferred_bytes: u64) {
+        self.last_running_emit.set(None);
         self.emit(transferred_bytes, "waiting", None);
     }
 
@@ -73,6 +87,16 @@ impl<'a> TransferReporter<'a> {
     pub(super) fn failed(&self, error: &str) {
         self.emit(0, "failed", Some(error.to_string()));
     }
+}
+
+fn should_emit_running_progress(
+    last_emit: Option<Instant>,
+    now: Instant,
+    transferred_bytes: u64,
+    total_bytes: u64,
+) -> bool {
+    last_emit.is_none_or(|last| now.duration_since(last) >= TRANSFER_PROGRESS_INTERVAL)
+        || transferred_bytes >= total_bytes
 }
 
 pub(super) fn wait_for_transfer(
@@ -132,6 +156,55 @@ impl Drop for NonblockingSessionGuard<'_> {
     }
 }
 
+struct TransferSocketWaiter {
+    poller: Poller,
+    events: Events,
+    socket: TcpStream,
+}
+
+impl TransferSocketWaiter {
+    fn new(socket: TcpStream) -> Result<Self, String> {
+        let poller =
+            Poller::new().map_err(|error| format!("无法初始化上传 socket 等待器：{error}"))?;
+        unsafe {
+            poller
+                .add(&socket, Event::none(1))
+                .map_err(|error| format!("无法监听上传 socket：{error}"))?;
+        }
+        Ok(Self {
+            poller,
+            events: Events::new(),
+            socket,
+        })
+    }
+
+    fn wait(&mut self, directions: BlockDirections) -> Result<(), String> {
+        let interest = match directions {
+            BlockDirections::Inbound => Event::readable(1),
+            BlockDirections::Outbound => Event::writable(1),
+            BlockDirections::Both => Event::all(1),
+            BlockDirections::None => {
+                thread::sleep(TRANSFER_UNDIRECTED_RETRY_DELAY);
+                return Ok(());
+            }
+        };
+        self.poller
+            .modify(&self.socket, interest)
+            .map_err(|error| format!("无法更新上传 socket 监听状态：{error}"))?;
+        self.events.clear();
+        self.poller
+            .wait(&mut self.events, Some(TRANSFER_SOCKET_WAIT))
+            .map_err(|error| format!("等待上传 socket 就绪失败：{error}"))?;
+        Ok(())
+    }
+}
+
+impl Drop for TransferSocketWaiter {
+    fn drop(&mut self) {
+        let _ = self.poller.delete(&self.socket);
+    }
+}
+
 fn verified_upload_resume_offset(
     sftp: &Sftp,
     source: &mut LocalFile,
@@ -159,7 +232,7 @@ fn verified_upload_resume_offset(
 
     // A retry uses the same transfer id. Compare the trailing block before
     // resuming so a locally changed file cannot be appended to stale data.
-    let verify_size = remote_size.min(TRANSFER_BUFFER_SIZE as u64) as usize;
+    let verify_size = remote_size.min(UPLOAD_BUFFER_SIZE as u64) as usize;
     let verify_start = remote_size - verify_size as u64;
     let mut local_tail = vec![0_u8; verify_size];
     source
@@ -190,6 +263,8 @@ fn verified_upload_resume_offset(
 }
 
 fn write_upload_buffer(
+    session: &Session,
+    socket_waiter: &mut TransferSocketWaiter,
     target: &mut ssh2::File,
     buffer: &[u8],
     task: &TransferTaskContext<'_>,
@@ -226,13 +301,14 @@ fn write_upload_buffer(
             reporter.waiting(*transferred);
             waiting_reported = true;
         }
-        thread::sleep(TRANSFER_RETRY_DELAY);
+        socket_waiter.wait(session.block_directions())?;
     }
     Ok(())
 }
 
 pub(super) fn upload_file(
     session: &Session,
+    readiness_socket: TcpStream,
     sftp: &Sftp,
     task: &TransferTaskContext<'_>,
 ) -> Result<(), String> {
@@ -292,7 +368,8 @@ pub(super) fn upload_file(
             target
         };
         let nonblocking = NonblockingSessionGuard::new(session);
-        let mut buffer = vec![0_u8; TRANSFER_BUFFER_SIZE];
+        let mut socket_waiter = TransferSocketWaiter::new(readiness_socket)?;
+        let mut buffer = vec![0_u8; UPLOAD_BUFFER_SIZE];
         loop {
             wait_for_transfer(task.control, &reporter, transferred)?;
             let size = source
@@ -302,6 +379,8 @@ pub(super) fn upload_file(
                 break;
             }
             write_upload_buffer(
+                session,
+                &mut socket_waiter,
                 &mut target,
                 &buffer[..size],
                 task,
@@ -334,6 +413,35 @@ pub(super) fn upload_file(
     }
     reporter.completed(transferred);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn throttles_intermediate_running_progress_events() {
+        let now = Instant::now();
+        assert!(should_emit_running_progress(None, now, 1, 100));
+        assert!(!should_emit_running_progress(
+            Some(now),
+            now + TRANSFER_PROGRESS_INTERVAL / 2,
+            50,
+            100,
+        ));
+        assert!(should_emit_running_progress(
+            Some(now),
+            now + TRANSFER_PROGRESS_INTERVAL,
+            50,
+            100,
+        ));
+    }
+
+    #[test]
+    fn always_emits_final_running_progress() {
+        let now = Instant::now();
+        assert!(should_emit_running_progress(Some(now), now, 100, 100));
+    }
 }
 
 pub(super) fn replace_remote_upload_file(

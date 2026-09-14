@@ -260,6 +260,14 @@ pub(super) fn connect_handshaken_session(
     config: &SshAuthConfig,
     cancelled: &AtomicBool,
 ) -> Result<(Session, String), String> {
+    let (session, fingerprint, _) = connect_handshaken_session_with_stream(config, cancelled)?;
+    Ok((session, fingerprint))
+}
+
+fn connect_handshaken_session_with_stream(
+    config: &SshAuthConfig,
+    cancelled: &AtomicBool,
+) -> Result<(Session, String, TcpStream), String> {
     if config.proxy.is_some() && config.jump_host.is_some() {
         return Err("代理和跳板机不能同时配置".to_string());
     }
@@ -285,6 +293,9 @@ pub(super) fn connect_handshaken_session(
             .clamp(3, 120)
             .saturating_mul(1000) as u32,
     );
+    let readiness_socket = tcp
+        .try_clone()
+        .map_err(|error| format!("无法复制 SSH 传输 socket：{error}"))?;
     session.set_tcp_stream(tcp);
     session
         .handshake()
@@ -294,7 +305,7 @@ pub(super) fn connect_handshaken_session(
     }
 
     let fingerprint = host_fingerprint(&session)?;
-    Ok((session, fingerprint))
+    Ok((session, fingerprint, readiness_socket))
 }
 
 pub(super) fn authenticate_session(
@@ -354,4 +365,19 @@ pub(crate) fn connect_authenticated_session(
     }
 
     Ok((session, fingerprint))
+}
+
+pub(crate) fn connect_authenticated_session_with_stream(
+    config: &SshAuthConfig,
+    cancelled: &AtomicBool,
+) -> Result<(Session, String, TcpStream), String> {
+    let (session, fingerprint, stream) = connect_handshaken_session_with_stream(config, cancelled)?;
+    validate_fingerprint(config.expected_fingerprint.as_deref(), &fingerprint)?;
+    authenticate_session(&session, config)?;
+    configure_keepalive(&session, config.keep_alive_interval_seconds);
+    if cancelled.load(Ordering::Acquire) {
+        return Err("SSH 连接已取消".to_string());
+    }
+
+    Ok((session, fingerprint, stream))
 }
