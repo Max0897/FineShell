@@ -628,6 +628,22 @@ function SettingsWindow() {
               />
               <SettingRow
                 control={
+                  <InputNumber
+                    aria-label="上传失败自动重试次数"
+                    max={5}
+                    min={0}
+                    mode="button"
+                    onChange={(value) =>
+                      updateSetting("sftpUploadRetryAttempts", value)
+                    }
+                    suffix="次"
+                    value={settings.sftpUploadRetryAttempts}
+                  />
+                }
+                label="上传失败自动重试"
+              />
+              <SettingRow
+                control={
                   <Space className="settings-editor-picker" size="mini">
                     <Input
                       aria-label="外部编辑器"

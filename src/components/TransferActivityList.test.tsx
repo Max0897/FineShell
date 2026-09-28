@@ -105,4 +105,70 @@ describe("TransferActivityList", () => {
     expect(onOpenExternalEdit).toHaveBeenCalledWith(CONFLICT);
     expect(onResolveExternalEdit).toHaveBeenCalledWith(CONFLICT);
   });
+
+  test("paginates large transfer lists without rendering every row", () => {
+    const transfers = Array.from({ length: 21 }, (_, index) =>
+      transfer("queued", `file-${index + 1}`),
+    );
+
+    render(
+      <TransferActivityList
+        externalEdits={[]}
+        onCancel={() => undefined}
+        onOpenExternalEdit={() => undefined}
+        onPause={() => undefined}
+        onResolveExternalEdit={() => undefined}
+        onResume={() => undefined}
+        onRetry={() => undefined}
+        transfers={transfers}
+      />,
+    );
+
+    expect(screen.getByText("file-1.zip")).not.toBeNull();
+    expect(screen.queryByText("file-21.zip")).toBeNull();
+    expect(screen.getByLabelText("传输记录分页")).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("listitem", { name: "第 2 页" }));
+
+    expect(screen.queryByText("file-1.zip")).toBeNull();
+    expect(screen.getByText("file-21.zip")).not.toBeNull();
+  });
+
+  test("preserves the list position when retrying a transfer", () => {
+    const failed = transfer("failed", "failed");
+    const onRetry = mock(() => undefined);
+    const view = render(
+      <TransferActivityList
+        externalEdits={[]}
+        onCancel={() => undefined}
+        onOpenExternalEdit={() => undefined}
+        onPause={() => undefined}
+        onResolveExternalEdit={() => undefined}
+        onResume={() => undefined}
+        onRetry={onRetry}
+        transfers={[failed]}
+      />,
+    );
+    const list = view.container.querySelector(
+      ".sftp-transfer-list",
+    ) as HTMLElement;
+    list.scrollTop = 240;
+
+    fireEvent.click(screen.getByRole("button", { name: "重试 failed.zip" }));
+    view.rerender(
+      <TransferActivityList
+        externalEdits={[]}
+        onCancel={() => undefined}
+        onOpenExternalEdit={() => undefined}
+        onPause={() => undefined}
+        onResolveExternalEdit={() => undefined}
+        onResume={() => undefined}
+        onRetry={onRetry}
+        transfers={[{ ...failed, status: "queued" }]}
+      />,
+    );
+
+    expect(list.scrollTop).toBe(240);
+    expect(onRetry).toHaveBeenCalledWith(failed);
+  });
 });

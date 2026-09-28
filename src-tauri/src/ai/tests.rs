@@ -23,6 +23,7 @@ use super::{
     validate_service_url, validate_tool_rounds, AiActionRoundDecision, AiActionRoundDecisionKind,
     AiCapabilityKind, AiCapabilityState, AiChatMessage, AiChatResult, AiFinalizeReason,
     AiModelEntry, AiRequestTelemetry, AiToolCall, AiToolResult, AiToolRound, SseParser,
+    MAX_TOOL_RESULT_CHARS,
 };
 
 #[test]
@@ -174,6 +175,62 @@ fn action_round_result_uses_the_authoritative_command_snapshot() {
     assert_eq!(content["decision"], "approved_and_completed");
     assert_eq!(content["exitCode"], 0);
     assert_eq!(content["output"], "active");
+}
+
+#[test]
+fn action_round_result_bounds_large_command_output_for_the_next_ai_turn() {
+    let call = AiToolCall {
+        id: "command-large-output".to_string(),
+        name: "propose_terminal_command".to_string(),
+        arguments: r#"{"command":"sed -n '751,999p' 2025.txt","purpose":"Read the requested script lines","risk":"safe","risk_reason":"Reads a bounded file range"}"#.to_string(),
+    };
+    let result = action_round_result(
+        &call,
+        &AiActionRoundDecision {
+            call_id: call.id.clone(),
+            kind: AiActionRoundDecisionKind::ExecutionCompleted,
+            feedback: None,
+            error: None,
+        },
+        AgentActionResultSnapshot {
+            id: call.id.clone(),
+            tool: "execute_terminal_command".to_string(),
+            status: AgentActionStatus::Succeeded,
+            summary: Some("终端命令执行成功".to_string()),
+            error: None,
+            duration_ms: Some(41),
+            command: Some(AgentCommandResultSnapshot {
+                phase: AgentCommandExecutionPhase::Completed,
+                output: Some("x".repeat(128 * 1024)),
+                output_truncated: true,
+                stdout: Some("x".repeat(128 * 1024)),
+                stdout_truncated: true,
+                stderr: Some("x".repeat(128 * 1024)),
+                stderr_truncated: true,
+                exit_code: Some(0),
+                duration_ms: Some(41),
+                reason: None,
+            }),
+        },
+    )
+    .unwrap();
+
+    assert!(result.content.chars().count() <= MAX_TOOL_RESULT_CHARS);
+    let content: Value = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(content["outputTruncated"], true);
+    assert!(content["output"].as_str().unwrap().contains("工具输出过长"));
+    assert!(validate_tool_rounds(
+        vec![AiToolRound {
+            calls: vec![call.clone()],
+            content: None,
+            reasoning_content: None,
+            results: vec![result],
+        }],
+        false,
+        false,
+        true,
+    )
+    .is_ok());
 }
 
 #[test]

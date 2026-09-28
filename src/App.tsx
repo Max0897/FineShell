@@ -745,6 +745,7 @@ function App() {
       confirmFileDelete={settings.confirmFileDelete}
       externalEditorName={settings.externalEditorName}
       externalEditorPath={settings.externalEditorPath}
+      sftpUploadRetryAttempts={settings.sftpUploadRetryAttempts}
       onCurrentPathChange={updateSftpCurrentPath}
       onReconnect={() => {
         if (activeSession) reconnectSession(activeSession);

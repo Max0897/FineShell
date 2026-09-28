@@ -258,7 +258,7 @@ function TerminalView({
         },
         {
           onError: (error) => {
-            Message.error(`终端日志记录失败：${String(error)}`);
+            Message.warning(`终端日志不可用，连接不受影响：${String(error)}`);
           },
         },
       );
@@ -507,6 +507,9 @@ function TerminalView({
     };
     const resizeObserver = new ResizeObserver(scheduleFit);
     resizeObserver.observe(container);
+    window.addEventListener("resize", scheduleFit);
+    window.addEventListener("focus", scheduleFit);
+    document.addEventListener("visibilitychange", scheduleFit);
     scheduleFit();
 
     const dataDisposable = terminal.onData((data) => {
@@ -652,6 +655,9 @@ function TerminalView({
       unlistenConfiguration?.();
       if (recentOutputTimer) clearTimeout(recentOutputTimer);
       resizeObserver.disconnect();
+      window.removeEventListener("resize", scheduleFit);
+      window.removeEventListener("focus", scheduleFit);
+      document.removeEventListener("visibilitychange", scheduleFit);
       if (fitFrame !== undefined) cancelAnimationFrame(fitFrame);
       dataDisposable.dispose();
       resizeDisposable.dispose();

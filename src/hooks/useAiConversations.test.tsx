@@ -141,6 +141,29 @@ describe("useAiConversations", () => {
     expect(result.current.getHostConversations("host-1")).toHaveLength(0);
   });
 
+  test("does not expose records returned for another host", async () => {
+    const { storage } = memoryStorage(async () => [
+      conversation("conversation-2", "host-2"),
+      conversation("conversation-1", "host-1"),
+    ]);
+    const { result } = renderHook(() =>
+      useAiConversations({
+        hostId: "host-2",
+        hostName: "主机 host-2",
+        sessionId: "session-1",
+        storage,
+      }),
+    );
+
+    await waitFor(() =>
+      expect(result.current.hostConversations).toEqual([
+        expect.objectContaining({ id: "conversation-2", hostId: "host-2" }),
+      ]),
+    );
+    expect(result.current.hostConversations).toHaveLength(1);
+    expect(result.current.activeConversation?.hostId).toBe("host-2");
+  });
+
   test("serializes persistence writes", async () => {
     const firstSave = deferred<AiConversationRecord>();
     const save = mock((value: AiConversationRecord) =>
