@@ -180,11 +180,18 @@ fn keeps_partial_downloads_next_to_the_selected_file() {
 
 #[test]
 fn keeps_partial_uploads_next_to_the_remote_target() {
-    let target = Path::new("/srv/releases/archive.zip");
+    let target = Path::new("/srv/releases/解压密码：johngo_tec.txt");
     let temporary = remote_upload_temporary_path(target.to_str().unwrap(), "transfer-123").unwrap();
-    assert_eq!(
+    assert_eq!(temporary.parent(), target.parent());
+    assert!(temporary.file_name().unwrap().to_string_lossy().is_ascii());
+    assert!(temporary
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .ends_with("-transfer-123.part"));
+    assert_ne!(
         temporary,
-        Path::new("/srv/releases/.archive.zip.transfer-123.part")
+        remote_upload_temporary_path("/srv/releases/another.txt", "transfer-123").unwrap()
     );
 }
 
@@ -214,11 +221,18 @@ fn creates_a_hidden_remote_text_editor_temporary_path() {
     let file_name = temporary.file_name().unwrap().to_string_lossy();
 
     assert_eq!(temporary.parent(), Some(Path::new("/tmp")));
-    assert!(file_name.starts_with(".config.toml.edit-"));
+    assert!(file_name.starts_with(".fineshell-upload-"));
+    assert!(file_name.contains("-edit-"));
     assert!(file_name.ends_with(".part"));
-    assert_eq!(
+    assert!(backup.file_name().unwrap().to_string_lossy().is_ascii());
+    assert!(backup
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .ends_with("-fineshell-edit-backup.part"));
+    assert_ne!(
         backup,
-        Path::new("/tmp/.config.toml.fineshell-edit-backup.part")
+        remote_text_backup_path(Path::new("/tmp/other.toml")).unwrap()
     );
 }
 

@@ -493,7 +493,14 @@ pub(super) fn remote_upload_temporary_path(
     } else {
         &safe_transfer_id
     };
-    let temporary_name = format!(".{file_name}.{safe_transfer_id}.part");
+    // Include the target name in a stable ASCII hash so different files in
+    // the same directory also have distinct recovery and backup paths.
+    let name_hash = file_name
+        .bytes()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+        });
+    let temporary_name = format!(".fineshell-upload-{name_hash:016x}-{safe_transfer_id}.part");
     Ok(PathBuf::from(remote_sibling_path(
         &remote_path,
         &temporary_name,
