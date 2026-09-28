@@ -44,6 +44,7 @@ export interface AppSettings {
   defaultKeepAliveIntervalSeconds: number;
   defaultAutoReconnect: boolean;
   defaultMaxReconnectAttempts: number;
+  sftpUploadRetryAttempts: number;
   connectionHistoryLimit: ConnectionHistoryLimit;
   connectionHistoryRetentionDays: ConnectionHistoryRetentionDays;
   diagnosticLogLevel: DiagnosticLogLevel;
@@ -83,6 +84,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultKeepAliveIntervalSeconds: 15,
   defaultAutoReconnect: true,
   defaultMaxReconnectAttempts: 3,
+  sftpUploadRetryAttempts: 2,
   connectionHistoryLimit: 50,
   connectionHistoryRetentionDays: 0,
   diagnosticLogLevel: "info",
@@ -274,6 +276,12 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
       DEFAULT_APP_SETTINGS.defaultMaxReconnectAttempts,
       1,
       10,
+    ),
+    sftpUploadRetryAttempts: numberValue(
+      settings.sftpUploadRetryAttempts,
+      DEFAULT_APP_SETTINGS.sftpUploadRetryAttempts,
+      0,
+      5,
     ),
     connectionHistoryLimit: connectionHistoryLimitValue(
       settings.connectionHistoryLimit,

@@ -1,6 +1,8 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Button,
   Empty,
+  Pagination,
   Progress,
   Tooltip,
   Typography,
@@ -27,6 +29,8 @@ import {
   type RemoteArchiveFormat,
   type SftpTransferStatus,
 } from "../sftp-utils";
+
+const TRANSFERS_PER_PAGE = 20;
 
 export interface TransferActivityRecord extends Omit<
   SftpTransferPayload,
@@ -92,6 +96,43 @@ function TransferActivityList({
   onRetry,
   transfers,
 }: TransferActivityListProps) {
+  const [currentPage, setCurrentPage] = useState(1);
+  const transferListRef = useRef<HTMLDivElement>(null);
+  const pendingRetryScrollTopRef = useRef<number | null>(null);
+  const pageCount = Math.max(
+    1,
+    Math.ceil(transfers.length / TRANSFERS_PER_PAGE),
+  );
+  const safeCurrentPage = Math.min(currentPage, pageCount);
+  const visibleTransfers = transfers.slice(
+    (safeCurrentPage - 1) * TRANSFERS_PER_PAGE,
+    safeCurrentPage * TRANSFERS_PER_PAGE,
+  );
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, pageCount));
+  }, [pageCount]);
+
+  useLayoutEffect(() => {
+    const scrollTop = pendingRetryScrollTopRef.current;
+    if (scrollTop === null) return;
+    const list = transferListRef.current;
+    if (list) list.scrollTop = scrollTop;
+    pendingRetryScrollTopRef.current = null;
+  }, [transfers, safeCurrentPage]);
+
+  const handleRetry = useCallback(
+    (transfer: TransferActivityRecord) => {
+      const scrollTop = transferListRef.current?.scrollTop ?? 0;
+      pendingRetryScrollTopRef.current = scrollTop;
+      onRetry(transfer);
+      if (transferListRef.current) {
+        transferListRef.current.scrollTop = scrollTop;
+      }
+    },
+    [onRetry],
+  );
+
   if (transfers.length === 0 && externalEdits.length === 0) {
     return (
       <div className="sftp-transfer-empty">
@@ -101,8 +142,9 @@ function TransferActivityList({
   }
 
   return (
-    <div className="sftp-transfer-list">
-      {transfers.map((transfer) => {
+    <div className="sftp-transfer-list-container">
+      <div className="sftp-transfer-list" ref={transferListRef}>
+        {visibleTransfers.map((transfer) => {
         const percent = transfer.totalBytes
           ? Math.min(
               100,
@@ -219,7 +261,7 @@ function TransferActivityList({
                   <Button
                     aria-label={`重试 ${transfer.fileName}`}
                     icon={<IconRefresh />}
-                    onClick={() => onRetry(transfer)}
+                    onClick={() => handleRetry(transfer)}
                     size="mini"
                   />
                 </Tooltip>
@@ -227,8 +269,8 @@ function TransferActivityList({
             </div>
           </div>
         );
-      })}
-      {externalEdits.map((edit) => {
+        })}
+        {externalEdits.map((edit) => {
         const status = externalEditStatusMeta(edit.status);
         const hasProblem =
           edit.status === "conflict" || edit.status === "failed";
@@ -298,7 +340,24 @@ function TransferActivityList({
             </div>
           </div>
         );
-      })}
+        })}
+      </div>
+      {pageCount > 1 && (
+        <div
+          aria-label="传输记录分页"
+          className="sftp-transfer-pagination"
+        >
+          <Pagination
+            current={safeCurrentPage}
+            hideOnSinglePage
+            onChange={setCurrentPage}
+            pageSize={TRANSFERS_PER_PAGE}
+            showTotal={(total, range) => `${range[0]}-${range[1]} / ${total}`}
+            size="small"
+            total={transfers.length}
+          />
+        </div>
+      )}
     </div>
   );
 }

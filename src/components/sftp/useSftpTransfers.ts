@@ -12,9 +12,14 @@ import {
 import { commandErrorMessage, listenProtocolEvent } from "../../tauri-protocol";
 import type { RemoteArchiveFormat } from "../../sftp-utils";
 import type { TransferActivityRecord } from "../TransferActivityList";
-import { isSftpSessionFailure, isSftpTransferCancellation } from "./sftpErrors";
+import {
+  isSftpSessionFailure,
+  isSftpTransferCancellation,
+  isSftpUploadRetryableError,
+} from "./sftpErrors";
 
 const MAX_CONCURRENT_TRANSFERS = 2;
+const UPLOAD_RETRY_DELAY_MS = 750;
 
 export interface QueueSftpTransferOptions {
   batchId?: string;
@@ -41,6 +46,7 @@ interface SftpTransfersOptions {
   isSessionReady: (sessionId: string) => boolean;
   onRefreshDirectory: (sessionId: string) => void | Promise<void>;
   onSessionFailure: (sessionId: string, message: string) => void;
+  uploadRetryAttempts: number;
 }
 
 function createTransferId() {
@@ -52,12 +58,14 @@ export default function useSftpTransfers({
   isSessionReady,
   onRefreshDirectory,
   onSessionFailure,
+  uploadRetryAttempts,
 }: SftpTransfersOptions) {
   const [transfers, setTransfers] = useState<
     Record<string, TransferActivityRecord>
   >({});
   const transfersRef = useRef(transfers);
   const startingTransfersRef = useRef(new Set<string>());
+  const retryingTransfersRef = useRef(new Set<string>());
   const finalizedUploadBatchesRef = useRef(new Set<string>());
   const isSessionReadyRef = useRef(isSessionReady);
   const onRefreshDirectoryRef = useRef(onRefreshDirectory);
@@ -143,65 +151,124 @@ export default function useSftpTransfers({
 
   const executeTransfer = useCallback(
     async (transfer: TransferActivityRecord) => {
+      let retryAttempt = 0;
       try {
-        if (transfer.archiveFormat && transfer.archiveSourcePaths?.length) {
-          await invoke("sftp_download_archive", {
-            sessionId: transfer.sessionId,
-            transferId: transfer.transferId,
-            localPath: transfer.localPath,
-            sourcePaths: transfer.archiveSourcePaths,
-            archiveName: transfer.fileName,
-            format: transfer.archiveFormat,
-            overwrite: transfer.overwrite,
-          });
-        } else {
-          await invoke(
-            transfer.direction === "upload" ? "sftp_upload" : "sftp_download",
-            {
-              sessionId: transfer.sessionId,
-              transferId: transfer.transferId,
-              localPath: transfer.localPath,
-              remotePath: transfer.remotePath,
-              overwrite: transfer.overwrite,
-            },
-          );
-        }
-        if (!transfer.batchId) {
-          Message.success(
-            `${transfer.direction === "upload" ? "上传" : "下载"}完成：${transfer.fileName}`,
-          );
-          if (transfer.direction === "upload") {
-            await onRefreshDirectoryRef.current(transfer.sessionId);
+        while (true) {
+          try {
+            if (transfer.archiveFormat && transfer.archiveSourcePaths?.length) {
+              await invoke("sftp_download_archive", {
+                sessionId: transfer.sessionId,
+                transferId: transfer.transferId,
+                localPath: transfer.localPath,
+                sourcePaths: transfer.archiveSourcePaths,
+                archiveName: transfer.fileName,
+                format: transfer.archiveFormat,
+                overwrite: transfer.overwrite,
+              });
+            } else {
+              await invoke(
+                transfer.direction === "upload"
+                  ? "sftp_upload"
+                  : "sftp_download",
+                {
+                  sessionId: transfer.sessionId,
+                  transferId: transfer.transferId,
+                  localPath: transfer.localPath,
+                  remotePath: transfer.remotePath,
+                  overwrite: transfer.overwrite,
+                },
+              );
+            }
+            if (!transfer.batchId) {
+              Message.success(
+                `${transfer.direction === "upload" ? "上传" : "下载"}完成：${transfer.fileName}`,
+              );
+              if (transfer.direction === "upload") {
+                await onRefreshDirectoryRef.current(transfer.sessionId);
+              }
+            }
+            return;
+          } catch (error) {
+            const message = commandErrorMessage(error);
+            const cancelled =
+              isSftpTransferCancellation(message) ||
+              transfersRef.current[transfer.transferId]?.status === "cancelled";
+            const shouldRetry =
+              !cancelled &&
+              transfer.direction === "upload" &&
+              retryAttempt < uploadRetryAttempts &&
+              isSftpUploadRetryableError(message);
+
+            if (shouldRetry) {
+              retryAttempt += 1;
+              retryingTransfersRef.current.add(transfer.transferId);
+              setTransfers((current) => {
+                const previous = current[transfer.transferId] ?? transfer;
+                return {
+                  ...current,
+                  [transfer.transferId]: {
+                    ...previous,
+                    status: "queued",
+                    error: undefined,
+                    bytesPerSecond: 0,
+                  },
+                };
+              });
+              await new Promise((resolve) =>
+                window.setTimeout(resolve, UPLOAD_RETRY_DELAY_MS),
+              );
+              retryingTransfersRef.current.delete(transfer.transferId);
+              if (
+                transfersRef.current[transfer.transferId]?.status ===
+                "cancelled"
+              ) {
+                return;
+              }
+              setTransfers((current) => {
+                const previous = current[transfer.transferId];
+                if (!previous || previous.status === "cancelled") {
+                  return current;
+                }
+                return {
+                  ...current,
+                  [transfer.transferId]: {
+                    ...previous,
+                    status: "running",
+                    sampledAt: Date.now(),
+                    sampledBytes: previous.transferredBytes,
+                  },
+                };
+              });
+              continue;
+            }
+
+            setTransfers((current) => {
+              const previous = current[transfer.transferId] ?? transfer;
+              return {
+                ...current,
+                [transfer.transferId]: {
+                  ...previous,
+                  status: cancelled ? "cancelled" : "failed",
+                  error: cancelled ? undefined : message,
+                  bytesPerSecond: 0,
+                },
+              };
+            });
+            if (!cancelled) {
+              if (isSftpSessionFailure(message)) {
+                onSessionFailureRef.current(transfer.sessionId, message);
+              }
+              if (!transfer.batchId) Message.error(message);
+            }
+            return;
           }
-        }
-      } catch (error) {
-        const message = commandErrorMessage(error);
-        const cancelled =
-          isSftpTransferCancellation(message) ||
-          transfersRef.current[transfer.transferId]?.status === "cancelled";
-        setTransfers((current) => {
-          const previous = current[transfer.transferId] ?? transfer;
-          return {
-            ...current,
-            [transfer.transferId]: {
-              ...previous,
-              status: cancelled ? "cancelled" : "failed",
-              error: cancelled ? undefined : message,
-              bytesPerSecond: 0,
-            },
-          };
-        });
-        if (!cancelled) {
-          if (isSftpSessionFailure(message)) {
-            onSessionFailureRef.current(transfer.sessionId, message);
-          }
-          if (!transfer.batchId) Message.error(message);
         }
       } finally {
+        retryingTransfersRef.current.delete(transfer.transferId);
         startingTransfersRef.current.delete(transfer.transferId);
       }
     },
-    [],
+    [uploadRetryAttempts],
   );
 
   useEffect(() => {
@@ -247,7 +314,8 @@ export default function useSftpTransfers({
       if (
         transfer.status === "running" ||
         transfer.status === "waiting" ||
-        transfer.status === "paused"
+        transfer.status === "paused" ||
+        retryingTransfersRef.current.has(transfer.transferId)
       ) {
         activeCounts.set(
           transfer.sessionId,
@@ -410,15 +478,19 @@ export default function useSftpTransfers({
 
   const cancel = useCallback(async (transfer: TransferActivityRecord) => {
     if (transfer.status === "queued") {
+      retryingTransfersRef.current.delete(transfer.transferId);
       startingTransfersRef.current.delete(transfer.transferId);
-      setTransfers((current) => ({
-        ...current,
-        [transfer.transferId]: {
-          ...transfer,
-          status: "cancelled",
-          bytesPerSecond: 0,
-        },
-      }));
+      setTransfers((current) => {
+        const previous = current[transfer.transferId] ?? transfer;
+        return {
+          ...current,
+          [transfer.transferId]: {
+            ...previous,
+            status: "cancelled",
+            bytesPerSecond: 0,
+          },
+        };
+      });
       return;
     }
     if (
@@ -458,6 +530,7 @@ export default function useSftpTransfers({
             transfer.sessionId === sessionId &&
             isActiveSftpTransfer(transfer.status)
           ) {
+            retryingTransfersRef.current.delete(transferId);
             startingTransfersRef.current.delete(transferId);
             return [
               transferId,

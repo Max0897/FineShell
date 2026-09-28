@@ -1589,16 +1589,24 @@
 .ai-assistant-composer-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
   margin-top: 9px;
 }
 
 .ai-assistant-composer-meta {
+  flex: 1 1 180px;
   min-width: 0;
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 7px;
+  row-gap: 4px;
+}
+
+.ai-assistant-composer-meta > * {
+  min-width: 0;
 }
 
 .ai-assistant-composer-meta > .arco-typography {
@@ -1615,12 +1623,20 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
 }
 
 .ai-assistant-composer-model.arco-typography {
   min-width: 0;
   max-width: 112px;
   margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-assistant-composer-meta .arco-tag {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

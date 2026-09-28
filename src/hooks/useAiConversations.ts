@@ -124,7 +124,9 @@ export function useAiConversations({
       update: (current: AiConversation[]) => AiConversation[],
     ) => {
       const nextHostConversations = sortAiConversations(
-        update(conversationsRef.current[targetHostId] ?? []),
+        update(conversationsRef.current[targetHostId] ?? []).filter(
+          (conversation) => conversation.hostId === targetHostId,
+        ),
       ).slice(0, MAX_AI_CONVERSATIONS_PER_HOST);
       const next = {
         ...conversationsRef.current,
@@ -262,7 +264,9 @@ export function useAiConversations({
   ]);
 
   const hostConversations = hostId
-    ? conversationsByHost[hostId] ?? []
+    ? (conversationsByHost[hostId] ?? []).filter(
+        (conversation) => conversation.hostId === hostId,
+      )
     : [];
   const activeConversationId = sessionId
     ? activeConversationIds[sessionId]

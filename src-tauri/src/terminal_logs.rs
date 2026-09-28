@@ -136,6 +136,8 @@ impl TerminalLogWriter {
         if request.directory.trim().is_empty() {
             return Err("终端日志目录不能为空".to_string());
         }
+        fs::create_dir_all(&directory)
+            .map_err(|error| format!("无法创建终端日志目录：{error}"))?;
         let metadata =
             fs::metadata(&directory).map_err(|error| format!("无法访问终端日志目录：{error}"))?;
         if !metadata.is_dir() {
@@ -567,5 +569,27 @@ mod tests {
         assert!(content.contains("连接成功"));
         assert!(!content.contains('\x1b'));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn creates_a_missing_log_directory_before_starting() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "fineshell-terminal-log-missing-{}-{unique}",
+            std::process::id()
+        ));
+        let directory = root.join("nested");
+        let mut request = request();
+        request.directory = directory.to_string_lossy().into_owned();
+        let manager = TerminalLogManager::default();
+
+        let result = manager.start(request).unwrap();
+        assert!(directory.is_dir());
+        manager.stop("terminal-log:1").unwrap();
+        assert!(std::path::Path::new(&result.path).is_file());
+        fs::remove_dir_all(root).unwrap();
     }
 }

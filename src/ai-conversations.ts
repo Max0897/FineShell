@@ -650,6 +650,7 @@ export async function loadAiConversations(hostId: string) {
   return records
     .map(sanitizeAiConversation)
     .filter((record): record is AiConversationRecord => Boolean(record))
+    .filter((record) => record.hostId === hostId)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, MAX_AI_CONVERSATIONS_PER_HOST);
 }

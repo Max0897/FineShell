@@ -98,6 +98,7 @@ interface SftpPanelProps {
   confirmFileDelete: boolean;
   externalEditorName: string;
   externalEditorPath: string;
+  sftpUploadRetryAttempts: number;
   onCurrentPathChange: (sessionId: string | null, path: string) => void;
   onReconnect: () => void;
   onSendFilesToAi: (
@@ -145,6 +146,7 @@ function SftpPanel({
   confirmFileDelete,
   externalEditorName,
   externalEditorPath,
+  sftpUploadRetryAttempts,
   onCurrentPathChange,
   onReconnect,
   onSendFilesToAi,
@@ -315,6 +317,7 @@ function SftpPanel({
       connectedHomesRef.current.delete(sessionId);
       updateBrowser(sessionId, { status: "failed", error: message });
     },
+    uploadRetryAttempts: sftpUploadRetryAttempts,
   });
   const {
     clearClipboard,

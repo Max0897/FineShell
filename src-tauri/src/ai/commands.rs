@@ -1,10 +1,97 @@
 use super::*;
 
+use crate::agent::AgentCommandResultSnapshot;
+
 fn bounded_round_message(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
         let value = value.trim().chars().take(500).collect::<String>();
         (!value.is_empty()).then_some(value)
     })
+}
+
+fn truncate_tool_output(value: &str, max_chars: usize) -> String {
+    let value_chars = value.chars().count();
+    if value_chars <= max_chars {
+        return value.to_string();
+    }
+    let marker = "\n[工具输出过长，已截断]";
+    let keep = max_chars.saturating_sub(marker.chars().count());
+    format!("{}{}", value.chars().take(keep).collect::<String>(), marker)
+}
+
+fn bounded_tool_result(content: Value, output: &str) -> String {
+    let serialized = content.to_string();
+    if serialized.chars().count() <= MAX_TOOL_RESULT_CHARS {
+        return serialized;
+    }
+
+    let mut compact = json!({
+        "ok": content.get("ok").cloned().unwrap_or(Value::Bool(false)),
+        "decision": content
+            .get("decision")
+            .cloned()
+            .unwrap_or_else(|| Value::String("approved_and_completed".to_string())),
+        "durationMs": content.get("durationMs").cloned().unwrap_or(Value::Null),
+        "exitCode": content.get("exitCode").cloned().unwrap_or(Value::Null),
+        "outputTruncated": true,
+        "stdoutTruncated": content
+            .get("stdoutTruncated")
+            .cloned()
+            .unwrap_or(Value::Bool(false)),
+        "stderrTruncated": content
+            .get("stderrTruncated")
+            .cloned()
+            .unwrap_or(Value::Bool(false)),
+        "message": content
+            .get("message")
+            .cloned()
+            .unwrap_or_else(|| Value::String("命令执行结果已压缩".to_string())),
+    });
+
+    let mut low = 0usize;
+    let mut high = output.chars().count();
+    let mut best = compact.to_string();
+    while low <= high {
+        let middle = low + (high - low) / 2;
+        compact["output"] = Value::String(truncate_tool_output(output, middle));
+        let candidate = compact.to_string();
+        if candidate.chars().count() <= MAX_TOOL_RESULT_CHARS {
+            best = candidate;
+            low = middle.saturating_add(1);
+        } else if middle == 0 {
+            break;
+        } else {
+            high = middle - 1;
+        }
+    }
+    best
+}
+
+fn command_result_content(
+    command: &AgentCommandResultSnapshot,
+    duration_ms: Option<u64>,
+    ok: bool,
+    decision: &str,
+    message: &str,
+) -> Value {
+    let content = json!({
+        "ok": ok,
+        "decision": decision,
+        "durationMs": duration_ms,
+        "exitCode": command.exit_code,
+        "output": command.output.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+        "outputTruncated": command.output_truncated.then_some(true),
+        "stdout": command.stdout.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+        "stdoutTruncated": command.stdout_truncated.then_some(true),
+        "stderr": command.stderr.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+        "stderrTruncated": command.stderr_truncated.then_some(true),
+        "message": message,
+    });
+    serde_json::from_str(&bounded_tool_result(
+        content,
+        command.output.as_deref().unwrap_or_default(),
+    ))
+    .expect("bounded command tool result must remain valid JSON")
 }
 
 pub(super) fn take_pre_resolved_tool_round(response: &mut AiChatResult) -> Option<AiToolRound> {
@@ -64,19 +151,13 @@ pub(super) fn action_round_result(
                 let exit_code = command
                     .exit_code
                     .ok_or_else(|| "AI 命令缺少退出码".to_string())?;
-                json!({
-                    "ok": exit_code == 0,
-                    "decision": "approved_and_completed",
-                    "durationMs": command.duration_ms.or(snapshot.duration_ms),
-                    "exitCode": exit_code,
-                    "output": command.output.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-                    "outputTruncated": command.output_truncated.then_some(true),
-                    "stdout": command.stdout.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-                    "stdoutTruncated": command.stdout_truncated.then_some(true),
-                    "stderr": command.stderr.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-                    "stderrTruncated": command.stderr_truncated.then_some(true),
-                    "message": "命令已获批准，后台 SSH 执行器已完成执行"
-                })
+                command_result_content(
+                    &command,
+                    command.duration_ms.or(snapshot.duration_ms),
+                    exit_code == 0,
+                    "approved_and_completed",
+                    "命令已获批准，后台 SSH 执行器已完成执行",
+                )
             }
             AgentActionStatus::Failed if is_command => {
                 if let Some(command) = snapshot
@@ -87,20 +168,13 @@ pub(super) fn action_round_result(
                     if command.phase != AgentCommandExecutionPhase::Failed {
                         return Err("AI 命令失败状态与执行阶段不一致".to_string());
                     }
-                    let exit_code = command.exit_code.unwrap_or_default();
-                    json!({
-                        "ok": false,
-                        "decision": "approved_and_completed",
-                        "durationMs": command.duration_ms.or(snapshot.duration_ms),
-                        "exitCode": exit_code,
-                        "output": command.output.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-                        "outputTruncated": command.output_truncated.then_some(true),
-                        "stdout": command.stdout.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-                        "stdoutTruncated": command.stdout_truncated.then_some(true),
-                        "stderr": command.stderr.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-                        "stderrTruncated": command.stderr_truncated.then_some(true),
-                        "message": "命令已获批准，但后台执行返回非零退出码"
-                    })
+                    command_result_content(
+                        command,
+                        command.duration_ms.or(snapshot.duration_ms),
+                        false,
+                        "approved_and_completed",
+                        "命令已获批准，但后台执行返回非零退出码",
+                    )
                 } else {
                     let reason = snapshot
                         .command

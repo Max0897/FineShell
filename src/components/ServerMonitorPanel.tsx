@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -164,30 +164,47 @@ function ServerMonitorPanel({
   const pingRequestRef = useRef(0);
   const connectionsRequestRef = useRef(0);
   const traceRequestRef = useRef(0);
+  const connected = Boolean(
+    session && isTerminalSessionOperational(session.status),
+  );
+  const monitorSnapshot = connected ? snapshot : null;
+  const monitorHistory = connected ? history : [];
+
+  const resetMonitorState = useCallback(
+    (sessionId: string | null) => {
+      diagnosticsGenerationRef.current += 1;
+      pingRequestRef.current += 1;
+      connectionsRequestRef.current += 1;
+      traceRequestRef.current += 1;
+      setSnapshot(null);
+      onSnapshotChange(sessionId, null);
+      setHistory([]);
+      setError(undefined);
+      setPingResult(null);
+      setPingLoading(false);
+      setPingError(undefined);
+      setConnectionsResult(null);
+      setConnectionsLoading(false);
+      setConnectionsError(undefined);
+      setConnectionFilter("all");
+      setTraceResult(null);
+      setTraceLoading(false);
+      setTraceError(undefined);
+      setDiagnosticsVisible(false);
+      setProcessDrawerVisible(false);
+      setPortForwardDrawerVisible(false);
+    },
+    [onSnapshotChange],
+  );
 
   useEffect(() => {
-    diagnosticsGenerationRef.current += 1;
-    pingRequestRef.current += 1;
-    connectionsRequestRef.current += 1;
-    traceRequestRef.current += 1;
-    setSnapshot(null);
-    onSnapshotChange(session?.id ?? null, null);
-    setHistory([]);
-    setError(undefined);
-    setPingResult(null);
-    setPingLoading(false);
-    setPingError(undefined);
-    setConnectionsResult(null);
-    setConnectionsLoading(false);
-    setConnectionsError(undefined);
-    setConnectionFilter("all");
-    setTraceResult(null);
-    setTraceLoading(false);
-    setTraceError(undefined);
-    setDiagnosticsVisible(false);
-    setProcessDrawerVisible(false);
-    setPortForwardDrawerVisible(false);
-  }, [onSnapshotChange, session?.id]);
+    resetMonitorState(session?.id ?? null);
+  }, [resetMonitorState, session?.id]);
+
+  useEffect(() => {
+    if (!session || isTerminalSessionOperational(session.status)) return;
+    resetMonitorState(session.id);
+  }, [resetMonitorState, session?.id, session?.status]);
 
   useEffect(() => {
     const sessionId = session?.id;
@@ -320,22 +337,22 @@ function ServerMonitorPanel({
 
   const utilizationData = useMemo(
     () =>
-      snapshot
+      monitorSnapshot
         ? [
             {
               metric: "CPU",
-              value: Math.round(snapshot.cpuUsagePercent),
-              displayValue: formatMonitorPercent(snapshot.cpuUsagePercent),
+              value: Math.round(monitorSnapshot.cpuUsagePercent),
+              displayValue: formatMonitorPercent(monitorSnapshot.cpuUsagePercent),
             },
             {
               metric: "内存",
-              value: Math.round(snapshot.memoryUsagePercent),
-              displayValue: formatMonitorPercent(snapshot.memoryUsagePercent),
+              value: Math.round(monitorSnapshot.memoryUsagePercent),
+              displayValue: formatMonitorPercent(monitorSnapshot.memoryUsagePercent),
             },
             {
               metric: "磁盘",
-              value: Math.round(snapshot.diskUsagePercent),
-              displayValue: formatMonitorPercent(snapshot.diskUsagePercent),
+              value: Math.round(monitorSnapshot.diskUsagePercent),
+              displayValue: formatMonitorPercent(monitorSnapshot.diskUsagePercent),
             },
           ]
         : [
@@ -343,11 +360,11 @@ function ServerMonitorPanel({
             { metric: "内存", value: 0, displayValue: "-" },
             { metric: "磁盘", value: 0, displayValue: "-" },
           ],
-    [snapshot],
+    [monitorSnapshot],
   );
   const trendData = useMemo(
     () =>
-      history.flatMap((point) => {
+      monitorHistory.flatMap((point) => {
         const time = new Date(point.collectedAt).toLocaleTimeString("zh-CN", {
           hour: "2-digit",
           minute: "2-digit",
@@ -368,11 +385,11 @@ function ServerMonitorPanel({
           },
         ];
       }),
-    [history],
+    [monitorHistory],
   );
   const networkTrendData = useMemo(
     () =>
-      history.flatMap((point) => {
+      monitorHistory.flatMap((point) => {
         const time = new Date(point.collectedAt).toLocaleTimeString("zh-CN", {
           hour: "2-digit",
           minute: "2-digit",
@@ -383,9 +400,9 @@ function ServerMonitorPanel({
           { metric: "上传", time, value: point.networkTransmitBytesPerSecond },
         ];
       }),
-    [history],
+    [monitorHistory],
   );
-  const latestHistoryPoint = history[history.length - 1];
+  const latestHistoryPoint = monitorHistory[monitorHistory.length - 1];
   const filteredConnections = useMemo(() => {
     const connections = connectionsResult?.connections ?? [];
     if (connectionFilter === "listening") {
@@ -449,9 +466,6 @@ function ServerMonitorPanel({
     [],
   );
 
-  const connected = Boolean(
-    session && isTerminalSessionOperational(session.status),
-  );
   const reconnecting = session?.status === "reconnecting";
   const suspect = session?.status === "suspect";
   const connectionUnavailable = Boolean(
@@ -485,7 +499,7 @@ function ServerMonitorPanel({
   };
 
   return (
-    <section className="server-monitor">
+    <section className={`server-monitor${connected ? "" : " is-unavailable"}`}>
       <div className="server-monitor-heading">
         <Typography.Text bold>服务器监控</Typography.Text>
         <Space size="mini">
@@ -524,25 +538,25 @@ function ServerMonitorPanel({
       <dl className="monitor-system-facts">
         <div>
           <dt>系统</dt>
-          <dd>{snapshot?.operatingSystem || "-"}</dd>
+          <dd>{monitorSnapshot?.operatingSystem || "-"}</dd>
         </div>
         <div>
           <dt>主机名</dt>
-          <dd>{snapshot?.hostname || "-"}</dd>
+          <dd>{monitorSnapshot?.hostname || "-"}</dd>
         </div>
         <div>
           <dt>内核</dt>
-          <dd>{snapshot?.kernel || "-"}</dd>
+          <dd>{monitorSnapshot?.kernel || "-"}</dd>
         </div>
         <div>
           <dt>运行时间</dt>
-          <dd>{snapshot ? formatUptime(snapshot.uptimeSeconds) : "-"}</dd>
+          <dd>{monitorSnapshot ? formatUptime(monitorSnapshot.uptimeSeconds) : "-"}</dd>
         </div>
         <div>
           <dt>负载</dt>
           <dd>
-            {snapshot
-              ? snapshot.loadAverage
+            {monitorSnapshot
+              ? monitorSnapshot.loadAverage
                   .map((value) => value.toFixed(2))
                   .join(" / ")
               : "-"}
@@ -554,8 +568,8 @@ function ServerMonitorPanel({
         <div className="monitor-chart-heading">
           <Typography.Text bold>资源占用</Typography.Text>
           <Typography.Text type="secondary">
-            {snapshot
-              ? `内存 ${formatMonitorBytes(snapshot.memoryUsedBytes)} / ${formatMonitorBytes(snapshot.memoryTotalBytes)}`
+            {monitorSnapshot
+              ? `内存 ${formatMonitorBytes(monitorSnapshot.memoryUsedBytes)} / ${formatMonitorBytes(monitorSnapshot.memoryTotalBytes)}`
               : "内存 - / -"}
           </Typography.Text>
         </div>
@@ -604,8 +618,8 @@ function ServerMonitorPanel({
         <div className="monitor-chart-heading">
           <Typography.Text bold>资源趋势</Typography.Text>
           <Typography.Text type="secondary">
-            {snapshot
-              ? `磁盘 ${formatMonitorBytes(snapshot.diskUsedBytes)} / ${formatMonitorBytes(snapshot.diskTotalBytes)}`
+            {monitorSnapshot
+              ? `磁盘 ${formatMonitorBytes(monitorSnapshot.diskUsedBytes)} / ${formatMonitorBytes(monitorSnapshot.diskTotalBytes)}`
               : "磁盘 - / -"}
           </Typography.Text>
         </div>
@@ -644,7 +658,7 @@ function ServerMonitorPanel({
           }}
           line={{ style: { lineWidth: 2 } }}
           padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
-          point={{ style: { size: 2 }, visible: history.length < 2 }}
+          point={{ style: { size: 2 }, visible: monitorHistory.length < 2 }}
           seriesField="metric"
           stack={false}
           theme={appearance}
@@ -658,8 +672,8 @@ function ServerMonitorPanel({
         <div className="monitor-chart-heading">
           <Typography.Text bold>网络流量</Typography.Text>
           <Typography.Text type="secondary">
-            {snapshot
-              ? `累计 ↓ ${formatMonitorBytes(snapshot.networkReceiveBytes)} / ↑ ${formatMonitorBytes(snapshot.networkTransmitBytes)}`
+            {monitorSnapshot
+              ? `累计 ↓ ${formatMonitorBytes(monitorSnapshot.networkReceiveBytes)} / ↑ ${formatMonitorBytes(monitorSnapshot.networkTransmitBytes)}`
               : "累计 ↓ - / ↑ -"}
           </Typography.Text>
         </div>
@@ -667,7 +681,7 @@ function ServerMonitorPanel({
           <span>
             <span>下载</span>
             <strong>
-              {snapshot
+              {monitorSnapshot
                 ? formatMonitorRate(
                     latestHistoryPoint?.networkReceiveBytesPerSecond ?? 0,
                   )
@@ -677,7 +691,7 @@ function ServerMonitorPanel({
           <span>
             <span>上传</span>
             <strong>
-              {snapshot
+              {monitorSnapshot
                 ? formatMonitorRate(
                     latestHistoryPoint?.networkTransmitBytesPerSecond ?? 0,
                   )
@@ -715,7 +729,7 @@ function ServerMonitorPanel({
           }}
           line={{ style: { lineWidth: 2 } }}
           padding={{ bottom: 6, left: 0, right: 0, top: 22 }}
-          point={{ style: { size: 2 }, visible: history.length < 2 }}
+          point={{ style: { size: 2 }, visible: monitorHistory.length < 2 }}
           seriesField="metric"
           stack={true}
           theme={appearance}

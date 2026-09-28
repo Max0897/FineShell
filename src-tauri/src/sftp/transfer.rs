@@ -212,6 +212,9 @@ fn verified_upload_resume_offset(
     total: u64,
 ) -> Result<u64, String> {
     if !remote_exists(sftp, temporary_path) {
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| format!("无法重置本地上传文件：{error}"))?;
         return Ok(0);
     }
     let stat = sftp
@@ -222,11 +225,17 @@ fn verified_upload_resume_offset(
     }
     let remote_size = stat.size.unwrap_or(0);
     if remote_size == 0 {
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| format!("无法重置本地上传文件：{error}"))?;
         return Ok(0);
     }
     if remote_size > total {
         sftp.unlink(temporary_path)
             .map_err(|error| format!("无法清理无效的未完成上传文件：{error}"))?;
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| format!("无法重置本地上传文件：{error}"))?;
         return Ok(0);
     }
 
@@ -306,6 +315,78 @@ fn write_upload_buffer(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn write_scp_upload(
+    session: &Session,
+    socket_waiter: &mut TransferSocketWaiter,
+    channel: &mut ssh2::Channel,
+    source: &mut LocalFile,
+    total: u64,
+    task: &TransferTaskContext<'_>,
+    reporter: &TransferReporter<'_>,
+    transferred: &mut u64,
+) -> Result<(), String> {
+    let mut buffer = vec![0_u8; UPLOAD_BUFFER_SIZE];
+    let mut last_progress = Instant::now();
+    let mut waiting_reported = false;
+    while *transferred < total {
+        wait_for_transfer(task.control, reporter, *transferred)?;
+        let size = source
+            .read(&mut buffer)
+            .map_err(|error| format!("读取本地文件失败：{error}"))?;
+        if size == 0 {
+            return Err(format!(
+                "本地文件在上传过程中提前结束（已读取 {} / {} 字节）",
+                *transferred, total
+            ));
+        }
+
+        let mut offset = 0;
+        while offset < size {
+            wait_for_transfer(task.control, reporter, *transferred)?;
+            match channel.write(&buffer[offset..size]) {
+                Ok(0) => {}
+                Ok(written) => {
+                    offset += written;
+                    *transferred += written as u64;
+                    last_progress = Instant::now();
+                    waiting_reported = false;
+                    reporter.running(*transferred);
+                    continue;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                Err(error) => return Err(format!("写入远程文件失败：{error}")),
+            }
+
+            let stalled_for = last_progress.elapsed();
+            if stalled_for >= TRANSFER_IDLE_TIMEOUT {
+                return Err(format!(
+                    "上传连续 {} 秒无进度，可能是网络中断或远程磁盘响应缓慢，可重试并继续上传",
+                    TRANSFER_IDLE_TIMEOUT.as_secs()
+                ));
+            }
+            if !waiting_reported && stalled_for >= TRANSFER_WAITING_NOTICE {
+                reporter.waiting(*transferred);
+                waiting_reported = true;
+            }
+            socket_waiter.wait(session.block_directions())?;
+        }
+    }
+    Ok(())
+}
+
+fn finish_scp_upload(channel: &mut ssh2::Channel) -> Result<(), String> {
+    channel
+        .send_eof()
+        .map_err(|error| format!("无法结束远程上传：{error}"))?;
+    channel
+        .wait_eof()
+        .map_err(|error| format!("等待远程上传结束失败：{error}"))?;
+    channel
+        .wait_close()
+        .map_err(|error| format!("等待远程上传通道关闭失败：{error}"))
+}
+
 pub(super) fn upload_file(
     session: &Session,
     readiness_socket: TcpStream,
@@ -326,6 +407,7 @@ pub(super) fn upload_file(
         return Err("远程目标已存在，需要确认覆盖".to_string());
     }
     let temporary_path = remote_upload_temporary_path(&remote_path_text, task.transfer_id)?;
+    let temporary_exists = remote_exists(sftp, &temporary_path);
 
     let reporter = TransferReporter::new(
         task.app,
@@ -350,6 +432,58 @@ pub(super) fn upload_file(
                 task.transfer_id,
             );
         }
+
+        // Fresh uploads use SCP's streaming channel. It avoids the per-write
+        // SFTP request/response path while keeping the same temporary path
+        // and atomic promotion. Existing parts stay on SFTP for resume.
+        if transferred == 0 && !temporary_exists {
+            if let Ok(scp_socket) = readiness_socket.try_clone() {
+                if let Ok(mut channel) = session.scp_send(&temporary_path, 0o644, total, None) {
+                    let nonblocking = NonblockingSessionGuard::new(session);
+                    let mut socket_waiter = TransferSocketWaiter::new(scp_socket)?;
+                    let upload_result = write_scp_upload(
+                        session,
+                        &mut socket_waiter,
+                        &mut channel,
+                        &mut source,
+                        total,
+                        task,
+                        &reporter,
+                        &mut transferred,
+                    );
+                    drop(nonblocking);
+                    let scp_result = upload_result.and_then(|_| finish_scp_upload(&mut channel));
+                    if scp_result.is_ok() {
+                        return replace_remote_upload_file(
+                            sftp,
+                            &temporary_path,
+                            remote_path,
+                            task.overwrite,
+                            task.transfer_id,
+                        );
+                    }
+                    if matches!(scp_result, Err(ref error) if error == TRANSFER_CANCELLED_ERROR) {
+                        return Err(TRANSFER_CANCELLED_ERROR.to_string());
+                    }
+
+                    // Some SFTP-only servers accept the SCP channel before
+                    // rejecting its command. Re-check the partial file and
+                    // continue through the resumable SFTP path in that case.
+                    transferred =
+                        verified_upload_resume_offset(sftp, &mut source, &temporary_path, total)?;
+                    if transferred == total {
+                        return replace_remote_upload_file(
+                            sftp,
+                            &temporary_path,
+                            remote_path,
+                            task.overwrite,
+                            task.transfer_id,
+                        );
+                    }
+                }
+            }
+        }
+
         let mut target = if transferred == 0 {
             sftp.create(&temporary_path)
                 .map_err(|error| format!("无法创建远程临时文件：{error}"))?
