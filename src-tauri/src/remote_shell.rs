@@ -73,11 +73,12 @@ pub(crate) fn posix_login_script(script: &str) -> String {
 
 /// 在远端执行一段 POSIX 脚本，返回（合并后的输出，退出码）。
 ///
-/// 排空通道时**同时**读取标准输出与标准错误：SSH 通道窗口由两条流共享，
-/// 若只读标准输出，远端进程一旦把标准错误写满就会被阻塞，标准输出随之停滞，
-/// 读取将永久等待——即死锁。这里用非阻塞轮询在两条流之间交替排空，任何一条
-/// 都不会被饿死。只有命令异常退出（退出码非 0）时才把标准错误并入输出，避免
-/// 正常结果里混入无关的告警信息。
+/// 通道创建与命令提交使用阻塞模式（这两步需要与服务器往返协商，非阻塞模式下会
+/// 返回 `would block`）；随后切到非阻塞模式**同时**排空标准输出与标准错误：SSH
+/// 通道窗口由两条流共享，若只读标准输出，远端进程一旦把标准错误写满就会被阻塞，
+/// 标准输出随之停滞，读取将永久等待——即死锁。交替排空后任何一条都不会被饿死。
+/// 只有命令异常退出（退出码非 0）时才把标准错误并入输出，避免正常结果里混入
+/// 无关的告警信息。
 pub(crate) fn run_script_blocking(
     session: &Session,
     script: &str,
@@ -89,7 +90,11 @@ pub(crate) fn run_script_blocking(
     // 会把 SFTP 会话错误地切成非阻塞，导致后续 realpath / readdir 立即返回
     // LIBSSH2_ERROR_EAGAIN（“would block”），表现为“无法解析/读取远程目录”。
     let was_blocking = session.is_blocking();
-    session.set_blocking(false);
+    // 通道创建与命令提交先用阻塞模式完成：这两个阶段都要和服务器往返协商，
+    // 在非阻塞模式下可能返回 LIBSSH2_ERROR_EAGAIN（would block），需要额外的
+    // 重试处理。放在阻塞模式里交给 libssh2 按会话自身的超时等待最稳妥；排空
+    // 阶段再切到非阻塞，避免阻塞式读取导致标准错误写满时死锁。
+    session.set_blocking(true);
     let result = (|| {
         let mut channel = session
             .channel_session()
@@ -98,6 +103,8 @@ pub(crate) fn run_script_blocking(
             .exec(&command)
             .map_err(|error| format!("无法执行{action}命令：{error}"))?;
 
+        // 命令已提交，切到非阻塞模式交替排空标准输出与标准错误。
+        session.set_blocking(false);
         let mut output = Vec::new();
         let mut error_output = Vec::new();
         let mut buffer = [0_u8; 8192];

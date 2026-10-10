@@ -1,6 +1,6 @@
 use super::health::{
-    PendingRemoteCommand, RemoteCommandOutput, RemoteCommandPoll, SessionHealth, SessionHealthUpdate,
-    HEALTH_PROBE_INTERVAL, HEALTH_PROBE_TIMEOUT,
+    PendingRemoteCommand, RemoteCommandOutput, RemoteCommandPoll, SessionHealth,
+    SessionHealthUpdate, HEALTH_PROBE_INTERVAL, HEALTH_PROBE_TIMEOUT,
 };
 use super::*;
 
