@@ -344,6 +344,10 @@ function TerminalView({
     } else {
       shellIntegrationInstalledRef.current = mutation === "uninstall";
       shellIntegrationStateRef.current = "unavailable";
+      // The shell could not install the hooks (unsupported shell, or the
+      // handshake timed out). Release the input gate so the terminal stays
+      // usable rather than appearing frozen.
+      historyCompletionRef.current?.setPromptReady(true);
     }
   };
 
@@ -581,7 +585,7 @@ function TerminalView({
         }
         if (message.kind === "unavailable") {
           settleShellIntegrationMutationRef.current("unavailable");
-          historyCompletionAddon.setPromptReady(false);
+          historyCompletionAddon.setPromptReady(true);
           currentDirectoryRef.current = "";
           currentDirectoryChangeRef.current(session.id, "");
           return true;

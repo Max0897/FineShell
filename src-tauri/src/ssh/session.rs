@@ -1,5 +1,5 @@
 use super::health::{
-    PendingRemoteCommand, RemoteCommandPoll, SessionHealth, SessionHealthUpdate,
+    PendingRemoteCommand, RemoteCommandOutput, RemoteCommandPoll, SessionHealth, SessionHealthUpdate,
     HEALTH_PROBE_INTERVAL, HEALTH_PROBE_TIMEOUT,
 };
 use super::*;
@@ -28,9 +28,17 @@ impl PendingMonitorCommand {
         self.remote.poll(session, now)
     }
 
-    fn respond(&mut self, result: Result<(String, i32), String>) {
-        let result = result.and_then(|(output, exit_status)| {
-            monitor::parse_server_snapshot_command(&output, exit_status)
+    fn respond(&mut self, result: Result<RemoteCommandOutput, String>) {
+        let result = result.and_then(|output| {
+            if output.exit_status != 0 {
+                let detail = output.stderr.trim();
+                return Err(if detail.is_empty() {
+                    format!("服务器监控命令异常退出：{}", output.exit_status)
+                } else {
+                    format!("服务器监控命令异常退出：{}（{detail}）", output.exit_status)
+                });
+            }
+            monitor::parse_server_snapshot_command(&output.stdout, output.exit_status)
         });
         if let Some(response) = self.response.take() {
             let _ = response.send(result);

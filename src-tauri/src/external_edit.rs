@@ -181,7 +181,7 @@ fn set_private_permissions(path: &Path, directory: bool) -> Result<(), String> {
             .map_err(|error| format!("无法设置本地编辑缓存权限：{error}"))?;
     }
     #[cfg(not(unix))]
-    let _ = directory;
+    let _ = (path, directory);
     Ok(())
 }
 

@@ -1,3 +1,5 @@
+use crate::remote_shell::{run_script_blocking, shell_quote};
+
 pub(super) fn entry_kind(stat: &FileStat) -> &'static str {
     match stat.file_type() {
         FileType::Directory => "directory",
@@ -39,19 +41,10 @@ pub(super) fn query_identity_names(
         "getent {database} {} 2>/dev/null || true",
         ids.iter().map(u32::to_string).collect::<Vec<_>>().join(" ")
     );
-    let mut channel = match session.channel_session() {
-        Ok(channel) => channel,
+    let output = match run_script_blocking(session, &command, "查询远程用户信息") {
+        Ok((output, _)) => output,
         Err(_) => return HashMap::new(),
     };
-    if channel.exec(&command).is_err() {
-        return HashMap::new();
-    }
-
-    let mut output = String::new();
-    if channel.read_to_string(&mut output).is_err() {
-        return HashMap::new();
-    }
-    let _ = channel.wait_close();
 
     parse_identity_names(&output)
 }
@@ -365,17 +358,8 @@ pub(super) fn resolve_identity_id(
         "getent {database} {} 2>/dev/null || true",
         shell_quote(identity)
     );
-    let mut channel = session
-        .channel_session()
-        .map_err(|error| format!("无法解析远程用户信息：{error}"))?;
-    channel
-        .exec(&command)
+    let (output, _) = run_script_blocking(session, &command, "查询远程用户信息")
         .map_err(|error| format!("无法查询远程用户信息：{error}"))?;
-    let mut output = String::new();
-    channel
-        .read_to_string(&mut output)
-        .map_err(|error| format!("无法读取远程用户信息：{error}"))?;
-    let _ = channel.wait_close();
 
     parse_identity_names(&output)
         .into_keys()

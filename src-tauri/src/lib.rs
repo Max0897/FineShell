@@ -17,6 +17,7 @@ mod monitor;
 #[cfg(desktop)]
 mod native_menu;
 mod protocol;
+mod remote_shell;
 mod sftp;
 mod ssh;
 mod terminal_logs;

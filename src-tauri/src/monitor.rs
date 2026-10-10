@@ -1,7 +1,7 @@
-use std::io::Read;
-
 use serde::Serialize;
 use ssh2::Session;
+
+use crate::remote_shell;
 
 pub(crate) const MONITOR_COMMAND: &str = r#"
 LC_ALL=C
@@ -575,28 +575,7 @@ fn execute_remote_command(
     command: &str,
     operation: &str,
 ) -> Result<(String, i32), String> {
-    session.set_blocking(true);
-    let result = (|| {
-        let mut channel = session
-            .channel_session()
-            .map_err(|error| format!("无法创建{operation}通道：{error}"))?;
-        channel
-            .exec(command)
-            .map_err(|error| format!("无法执行{operation}命令：{error}"))?;
-        let mut output = String::new();
-        channel
-            .read_to_string(&mut output)
-            .map_err(|error| format!("无法读取{operation}数据：{error}"))?;
-        channel
-            .wait_close()
-            .map_err(|error| format!("{operation}通道关闭失败：{error}"))?;
-        let exit_status = channel
-            .exit_status()
-            .map_err(|error| format!("无法读取{operation}命令状态：{error}"))?;
-        Ok((output, exit_status))
-    })();
-    session.set_blocking(false);
-    result
+    remote_shell::run_script_blocking(session, command, operation)
 }
 
 pub(crate) fn parse_server_snapshot_command(

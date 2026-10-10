@@ -30,6 +30,7 @@ use crate::monitor::{
     ServerProcessListResult, ServiceInspectionResult, ServiceLogsResult,
 };
 use crate::protocol::{PORT_FORWARD_STATUS_EVENT, SSH_OUTPUT_EVENT, SSH_STATUS_EVENT};
+use crate::remote_shell;
 use crate::transport::{self, ProxyConfig};
 
 #[derive(Clone, Deserialize)]

@@ -38,10 +38,6 @@ pub(super) enum AgentSessionCommand {
     Close,
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
 fn validate_current_directory(current_directory: Option<&str>) -> Result<(), String> {
     let Some(current_directory) = current_directory else {
         return Ok(());
@@ -60,10 +56,10 @@ fn validate_current_directory(current_directory: Option<&str>) -> Result<(), Str
 fn command_script(command: &str, current_directory: Option<&str>) -> Result<String, String> {
     validate_current_directory(current_directory)?;
     let directory = current_directory
-        .map(shell_quote)
+        .map(remote_shell::shell_quote)
         .unwrap_or_else(|| "\"$HOME\"".to_string());
     let script = format!("cd -- {directory} && {command}");
-    Ok(format!("sh -lc {}", shell_quote(&script)))
+    Ok(remote_shell::posix_login_script(&script))
 }
 
 fn append_bounded_output(output: &mut Vec<u8>, chunk: &[u8], truncated: &mut bool) {
@@ -406,7 +402,7 @@ mod tests {
     fn builds_non_interactive_shell_command_in_selected_directory() {
         assert_eq!(
             command_script("printf '%s' ok", Some("/srv/app's data")).unwrap(),
-            r#"sh -lc 'cd -- '\''/srv/app'\''\'\'''\''s data'\'' && printf '\''%s'\'' ok'"#
+            r#"sh -lc 'cd -- '\''/srv/app'\'\\\'\''s data'\'' && printf '\''%s'\'' ok'"#
         );
     }
 
