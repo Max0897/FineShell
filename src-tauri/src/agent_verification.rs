@@ -1,8 +1,8 @@
-use std::io::Read;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ssh2::Session;
+
+use crate::remote_shell::{run_script_blocking, shell_quote};
 
 const MAX_SERVICE_NAME_CHARS: usize = 128;
 const MAX_CONFIG_PATH_CHARS: usize = 1_024;
@@ -206,32 +206,11 @@ pub(crate) fn execute_business_verification(
     session: &Session,
     verification: &AgentBusinessVerification,
 ) -> Result<AgentBusinessVerificationResult, String> {
-    session.set_blocking(true);
-    let result = (|| {
-        let mut channel = session
-            .channel_session()
-            .map_err(|error| format!("无法创建 AI 验证通道：{error}"))?;
-        channel
-            .exec(&verification.command())
-            .map_err(|error| format!("无法执行 AI 验证命令：{error}"))?;
-        let mut sink = Vec::new();
-        (&mut channel)
-            .take(8 * 1024)
-            .read_to_end(&mut sink)
-            .map_err(|error| format!("无法读取 AI 验证结果：{error}"))?;
-        channel
-            .wait_close()
-            .map_err(|error| format!("AI 验证通道关闭失败：{error}"))?;
-        let exit_status = channel
-            .exit_status()
-            .map_err(|error| format!("无法读取 AI 验证状态：{error}"))?;
-        Ok(AgentBusinessVerificationResult {
-            passed: exit_status == 0,
-            summary: verification.summary(exit_status == 0, exit_status == 127),
-        })
-    })();
-    session.set_blocking(false);
-    result
+    let (_, exit_status) = run_script_blocking(session, &verification.command(), "AI 验证")?;
+    Ok(AgentBusinessVerificationResult {
+        passed: exit_status == 0,
+        summary: verification.summary(exit_status == 0, exit_status == 127),
+    })
 }
 
 fn validate_remote_path(path: &str) -> Result<(), String> {
@@ -243,10 +222,6 @@ fn validate_remote_path(path: &str) -> Result<(), String> {
         return Err("AI 配置语法验证路径无效".to_string());
     }
     Ok(())
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

@@ -13,11 +13,14 @@ use super::{
     entry_kind, fast_delete_command, inspect_upload_paths, is_remote_descendant,
     normalize_remote_operation_path, parse_identity_names, remote_archive_temporary_directory,
     remote_text_backup_path, remote_text_temporary_path, remote_upload_temporary_path,
-    replace_download_file, replace_remote_upload_file, shell_quote,
-    validate_ai_file_operation_content, validate_archive_file_name, AiSftpFileOperationKind,
-    AiSftpFileOperationRequest, RemoteArchiveFormat, RemoteIdentityCache, SftpCommand,
-    SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
+    replace_remote_upload_file, validate_ai_file_operation_content, validate_archive_file_name,
+    AiSftpFileOperationKind, AiSftpFileOperationRequest, RemoteArchiveFormat, RemoteIdentityCache,
+    SftpCommand, SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
 };
+// 仅 Unix 平台的替换测试会用到，加在分组导入里会让 Windows 构建报未使用导入。
+#[cfg(unix)]
+use super::replace_download_file;
+use crate::remote_shell::shell_quote;
 use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
 
 fn test_auth() -> SshAuthConfig {
@@ -100,7 +103,7 @@ fn builds_archive_commands_with_quoted_same_directory_sources() {
 
     assert_eq!(
             command,
-            "tar -czf '/srv/releases/bundle.tar.gz' -C '/srv/releases' -- 'a b' 'report'\"'\"'s.txt' 2>&1"
+            "tar -czf '/srv/releases/bundle.tar.gz' -C '/srv/releases' -- 'a b' 'report'\\''s.txt' 2>&1"
         );
     assert!(archive_create_command(
         &["/srv/a".to_string(), "/tmp/b".to_string()],
@@ -138,7 +141,7 @@ fn sanitizes_archive_download_temporary_directories() {
 fn quotes_fast_delete_paths_without_shell_expansion() {
     assert_eq!(
         shell_quote("/tmp/report's draft"),
-        "'/tmp/report'\"'\"'s draft'"
+        "'/tmp/report'\\''s draft'"
     );
     assert_eq!(
         fast_delete_command(&["/tmp/a b".to_string(), "/tmp/$HOME".to_string()]).unwrap(),

@@ -1,28 +1,11 @@
-pub(super) fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
+use crate::remote_shell::{run_script_blocking, shell_quote};
 
 pub(super) fn execute_remote_command(
     session: &Session,
     command: &str,
     action: &str,
 ) -> Result<String, String> {
-    let mut channel = session
-        .channel_session()
-        .map_err(|error| format!("无法创建{action}通道：{error}"))?;
-    channel
-        .exec(command)
-        .map_err(|error| format!("无法执行{action}命令：{error}"))?;
-    let mut output = String::new();
-    channel
-        .read_to_string(&mut output)
-        .map_err(|error| format!("无法读取{action}结果：{error}"))?;
-    channel
-        .wait_close()
-        .map_err(|error| format!("{action}通道关闭失败：{error}"))?;
-    let exit_status = channel
-        .exit_status()
-        .map_err(|error| format!("无法读取{action}命令状态：{error}"))?;
+    let (output, exit_status) = run_script_blocking(session, command, action)?;
     if exit_status == 0 {
         Ok(output)
     } else {
@@ -279,31 +262,6 @@ pub(super) fn fast_delete_command(paths: &[String]) -> Result<String, String> {
 
 pub(super) fn fast_delete(session: &Session, paths: &[String]) -> Result<(), String> {
     let command = fast_delete_command(paths)?;
-    let mut channel = session
-        .channel_session()
-        .map_err(|error| format!("无法创建快速删除通道：{error}"))?;
-    channel
-        .exec(&command)
-        .map_err(|error| format!("无法执行快速删除命令：{error}"))?;
-    let mut output = String::new();
-    channel
-        .read_to_string(&mut output)
-        .map_err(|error| format!("无法读取快速删除结果：{error}"))?;
-    channel
-        .wait_close()
-        .map_err(|error| format!("快速删除通道关闭失败：{error}"))?;
-    let exit_status = channel
-        .exit_status()
-        .map_err(|error| format!("无法读取快速删除命令状态：{error}"))?;
-    if exit_status == 0 {
-        Ok(())
-    } else {
-        let detail = output.trim();
-        Err(if detail.is_empty() {
-            format!("快速删除命令异常退出：{exit_status}")
-        } else {
-            format!("快速删除失败：{detail}")
-        })
-    }
+    execute_remote_command(session, &command, "快速删除").map(|_| ())
 }
 use super::*;

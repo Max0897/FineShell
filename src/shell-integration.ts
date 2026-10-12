@@ -1,8 +1,10 @@
 export const FINESHELL_OSC_ID = 633;
 export const MAX_SHELL_COMMAND_RESULT_CHARS = 12_000;
 
+export type ShellIntegrationShell = "bash" | "zsh" | "fish";
+
 export type ShellIntegrationMessage =
-  | { kind: "ready"; shell: "bash" | "zsh" }
+  | { kind: "ready"; shell: ShellIntegrationShell }
   | { kind: "disabled" }
   | { kind: "cwd"; path: string }
   | { kind: "end"; exitCode: number }
@@ -45,7 +47,10 @@ export function parseShellIntegrationMessage(
     return null;
   }
   if (values.length !== 1) return null;
-  if (kind === "ready" && (value === "bash" || value === "zsh")) {
+  if (
+    kind === "ready" &&
+    (value === "bash" || value === "zsh" || value === "fish")
+  ) {
     return { kind, shell: value };
   }
   if (kind === "disabled" && value === "tty") {
@@ -99,6 +104,7 @@ export function createShellIntegrationEchoFilter(
         ? [
             lifecycleMarker(nonce, "ready", "bash"),
             lifecycleMarker(nonce, "ready", "zsh"),
+            lifecycleMarker(nonce, "ready", "fish"),
             lifecycleMarker(nonce, "unavailable", "unsupported-shell"),
           ]
         : [lifecycleMarker(nonce, "disabled", "tty")],
@@ -140,50 +146,162 @@ function bashHistoryCleanup(safeNonce: string) {
   ].join(" ");
 }
 
-export function buildShellIntegrationInstallCommand(nonce: string) {
-  const safeNonce = shellSingleQuote(nonce);
-  const endMarker = `printf '\\033]${FINESHELL_OSC_ID};FineShell;%s;end;%s\\007' "$__fineshell_nonce" "$__fineshell_status"`;
-  const cwdMarker = `case "$PWD" in *[[:cntrl:]]*) ;; /*) printf '\\033]${FINESHELL_OSC_ID};FineShell;%s;cwd;%s\\007' "$__fineshell_nonce" "$PWD";; esac`;
-  const readyMarker = (shell: string) =>
-    `printf '\\r\\033[2K\\033]${FINESHELL_OSC_ID};FineShell;%s;ready;${shell}\\007' "$__fineshell_nonce"`;
-  const unavailableMarker = `printf '\\r\\033[2K\\033]${FINESHELL_OSC_ID};FineShell;%s;unavailable;unsupported-shell\\007' ${safeNonce}`;
+/**
+ * Quotes a value so that bash, zsh, fish and plain POSIX shells all parse it
+ * back to the exact same literal text. The result is a run of single-quoted
+ * fragments joined by bare `\'` / `\\` escapes; every one of those shells
+ * evaluates that sequence identically, which is what lets us ship a single
+ * command line that the login shell can parse without knowing it in advance.
+ */
+function shellCrossQuote(value: string) {
+  let quoted = "";
+  let literal = "";
+  const flush = () => {
+    if (literal.length === 0) return;
+    quoted += `'${literal}'`;
+    literal = "";
+  };
+  for (const character of value) {
+    if (character === "'") {
+      flush();
+      quoted += "\\'";
+    } else if (character === "\\") {
+      flush();
+      quoted += "\\\\";
+    } else {
+      literal += character;
+    }
+  }
+  flush();
+  return quoted.length > 0 ? quoted : "''";
+}
 
-  return ` ${[
-    'if [ -n "${BASH_VERSION-}" ]; then',
+function shellIntegrationEndMarker(statusExpression: string) {
+  return `printf '\\033]${FINESHELL_OSC_ID};FineShell;%s;end;%s\\007' "$__fineshell_nonce" ${statusExpression}`;
+}
+
+function shellIntegrationCwdMarker() {
+  return `case "$PWD" in *[[:cntrl:]]*) ;; /*) printf '\\033]${FINESHELL_OSC_ID};FineShell;%s;cwd;%s\\007' "$__fineshell_nonce" "$PWD";; esac`;
+}
+
+/**
+ * fish has no `case ... esac` outside `switch`, so the cwd guard is expressed
+ * with fish's own `string match` builtin instead of the POSIX `case` form.
+ */
+function fishIntegrationCwdMarker() {
+  return `if string match -q '/*' "$PWD"; and not string match -q -r '[[:cntrl:]]' "$PWD"; printf '\\033]${FINESHELL_OSC_ID};FineShell;%s;cwd;%s\\007' "$__fineshell_nonce" "$PWD"; end`;
+}
+
+function shellIntegrationReadyMarker(shell: ShellIntegrationShell) {
+  return `printf '\\r\\033[2K\\033]${FINESHELL_OSC_ID};FineShell;%s;ready;${shell}\\007' "$__fineshell_nonce"`;
+}
+
+function shellIntegrationUnsupportedMarker(nonce: string) {
+  return `printf '\\r\\033[2K\\033]${FINESHELL_OSC_ID};FineShell;%s;unavailable;unsupported-shell\\007' ${shellSingleQuote(nonce)}`;
+}
+
+function shellIntegrationDisabledMarker(nonce: string) {
+  return `printf '\\r\\033[2K\\033]${FINESHELL_OSC_ID};FineShell;%s;disabled;tty\\007' ${shellSingleQuote(nonce)}`;
+}
+
+function bashInstallScript(nonce: string) {
+  const safeNonce = shellSingleQuote(nonce);
+  return [
     `__fineshell_nonce=${safeNonce};`,
     "__fineshell_pc_was_set=${PROMPT_COMMAND+x};",
     "__fineshell_pc_decl=$(declare -p PROMPT_COMMAND 2>/dev/null || true);",
-    `__fineshell_prompt_command(){ __fineshell_status="$1"; ${endMarker}; ${cwdMarker}; return "$__fineshell_status"; };`,
+    `__fineshell_prompt_command(){ __fineshell_status="$1"; ${shellIntegrationEndMarker('"$__fineshell_status"')}; ${shellIntegrationCwdMarker()}; return "$__fineshell_status"; };`,
     "if declare -p PROMPT_COMMAND 2>/dev/null | grep -q 'declare -a'; then PROMPT_COMMAND=('__fineshell_prompt_command \"$?\"' \"${PROMPT_COMMAND[@]}\"); else PROMPT_COMMAND='__fineshell_prompt_command \"$?\"; '" +
       '"${PROMPT_COMMAND-}"; fi;',
     bashHistoryCleanup(safeNonce),
-    `${readyMarker("bash")};`,
-    'elif [ -n "${ZSH_VERSION-}" ]; then',
+    `${shellIntegrationReadyMarker("bash")};`,
+  ].join(" ");
+}
+
+function zshInstallScript(nonce: string) {
+  const safeNonce = shellSingleQuote(nonce);
+  return [
     `__fineshell_nonce=${safeNonce};`,
     "autoload -Uz add-zsh-hook;",
-    `__fineshell_precmd(){ local __fineshell_status=$?; ${endMarker}; ${cwdMarker}; return "$__fineshell_status"; };`,
+    `__fineshell_precmd(){ local __fineshell_status=$?; ${shellIntegrationEndMarker('"$__fineshell_status"')}; ${shellIntegrationCwdMarker()}; return "$__fineshell_status"; };`,
     "add-zsh-hook -d precmd __fineshell_precmd 2>/dev/null || true;",
     "add-zsh-hook precmd __fineshell_precmd;",
-    `${readyMarker("zsh")};`,
-    `else ${unavailableMarker}; fi`,
+    `${shellIntegrationReadyMarker("zsh")};`,
+  ].join(" ");
+}
+
+/**
+ * fish's single-quoted strings only treat `\'` and `\\` as escapes, so a
+ * dedicated quoting helper keeps the embedded nonce literal in fish.
+ */
+function fishQuote(value: string) {
+  return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+}
+
+function fishInstallScript(nonce: string) {
+  return [
+    `set -g __fineshell_nonce ${fishQuote(nonce)};`,
+    "if not functions -q __fineshell_original_fish_prompt; functions -c fish_prompt __fineshell_original_fish_prompt 2>/dev/null; end;",
+    `function fish_prompt; set -l __fineshell_status $status; ${shellIntegrationEndMarker("$__fineshell_status")}; ${fishIntegrationCwdMarker()}; __fineshell_original_fish_prompt; end;`,
+    `${shellIntegrationReadyMarker("fish")};`,
+  ].join(" ");
+}
+
+function bashUninstallScript(nonce: string) {
+  return [
+    "if command -v __fineshell_prompt_command >/dev/null 2>&1; then",
+    'if [ "${__fineshell_pc_was_set-}" = x ]; then eval "$__fineshell_pc_decl"; else unset PROMPT_COMMAND; fi;',
+    "unset -f __fineshell_prompt_command; unset __fineshell_nonce __fineshell_pc_decl __fineshell_pc_was_set;",
+    bashHistoryCleanup(shellSingleQuote(nonce)),
+    "fi",
+  ].join(" ");
+}
+
+function zshUninstallScript() {
+  return [
+    "autoload -Uz add-zsh-hook; add-zsh-hook -d precmd __fineshell_precmd 2>/dev/null || true;",
+    "unfunction __fineshell_precmd 2>/dev/null || true; unset __fineshell_nonce;",
+  ].join(" ");
+}
+
+function fishUninstallScript() {
+  return [
+    "if functions -q __fineshell_original_fish_prompt;",
+    "functions -e fish_prompt; functions -c __fineshell_original_fish_prompt fish_prompt; functions -e __fineshell_original_fish_prompt;",
+    "end;",
+    "set -e __fineshell_nonce 2>/dev/null;",
+  ].join(" ");
+}
+
+/**
+ * Wraps every shell-specific script in `eval`, which is understood by bash,
+ * zsh, fish and POSIX sh alike. Each branch is guarded with syntax that all of
+ * them parse the same way, so the login shell only has to launch the branch
+ * that matches it instead of parsing a foreign language as a whole.
+ */
+function shellIntegrationDispatch(branches: readonly string[]) {
+  return branches.join(" ");
+}
+
+export function buildShellIntegrationInstallCommand(nonce: string) {
+  const fallback = `test -z "$BASH_VERSION" && test -z "$ZSH_VERSION" && test -z "$version" && eval ${shellCrossQuote(shellIntegrationUnsupportedMarker(nonce))};`;
+  return ` ${shellIntegrationDispatch([
+    `test -n "$BASH_VERSION" && eval ${shellCrossQuote(bashInstallScript(nonce))};`,
+    `test -z "$BASH_VERSION" && test -n "$ZSH_VERSION" && eval ${shellCrossQuote(zshInstallScript(nonce))};`,
+    `test -z "$BASH_VERSION" && test -z "$ZSH_VERSION" && test -n "$version" && eval ${shellCrossQuote(fishInstallScript(nonce))};`,
+    fallback,
     "\r",
-  ].join(" ")}`;
+  ])}`;
 }
 
 export function buildShellIntegrationUninstallCommand(nonce: string) {
-  const safeNonce = shellSingleQuote(nonce);
-  const disabledMarker = `printf '\\r\\033[2K\\033]${FINESHELL_OSC_ID};FineShell;%s;disabled;tty\\007' ${safeNonce}`;
-  return ` ${[
-    'if [ -n "${BASH_VERSION-}" ] && command -v __fineshell_prompt_command >/dev/null 2>&1; then',
-    'if [ "${__fineshell_pc_was_set-}" = x ]; then eval "$__fineshell_pc_decl"; else unset PROMPT_COMMAND; fi;',
-    "unset -f __fineshell_prompt_command; unset __fineshell_nonce __fineshell_pc_decl __fineshell_pc_was_set;",
-    bashHistoryCleanup(safeNonce),
-    'elif [ -n "${ZSH_VERSION-}" ]; then',
-    "autoload -Uz add-zsh-hook; add-zsh-hook -d precmd __fineshell_precmd 2>/dev/null || true;",
-    "unfunction __fineshell_precmd 2>/dev/null || true; unset __fineshell_nonce; fi;",
-    `${disabledMarker};`,
+  return ` ${shellIntegrationDispatch([
+    `test -n "$BASH_VERSION" && eval ${shellCrossQuote(bashUninstallScript(nonce))};`,
+    `test -z "$BASH_VERSION" && test -n "$ZSH_VERSION" && eval ${shellCrossQuote(zshUninstallScript())};`,
+    `test -z "$BASH_VERSION" && test -z "$ZSH_VERSION" && test -n "$version" && eval ${shellCrossQuote(fishUninstallScript())};`,
+    `${shellIntegrationDisabledMarker(nonce)};`,
     "\r",
-  ].join(" ")}`;
+  ])}`;
 }
 
 export function boundedShellCommandOutput(value: string) {

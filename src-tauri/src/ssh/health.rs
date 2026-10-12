@@ -55,36 +55,44 @@ impl SessionHealth {
     }
 }
 
+pub(super) struct RemoteCommandOutput {
+    pub(super) stdout: String,
+    pub(super) stderr: String,
+    pub(super) exit_status: i32,
+}
+
 pub(super) enum RemoteCommandPoll {
     Pending(bool),
     Finished {
-        result: Result<(String, i32), String>,
+        result: Result<RemoteCommandOutput, String>,
     },
 }
 
 pub(super) struct PendingRemoteCommand {
-    command: &'static str,
+    command: String,
     operation: &'static str,
     channel: Option<Channel>,
     exec_started: bool,
     output: Vec<u8>,
+    error_output: Vec<u8>,
     started_at: Instant,
     timeout: Duration,
 }
 
 impl PendingRemoteCommand {
     pub(super) fn new(
-        command: &'static str,
+        script: &str,
         operation: &'static str,
         timeout: Duration,
         now: Instant,
     ) -> Self {
         Self {
-            command,
+            command: remote_shell::posix_script(script),
             operation,
             channel: None,
             exec_started: false,
             output: Vec::new(),
+            error_output: Vec::new(),
             started_at: now,
             timeout,
         }
@@ -120,7 +128,7 @@ impl PendingRemoteCommand {
 
         let channel = self.channel.as_mut().expect("remote channel is present");
         if !self.exec_started {
-            match channel.exec(self.command) {
+            match channel.exec(&self.command) {
                 Ok(()) => {
                     self.exec_started = true;
                     active = true;
@@ -156,6 +164,27 @@ impl PendingRemoteCommand {
             }
         }
 
+        // 必须同时排空标准错误，否则远端进程写满标准错误缓冲区后会阻塞，
+        // 进而让本应快速失败的命令表现为整体超时。
+        {
+            let mut stderr_stream = channel.stderr();
+            loop {
+                match stderr_stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(length) => {
+                        self.error_output.extend_from_slice(&buffer[..length]);
+                        active = true;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => {
+                        return RemoteCommandPoll::Finished {
+                            result: Err(format!("无法读取{}错误输出：{error}", self.operation)),
+                        };
+                    }
+                }
+            }
+        }
+
         if !channel.eof() {
             return RemoteCommandPoll::Pending(active);
         }
@@ -174,12 +203,13 @@ impl PendingRemoteCommand {
             }
         }
         match channel.exit_status() {
-            Ok(exit_status) => {
-                let output = String::from_utf8_lossy(&self.output);
-                RemoteCommandPoll::Finished {
-                    result: Ok((output.into_owned(), exit_status)),
-                }
-            }
+            Ok(exit_status) => RemoteCommandPoll::Finished {
+                result: Ok(RemoteCommandOutput {
+                    stdout: String::from_utf8_lossy(&self.output).into_owned(),
+                    stderr: String::from_utf8_lossy(&self.error_output).into_owned(),
+                    exit_status,
+                }),
+            },
             Err(error) => {
                 let message = error.to_string();
                 let io_error: io::Error = error.into();
