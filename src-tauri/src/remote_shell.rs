@@ -11,6 +11,7 @@
 //! 兼容，也能适配 fish 等其它 shell。
 
 use std::io::{self, Read};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ssh2::{Channel, Session};
@@ -84,6 +85,27 @@ pub(crate) fn run_script_blocking(
     script: &str,
     action: &str,
 ) -> Result<(String, i32), String> {
+    run_script(session, script, action, None)
+}
+
+/// 与 [`run_script_blocking`] 相同，但用于可能长时间无输出的命令（如大文件
+/// 压缩/解压）：空闲等待期间检查取消标记，并按会话的保活配置发送 keepalive，
+/// 避免静默期间被 NAT 或中间设备断开。取消时关闭通道并返回错误。
+pub(crate) fn run_script_cancellable(
+    session: &Session,
+    script: &str,
+    action: &str,
+    cancelled: &AtomicBool,
+) -> Result<(String, i32), String> {
+    run_script(session, script, action, Some(cancelled))
+}
+
+fn run_script(
+    session: &Session,
+    script: &str,
+    action: &str,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(String, i32), String> {
     let command = posix_script(script);
     // 记录并恢复调用前的阻塞模式。SFTP 浏览会话默认是阻塞模式，而监控、进程
     // 等采集会话默认是非阻塞模式。这里必须还原原状态：此前无条件恢复为非阻塞，
@@ -128,6 +150,15 @@ pub(crate) fn run_script_blocking(
                 break;
             }
             if !progressed {
+                if let Some(cancelled) = cancelled {
+                    if cancelled.load(Ordering::Acquire) {
+                        let _ = channel.close();
+                        return Err(format!("{action}已取消"));
+                    }
+                    // 非阻塞模式下发送失败（含 would block）不影响命令本身，
+                    // 真正的连接中断会在后续读取时报错。
+                    let _ = session.keepalive_send();
+                }
                 std::thread::sleep(CHANNEL_POLL_INTERVAL);
             }
         }
