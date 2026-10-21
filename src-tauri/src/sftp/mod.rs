@@ -234,20 +234,6 @@ enum SftpCommand {
         group: Option<String>,
         reply: Sender<Result<(), String>>,
     },
-    CreateArchive {
-        source_paths: Vec<String>,
-        target_path: String,
-        format: RemoteArchiveFormat,
-        overwrite: bool,
-        reply: Sender<Result<(), String>>,
-    },
-    ExtractArchive {
-        archive_path: String,
-        target_directory: String,
-        format: RemoteArchiveFormat,
-        create_directory: bool,
-        reply: Sender<Result<(), String>>,
-    },
     ReadTextFile {
         path: String,
         reply: Sender<Result<SftpTextFile, String>>,

@@ -1,11 +1,19 @@
-use crate::remote_shell::{run_script_blocking, shell_quote};
+use crate::remote_shell::{run_script_cancellable, shell_quote};
 
 pub(super) fn execute_remote_command(
     session: &Session,
     command: &str,
     action: &str,
+    cancelled: &AtomicBool,
 ) -> Result<String, String> {
-    let (output, exit_status) = run_script_blocking(session, command, action)?;
+    let (output, exit_status) = run_script_cancellable(session, command, action, cancelled)
+        .map_err(|error| {
+            if cancelled.load(Ordering::Acquire) {
+                TRANSFER_CANCELLED_ERROR.to_string()
+            } else {
+                error
+            }
+        })?;
     if exit_status == 0 {
         Ok(output)
     } else {
@@ -18,11 +26,17 @@ pub(super) fn execute_remote_command(
     }
 }
 
-pub(super) fn require_remote_commands(session: &Session, commands: &[&str]) -> Result<(), String> {
+pub(super) fn require_remote_commands(
+    session: &Session,
+    commands: &[&str],
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
     for command in commands {
         let probe = format!("command -v {command} >/dev/null 2>&1");
-        if execute_remote_command(session, &probe, "检查归档工具").is_err() {
-            return Err(format!("远程服务器未安装 {command} 命令"));
+        match execute_remote_command(session, &probe, "检查归档工具", cancelled) {
+            Ok(_) => {}
+            Err(error) if error == TRANSFER_CANCELLED_ERROR => return Err(error),
+            Err(_) => return Err(format!("远程服务器未安装 {command} 命令")),
         }
     }
     Ok(())
@@ -130,6 +144,7 @@ pub(super) fn create_archive(
     target_path: &str,
     format: RemoteArchiveFormat,
     overwrite: bool,
+    cancelled: &AtomicBool,
 ) -> Result<(), String> {
     let target_path = normalize_remote_operation_path(target_path)?;
     let target = Path::new(&target_path);
@@ -140,25 +155,28 @@ pub(super) fn create_archive(
         return Err("归档目标已存在，需要确认覆盖".to_string());
     }
     match format {
-        RemoteArchiveFormat::TarGz => require_remote_commands(session, &["tar", "gzip"])?,
-        RemoteArchiveFormat::Tar => require_remote_commands(session, &["tar"])?,
-        RemoteArchiveFormat::Zip => require_remote_commands(session, &["zip"])?,
+        RemoteArchiveFormat::TarGz => {
+            require_remote_commands(session, &["tar", "gzip"], cancelled)?
+        }
+        RemoteArchiveFormat::Tar => require_remote_commands(session, &["tar"], cancelled)?,
+        RemoteArchiveFormat::Zip => require_remote_commands(session, &["zip"], cancelled)?,
     }
     let temporary_path = remote_archive_creation_temporary_path(&target_path)?;
     let temporary_path_text = remote_path_text(&temporary_path);
     let command = archive_create_command(source_paths, &temporary_path_text, format)?;
-    let result = execute_remote_command(session, &command, "压缩远程项目").and_then(|_| {
-        sftp.rename(
-            &temporary_path,
-            target,
-            Some(if overwrite {
-                RenameFlags::OVERWRITE
-            } else {
-                RenameFlags::empty()
-            }),
-        )
-        .map_err(|error| format!("无法保存远程归档文件：{error}"))
-    });
+    let result =
+        execute_remote_command(session, &command, "压缩远程项目", cancelled).and_then(|_| {
+            sftp.rename(
+                &temporary_path,
+                target,
+                Some(if overwrite {
+                    RenameFlags::OVERWRITE
+                } else {
+                    RenameFlags::empty()
+                }),
+            )
+            .map_err(|error| format!("无法保存远程归档文件：{error}"))
+        });
     if result.is_err() {
         let _ = sftp.unlink(&temporary_path);
     }
@@ -179,6 +197,7 @@ pub(super) fn extract_archive(
     target_directory: &str,
     format: RemoteArchiveFormat,
     create_directory: bool,
+    cancelled: &AtomicBool,
 ) -> Result<(), String> {
     let archive_path = normalize_remote_operation_path(archive_path)?;
     let target_directory = normalize_remote_operation_path(target_directory)?;
@@ -200,28 +219,28 @@ pub(super) fn extract_archive(
     let destination = shell_quote(&target_directory);
     let (listing_command, extract_command) = match format {
         RemoteArchiveFormat::TarGz => {
-            require_remote_commands(session, &["tar", "gzip"])?;
+            require_remote_commands(session, &["tar", "gzip"], cancelled)?;
             (
                 format!("tar -tzf {archive} 2>&1"),
                 format!("tar -xzf {archive} -C {destination} 2>&1"),
             )
         }
         RemoteArchiveFormat::Tar => {
-            require_remote_commands(session, &["tar"])?;
+            require_remote_commands(session, &["tar"], cancelled)?;
             (
                 format!("tar -tf {archive} 2>&1"),
                 format!("tar -xf {archive} -C {destination} 2>&1"),
             )
         }
         RemoteArchiveFormat::Zip => {
-            require_remote_commands(session, &["unzip"])?;
+            require_remote_commands(session, &["unzip"], cancelled)?;
             (
                 format!("unzip -Z1 {archive} 2>&1"),
                 format!("unzip -oq {archive} -d {destination} 2>&1"),
             )
         }
     };
-    let listing = execute_remote_command(session, &listing_command, "检查归档内容")?;
+    let listing = execute_remote_command(session, &listing_command, "检查归档内容", cancelled)?;
     if !archive_listing_is_safe(&listing) {
         return Err("归档包含不安全的绝对路径或上级目录，已拒绝解压".to_string());
     }
@@ -229,7 +248,7 @@ pub(super) fn extract_archive(
         sftp.mkdir(target, 0o755)
             .map_err(|error| format!("无法创建解压目标目录：{error}"))?;
     }
-    execute_remote_command(session, &extract_command, "解压远程归档").map(|_| ())
+    execute_remote_command(session, &extract_command, "解压远程归档", cancelled).map(|_| ())
 }
 
 pub(super) fn fast_delete_command(paths: &[String]) -> Result<String, String> {
@@ -262,6 +281,6 @@ pub(super) fn fast_delete_command(paths: &[String]) -> Result<String, String> {
 
 pub(super) fn fast_delete(session: &Session, paths: &[String]) -> Result<(), String> {
     let command = fast_delete_command(paths)?;
-    execute_remote_command(session, &command, "快速删除").map(|_| ())
+    execute_remote_command(session, &command, "快速删除", &AtomicBool::new(false)).map(|_| ())
 }
 use super::*;

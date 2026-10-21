@@ -112,38 +112,6 @@ pub(super) fn run_session(
                     &mut identity_cache,
                 ));
             }
-            SftpCommand::CreateArchive {
-                source_paths,
-                target_path,
-                format,
-                overwrite,
-                reply,
-            } => {
-                let _ = reply.send(create_archive(
-                    &session,
-                    &sftp,
-                    &source_paths,
-                    &target_path,
-                    format,
-                    overwrite,
-                ));
-            }
-            SftpCommand::ExtractArchive {
-                archive_path,
-                target_directory,
-                format,
-                create_directory,
-                reply,
-            } => {
-                let _ = reply.send(extract_archive(
-                    &session,
-                    &sftp,
-                    &archive_path,
-                    &target_directory,
-                    format,
-                    create_directory,
-                ));
-            }
             SftpCommand::ReadTextFile { path, reply } => {
                 let _ = reply.send(read_remote_text_file(&sftp, &path));
             }

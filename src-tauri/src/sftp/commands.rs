@@ -318,6 +318,36 @@ pub(crate) async fn sftp_set_owner(
     .await
 }
 
+/// Runs an archive command on its own SSH connection so a long compression or
+/// extraction neither blocks the panel's SFTP session nor trips its timeout.
+/// The task is registered like a transfer, so disconnecting the panel cancels it.
+async fn run_remote_archive_task<F>(
+    manager: SftpSessionManager,
+    session_id: String,
+    task: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Session, &Sftp, &AtomicBool) -> Result<(), String> + Send + 'static,
+{
+    let task_id = format!(
+        "remote-archive-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    run_transfer_task(manager, session_id, task_id, move |auth, control| {
+        let session = connect_transfer_session(&auth, &control.cancelled)?;
+        let sftp = session
+            .sftp()
+            .map_err(|error| format!("无法建立归档操作通道：{error}"))?;
+        let result = task(&session, &sftp, &control.cancelled);
+        let _ = session.disconnect(None, "FineShell archive operation finished", None);
+        result
+    })
+    .await
+}
+
 #[tauri::command]
 pub(crate) async fn sftp_create_archive(
     manager: State<'_, SftpSessionManager>,
@@ -327,15 +357,21 @@ pub(crate) async fn sftp_create_archive(
     format: RemoteArchiveFormat,
     overwrite: bool,
 ) -> Result<(), String> {
-    dispatch(manager.inner().clone(), session_id, move |reply| {
-        SftpCommand::CreateArchive {
-            source_paths,
-            target_path,
-            format,
-            overwrite,
-            reply,
-        }
-    })
+    run_remote_archive_task(
+        manager.inner().clone(),
+        session_id,
+        move |session, sftp, cancelled| {
+            create_archive(
+                session,
+                sftp,
+                &source_paths,
+                &target_path,
+                format,
+                overwrite,
+                cancelled,
+            )
+        },
+    )
     .await
 }
 
@@ -348,15 +384,21 @@ pub(crate) async fn sftp_extract_archive(
     format: RemoteArchiveFormat,
     create_directory: bool,
 ) -> Result<(), String> {
-    dispatch(manager.inner().clone(), session_id, move |reply| {
-        SftpCommand::ExtractArchive {
-            archive_path,
-            target_directory,
-            format,
-            create_directory,
-            reply,
-        }
-    })
+    run_remote_archive_task(
+        manager.inner().clone(),
+        session_id,
+        move |session, sftp, cancelled| {
+            extract_archive(
+                session,
+                sftp,
+                &archive_path,
+                &target_directory,
+                format,
+                create_directory,
+                cancelled,
+            )
+        },
+    )
     .await
 }
 
@@ -572,6 +614,7 @@ pub(crate) async fn sftp_download_archive(
                         &remote_archive_path,
                         format,
                         false,
+                        &control.cancelled,
                     )?;
                     wait_for_transfer(&control, &reporter, 0)?;
                     let task = TransferTaskContext {
