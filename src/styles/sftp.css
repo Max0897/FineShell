@@ -592,6 +592,24 @@ body.sftp-remote-dragging * {
   flex: 1;
 }
 
+.sftp-transfer-location {
+  display: block;
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.sftp-transfer-row-missing .sftp-transfer-file-name {
+  color: var(--color-text-3);
+  text-decoration: line-through;
+}
+
+.sftp-transfer-activity-missing {
+  color: var(--color-text-3);
+}
+
 .sftp-sync-activity-active,
 .sftp-sync-activity-syncing {
   color: rgb(var(--primary-6));
@@ -633,6 +651,8 @@ body.sftp-remote-dragging * {
 }
 
 .sftp-transfer-actions {
+  /* Reserve room for two mini buttons so progress bars align across rows. */
+  min-width: 48px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -642,8 +662,4 @@ body.sftp-remote-dragging * {
 .sftp-sync-row {
   min-height: 60px;
   order: -1;
-}
-
-.sftp-transfer-actions:empty {
-  display: none;
 }

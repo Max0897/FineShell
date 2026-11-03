@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ExternalEditPayload } from "../tauri-protocol";
 import TransferActivityList, {
+  transferContextMenuItems,
   type TransferActivityRecord,
 } from "./TransferActivityList";
 
@@ -170,5 +171,115 @@ describe("TransferActivityList", () => {
 
     expect(list.scrollTop).toBe(240);
     expect(onRetry).toHaveBeenCalledWith(failed);
+  });
+
+  test("shows where each transfer went and reveals completed downloads", () => {
+    const onRevealLocal = mock(() => undefined);
+    const upload = {
+      ...transfer("completed", "upload"),
+      remotePath: "/srv/app/uploads/upload.zip",
+    };
+    const download = {
+      ...transfer("completed", "download"),
+      localPath: "/Users/max/Downloads/download.zip",
+    };
+    const running = transfer("running", "running");
+
+    render(
+      <TransferActivityList
+        externalEdits={[]}
+        homeDirectory="/Users/max"
+        onCancel={() => undefined}
+        onOpenExternalEdit={() => undefined}
+        onPause={() => undefined}
+        onResolveExternalEdit={() => undefined}
+        onResume={() => undefined}
+        onRetry={() => undefined}
+        onRevealLocal={onRevealLocal}
+        transfers={[upload, download, running]}
+      />,
+    );
+
+    expect(screen.getByText("→ /srv/app/uploads")).not.toBeNull();
+    expect(screen.getByText("→ ~/Downloads")).not.toBeNull();
+    const revealButtons = screen.getAllByRole("button", {
+      name: /中显示 /,
+    });
+    expect(revealButtons).toHaveLength(1);
+
+    fireEvent.click(revealButtons[0]);
+
+    expect(onRevealLocal).toHaveBeenCalledWith(download);
+  });
+
+  test("marks downloads whose local file is missing", () => {
+    const download = transfer("completed", "download");
+
+    render(
+      <TransferActivityList
+        externalEdits={[]}
+        missingTransferIds={new Set([download.transferId])}
+        onCancel={() => undefined}
+        onOpenExternalEdit={() => undefined}
+        onPause={() => undefined}
+        onResolveExternalEdit={() => undefined}
+        onResume={() => undefined}
+        onRetry={() => undefined}
+        onRevealLocal={() => undefined}
+        transfers={[download]}
+      />,
+    );
+
+    expect(screen.getByText("已删除")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: /中显示 / })).toBeNull();
+  });
+
+  test("builds direction-specific context menus", () => {
+    const handlers = {
+      onCopyPath: mock(() => undefined),
+      onLocateRemote: mock(() => undefined),
+      onOpenLocal: mock(() => undefined),
+      onRemove: mock(() => undefined),
+      onRetry: mock(() => undefined),
+      onRevealLocal: mock(() => undefined),
+    };
+    const keys = (record: TransferActivityRecord) =>
+      transferContextMenuItems(record, handlers, "MacIntel").map(
+        (item) => item.key,
+      );
+
+    expect(keys(transfer("completed", "download"))).toEqual([
+      "open-local",
+      "reveal-local",
+      "copy-local-path",
+      "remove",
+    ]);
+    expect(keys(transfer("completed", "upload"))).toEqual([
+      "locate-remote",
+      "copy-remote-path",
+      "remove",
+    ]);
+    expect(keys(transfer("failed", "download"))).toEqual([
+      "copy-local-path",
+      "retry",
+      "remove",
+    ]);
+    expect(keys(transfer("running", "upload"))).toEqual(["copy-remote-path"]);
+
+    const reveal = transferContextMenuItems(
+      transfer("completed", "download"),
+      handlers,
+      "MacIntel",
+    ).find((item) => item.key === "reveal-local");
+    expect(reveal?.label).toBe("在访达中显示");
+    void reveal?.onClick?.();
+    expect(handlers.onRevealLocal).toHaveBeenCalled();
+
+    const copy = transferContextMenuItems(
+      transfer("completed", "upload"),
+      handlers,
+    ).find((item) => item.key === "copy-remote-path");
+    void copy?.onClick?.();
+    expect(handlers.onCopyPath).toHaveBeenCalledWith("/root/upload.zip");
   });
 });

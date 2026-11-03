@@ -8,9 +8,13 @@ import {
   Typography,
 } from "@arco-design/web-react";
 import {
+  IconCopy,
+  IconDelete,
   IconDownload,
   IconExclamationCircle,
+  IconFolder,
   IconLaunch,
+  IconLocation,
   IconPause,
   IconPlayArrow,
   IconRefresh,
@@ -29,6 +33,12 @@ import {
   type RemoteArchiveFormat,
   type SftpTransferStatus,
 } from "../sftp-utils";
+import {
+  canRevealLocalTransfer,
+  revealInFileManagerLabel,
+  transferLocation,
+} from "../transfer-location";
+import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 const TRANSFERS_PER_PAGE = 20;
 
@@ -57,6 +67,101 @@ interface TransferActivityListProps {
   onResume: (transfer: TransferActivityRecord) => void;
   onRetry: (transfer: TransferActivityRecord) => void;
   transfers: TransferActivityRecord[];
+  homeDirectory?: string;
+  missingTransferIds?: ReadonlySet<string>;
+  onCopyPath?: (path: string) => void;
+  onLocateRemote?: (transfer: TransferActivityRecord) => void;
+  onOpenLocal?: (transfer: TransferActivityRecord) => void;
+  onRemove?: (transfer: TransferActivityRecord) => void;
+  onRevealLocal?: (transfer: TransferActivityRecord) => void;
+}
+
+export interface TransferContextMenuHandlers {
+  onCopyPath?: (path: string) => void;
+  onLocateRemote?: (transfer: TransferActivityRecord) => void;
+  onOpenLocal?: (transfer: TransferActivityRecord) => void;
+  onRemove?: (transfer: TransferActivityRecord) => void;
+  onRetry?: (transfer: TransferActivityRecord) => void;
+  onRevealLocal?: (transfer: TransferActivityRecord) => void;
+}
+
+export function transferContextMenuItems(
+  transfer: TransferActivityRecord,
+  handlers: TransferContextMenuHandlers,
+  platform: string = navigator.platform,
+): ContextMenuItem[] {
+  const completed = transfer.status === "completed";
+  const items: ContextMenuItem[] = [];
+  if (transfer.direction === "download") {
+    if (completed && handlers.onOpenLocal) {
+      const onOpenLocal = handlers.onOpenLocal;
+      items.push({
+        key: "open-local",
+        label: "打开文件",
+        icon: <IconLaunch />,
+        onClick: () => onOpenLocal(transfer),
+      });
+    }
+    if (canRevealLocalTransfer(transfer) && handlers.onRevealLocal) {
+      const onRevealLocal = handlers.onRevealLocal;
+      items.push({
+        key: "reveal-local",
+        label: revealInFileManagerLabel(platform),
+        icon: <IconFolder />,
+        onClick: () => onRevealLocal(transfer),
+      });
+    }
+    if (handlers.onCopyPath && transfer.localPath) {
+      const onCopyPath = handlers.onCopyPath;
+      items.push({
+        key: "copy-local-path",
+        label: "复制本地路径",
+        icon: <IconCopy />,
+        onClick: () => onCopyPath(transfer.localPath),
+      });
+    }
+  } else {
+    if (completed && handlers.onLocateRemote) {
+      const onLocateRemote = handlers.onLocateRemote;
+      items.push({
+        key: "locate-remote",
+        label: "在 SFTP 中定位",
+        icon: <IconLocation />,
+        onClick: () => onLocateRemote(transfer),
+      });
+    }
+    if (handlers.onCopyPath && transfer.remotePath) {
+      const onCopyPath = handlers.onCopyPath;
+      items.push({
+        key: "copy-remote-path",
+        label: "复制远程路径",
+        icon: <IconCopy />,
+        onClick: () => onCopyPath(transfer.remotePath),
+      });
+    }
+  }
+  if (transfer.status === "failed" && handlers.onRetry) {
+    const onRetry = handlers.onRetry;
+    items.push({
+      key: "retry",
+      label: "重试",
+      icon: <IconRefresh />,
+      dividerBefore: items.length > 0,
+      onClick: () => onRetry(transfer),
+    });
+  }
+  if (!isActiveSftpTransfer(transfer.status) && handlers.onRemove) {
+    const onRemove = handlers.onRemove;
+    items.push({
+      key: "remove",
+      label: "删除记录",
+      icon: <IconDelete />,
+      danger: true,
+      dividerBefore: items.length > 0 && transfer.status !== "failed",
+      onClick: () => onRemove(transfer),
+    });
+  }
+  return items;
 }
 
 export function externalEditStatusMeta(status: ExternalEditStatus) {
@@ -95,6 +200,13 @@ function TransferActivityList({
   onResume,
   onRetry,
   transfers,
+  homeDirectory,
+  missingTransferIds,
+  onCopyPath,
+  onLocateRemote,
+  onOpenLocal,
+  onRemove,
+  onRevealLocal,
 }: TransferActivityListProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const transferListRef = useRef<HTMLDivElement>(null);
@@ -160,8 +272,11 @@ function TransferActivityList({
           : transfer.transferredBytes > 0
             ? formatFileSize(transfer.transferredBytes)
             : "等待传输";
-        const activityText =
-          transfer.status === "completed"
+        const missing = missingTransferIds?.has(transfer.transferId) ?? false;
+        const location = transferLocation(transfer, homeDirectory);
+        const activityText = missing
+          ? "已删除"
+          : transfer.status === "completed"
             ? "已完成"
             : transfer.status === "failed"
               ? "传输失败"
@@ -175,8 +290,24 @@ function TransferActivityList({
                       ? "等待中"
                       : formatTransferSpeed(transfer.bytesPerSecond);
 
+        const contextMenuItems = transferContextMenuItems(transfer, {
+          onCopyPath,
+          onLocateRemote,
+          onOpenLocal,
+          onRemove,
+          onRetry: handleRetry,
+          onRevealLocal,
+        });
+
         return (
-          <div className="sftp-transfer-row" key={transfer.transferId}>
+          <ContextMenu
+            disabled={contextMenuItems.length === 0}
+            items={contextMenuItems}
+            key={transfer.transferId}
+          >
+          <div
+            className={`sftp-transfer-row${missing ? " sftp-transfer-row-missing" : ""}`}
+          >
             <span
               className={`sftp-transfer-direction sftp-transfer-direction-${transfer.direction}`}
             >
@@ -195,10 +326,20 @@ function TransferActivityList({
                   {transfer.fileName}
                 </Typography.Text>
               </div>
+              {location.fullPath && (
+                <Tooltip content={location.fullPath} position="tl">
+                  <Typography.Text
+                    className="sftp-transfer-location"
+                    type="secondary"
+                  >
+                    → {location.label}
+                  </Typography.Text>
+                </Tooltip>
+              )}
               <div className="sftp-transfer-meta">
                 <Typography.Text type="secondary">{sizeText}</Typography.Text>
                 <Typography.Text
-                  className={`sftp-transfer-activity sftp-transfer-activity-${transfer.status}`}
+                  className={`sftp-transfer-activity sftp-transfer-activity-${missing ? "missing" : transfer.status}`}
                   type={transfer.status === "failed" ? "error" : "secondary"}
                 >
                   {activityText}
@@ -222,6 +363,17 @@ function TransferActivityList({
               )}
             </div>
             <div className="sftp-transfer-actions">
+              {canRevealLocalTransfer(transfer) && !missing && onRevealLocal && (
+                <Tooltip content={revealInFileManagerLabel()}>
+                  <Button
+                    aria-label={`${revealInFileManagerLabel()} ${transfer.fileName}`}
+                    icon={<IconFolder />}
+                    onClick={() => onRevealLocal(transfer)}
+                    size="mini"
+                    type="text"
+                  />
+                </Tooltip>
+              )}
               {(transfer.status === "running" ||
                 transfer.status === "waiting") && (
                 <Tooltip content="暂停">
@@ -268,6 +420,7 @@ function TransferActivityList({
               )}
             </div>
           </div>
+          </ContextMenu>
         );
         })}
         {externalEdits.map((edit) => {

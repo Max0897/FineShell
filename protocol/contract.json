@@ -1,5 +1,5 @@
 {
-  "version": 35,
+  "version": 36,
   "commands": {
     "protocol_version": true,
     "open_settings_window": true,
@@ -54,6 +54,8 @@
     "diagnostic_record": true,
     "diagnostic_open_log": true,
     "diagnostic_open_log_directory": true,
+    "local_file_reveal": true,
+    "local_file_open": true,
     "terminal_log_start": true,
     "terminal_log_default_directory": true,
     "terminal_log_append": true,

@@ -5,14 +5,17 @@ import { isActiveSftpTransfer } from "../../sftp-utils";
 import TransferActivityList, {
   type TransferActivityRecord,
 } from "../TransferActivityList";
+import useTransferRecordActions from "./useTransferRecordActions";
 
 interface SftpTransferDrawerProps {
   externalEdits: ExternalEditPayload[];
   onCancelTransfer: (transfer: TransferActivityRecord) => void;
   onClearFinished: () => void;
   onClose: () => void;
+  onLocateRemoteTransfer: (transfer: TransferActivityRecord) => void;
   onOpenExternalEdit: (edit: ExternalEditPayload) => void;
   onPauseTransfer: (transfer: TransferActivityRecord) => void;
+  onRemoveTransfer: (transfer: TransferActivityRecord) => void;
   onResolveExternalEdit: (edit: ExternalEditPayload) => void;
   onResumeTransfer: (transfer: TransferActivityRecord) => void;
   onRetryTransfer: (transfer: TransferActivityRecord) => void;
@@ -25,14 +28,19 @@ export default function SftpTransferDrawer({
   onCancelTransfer,
   onClearFinished,
   onClose,
+  onLocateRemoteTransfer,
   onOpenExternalEdit,
   onPauseTransfer,
+  onRemoveTransfer,
   onResolveExternalEdit,
   onResumeTransfer,
   onRetryTransfer,
   transfers,
   visible,
 }: SftpTransferDrawerProps) {
+  const { copyPath, homeDirectory, missingTransferIds, openLocal, revealLocal } =
+    useTransferRecordActions();
+
   return (
     <Drawer
       bodyStyle={{ padding: 0 }}
@@ -61,7 +69,14 @@ export default function SftpTransferDrawer({
     >
       <TransferActivityList
         externalEdits={externalEdits}
+        homeDirectory={homeDirectory}
+        missingTransferIds={missingTransferIds}
         onCancel={onCancelTransfer}
+        onCopyPath={(path) => void copyPath(path)}
+        onLocateRemote={onLocateRemoteTransfer}
+        onOpenLocal={(transfer) => void openLocal(transfer)}
+        onRemove={onRemoveTransfer}
+        onRevealLocal={(transfer) => void revealLocal(transfer)}
         onOpenExternalEdit={onOpenExternalEdit}
         onPause={onPauseTransfer}
         onResolveExternalEdit={onResolveExternalEdit}

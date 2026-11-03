@@ -13,6 +13,7 @@ mod credentials;
 mod diagnostics;
 mod dynamic_forward;
 mod external_edit;
+mod local_files;
 mod managed_keys;
 mod monitor;
 #[cfg(desktop)]
@@ -142,6 +143,8 @@ pub fn run() {
             diagnostics::diagnostic_record,
             diagnostics::diagnostic_open_log,
             diagnostics::diagnostic_open_log_directory,
+            local_files::local_file_reveal,
+            local_files::local_file_open,
             terminal_logs::terminal_log_start,
             terminal_logs::terminal_log_default_directory,
             terminal_logs::terminal_log_append,
