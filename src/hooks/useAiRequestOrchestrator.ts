@@ -85,6 +85,8 @@ interface UseAiRequestOrchestratorOptions {
   listenToTaskEvents?: AiTaskListener;
   onCancelError?: (error: unknown) => void;
   onMissingModel?: () => void;
+  /** Called when switching terminal sessions cancels a request in flight. */
+  onSessionSwitchInterrupt?: () => void;
   onSummaryError?: (error: unknown) => void;
   persistConversation: (conversation?: AiConversation) => Promise<void>;
   restoreTaskId?: string;
@@ -181,6 +183,7 @@ export function useAiRequestOrchestrator({
   listenToTaskEvents = defaultTaskListener,
   onCancelError,
   onMissingModel,
+  onSessionSwitchInterrupt,
   onSummaryError,
   persistConversation,
   restoreTaskId,
@@ -224,12 +227,14 @@ export function useAiRequestOrchestrator({
   const callbacksRef = useRef({
     onCancelError,
     onMissingModel,
+    onSessionSwitchInterrupt,
     onSummaryError,
     updateMessages,
   });
   callbacksRef.current = {
     onCancelError,
     onMissingModel,
+    onSessionSwitchInterrupt,
     onSummaryError,
     updateMessages,
   };
@@ -395,6 +400,7 @@ export function useAiRequestOrchestrator({
       void invoke("ai_chat_cancel", {
         requestId: activeRequest.requestId,
       }).catch(() => undefined);
+      callbacksRef.current.onSessionSwitchInterrupt?.();
     }
     activeRequestRef.current = undefined;
     trackedTaskIdRef.current = undefined;

@@ -8,6 +8,20 @@ export function agentTaskNeedsRecovery(task?: AgentTask): task is AgentTask {
   return task?.status === "paused" || task?.status === "paused_disconnected";
 }
 
+/**
+ * A command that timed out, was cancelled, or lost its connection only had its
+ * SSH channel closed; the remote process may still be running.
+ */
+export function agentTaskMayHaveRunningCommand(task?: AgentTask) {
+  return Boolean(
+    task?.actions.some(
+      (action) =>
+        action.commandExecution?.phase === "interrupted" ||
+        action.commandExecution?.phase === "cancelling",
+    ),
+  );
+}
+
 function recoveryList(values: string[], fallback: string): string {
   if (!values.length) return `- ${fallback}`;
   return values.map((value) => `- ${value}`).join("\n");
@@ -16,6 +30,7 @@ function recoveryList(values: string[], fallback: string): string {
 export function buildAgentRecoveryPrompt(
   recovery: AgentTaskRecoveryContext,
   decision: Exclude<AgentTaskRecoveryDecision, "finish">,
+  { remoteCommandMayBeRunning = false }: { remoteCommandMayBeRunning?: boolean } = {},
 ): string {
   const objective = recovery.objective.slice(0, 16_000);
   const intent =
@@ -30,6 +45,11 @@ export function buildAgentRecoveryPrompt(
     recoveryList(recovery.completedActions, "无"),
     "结果不确定或未完成的动作：",
     recoveryList(recovery.uncertainActions, "无"),
+    ...(remoteCommandMayBeRunning
+      ? [
+          "注意：有命令因超时、取消或断线被中断，但远端进程可能仍在运行。重新执行同类命令前，先用只读命令（如 ps、pgrep、systemctl status）确认它是否仍在运行，避免重复执行。",
+        ]
+      : []),
     intent,
   ].join("\n");
 }

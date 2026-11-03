@@ -11,6 +11,7 @@ import type {
 } from "../ai-action-lifecycle";
 import { buildAiConversationRequestMessages } from "../ai-summaries";
 import {
+  agentTaskMayHaveRunningCommand,
   agentTaskNeedsRecovery,
   buildAgentRecoveryPrompt,
 } from "../ai-task-recovery";
@@ -361,6 +362,8 @@ function AiAssistantPanel({
     approvalMode,
     onCancelError: (error) => Message.error(commandErrorMessage(error)),
     onMissingModel: () => Message.warning("请先在设置中配置 AI 模型"),
+    onSessionSwitchInterrupt: () =>
+      Message.warning("已切换终端，进行中的 AI 任务已中断"),
     onSummaryError: (error) =>
       recordDiagnostic("warn", "ai.summary", "后台整理对话摘要失败", {
         error: commandErrorMessage(error),
@@ -960,7 +963,9 @@ function AiAssistantPanel({
         activeConversation?.summary,
         null,
         false,
-        buildAgentRecoveryPrompt(recovery, decision),
+        buildAgentRecoveryPrompt(recovery, decision, {
+          remoteCommandMayBeRunning: agentTaskMayHaveRunningCommand(activeTask),
+        }),
         "on_request",
       );
     } catch (error) {
@@ -1127,6 +1132,7 @@ function AiAssistantPanel({
             disconnected={activeTask.status === "paused_disconnected"}
             onDecision={(decision) => void decideInterruptedTask(decision)}
             reason={activeTask.error ?? "AI 任务执行被中断"}
+            remoteCommandMayBeRunning={agentTaskMayHaveRunningCommand(activeTask)}
             sessionAvailable={Boolean(sessionId)}
           />
         )}
