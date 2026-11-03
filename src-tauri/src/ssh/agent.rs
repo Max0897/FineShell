@@ -38,6 +38,8 @@ pub(super) enum AgentSessionCommand {
     Close,
 }
 
+const CD_FAILED_EXIT_CODE: i32 = 125;
+
 fn validate_current_directory(current_directory: Option<&str>) -> Result<(), String> {
     let Some(current_directory) = current_directory else {
         return Ok(());
@@ -53,13 +55,22 @@ fn validate_current_directory(current_directory: Option<&str>) -> Result<(), Str
     Ok(())
 }
 
-fn command_script(command: &str, current_directory: Option<&str>) -> Result<String, String> {
+/// Changes into the working directory and aborts the whole script if that
+/// fails. `cd && command` is not enough: for `a; b` it parses as
+/// `(cd && a); b`, so `b` would run in the login shell's default directory.
+fn directory_script(command: &str, current_directory: Option<&str>) -> Result<String, String> {
     validate_current_directory(current_directory)?;
     let directory = current_directory
         .map(remote_shell::shell_quote)
         .unwrap_or_else(|| "\"$HOME\"".to_string());
-    let script = format!("cd -- {directory} && {command}");
-    Ok(remote_shell::posix_login_script(&script))
+    Ok(format!(
+        "cd -- {directory} || exit {CD_FAILED_EXIT_CODE}\n{command}"
+    ))
+}
+
+fn command_script(command: &str, current_directory: Option<&str>) -> Result<String, String> {
+    directory_script(command, current_directory)
+        .map(|script| remote_shell::posix_login_script(&script))
 }
 
 fn append_bounded_output(output: &mut Vec<u8>, chunk: &[u8], truncated: &mut bool) {
@@ -392,8 +403,8 @@ pub(super) fn run_agent_session(config: SshAuthConfig, receiver: Receiver<AgentS
 #[cfg(test)]
 mod tests {
     use super::{
-        append_bounded_output, command_interrupted, command_script, validate_current_directory,
-        MAX_AGENT_COMMAND_STREAM_BYTES,
+        append_bounded_output, command_interrupted, command_script, directory_script,
+        validate_current_directory, CD_FAILED_EXIT_CODE, MAX_AGENT_COMMAND_STREAM_BYTES,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Instant;
@@ -402,8 +413,25 @@ mod tests {
     fn builds_non_interactive_shell_command_in_selected_directory() {
         assert_eq!(
             command_script("printf '%s' ok", Some("/srv/app's data")).unwrap(),
-            r#"sh -lc 'cd -- '\''/srv/app'\'\\\'\''s data'\'' && printf '\''%s'\'' ok'"#
+            "sh -lc 'cd -- '\\''/srv/app'\\'\\\\\\'\\''s data'\\'' || exit 125\nprintf '\\''%s'\\'' ok'"
         );
+    }
+
+    #[test]
+    fn stops_the_whole_command_when_the_directory_is_unavailable() {
+        let marker =
+            std::env::temp_dir().join(format!("fineshell-cd-guard-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let command = format!("true; touch '{}'", marker.display());
+        let script = directory_script(&command, Some("/nonexistent/fineshell-test")).unwrap();
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(CD_FAILED_EXIT_CODE));
+        assert!(!marker.exists());
     }
 
     #[test]

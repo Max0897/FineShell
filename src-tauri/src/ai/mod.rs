@@ -50,6 +50,8 @@ use validation::*;
 #[cfg(test)]
 mod tests;
 
+/// How long a streamed response may go without receiving any bytes.
+const AI_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_MESSAGES: usize = 24;
 const MAX_MESSAGE_CHARS: usize = 24_000;
 const MAX_CONTEXT_CHARS: usize = 32_000;

@@ -492,8 +492,30 @@ function AiAssistantPanel({
       proposal,
       userConfirmed,
     );
-    if (!submission) return false;
-    const decision = aiCommandApprovalDecisionFromSubmission(submission);
+    // Not pending anymore: another path already settled this proposal.
+    if (submission === false) return false;
+    // An automatic attempt falls back to manual approval, so the round keeps
+    // waiting. A manual attempt must settle the round, otherwise the agent
+    // loop waits forever for a decision that never comes.
+    if ("failed" in submission) {
+      if (userConfirmed) {
+        commandDecisionRef.current(proposal.id, {
+          kind: "execution_unavailable",
+          reason: submission.reason,
+        });
+      }
+      return false;
+    }
+    let decision: ReturnType<typeof aiCommandApprovalDecisionFromSubmission>;
+    try {
+      decision = aiCommandApprovalDecisionFromSubmission(submission);
+    } catch (error) {
+      decision = {
+        kind: "execution_unavailable",
+        reason: commandErrorMessage(error),
+      };
+    }
+    // A still-running submission is settled later by task events.
     if (decision) commandDecisionRef.current(proposal.id, decision);
     return true;
   };
@@ -655,37 +677,50 @@ function AiAssistantPanel({
     if (!automaticApproval || !queuedApprovalId || !sending) return;
     if (automaticApprovalAttemptsRef.current.has(queuedApprovalId)) return;
     automaticApprovalAttemptsRef.current.add(queuedApprovalId);
+    const approval = automaticApproval;
+    const approvalId = queuedApprovalId;
+    const markAutomaticApprovalFailed = () =>
+      setAutomaticApprovalFailures((current) =>
+        new Set(current).add(approvalId),
+      );
 
     void (async () => {
-      if (automaticApproval.kind === "command") {
-        const approved = await executeCommandAndResume(
-          automaticApproval.messageId,
-          automaticApproval.proposal,
-          false,
-        );
-        if (!approved) {
-          setAutomaticApprovalFailures((current) =>
-            new Set(current).add(queuedApprovalId),
-          );
-        }
-        return;
-      }
-      if (automaticApproval.kind === "file-edit") {
-        await approveFileEditAndResume(
-          automaticApproval.messageId,
-          automaticApproval.proposal,
-          false,
-        );
-        return;
-      }
-      if (automaticApproval.kind === "file-operation") {
-        await approveFileOperationAndResume(
-          automaticApproval.messageId,
-          automaticApproval.proposal,
-          false,
+      try {
+        await runAutomaticApproval();
+      } catch (error) {
+        markAutomaticApprovalFailed();
+        Message.warning(
+          `自动执行未完成，请手动确认：${commandErrorMessage(error)}`,
         );
       }
     })();
+
+    async function runAutomaticApproval() {
+      if (approval.kind === "command") {
+        const approved = await executeCommandAndResume(
+          approval.messageId,
+          approval.proposal,
+          false,
+        );
+        if (!approved) markAutomaticApprovalFailed();
+        return;
+      }
+      if (approval.kind === "file-edit") {
+        await approveFileEditAndResume(
+          approval.messageId,
+          approval.proposal,
+          false,
+        );
+        return;
+      }
+      if (approval.kind === "file-operation") {
+        await approveFileOperationAndResume(
+          approval.messageId,
+          approval.proposal,
+          false,
+        );
+      }
+    }
   }, [automaticApproval, queuedApprovalId, sending]);
 
   const {

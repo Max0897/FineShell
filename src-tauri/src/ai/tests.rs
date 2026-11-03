@@ -674,10 +674,9 @@ fn validates_and_redacts_tool_results_before_provider_handling() {
         "inspect the current directory"
     );
     assert_eq!(messages[messages.len() - 1]["role"], "tool");
-    assert!(messages[messages.len() - 1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("password=[REDACTED]"));
+    let tool_content = messages[messages.len() - 1]["content"].as_str().unwrap();
+    assert!(tool_content.contains("[REDACTED]"));
+    assert!(!tool_content.contains("\"secret\""));
 }
 
 #[test]
@@ -1227,6 +1226,31 @@ fn redacts_common_workspace_secrets() {
     assert!(!sanitized.contains("process-secret"));
     assert!(!sanitized.contains("\nsecret\n"));
     assert!(sanitized.contains("api_key=[REDACTED]"));
+}
+
+#[test]
+fn redacts_prefixed_environment_secrets_and_keeps_json_valid() {
+    let input = "DB_PASSWORD=hunter2\nexport OPENAI_API_KEY=sk-abcdefghijklmnopqrstu\nGITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwx\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI\nredis://default:s3cret@cache:6379";
+    let sanitized = sanitize_context(input);
+    for secret in [
+        "hunter2",
+        "sk-abcdef",
+        "ghp_abcdef",
+        "wJalrXUtnFEMI",
+        "s3cret",
+    ] {
+        assert!(!sanitized.contains(secret), "{secret} leaked: {sanitized}");
+    }
+    assert!(sanitized.contains("DB_PASSWORD=[REDACTED]"));
+
+    let json = sanitize_context(r#"{"password":"x","client_secret":"y","status":1}"#);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["password"], "[REDACTED]");
+    assert_eq!(value["client_secret"], "[REDACTED]");
+    assert_eq!(value["status"], 1);
+
+    assert_eq!(sanitize_context("Bearer abc.def"), "Bearer [REDACTED]");
+    assert_eq!(sanitize_context("status=ok users=3"), "status=ok users=3");
 }
 
 #[test]

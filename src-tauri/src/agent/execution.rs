@@ -110,7 +110,8 @@ impl AgentTaskManager {
         } else {
             false
         };
-        let policy = registered_action_policy(approval_mode, &execution.tool, risk);
+        let policy =
+            registered_action_policy(approval_mode, &execution.tool, risk, &execution.arguments);
         match policy.decision {
             PolicyDecision::Deny => return Err(policy.reason),
             PolicyDecision::Prompt if !user_confirmed => {

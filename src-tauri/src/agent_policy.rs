@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use crate::agent::{AgentActionRisk, AgentApprovalMode};
+use crate::agent_command_risk::{classify_terminal_command, CommandRiskClass};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PolicyDecision {
@@ -94,17 +95,28 @@ fn policy_decision(
     }
 }
 
+/// Destructive commands are never bounded, so even full access asks the user.
+fn terminal_command_bounded(arguments: &Value) -> bool {
+    arguments
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|command| classify_terminal_command(command) != CommandRiskClass::Destructive)
+}
+
 pub(crate) fn registered_action_policy(
     mode: AgentApprovalMode,
     tool: &str,
     risk: AgentActionRisk,
+    arguments: &Value,
 ) -> PolicyEvaluation {
     let descriptor = match (tool, risk) {
         ("propose_file_edit", AgentActionRisk::ReversibleWrite) => Some((true, true)),
         ("propose_file_operation", AgentActionRisk::ReversibleWrite) => Some((true, true)),
         ("propose_file_operation", AgentActionRisk::Elevated) => Some((true, true)),
         ("execute_terminal_command", AgentActionRisk::LowRisk) => Some((false, true)),
-        ("execute_terminal_command", AgentActionRisk::Elevated) => Some((false, true)),
+        ("execute_terminal_command", AgentActionRisk::Elevated) => {
+            Some((false, terminal_command_bounded(arguments)))
+        }
         _ => None,
     };
     let Some((reversible, bounded)) = descriptor else {
@@ -350,6 +362,7 @@ mod tests {
                 AgentApprovalMode::AutoSafe,
                 "propose_file_edit",
                 AgentActionRisk::ReversibleWrite,
+                &json!({ "command": "systemctl restart nginx" }),
             )
             .decision,
             PolicyDecision::Prompt
@@ -359,6 +372,7 @@ mod tests {
                 AgentApprovalMode::AutoSafe,
                 "execute_terminal_command",
                 AgentActionRisk::LowRisk,
+                &json!({ "command": "systemctl restart nginx" }),
             )
             .decision,
             PolicyDecision::Allow
@@ -368,6 +382,7 @@ mod tests {
                 AgentApprovalMode::AutoSafe,
                 "execute_terminal_command",
                 AgentActionRisk::Elevated,
+                &json!({ "command": "systemctl restart nginx" }),
             )
             .decision,
             PolicyDecision::Prompt
@@ -377,6 +392,7 @@ mod tests {
                 AgentApprovalMode::FullAccess,
                 "propose_file_operation",
                 AgentActionRisk::Elevated,
+                &json!({ "command": "systemctl restart nginx" }),
             )
             .decision,
             PolicyDecision::Allow
@@ -386,6 +402,7 @@ mod tests {
                 AgentApprovalMode::FullAccess,
                 "execute_terminal_command",
                 AgentActionRisk::Elevated,
+                &json!({ "command": "systemctl restart nginx" }),
             )
             .decision,
             PolicyDecision::Allow
@@ -395,6 +412,7 @@ mod tests {
                 AgentApprovalMode::FullAccess,
                 "propose_terminal_command",
                 AgentActionRisk::Elevated,
+                &json!({ "command": "systemctl restart nginx" }),
             )
             .decision,
             PolicyDecision::Deny
@@ -422,9 +440,41 @@ mod tests {
                 AgentApprovalMode::FullAccess,
                 "propose_terminal_command",
                 AgentActionRisk::Elevated,
+                &json!({ "command": "systemctl restart nginx" }),
             )
             .decision,
             PolicyDecision::Deny
+        );
+    }
+
+    #[test]
+    fn full_access_still_prompts_for_destructive_commands() {
+        for command in [
+            "rm -rf /srv/app",
+            "echo $(rm -rf /srv/app)",
+            "systemctl reboot",
+        ] {
+            assert_eq!(
+                registered_action_policy(
+                    AgentApprovalMode::FullAccess,
+                    "execute_terminal_command",
+                    AgentActionRisk::Elevated,
+                    &json!({ "command": command }),
+                )
+                .decision,
+                PolicyDecision::Prompt,
+                "command: {command}"
+            );
+        }
+        assert_eq!(
+            registered_action_policy(
+                AgentApprovalMode::FullAccess,
+                "execute_terminal_command",
+                AgentActionRisk::Elevated,
+                &json!({}),
+            )
+            .decision,
+            PolicyDecision::Prompt
         );
     }
 }

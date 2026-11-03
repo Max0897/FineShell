@@ -1,4 +1,5 @@
 import type { ServerMonitorSnapshot } from "./models";
+import { classifyTerminalCommand } from "./ai-command-risk";
 
 export function normalizeAiTerminalCommand(command: string) {
   const value = command.trim();
@@ -440,11 +441,8 @@ export function assessAiTerminalCommand(command: string): AiCommandAssessment {
     };
   }
 
-  if (
-    /(^|[;&|]\s*)(?:sudo\s+)?(?:rm\b|dd\b|mkfs(?:\.[\w-]+)?\b|wipefs\b|shutdown\b|reboot\b|poweroff\b|halt\b|kill(?:all)?\b|pkill\b)|:\(\)\s*\{\s*:\|:&\s*\};:/i.test(
-      command,
-    )
-  ) {
+  const risk = classifyTerminalCommand(command);
+  if (risk === "destructive") {
     return {
       canInsert: true,
       label: "高风险",
@@ -453,15 +451,11 @@ export function assessAiTerminalCommand(command: string): AiCommandAssessment {
     };
   }
 
-  if (
-    /\bsudo\b|\b(?:chmod|chown)\s+-R\b|\bsystemctl\s+(?:start|stop|restart|disable|mask)\b|\b(?:apt|apt-get|dnf|yum|pacman|apk|brew)\s+(?:install|remove|purge|upgrade)\b|(?:curl|wget)[^\r\n|]*\|\s*(?:ba)?sh\b|(?:^|\s)>(?:>|\s*)\s*\/(?:etc|usr|var)\//i.test(
-      command,
-    )
-  ) {
+  if (risk === "mutating") {
     return {
       canInsert: true,
       label: "需确认",
-      reason: "命令可能修改系统配置、软件包或受保护文件",
+      reason: "命令不在只读命令白名单内，可能修改系统状态",
       risk: "caution",
     };
   }

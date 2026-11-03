@@ -4,6 +4,7 @@ import {
   markAiCommandProposalUnavailable,
   markAiCommandProposalVerified,
   reconcileAiCommandProposalExecution,
+  revertAiCommandProposalApproval,
   type AiCommandProposal,
 } from "../ai-command-proposals";
 import type { TerminalCommandSubmission } from "../terminal-utils";
@@ -11,6 +12,12 @@ import { appendAiContextMentions, type AiContextSource } from "../ai-utils";
 import { commandErrorMessage } from "../tauri-protocol";
 
 export type AiCommandNotice = "error" | "info" | "success" | "warning";
+
+/** The command could not be submitted; nothing ran on the server. */
+export interface AiCommandApprovalFailure {
+  failed: true;
+  reason: string;
+}
 
 interface CommandVerificationTarget {
   conversationId: string;
@@ -129,11 +136,21 @@ export function useAiCommandActions({
       );
       return submission;
     } catch (error) {
-      updateCommandProposal(messageId, proposal.id, (current) =>
-        markAiCommandProposalUnavailable(current, commandErrorMessage(error)),
-      );
-      onNotice("error", commandErrorMessage(error));
-      return null;
+      const reason = commandErrorMessage(error);
+      if (!userConfirmed) {
+        updateCommandProposal(
+          messageId,
+          proposal.id,
+          revertAiCommandProposalApproval,
+        );
+        onNotice("warning", `自动执行未完成，请手动确认：${reason}`);
+      } else {
+        updateCommandProposal(messageId, proposal.id, (current) =>
+          markAiCommandProposalUnavailable(current, reason),
+        );
+        onNotice("error", reason);
+      }
+      return { failed: true, reason } satisfies AiCommandApprovalFailure;
     }
   };
 

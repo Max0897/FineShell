@@ -1,8 +1,7 @@
-use regex::Regex;
 use serde_json::{json, Map, Value};
-use std::sync::OnceLock;
 
 use crate::agent::{AgentActionIntent, AgentActionRisk};
+use crate::agent_command_risk::{classify_terminal_command, CommandRiskClass};
 use crate::agent_verification::AgentBusinessVerification;
 
 pub(crate) const MAX_FILE_EDIT_CHARS: usize = 60_000;
@@ -149,30 +148,12 @@ fn normalize_risk_reason(reason: &str) -> Result<String, String> {
     Ok(reason)
 }
 
-fn command_requires_confirmation(command: &str) -> bool {
-    static DANGEROUS: OnceLock<Regex> = OnceLock::new();
-    static MUTATING: OnceLock<Regex> = OnceLock::new();
-    let dangerous = DANGEROUS.get_or_init(|| {
-        Regex::new(
-            r"(?i)(^|[;&|]\s*)(?:sudo\s+)?(?:rm\b|dd\b|mkfs(?:\.[\w-]+)?\b|wipefs\b|shutdown\b|reboot\b|poweroff\b|halt\b|kill(?:all)?\b|pkill\b)|:\(\)\s*\{\s*:\|:&\s*\};:",
-        )
-        .expect("terminal danger expression must compile")
-    });
-    let mutating = MUTATING.get_or_init(|| {
-        Regex::new(
-            r"(?i)\bsudo\b|\b(?:chmod|chown)\s+-R\b|\bsystemctl\s+(?:start|stop|restart|disable|mask)\b|\b(?:apt|apt-get|dnf|yum|pacman|apk|brew)\s+(?:install|remove|purge|upgrade)\b|(?:curl|wget)[^\r\n|]*\|\s*(?:ba)?sh\b|(?:^|\s)>(?:>|\s*)\s*/(?:etc|usr|var)/",
-        )
-        .expect("terminal mutation expression must compile")
-    });
-    dangerous.is_match(command) || mutating.is_match(command)
-}
-
 fn terminal_action_risk(command: &str, ai_risk: &str) -> Result<AgentActionRisk, String> {
     if !matches!(ai_risk, "safe" | "caution" | "danger") {
         return Err("AI 命令风险等级无效".to_string());
     }
     Ok(
-        if ai_risk == "safe" && !command_requires_confirmation(command) {
+        if ai_risk == "safe" && classify_terminal_command(command) == CommandRiskClass::ReadOnly {
             AgentActionRisk::LowRisk
         } else {
             AgentActionRisk::Elevated
