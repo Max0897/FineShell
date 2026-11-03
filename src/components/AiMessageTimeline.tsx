@@ -337,14 +337,21 @@ function AiStreamingIndicator() {
   );
 }
 
-function AiMarkdown({
-  children,
-  onCopyCode,
-}: {
-  children: string;
-  onCopyCode: (value: string) => Promise<void>;
-}) {
-  return (
+const REMARK_PLUGINS = [remarkGfm];
+
+// Parsing Markdown is the most expensive part of rendering the timeline.
+// Re-render only when the text changes so streaming into the last message
+// doesn't re-parse every earlier one. `onCopyCode` only copies text, so an
+// earlier callback behaves the same as the latest one.
+const AiMarkdown = memo(
+  function AiMarkdown({
+    children,
+    onCopyCode,
+  }: {
+    children: string;
+    onCopyCode: (value: string) => Promise<void>;
+  }) {
+    return (
     <ReactMarkdown
       components={{
         pre: ({ children: codeNode }) => {
@@ -383,12 +390,14 @@ function AiMarkdown({
           );
         },
       }}
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={REMARK_PLUGINS}
     >
       {children}
     </ReactMarkdown>
-  );
-}
+    );
+  },
+  (previous, next) => previous.children === next.children,
+);
 
 function AiMessageTimeline({
   activeConversationAvailable,

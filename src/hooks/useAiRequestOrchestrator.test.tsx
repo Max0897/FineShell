@@ -638,7 +638,10 @@ describe("useAiRequestOrchestrator", () => {
       onStream({ delta: "正在分析", requestId: request.requestId });
       onStream({ delta: "忽略", requestId: "obsolete-request" });
     });
-    expect(callbacks.current().messages[1]?.reasoning).toBe("检查服务器指标");
+    // Deltas are coalesced and applied on the next animation frame.
+    await waitFor(() =>
+      expect(callbacks.current().messages[1]?.reasoning).toBe("检查服务器指标"),
+    );
     expect(callbacks.current().messages[1]?.content).toBe("正在分析");
 
     await act(async () => {

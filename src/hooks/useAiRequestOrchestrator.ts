@@ -9,6 +9,7 @@ import {
 import {
   buildAiConversationRequestMessages,
 } from "../ai-summaries";
+import { AiStreamBuffer } from "../ai-stream-buffer";
 import { finishAiToolRun } from "../ai-tools";
 import type { AiRemoteFileContext } from "../ai-utils";
 import { diagnosticInvoke } from "../diagnostics";
@@ -193,6 +194,26 @@ export function useAiRequestOrchestrator({
   const [activeTask, setActiveTask] = useState<AgentTask>();
   const activeTaskRef = useRef<AgentTask>();
   const activeRequestRef = useRef<ActiveAiRequest>();
+  const streamBufferRef = useRef<AiStreamBuffer>();
+  streamBufferRef.current ??= new AiStreamBuffer((target, chunk) =>
+    callbacksRef.current.updateMessages(
+      target.hostId,
+      target.conversationId,
+      (current) =>
+        current.map((message) =>
+          message.id === target.assistantId
+            ? {
+                ...message,
+                content: message.content + chunk.content,
+                ...(chunk.reasoning
+                  ? { reasoning: `${message.reasoning ?? ""}${chunk.reasoning}` }
+                  : {}),
+              }
+            : message,
+        ),
+    ),
+  );
+  const streamBuffer = streamBufferRef.current;
   const trackedTaskIdRef = useRef<string>();
   const cancelledRequestsRef = useRef(new Set<string>());
   const activeDiagnosticPlansRef = useRef(
@@ -394,22 +415,10 @@ export function useAiRequestOrchestrator({
     let disposed = false;
     let stopStream: (() => void) | undefined;
     void listenToStream((payload) => {
-      const activeRequest = activeRequestRef.current;
-      if (!activeRequest || payload.requestId !== activeRequest.requestId) return;
-      callbacksRef.current.updateMessages(
-        activeRequest.hostId,
-        activeRequest.conversationId,
-        (current) =>
-          current.map((message) =>
-            message.id === activeRequest.assistantId
-              ? payload.kind === "reasoning"
-                ? {
-                    ...message,
-                    reasoning: `${message.reasoning ?? ""}${payload.delta}`,
-                  }
-                : { ...message, content: message.content + payload.delta }
-              : message,
-          ),
+      streamBuffer.push(
+        payload.requestId,
+        payload.kind === "reasoning" ? "reasoning" : "content",
+        payload.delta,
       );
     }).then((unlisten) => {
       if (disposed) unlisten();
@@ -564,36 +573,48 @@ export function useAiRequestOrchestrator({
           if (cancelledRequestsRef.current.has(requestId)) {
             throw new Error("AI 请求已取消");
           }
-          const result = await invoke<AiChatResult>("ai_chat_start", {
-            request: {
-              requestId,
-              baseUrl: settings.aiBaseUrl,
-              model: settings.aiModel,
-              messages: requestMessages,
-              context: context || null,
-              enabledTools: settings.aiReadOnlyTools,
-              fileEditEnabled: fileProposalEnabled,
-              commandProposalEnabled: terminalProposalEnabled,
-              toolRounds,
-              task: {
-                contextVersion: 1,
-                contextCapturedAt: Date.now(),
-                id: requestId,
-                conversationId: targetConversationId,
-                hostId: targetHostId,
-                terminalSessionId: targetSessionId,
-                currentDirectory: toolCurrentDirectory ?? undefined,
-                fileOperationDirectory: currentOperationDirectory ?? undefined,
-                writableFiles: editableFiles.map(({ content, path, size }) => ({
-                  content,
-                  path,
-                  size,
-                })),
-                objective: modelRequestValue,
-                approvalMode: approvalModeOverride ?? approvalMode,
-              },
-            },
+          streamBuffer.begin({
+            requestId,
+            hostId: targetHostId,
+            conversationId: targetConversationId,
+            assistantId: assistantMessage.id,
           });
+          let result: AiChatResult;
+          try {
+            result = await invoke<AiChatResult>("ai_chat_start", {
+              request: {
+                requestId,
+                baseUrl: settings.aiBaseUrl,
+                model: settings.aiModel,
+                messages: requestMessages,
+                context: context || null,
+                enabledTools: settings.aiReadOnlyTools,
+                fileEditEnabled: fileProposalEnabled,
+                commandProposalEnabled: terminalProposalEnabled,
+                toolRounds,
+                task: {
+                  contextVersion: 1,
+                  contextCapturedAt: Date.now(),
+                  id: requestId,
+                  conversationId: targetConversationId,
+                  hostId: targetHostId,
+                  terminalSessionId: targetSessionId,
+                  currentDirectory: toolCurrentDirectory ?? undefined,
+                  fileOperationDirectory: currentOperationDirectory ?? undefined,
+                  writableFiles: editableFiles.map(({ content, path, size }) => ({
+                    content,
+                    path,
+                    size,
+                  })),
+                  objective: modelRequestValue,
+                  approvalMode: approvalModeOverride ?? approvalMode,
+                },
+              },
+            });
+          } finally {
+            // Deltas that arrive after the turn's result are dropped.
+            streamBuffer.end();
+          }
           requestTelemetry = mergeAiRequestTelemetry(
             requestTelemetry,
             result.telemetry,
