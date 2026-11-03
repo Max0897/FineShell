@@ -543,6 +543,9 @@ pub(crate) struct AgentTaskManager {
     pub(super) storage_path: Mutex<Option<PathBuf>>,
     pub(super) plan_controls: Mutex<HashMap<String, AgentPlanControl>>,
     pub(super) approval_credentials: Mutex<ApprovalCredentialStore>,
+    /// Serializes snapshot-and-write so an older snapshot never lands on disk
+    /// after a newer one. Acquired before `tasks` and `events`.
+    pub(super) persist_lock: Mutex<()>,
 }
 
 #[derive(Deserialize, Serialize)]

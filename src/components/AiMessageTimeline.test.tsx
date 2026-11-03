@@ -101,6 +101,25 @@ describe("AiMessageTimeline", () => {
     expect(view.onRetryMessage).toHaveBeenCalledWith(1);
   });
 
+  test("offers to ask again instead of replacing an earlier failed answer", () => {
+    const view = renderTimeline([
+      { content: "检查服务器负载", id: "user-1", role: "user" },
+      {
+        content: "",
+        error: "服务暂时不可用",
+        failed: true,
+        id: "assistant-1",
+        role: "assistant",
+      },
+      { content: "查看磁盘", id: "user-2", role: "user" },
+      { content: "磁盘正常", id: "assistant-2", role: "assistant" },
+    ]);
+
+    expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "重新提问" }));
+    expect(view.onRetryMessage).toHaveBeenCalledWith(1);
+  });
+
   test("keeps unregistered markdown commands copy-only", () => {
     renderTimeline([
       {

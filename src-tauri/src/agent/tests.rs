@@ -164,6 +164,74 @@ fn serialized_values<T: SerializeValues>(values: &[T]) -> BTreeSet<String> {
 }
 
 #[test]
+fn keeps_unreadable_state_and_writes_atomically() {
+    let directory = std::env::temp_dir().join(format!(
+        "fineshell-agent-state-corrupt-{}-{}",
+        std::process::id(),
+        super::timestamp_ms()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(AGENT_RUNTIME_STATE_FILE);
+    std::fs::write(&path, b"{\"version\": 1, \"tasks\": [").unwrap();
+
+    let manager = AgentTaskManager::default();
+    manager.initialize_storage(path.clone()).unwrap();
+    let backups = std::fs::read_dir(&directory)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+        .count();
+    assert_eq!(backups, 1);
+
+    let started = manager.begin_model_turn(&context()).unwrap();
+    manager.record_events(&started);
+    let persisted = std::fs::read(&path).unwrap();
+    assert!(serde_json::from_slice::<serde_json::Value>(&persisted).is_ok());
+    let leftovers = std::fs::read_dir(&directory)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+        .count();
+    assert_eq!(leftovers, 0);
+
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn concurrent_saves_leave_a_readable_state_file() {
+    let directory = std::env::temp_dir().join(format!(
+        "fineshell-agent-state-concurrent-{}-{}",
+        std::process::id(),
+        super::timestamp_ms()
+    ));
+    let path = directory.join(AGENT_RUNTIME_STATE_FILE);
+    let manager = std::sync::Arc::new(AgentTaskManager::default());
+    manager.initialize_storage(path.clone()).unwrap();
+    let started = manager.begin_model_turn(&context()).unwrap();
+    manager.record_events(&started);
+
+    let workers = (0..8)
+        .map(|_| {
+            let manager = manager.clone();
+            std::thread::spawn(move || {
+                for _ in 0..20 {
+                    manager.persist_state().unwrap();
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+
+    let restored = AgentTaskManager::default();
+    restored.initialize_storage(path.clone()).unwrap();
+    assert!(restored.get_task("task-1").unwrap().is_some());
+
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn persists_only_redacted_snapshots_and_replays_bounded_events() {
     let directory = std::env::temp_dir().join(format!(
         "fineshell-agent-state-{}-{}",

@@ -621,7 +621,7 @@ function AiMessageTimeline({
                           size="mini"
                           type="text"
                         >
-                          重试
+                          {index === messages.length - 1 ? "重试" : "重新提问"}
                         </Button>
                       </div>
                     )}

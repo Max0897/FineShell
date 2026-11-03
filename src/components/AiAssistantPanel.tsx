@@ -1003,6 +1003,28 @@ function AiAssistantPanel({
     ) {
       return;
     }
+    // Retrying the latest answer replaces it. For an earlier one, replacing
+    // would discard everything after it, so ask the question again at the end.
+    const latest = assistantIndex === messages.length - 1;
+    if (!latest) {
+      void sendMessage({
+        commandProposalEnabled:
+          canInsertCommand && settings.aiCommandProposalsEnabled,
+        conversationSummary: activeConversation.summary,
+        context: userMessage.context ?? "",
+        contextLabels: userMessage.contextLabels ?? [],
+        currentOperationDirectory: null,
+        editableFiles: [],
+        history: messages,
+        targetConversationId: activeConversation.id,
+        targetDirectory: currentRemoteDirectory,
+        targetHostId: hostId,
+        targetSessionId: sessionId,
+        toolCurrentDirectory: currentRemoteDirectory,
+        value: userMessage.content,
+      });
+      return;
+    }
     void sendMessage({
       commandProposalEnabled:
         canInsertCommand && settings.aiCommandProposalsEnabled,

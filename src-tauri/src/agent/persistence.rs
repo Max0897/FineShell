@@ -8,6 +8,7 @@ impl Default for AgentTaskManager {
             storage_path: Mutex::new(None),
             plan_controls: Mutex::new(HashMap::new()),
             approval_credentials: Mutex::new(ApprovalCredentialStore::default()),
+            persist_lock: Mutex::new(()),
         }
     }
 }
@@ -23,10 +24,12 @@ impl AgentTaskManager {
                 Ok(state) if state.version == AGENT_RUNTIME_STATE_VERSION => Some(state),
                 Ok(_) => {
                     log::warn!(target: "fineshell::agent", "忽略不兼容的 AI 运行时状态文件");
+                    preserve_unreadable_state(&path);
                     None
                 }
                 Err(error) => {
                     log::warn!(target: "fineshell::agent", "忽略损坏的 AI 运行时状态文件: {error}");
+                    preserve_unreadable_state(&path);
                     None
                 }
             },
@@ -139,6 +142,10 @@ impl AgentTaskManager {
     }
 
     pub(super) fn persist_state(&self) -> Result<(), String> {
+        let _persisting = self
+            .persist_lock
+            .lock()
+            .map_err(|_| "AI 运行时存储状态不可用".to_string())?;
         let Some(path) = self
             .storage_path
             .lock()
@@ -153,13 +160,22 @@ impl AgentTaskManager {
             .map(AgentTask::redacted_for_persistence)
             .collect::<Vec<_>>();
         tasks.sort_by_key(|task| task.updated_at);
-        let mut events = self
-            .events
-            .lock()
-            .map_err(|_| "AI 事件状态不可用".to_string())?
-            .values()
-            .flat_map(|events| events.iter().cloned())
-            .collect::<Vec<_>>();
+        let task_ids = tasks
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<HashSet<_>>();
+        let mut events = {
+            let mut stored = self
+                .events
+                .lock()
+                .map_err(|_| "AI 事件状态不可用".to_string())?;
+            // Drop the history of tasks that were evicted.
+            stored.retain(|task_id, _| task_ids.contains(task_id.as_str()));
+            stored
+                .values()
+                .flat_map(|events| events.iter().cloned())
+                .collect::<Vec<_>>()
+        };
         events.sort_by_key(|event| (event.task.updated_at, event.sequence));
         let bytes = serde_json::to_vec(&PersistedAgentRuntime {
             version: AGENT_RUNTIME_STATE_VERSION,
@@ -167,7 +183,7 @@ impl AgentTaskManager {
             events,
         })
         .map_err(|error| format!("无法序列化 AI 运行时状态：{error}"))?;
-        fs::write(path, bytes).map_err(|error| format!("无法写入 AI 运行时状态：{error}"))
+        write_atomically(&path, &bytes).map_err(|error| format!("无法写入 AI 运行时状态：{error}"))
     }
 
     pub(super) fn events_since(
@@ -196,6 +212,34 @@ impl AgentTaskManager {
         let task = self.get_task(task_id)?;
         let events = self.events_since(task_id, after_sequence)?;
         Ok(AgentTaskSync { task, events })
+    }
+}
+
+/// Writes through a temporary file so a crash mid-write leaves the previous
+/// state intact instead of a truncated file.
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = PathBuf::from(temporary);
+    let result = (|| {
+        let mut file = fs::File::create(&temporary)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// Keeps an unreadable state file for inspection instead of overwriting it
+/// with the next save.
+fn preserve_unreadable_state(path: &Path) {
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(format!(".corrupt-{}", timestamp_ms()));
+    if let Err(error) = fs::rename(path, PathBuf::from(&backup)) {
+        log::warn!(target: "fineshell::agent", "无法备份损坏的 AI 运行时状态文件: {error}");
     }
 }
 
