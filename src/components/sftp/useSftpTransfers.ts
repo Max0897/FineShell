@@ -555,6 +555,15 @@ export default function useSftpTransfers({
     );
   }, []);
 
+  const remove = useCallback((transferId: string) => {
+    setTransfers((current) => {
+      const transfer = current[transferId];
+      if (!transfer || isActiveSftpTransfer(transfer.status)) return current;
+      const { [transferId]: _removed, ...rest } = current;
+      return rest;
+    });
+  }, []);
+
   const currentTransfers = useMemo(
     () =>
       Object.values(transfers)
@@ -571,6 +580,7 @@ export default function useSftpTransfers({
     pause,
     queueArchiveDownload,
     queueTransfer,
+    remove,
     resume,
     retry,
   };

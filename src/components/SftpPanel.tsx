@@ -65,6 +65,7 @@ import {
   type RemoteTextFile,
 } from "./sftp/SftpDialogs";
 import SftpTransferDrawer from "./sftp/SftpTransferDrawer";
+import type { TransferActivityRecord } from "./TransferActivityList";
 import ConnectionStatusOverlay from "./ConnectionStatusOverlay";
 import buildSftpContextMenu from "./sftp/buildSftpContextMenu";
 import SftpToolbar from "./sftp/SftpToolbar";
@@ -173,6 +174,7 @@ function SftpPanel({
   );
   const browsersRef = useRef(browsers);
   const panelRef = useRef<HTMLElement>(null);
+  const pendingLocatePathRef = useRef<string | null>(null);
   const sessionHostIdsRef = useRef(new Map<string, string>());
   const { commitLocation, locationForHost, recordVisitedPath } =
     useSftpLocations();
@@ -302,6 +304,7 @@ function SftpPanel({
     pause: pauseTransfer,
     queueArchiveDownload,
     queueTransfer,
+    remove: removeTransfer,
     resume: resumeTransfer,
     retry: retryTransfer,
   } = useSftpTransfers({
@@ -555,6 +558,24 @@ function SftpPanel({
   }, [visibleEntries]);
 
   useEffect(() => {
+    const target = pendingLocatePathRef.current;
+    if (!target || browser?.status !== "ready") return;
+    pendingLocatePathRef.current = null;
+    if (browser.path !== remoteParentPath(target)) return;
+    const entry = visibleEntries.find((candidate) => candidate.path === target);
+    if (!entry) {
+      Message.warning("远程文件已不存在，或被隐藏文件设置过滤");
+      return;
+    }
+    setSelectedEntryKeys([entry.id]);
+    requestAnimationFrame(() => {
+      panelRef.current
+        ?.querySelector(`[data-sftp-entry-path="${CSS.escape(target)}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  }, [browser?.path, browser?.status, visibleEntries]);
+
+  useEffect(() => {
     const handleSelectAllRequest = (event: Event) => {
       const panel = panelRef.current;
       if (
@@ -592,6 +613,13 @@ function SftpPanel({
       return;
     }
     panelRef.current?.focus({ preventScroll: true });
+  }
+
+  function locateTransferInPanel(transfer: TransferActivityRecord) {
+    if (!session || !transfer.remotePath) return;
+    pendingLocatePathRef.current = transfer.remotePath;
+    setTransferDrawerVisible(false);
+    void loadDirectory(session.id, remoteParentPath(transfer.remotePath));
   }
 
   function navigateToPath(path: string) {
@@ -1134,6 +1162,8 @@ function SftpPanel({
         onCancelTransfer={(transfer) => void cancelTransfer(transfer)}
         onClearFinished={clearFinishedTransfers}
         onClose={() => setTransferDrawerVisible(false)}
+        onLocateRemoteTransfer={locateTransferInPanel}
+        onRemoveTransfer={(transfer) => removeTransfer(transfer.transferId)}
         onOpenExternalEdit={(edit) => void reopenExternalEditLocalFile(edit)}
         onPauseTransfer={(transfer) => void pauseTransfer(transfer)}
         onResolveExternalEdit={selectExternalEditConflict}
