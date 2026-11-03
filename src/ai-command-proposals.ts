@@ -460,6 +460,13 @@ export function markAiCommandProposalApproved(
   return { ...proposal, approvedAt, status: "approved" as const };
 }
 
+/** Hands an approval that failed before running back to the user. */
+export function revertAiCommandProposalApproval(proposal: AiCommandProposal) {
+  if (proposal.status !== "approved") return proposal;
+  const { approvedAt: _approvedAt, ...rest } = proposal;
+  return { ...rest, status: "pending" as const };
+}
+
 export function updateAiCommandProposalOutput(
   proposal: AiCommandProposal,
   output: string,

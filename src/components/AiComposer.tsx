@@ -326,13 +326,15 @@ function AiComposer({
             </span>
           </Tooltip>
           {sending ? (
-            <Button
-              icon={<IconStop />}
-              onClick={() => void onCancel()}
-              size="small"
-            >
-              停止
-            </Button>
+            <Tooltip content="停止生成。切换到其他终端也会中断当前 AI 任务">
+              <Button
+                icon={<IconStop />}
+                onClick={() => void onCancel()}
+                size="small"
+              >
+                停止
+              </Button>
+            </Tooltip>
           ) : (
             <Button
               disabled={!sendEnabled}

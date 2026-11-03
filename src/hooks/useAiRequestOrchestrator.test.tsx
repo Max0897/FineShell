@@ -638,7 +638,10 @@ describe("useAiRequestOrchestrator", () => {
       onStream({ delta: "正在分析", requestId: request.requestId });
       onStream({ delta: "忽略", requestId: "obsolete-request" });
     });
-    expect(callbacks.current().messages[1]?.reasoning).toBe("检查服务器指标");
+    // Deltas are coalesced and applied on the next animation frame.
+    await waitFor(() =>
+      expect(callbacks.current().messages[1]?.reasoning).toBe("检查服务器指标"),
+    );
     expect(callbacks.current().messages[1]?.content).toBe("正在分析");
 
     await act(async () => {
@@ -903,6 +906,46 @@ describe("useAiRequestOrchestrator", () => {
     expect(callbacks.current().messages[1]?.diagnosticPlans?.[0]?.status).toBe(
       "completed",
     );
+  });
+
+  test("tells the user when switching sessions interrupts a request", async () => {
+    const response = deferred<AiChatResult>();
+    const invoke = mock(async (command: string) =>
+      command === "ai_chat_start" ? response.promise : undefined,
+    ) as unknown as AiRequestInvoke;
+    const onSessionSwitchInterrupt = mock(() => undefined);
+    const callbacks = createConversationCallbacks();
+    const { result, rerender } = renderHook(
+      ({ sessionId }: { sessionId: string }) =>
+        useAiRequestOrchestrator({
+          invoke,
+          listenToStream: async () => () => undefined,
+          onSessionSwitchInterrupt,
+          persistConversation: async () => undefined,
+          sessionId,
+          settings: aiSettings,
+          setDraft: () => undefined,
+          updateConversation: callbacks.updateConversation,
+          updateMessages: callbacks.updateMessages,
+        }),
+      { initialProps: { sessionId: "session-1" } },
+    );
+
+    rerender({ sessionId: "session-2" });
+    expect(onSessionSwitchInterrupt).not.toHaveBeenCalled();
+
+    let task!: Promise<AiConversation | undefined>;
+    act(() => {
+      task = result.current.sendMessage(baseSendOptions);
+    });
+    rerender({ sessionId: "session-3" });
+
+    expect(onSessionSwitchInterrupt).toHaveBeenCalledTimes(1);
+    expect(result.current.sending).toBe(false);
+    await act(async () => {
+      response.resolve({ content: "完成", toolCalls: [] });
+      await task.catch(() => undefined);
+    });
   });
 
   test("blocks a duplicate send while the first request is active", async () => {

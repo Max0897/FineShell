@@ -11,6 +11,7 @@ import type {
 } from "../ai-action-lifecycle";
 import { buildAiConversationRequestMessages } from "../ai-summaries";
 import {
+  agentTaskMayHaveRunningCommand,
   agentTaskNeedsRecovery,
   buildAgentRecoveryPrompt,
 } from "../ai-task-recovery";
@@ -52,6 +53,7 @@ import { useAiConversationActions } from "../hooks/useAiConversationActions";
 import { useAiDraftActions } from "../hooks/useAiDraftActions";
 import { useAiFileChangeWorkflow } from "../hooks/useAiFileChangeWorkflow";
 import { useAiProposalState } from "../hooks/useAiProposalState";
+import { useAiTimelineAutoScroll } from "../hooks/useAiTimelineAutoScroll";
 import { useAiRequestOrchestrator } from "../hooks/useAiRequestOrchestrator";
 import AiComposer from "./AiComposer";
 import AiCommandProposalList from "./AiCommandProposalList";
@@ -158,15 +160,30 @@ function AiAssistantPanel({
   });
   const conversationsByHostRef = useRef(conversationsByHost);
   conversationsByHostRef.current = conversationsByHost;
-  const commandResultContextSources = useMemo(
-    () =>
-      messages.flatMap((message) =>
-        (message.commandProposals ?? [])
-          .map(aiCommandResultContextSource)
-          .filter((source) => source !== null),
-      ),
-    [messages],
-  );
+  // `messages` changes on every streamed frame; keep the same array while the
+  // command results are unchanged so context-dependent memos stay valid.
+  const commandResultContextSourcesRef = useRef<AiContextSource[]>([]);
+  const commandResultContextSources = useMemo(() => {
+    const next = messages.flatMap((message) =>
+      (message.commandProposals ?? [])
+        .map(aiCommandResultContextSource)
+        .filter((source) => source !== null),
+    );
+    const previous = commandResultContextSourcesRef.current;
+    if (
+      next.length === previous.length &&
+      next.every(
+        (source, index) =>
+          source.id === previous[index]?.id &&
+          source.label === previous[index]?.label &&
+          source.content === previous[index]?.content,
+      )
+    ) {
+      return previous;
+    }
+    commandResultContextSourcesRef.current = next;
+    return next;
+  }, [messages]);
   const commandDecisionRef = useRef<
     (proposalId: string, decision: AiCommandApprovalDecision) => boolean
   >(() => false);
@@ -345,6 +362,8 @@ function AiAssistantPanel({
     approvalMode,
     onCancelError: (error) => Message.error(commandErrorMessage(error)),
     onMissingModel: () => Message.warning("请先在设置中配置 AI 模型"),
+    onSessionSwitchInterrupt: () =>
+      Message.warning("已切换终端，进行中的 AI 任务已中断"),
     onSummaryError: (error) =>
       recordDiagnostic("warn", "ai.summary", "后台整理对话摘要失败", {
         error: commandErrorMessage(error),
@@ -492,8 +511,30 @@ function AiAssistantPanel({
       proposal,
       userConfirmed,
     );
-    if (!submission) return false;
-    const decision = aiCommandApprovalDecisionFromSubmission(submission);
+    // Not pending anymore: another path already settled this proposal.
+    if (submission === false) return false;
+    // An automatic attempt falls back to manual approval, so the round keeps
+    // waiting. A manual attempt must settle the round, otherwise the agent
+    // loop waits forever for a decision that never comes.
+    if ("failed" in submission) {
+      if (userConfirmed) {
+        commandDecisionRef.current(proposal.id, {
+          kind: "execution_unavailable",
+          reason: submission.reason,
+        });
+      }
+      return false;
+    }
+    let decision: ReturnType<typeof aiCommandApprovalDecisionFromSubmission>;
+    try {
+      decision = aiCommandApprovalDecisionFromSubmission(submission);
+    } catch (error) {
+      decision = {
+        kind: "execution_unavailable",
+        reason: commandErrorMessage(error),
+      };
+    }
+    // A still-running submission is settled later by task events.
     if (decision) commandDecisionRef.current(proposal.id, decision);
     return true;
   };
@@ -655,37 +696,50 @@ function AiAssistantPanel({
     if (!automaticApproval || !queuedApprovalId || !sending) return;
     if (automaticApprovalAttemptsRef.current.has(queuedApprovalId)) return;
     automaticApprovalAttemptsRef.current.add(queuedApprovalId);
+    const approval = automaticApproval;
+    const approvalId = queuedApprovalId;
+    const markAutomaticApprovalFailed = () =>
+      setAutomaticApprovalFailures((current) =>
+        new Set(current).add(approvalId),
+      );
 
     void (async () => {
-      if (automaticApproval.kind === "command") {
-        const approved = await executeCommandAndResume(
-          automaticApproval.messageId,
-          automaticApproval.proposal,
-          false,
-        );
-        if (!approved) {
-          setAutomaticApprovalFailures((current) =>
-            new Set(current).add(queuedApprovalId),
-          );
-        }
-        return;
-      }
-      if (automaticApproval.kind === "file-edit") {
-        await approveFileEditAndResume(
-          automaticApproval.messageId,
-          automaticApproval.proposal,
-          false,
-        );
-        return;
-      }
-      if (automaticApproval.kind === "file-operation") {
-        await approveFileOperationAndResume(
-          automaticApproval.messageId,
-          automaticApproval.proposal,
-          false,
+      try {
+        await runAutomaticApproval();
+      } catch (error) {
+        markAutomaticApprovalFailed();
+        Message.warning(
+          `自动执行未完成，请手动确认：${commandErrorMessage(error)}`,
         );
       }
     })();
+
+    async function runAutomaticApproval() {
+      if (approval.kind === "command") {
+        const approved = await executeCommandAndResume(
+          approval.messageId,
+          approval.proposal,
+          false,
+        );
+        if (!approved) markAutomaticApprovalFailed();
+        return;
+      }
+      if (approval.kind === "file-edit") {
+        await approveFileEditAndResume(
+          approval.messageId,
+          approval.proposal,
+          false,
+        );
+        return;
+      }
+      if (approval.kind === "file-operation") {
+        await approveFileOperationAndResume(
+          approval.messageId,
+          approval.proposal,
+          false,
+        );
+      }
+    }
   }, [automaticApproval, queuedApprovalId, sending]);
 
   const {
@@ -731,9 +785,9 @@ function AiAssistantPanel({
     sending,
     sessionId,
   });
-  const selectedContextIds = aiContextMentionIds(
-    prompt,
-    availableContextSources,
+  const selectedContextIds = useMemo(
+    () => aiContextMentionIds(prompt, availableContextSources),
+    [availableContextSources, prompt],
   );
   const question = stripAiContextMentions(prompt, availableContextSources);
 
@@ -741,36 +795,69 @@ function AiAssistantPanel({
     (source) =>
       selectedContextIds.includes(source.id) && Boolean(source.content.trim()),
   );
-  const contextPayload = buildAiContextPayloadResult(
-    availableContextSources,
-    selectedContextIds,
-    settings.aiContextMaxChars,
+  const contextPayload = useMemo(
+    () =>
+      buildAiContextPayloadResult(
+        availableContextSources,
+        selectedContextIds,
+        settings.aiContextMaxChars,
+      ),
+    [availableContextSources, selectedContextIds, settings.aiContextMaxChars],
   );
   const context = contextPayload.content;
-  const tokenBudget = estimateAiRequestTokenBudget(
-    buildAiConversationRequestMessages(messages, activeConversation?.summary),
-    question,
-    contextPayload,
-    settings.aiContextMaxChars,
+  // The budget is for the next request, which can't be sent while one is in
+  // flight, so it doesn't need to follow every streamed frame.
+  const budgetMessagesRef = useRef(messages);
+  if (!sending) budgetMessagesRef.current = messages;
+  const budgetMessages = budgetMessagesRef.current;
+  const conversationSummary = activeConversation?.summary;
+  const tokenBudget = useMemo(
+    () =>
+      estimateAiRequestTokenBudget(
+        buildAiConversationRequestMessages(budgetMessages, conversationSummary),
+        question,
+        contextPayload,
+        settings.aiContextMaxChars,
+      ),
+    [
+      budgetMessages,
+      contextPayload,
+      conversationSummary,
+      question,
+      settings.aiContextMaxChars,
+    ],
   );
   const lastTelemetry = [...messages]
     .reverse()
     .find((message) => message.role === "assistant" && message.telemetry)
     ?.telemetry;
-  const selectedRemoteFiles = remoteFiles.filter((file) =>
-    selectedContextIds.includes(aiRemoteFileContextSource(file).id),
+  const selectedRemoteFiles = useMemo(
+    () =>
+      remoteFiles.filter((file) =>
+        selectedContextIds.includes(aiRemoteFileContextSource(file).id),
+      ),
+    [remoteFiles, selectedContextIds],
   );
-  const editableRemoteFiles =
-    settings.aiFileProposalsEnabled && canInsertCommand
-      ? selectedRemoteFiles.filter(
-          (file) =>
-            !aiFileEditEligibilityError(
-              file,
-              context,
-              settings.aiContextMaxChars,
-            ),
-        )
-      : [];
+  const editableRemoteFiles = useMemo(
+    () =>
+      settings.aiFileProposalsEnabled && canInsertCommand
+        ? selectedRemoteFiles.filter(
+            (file) =>
+              !aiFileEditEligibilityError(
+                file,
+                context,
+                settings.aiContextMaxChars,
+              ),
+          )
+        : [],
+    [
+      canInsertCommand,
+      context,
+      selectedRemoteFiles,
+      settings.aiContextMaxChars,
+      settings.aiFileProposalsEnabled,
+    ],
+  );
   const currentRemoteDirectory =
     contextSources
       .find((source) => source.id === "sftp-path")
@@ -811,15 +898,12 @@ function AiAssistantPanel({
     });
   };
 
-  useEffect(() => {
-    if (!visible) return;
-    const frame = requestAnimationFrame(() => {
-      const contentElement = contentRef.current;
-      if (contentElement)
-        contentElement.scrollTop = contentElement.scrollHeight;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [messages, visible]);
+  useAiTimelineAutoScroll(contentRef, {
+    content: messages,
+    conversationId: activeConversation?.id,
+    messageCount: messages.length,
+    visible,
+  });
 
   useEffect(() => {
     if (visible) return;
@@ -879,7 +963,9 @@ function AiAssistantPanel({
         activeConversation?.summary,
         null,
         false,
-        buildAgentRecoveryPrompt(recovery, decision),
+        buildAgentRecoveryPrompt(recovery, decision, {
+          remoteCommandMayBeRunning: agentTaskMayHaveRunningCommand(activeTask),
+        }),
         "on_request",
       );
     } catch (error) {
@@ -920,6 +1006,28 @@ function AiAssistantPanel({
       userMessage.role !== "user" ||
       !assistantMessage?.failed
     ) {
+      return;
+    }
+    // Retrying the latest answer replaces it. For an earlier one, replacing
+    // would discard everything after it, so ask the question again at the end.
+    const latest = assistantIndex === messages.length - 1;
+    if (!latest) {
+      void sendMessage({
+        commandProposalEnabled:
+          canInsertCommand && settings.aiCommandProposalsEnabled,
+        conversationSummary: activeConversation.summary,
+        context: userMessage.context ?? "",
+        contextLabels: userMessage.contextLabels ?? [],
+        currentOperationDirectory: null,
+        editableFiles: [],
+        history: messages,
+        targetConversationId: activeConversation.id,
+        targetDirectory: currentRemoteDirectory,
+        targetHostId: hostId,
+        targetSessionId: sessionId,
+        toolCurrentDirectory: currentRemoteDirectory,
+        value: userMessage.content,
+      });
       return;
     }
     void sendMessage({
@@ -1024,6 +1132,7 @@ function AiAssistantPanel({
             disconnected={activeTask.status === "paused_disconnected"}
             onDecision={(decision) => void decideInterruptedTask(decision)}
             reason={activeTask.error ?? "AI 任务执行被中断"}
+            remoteCommandMayBeRunning={agentTaskMayHaveRunningCommand(activeTask)}
             sessionAvailable={Boolean(sessionId)}
           />
         )}

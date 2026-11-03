@@ -76,39 +76,48 @@ pub(super) fn supported_tool(name: &str) -> bool {
     tool_kind(name).is_some()
 }
 
-pub(super) fn private_key_regex() -> Regex {
-    Regex::new(r"(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----")
-        .expect("private key regex must be valid")
+fn redaction_regex(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("redaction regex must be valid")
 }
 
-pub(super) fn bearer_regex() -> Regex {
-    Regex::new(r#"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s\"']+"#)
-        .expect("bearer regex must be valid")
-}
-
-pub(super) fn secret_assignment_regex() -> Regex {
-    Regex::new(
-        r#"(?im)\b(password|passwd|api[_-]?key|access[_-]?token|secret)\b[\"']?\s*[:=]\s*[\"']?([^\s,;\"'}]+)"#,
+// Kept in line with redactAiContext in src/ai-utils.ts. The backend applies
+// these to content the frontend never sees before it reaches the model, such
+// as service logs and command output collected during diagnostics.
+static PRIVATE_KEY: LazyLock<Regex> = LazyLock::new(|| {
+    redaction_regex(r"(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----")
+});
+static BEARER: LazyLock<Regex> =
+    LazyLock::new(|| redaction_regex(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+"));
+/// Names that contain a secret keyword anywhere, e.g. `DB_PASSWORD`,
+/// `OPENAI_API_KEY`, `"client_secret"`. Quotes and the separator are kept so
+/// JSON stays valid after redaction.
+static SECRET_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
+    redaction_regex(
+        r#"(?i)(\b[A-Za-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|database[_-]?url|connection[_-]?string|dsn)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?)([^\s,;"'}]+)"#,
     )
-    .expect("secret assignment regex must be valid")
-}
-
-pub(super) fn secret_argument_regex() -> Regex {
-    Regex::new(
-        r#"(?i)(^|[\s\"'\\])(--?(?:password|passphrase|api[_-]?key|access[_-]?token|secret|token)\s+)[^\s,;\"'}]+"#,
+});
+static SECRET_ARGUMENT: LazyLock<Regex> = LazyLock::new(|| {
+    redaction_regex(
+        r#"(?i)(^|[\s"'\\])(--?(?:password|passphrase|api[_-]?key|access[_-]?(?:key|token)|client[_-]?secret|secret|token|database[_-]?url|connection[_-]?string|dsn)(?:\s+|=)["']?)[^\s,;"'}]+"#,
     )
-    .expect("secret argument regex must be valid")
-}
+});
+static SECRET_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
+    redaction_regex(
+        r"\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[A-Z0-9]{16})\b",
+    )
+});
+static CREDENTIAL_URL: LazyLock<Regex> =
+    LazyLock::new(|| redaction_regex(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s/:@]+:)([^\s/@]+)(@)"));
 
 pub(super) fn sanitize_context(value: &str) -> String {
     let limited = value.chars().take(MAX_CONTEXT_CHARS).collect::<String>();
-    let value = private_key_regex().replace_all(&limited, "[PRIVATE KEY REDACTED]");
-    let value = bearer_regex().replace_all(&value, "${1}[REDACTED]");
-    let value = secret_assignment_regex()
-        .replace_all(&value, "${1}=[REDACTED]")
-        .into_owned();
-    secret_argument_regex()
-        .replace_all(&value, "${1}${2}[REDACTED]")
+    let value = PRIVATE_KEY.replace_all(&limited, "[PRIVATE KEY REDACTED]");
+    let value = BEARER.replace_all(&value, "${1}[REDACTED]");
+    let value = SECRET_ASSIGNMENT.replace_all(&value, "${1}[REDACTED]");
+    let value = SECRET_ARGUMENT.replace_all(&value, "${1}${2}[REDACTED]");
+    let value = SECRET_TOKEN.replace_all(&value, "[REDACTED]");
+    CREDENTIAL_URL
+        .replace_all(&value, "${1}[REDACTED]${3}")
         .into_owned()
 }
 

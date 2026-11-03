@@ -92,6 +92,24 @@ describe("AI approval queue", () => {
     expect(aiApprovalRequiresUserDecision(deleteItem, "full_access")).toBe(
       false,
     );
+    expect(
+      aiApprovalRequiresUserDecision(
+        {
+          ...commandItem,
+          proposal: {
+            ...commandItem.proposal,
+            command: "rm -rf /srv/app",
+            assessment: {
+              label: "高风险",
+              risk: "danger",
+              reason: "会删除数据",
+              canInsert: true,
+            },
+          },
+        },
+        "full_access",
+      ),
+    ).toBe(true);
   });
 
   test("combines pending diagnostics and blocking commands for the active task", () => {

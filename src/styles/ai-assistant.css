@@ -1582,6 +1582,10 @@
   line-height: 18px;
 }
 
+.ai-task-recovery-copy .arco-typography.ai-task-recovery-warning {
+  color: rgb(var(--orange-6));
+}
+
 .ai-assistant-composer .arco-textarea:focus-visible {
   outline: none;
 }

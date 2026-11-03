@@ -396,8 +396,7 @@ pub(crate) async fn ai_chat_start(
     }
 
     let result = async {
-        let ai_client =
-            client(Duration::from_secs(180)).map_err(|error| structured(operation, error))?;
+        let ai_client = streaming_client().map_err(|error| structured(operation, error))?;
         let mut runtime_plans = Vec::new();
         let mut runtime_rounds = Vec::new();
 

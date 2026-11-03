@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  agentTaskMayHaveRunningCommand,
   agentTaskNeedsRecovery,
   buildAgentRecoveryPrompt,
 } from "./ai-task-recovery";
@@ -30,5 +31,28 @@ describe("AI task recovery", () => {
       agentTaskNeedsRecovery({ status: "paused_disconnected" } as AgentTask),
     ).toBe(true);
     expect(agentTaskNeedsRecovery({ status: "failed" } as AgentTask)).toBe(false);
+  });
+
+  test("warns the next turn when an interrupted command may still be running", () => {
+    expect(buildAgentRecoveryPrompt(recovery, "retry")).not.toContain("pgrep");
+    expect(
+      buildAgentRecoveryPrompt(recovery, "retry", {
+        remoteCommandMayBeRunning: true,
+      }),
+    ).toContain("远端进程可能仍在运行");
+  });
+
+  test("detects commands whose remote process may outlive the task", () => {
+    const task = (phase: string | null) =>
+      ({
+        actions: [
+          { commandExecution: phase === null ? null : { phase } },
+        ],
+      }) as unknown as AgentTask;
+    expect(agentTaskMayHaveRunningCommand(task("interrupted"))).toBe(true);
+    expect(agentTaskMayHaveRunningCommand(task("cancelling"))).toBe(true);
+    expect(agentTaskMayHaveRunningCommand(task("completed"))).toBe(false);
+    expect(agentTaskMayHaveRunningCommand(task(null))).toBe(false);
+    expect(agentTaskMayHaveRunningCommand(undefined)).toBe(false);
   });
 });

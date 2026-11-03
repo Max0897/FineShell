@@ -43,7 +43,10 @@ export function aiApprovalRequiresUserDecision(
   mode: AgentApprovalMode,
 ) {
   if (mode === "on_request" || item.kind === "diagnostic") return true;
-  if (mode === "full_access") return false;
+  // Mirrors the backend policy: destructive commands are never auto-run.
+  if (mode === "full_access") {
+    return item.kind === "command" && item.proposal.assessment.risk === "danger";
+  }
   return item.kind !== "command" || item.proposal.assessment.risk !== "safe";
 }
 

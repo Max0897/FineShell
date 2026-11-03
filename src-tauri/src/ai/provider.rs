@@ -303,6 +303,18 @@ pub(super) fn validate_model(model: &str) -> Result<&str, String> {
     }
 }
 
+/// Client for streamed chat turns. A total timeout would cut off long
+/// reasoning responses that are still making progress, so only stalls count:
+/// the read timeout resets whenever the provider sends any bytes.
+pub(super) fn streaming_client() -> Result<Client, String> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(AI_STREAM_IDLE_TIMEOUT)
+        .user_agent("FineShell AI Assistant")
+        .build()
+        .map_err(|error| format!("无法初始化 AI 网络客户端：{error}"))
+}
+
 pub(super) fn client(timeout: Duration) -> Result<Client, String> {
     Client::builder()
         .connect_timeout(Duration::from_secs(10))

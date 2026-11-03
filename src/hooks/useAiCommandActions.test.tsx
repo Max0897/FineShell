@@ -85,6 +85,7 @@ function renderActions(options?: {
   );
   return {
     ...hook,
+    currentProposal: () => currentProposal,
     onPrepareCommand,
     onNotice,
     setDraft,
@@ -127,6 +128,50 @@ describe("useAiCommandActions", () => {
       value,
       true,
     );
+  });
+
+  test("hands a failed automatic approval back to the user", async () => {
+    const view = renderActions({
+      onPrepareCommand: async () => {
+        throw new Error("该 AI 动作需要本次用户审批");
+      },
+    });
+    let result: unknown;
+
+    await act(async () => {
+      result = await view.result.current.approveCommandProposal(
+        "assistant-1",
+        proposal(),
+        false,
+      );
+    });
+
+    expect(result).toEqual({
+      failed: true,
+      reason: "该 AI 动作需要本次用户审批",
+    });
+    expect(view.currentProposal().status).toBe("pending");
+    expect(view.currentProposal().approvedAt).toBeUndefined();
+  });
+
+  test("reports why a manual approval could not run", async () => {
+    const view = renderActions({
+      onPrepareCommand: async () => {
+        throw new Error("当前终端会话不可用");
+      },
+    });
+    let result: unknown;
+
+    await act(async () => {
+      result = await view.result.current.approveCommandProposal(
+        "assistant-1",
+        proposal(),
+      );
+    });
+
+    expect(result).toEqual({ failed: true, reason: "当前终端会话不可用" });
+    expect(view.currentProposal().status).toBe("unavailable");
+    expect(view.onNotice).toHaveBeenCalledWith("error", "当前终端会话不可用");
   });
 
   test("can execute a policy-approved command without claiming user confirmation", async () => {
