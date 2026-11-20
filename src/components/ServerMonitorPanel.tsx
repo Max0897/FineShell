@@ -468,16 +468,19 @@ function ServerMonitorPanel({
 
   const reconnecting = session?.status === "reconnecting";
   const suspect = session?.status === "suspect";
+  // A failed collection says nothing about the connection: the terminal may
+  // be fine while one sample timed out. Only the session status may offer to
+  // reconnect, which would interrupt whatever is running in the terminal.
   const connectionUnavailable = Boolean(
     session &&
     (session.status === "failed" ||
       session.status === "disconnected" ||
-      reconnecting ||
-      Boolean(error && !suspect)),
+      reconnecting),
   );
+  const collectionError = connected && !suspect ? error : undefined;
   const connectionDescription = reconnecting
     ? "正在重新连接服务器"
-    : error || session?.error || "服务器连接已断开";
+    : session?.error || "服务器连接已断开";
   const sendNetworkToAi = () => {
     if (
       !session ||
@@ -535,6 +538,14 @@ function ServerMonitorPanel({
           </Tooltip>
         </Space>
       </div>
+      {collectionError && (
+        <Alert
+          className="server-monitor-collection-error"
+          content={`监控采集失败，稍后自动重试：${collectionError}`}
+          showIcon
+          type="warning"
+        />
+      )}
       <dl className="monitor-system-facts">
         <div>
           <dt>系统</dt>

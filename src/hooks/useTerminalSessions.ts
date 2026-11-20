@@ -11,7 +11,8 @@ import type {
 import { confirmHostFingerprint, persistHostFingerprint } from "../app-window-actions";
 import { recordDiagnostic, diagnosticInvoke as invoke } from "../diagnostics";
 import { withHostDefaults } from "../host-storage";
-import { knownHostTargetKey } from "../known-hosts";
+import { loadConfiguration } from "../config-database";
+import { knownHostTargetKey, trustedHostFingerprint } from "../known-hosts";
 import {
   commandErrorMessage,
   listenProtocolEvent,
@@ -100,6 +101,9 @@ export function useTerminalSessions({
         sessionId: session.id,
       });
       try {
+        const knownHosts = await loadConfiguration()
+          .then((configuration) => configuration.knownHosts)
+          .catch(() => []);
         const result = await invoke<SshConnectResult>("ssh_connect", {
           request: {
             sessionId: session.id,
@@ -111,7 +115,11 @@ export function useTerminalSessions({
             privateKeyPath: session.host.privateKeyPath,
             connectTimeoutSeconds: session.host.connectTimeoutSeconds,
             keepAliveIntervalSeconds: session.host.keepAliveIntervalSeconds,
-            expectedFingerprint: session.host.hostFingerprint,
+            expectedFingerprint: trustedHostFingerprint(
+              knownHosts,
+              session.host,
+              session.host.hostFingerprint,
+            ),
             proxy: session.proxy,
             jumpHost: jumpHostRequest(session.jumpHost),
             localPortForwards: session.host.localPortForwards ?? [],

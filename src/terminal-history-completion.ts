@@ -76,6 +76,10 @@ export class TerminalHistoryCompletionAddon implements ITerminalAddon {
     this.refreshDecoration();
   }
 
+  public get isPromptReady() {
+    return this.promptReady;
+  }
+
   public setPromptReady(ready: boolean) {
     this.promptReady = ready;
     if (ready) {

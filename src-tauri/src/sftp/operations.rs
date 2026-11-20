@@ -376,6 +376,30 @@ pub(super) fn resolve_identity_id(
         })
 }
 
+/// SFTP sends uid and gid as one pair, and ssh2 fills a missing half with 0.
+/// Changing only the group would therefore hand the file to root, so the
+/// unchanged half is always taken from the current attributes.
+pub(super) fn owner_attributes(
+    current: &FileStat,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<FileStat, String> {
+    let uid = uid
+        .or(current.uid)
+        .ok_or_else(|| "远程服务器没有返回当前用户，无法只修改用户组".to_string())?;
+    let gid = gid
+        .or(current.gid)
+        .ok_or_else(|| "远程服务器没有返回当前用户组，无法只修改用户".to_string())?;
+    Ok(FileStat {
+        size: None,
+        uid: Some(uid),
+        gid: Some(gid),
+        perm: None,
+        atime: None,
+        mtime: None,
+    })
+}
+
 pub(super) fn set_owner(
     session: &Session,
     sftp: &Sftp,
@@ -394,18 +418,11 @@ pub(super) fn set_owner(
     let gid = group
         .map(|value| resolve_identity_id(session, "group", value, &identity_cache.groups))
         .transpose()?;
-    sftp.setstat(
-        Path::new(path),
-        FileStat {
-            size: None,
-            uid,
-            gid,
-            perm: None,
-            atime: None,
-            mtime: None,
-        },
-    )
-    .map_err(|error| format!("修改远程项目所有者失败：{error}"))?;
+    let current = sftp
+        .stat(Path::new(path))
+        .map_err(|error| format!("无法读取远程项目当前所有者：{error}"))?;
+    sftp.setstat(Path::new(path), owner_attributes(&current, uid, gid)?)
+        .map_err(|error| format!("修改远程项目所有者失败：{error}"))?;
 
     if let (Some(id), Some(name)) = (uid, owner) {
         identity_cache.users.insert(id, name.to_string());

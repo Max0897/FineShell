@@ -29,6 +29,28 @@ export function knownHostRecordId(address: string, port: number) {
   return `known-host-${encodeURIComponent(knownHostTargetKey(address, port))}`;
 }
 
+/**
+ * The fingerprint already trusted for this address and port, whichever host
+ * entry or quick connection it was confirmed through. Looking it up at
+ * connect time means a changed key is reported as changed even when the
+ * connection comes from a new host entry that has no fingerprint of its own.
+ */
+export function trustedHostFingerprint(
+  records: readonly KnownHostRecord[],
+  target: KnownHostTarget,
+  hostFingerprint?: string,
+) {
+  const key = knownHostTargetKey(target.address, target.port);
+  const known = records.find(
+    (record) => knownHostTargetKey(record.address, record.port) === key,
+  );
+  return (
+    known?.fingerprint ||
+    normalizeHostFingerprint(hostFingerprint ?? "") ||
+    undefined
+  );
+}
+
 export function upsertKnownHostRecord(
   records: KnownHostRecord[],
   target: KnownHostTarget,

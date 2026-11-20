@@ -10,6 +10,7 @@ import {
   reconnectDelaySeconds,
   sessionTabName,
   sshCredentialId,
+  recordableTerminalSubmissions,
   trackTerminalInput,
   trackInjectedTerminalInput,
   terminalInjectedInputData,
@@ -139,6 +140,29 @@ describe("terminal input tracking", () => {
 
     result = trackTerminalInput(EMPTY_TERMINAL_INPUT_STATE, "secret\u0003\r");
     expect(result.submissions).toEqual([]);
+  });
+
+  test("records only lines entered at a waiting shell prompt", () => {
+    const command = trackTerminalInput(EMPTY_TERMINAL_INPUT_STATE, "sudo -i\r");
+    expect(recordableTerminalSubmissions(command.submissions, true)).toEqual([
+      "sudo -i",
+    ]);
+
+    // The password prompt that follows is not a shell prompt.
+    const password = trackTerminalInput(command.state, "git2024!\r");
+    expect(password.submissions).toEqual(["git2024!"]);
+    expect(recordableTerminalSubmissions(password.submissions, false)).toEqual(
+      [],
+    );
+
+    // Only the first line of a pasted block started at the prompt.
+    const pasted = trackTerminalInput(
+      EMPTY_TERMINAL_INPUT_STATE,
+      "mysql -p\rhunter2\r",
+    );
+    expect(recordableTerminalSubmissions(pasted.submissions, true)).toEqual([
+      "mysql -p",
+    ]);
   });
 
   test("does not report input after cursor control sequences", () => {

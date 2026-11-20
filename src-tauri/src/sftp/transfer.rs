@@ -549,6 +549,35 @@ pub(super) fn upload_file(
     Ok(())
 }
 
+/// Carries the replaced file's owner and permission bits over to the file
+/// that takes its place, so overwriting a script keeps it executable and
+/// overwriting another user's file as root keeps it theirs. Best effort:
+/// only root or the owner may chown, and the content is what matters most.
+pub(super) fn inherit_replaced_file_attributes(
+    sftp: &Sftp,
+    original: &FileStat,
+    replacement: &Path,
+) {
+    let attributes = |uid, gid, perm| FileStat {
+        size: None,
+        uid,
+        gid,
+        perm,
+        atime: None,
+        mtime: None,
+    };
+    // Owner first: changing it can clear setuid/setgid bits.
+    if let (Some(uid), Some(gid)) = (original.uid, original.gid) {
+        let _ = sftp.setstat(replacement, attributes(Some(uid), Some(gid), None));
+    }
+    if let Some(permissions) = original.perm {
+        let _ = sftp.setstat(
+            replacement,
+            attributes(None, None, Some(permissions & 0o7777)),
+        );
+    }
+}
+
 pub(super) fn replace_remote_upload_file(
     sftp: &Sftp,
     temporary_path: &Path,
@@ -585,6 +614,12 @@ pub(super) fn replace_remote_upload_file(
     }
     if !overwrite {
         return Err("远程目标已存在，需要确认覆盖".to_string());
+    }
+
+    // For a symlink the attributes that matter are the target's.
+    let replaced = sftp.stat(remote_path).ok().or(target_stat);
+    if let Some(replaced) = replaced.filter(FileStat::is_file) {
+        inherit_replaced_file_attributes(sftp, &replaced, temporary_path);
     }
 
     if remote_exists(sftp, &backup_path) {

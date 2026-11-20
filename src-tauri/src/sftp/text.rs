@@ -158,6 +158,11 @@ pub(super) fn write_remote_text_file(
             },
         )
         .map_err(|error| format!("无法保留远程文件权限：{error}"))?;
+        // Saving swaps in a new file; keep the original owner where allowed,
+        // e.g. root editing another user's authorized_keys.
+        if let Ok(original) = sftp.stat(remote_path) {
+            inherit_replaced_file_attributes(sftp, &original, &temporary_path);
+        }
         let backup_path = replace_remote_text_file(sftp, &temporary_path, remote_path)?;
 
         let verification = read_remote_text_file(sftp, path).and_then(|updated| {

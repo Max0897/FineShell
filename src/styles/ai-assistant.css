@@ -1667,3 +1667,7 @@
   border-top: 1px solid var(--color-border-2);
   font-weight: 500;
 }
+
+.ai-markdown-image-placeholder {
+  color: var(--color-text-3);
+}

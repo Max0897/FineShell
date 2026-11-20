@@ -43,6 +43,7 @@ import {
   isTerminalSessionOperational,
   isWindowsTerminalPasteShortcut,
   terminalStatusNoticeKey,
+  recordableTerminalSubmissions,
   trackTerminalInput,
 } from "../terminal-utils";
 import { loadConfiguration } from "../config-database";
@@ -524,10 +525,18 @@ function TerminalView({
         tracked.state.value,
         tracked.state.reliable,
       );
+      // Without shell integration there is no way to tell a prompt from a
+      // password request, so nothing is recorded.
+      const enteredAtShellPrompt =
+        shellIntegrationStateRef.current === "ready" &&
+        historyCompletionAddon.isPromptReady;
       if (data.includes("\r") || data.includes("\n")) {
         historyCompletionAddon.setPromptReady(false);
       }
-      tracked.submissions.forEach((command) => {
+      recordableTerminalSubmissions(
+        tracked.submissions,
+        enteredAtShellPrompt,
+      ).forEach((command) => {
         recordTerminalHistoryRef.current(command);
       });
       void invoke("ssh_write", {

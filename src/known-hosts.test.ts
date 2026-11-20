@@ -3,6 +3,7 @@ import {
   deriveKnownHostRecords,
   normalizeHostFingerprint,
   removeKnownHostTrust,
+  trustedHostFingerprint,
   upsertKnownHostRecord,
 } from "./known-hosts";
 import type { ConnectionHistoryRecord, HostRecord } from "./models";
@@ -90,6 +91,37 @@ describe("known host fingerprints", () => {
     expect(records).toHaveLength(1);
     expect(records[0].fingerprint).toBe("SHA256:new");
     expect(records[0].firstSeenAt).toBe("2026-07-22T00:00:00.000Z");
+  });
+
+  test("uses the trusted fingerprint of the endpoint for hosts that have none", () => {
+    const known = upsertKnownHostRecord(
+      [],
+      { address: "Server.Example.com", port: 22 },
+      "SHA256:trusted",
+    );
+
+    // A new host entry or quick connection to an already trusted address.
+    expect(
+      trustedHostFingerprint(known, { address: "server.example.com", port: 22 }),
+    ).toBe("SHA256:trusted");
+    // The endpoint's trust wins over a stale per-host value.
+    expect(
+      trustedHostFingerprint(
+        known,
+        { address: "server.example.com", port: 22 },
+        "SHA256:stale",
+      ),
+    ).toBe("SHA256:trusted");
+    // Another port is another endpoint and stays a first connection.
+    expect(
+      trustedHostFingerprint(known, {
+        address: "server.example.com",
+        port: 2222,
+      }),
+    ).toBeUndefined();
+    expect(
+      trustedHostFingerprint([], { address: "new.example.com", port: 22 }, "own"),
+    ).toBe("SHA256:own");
   });
 
   test("clears trust from every account using the removed endpoint", () => {
