@@ -9,6 +9,12 @@
 </p>
 
 <p align="center">
+  <a href="https://www.fineshell.cn/">官网</a> ·
+  <a href="https://github.com/Max0897/fineshell/releases">下载</a> ·
+  <a href="CHANGELOG.md">更新日志</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/Max0897/fineshell/actions/workflows/ci.yml"><img src="https://github.com/Max0897/fineshell/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/Max0897/fineshell/releases"><img src="https://img.shields.io/github/v/release/Max0897/fineshell?display_name=tag&sort=semver" alt="GitHub release" /></a>
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white" alt="Tauri 2" />
@@ -26,13 +32,14 @@
 | 主机管理   | 分组与树形列表、搜索排序、连接历史、复制与回收站、配置导入导出                         |
 | SSH 连接 | 密码、私钥、托管密钥和 SSH Agent 认证，SOCKS5 / HTTP CONNECT 代理，一级跳板机 |
 | 连接可靠性  | SHA256 主机指纹确认、保活、自动重连、连接取消、结构化错误提示                      |
-| 终端     | 多主机多会话标签、内容搜索、快捷命令、动态参数、本地 / 远程 / 动态 SOCKS5 端口转发        |
+| 终端     | 多主机多会话标签、内容搜索、命令历史补全、快捷命令与动态参数、终端日志，本地 / 远程 / 动态 SOCKS5 端口转发 |
 | AI 助手  | OpenAI 兼容服务、上下文提及、流式对话、服务器诊断、终端命令与远程文件操作、分级审批和执行结果验证       |
-| SFTP   | 上传下载、暂停继续、取消重试、批量拖拽、复制移动、排序、权限及用户/用户组管理                 |
+| SFTP   | 上传下载、暂停继续、取消重试、上传断点续传、批量拖拽、复制移动、排序、权限及用户/用户组管理、传输记录与文件定位 |
 | 文件编辑   | 内置文本编辑、调用本地默认或指定编辑器、文件变化自动同步远端、冲突处理                     |
 | 归档操作   | 远程压缩与解压、目录及多选项目打包下载，支持 `.tar.gz`、`.tar` 和 `.zip`        |
 | 服务器监控  | 系统信息、CPU / 内存 / 磁盘占用与趋势、网络流量、进程管理和网络诊断                  |
-| 应用设置   | 终端、文件管理、监控、连接、代理、密钥、已知主机、隐私清理及备份恢复设置                    |
+| 备份与恢复  | 本地自动备份、配置导入导出、兼容 S3 的对象存储加密云备份与跨设备恢复                   |
+| 应用设置   | 外观（浅色 / 深色 / 跟随系统）、终端、文件管理、监控、连接、代理、密钥、已知主机、隐私清理及更新线路 |
 
 ## 界面预览
 
@@ -56,13 +63,13 @@
 
 ### 传输记录
 
-集中查看文件上传、下载与同步任务的进度、速度和状态，并可暂停或取消正在执行的任务。
+集中查看文件上传、下载与同步任务的进度、速度、状态和保存位置，可暂停或取消正在执行的任务。下载完成后可以直接在访达或资源管理器中定位文件，右键菜单还提供打开文件、复制路径和在 SFTP 中定位。
 
 ![FineShell 传输记录](docs/screenshots/transfer-history.png)
 
 ### 设置
 
-在独立设置窗口中统一调整终端、快捷命令、AI 服务、文件管理、服务器监控、连接、代理、密钥和备份恢复选项。
+在独立设置窗口中统一调整外观、终端、快捷命令、AI 服务、文件管理、服务器监控、连接、代理、密钥、备份恢复和云备份选项。
 
 ![FineShell 设置](docs/screenshots/settings.png)
 
@@ -95,8 +102,8 @@ FineShell 将 AI 助手放在当前 SSH 工作区右侧。它可以结合服务�
 | 模式 | 行为 | 适用场景 |
 | --- | --- | --- |
 | 请求审批 | 受控操作由用户逐项确认 | 初次使用、生产环境和关键主机 |
-| 替我审批 | 自动执行经过策略判断的安全操作，风险操作仍需确认 | 日常诊断和重复性维护 |
-| 完全访问 | 在当前主机和连接周期内自动执行策略允许的受控操作，超出安全边界的操作仍会被阻止或要求确认 | 明确范围内的连续自动化任务 |
+| 替我审批 | 自动执行只读白名单内的命令，其他命令和文件修改仍需确认 | 日常诊断和重复性维护 |
+| 完全访问 | 在当前主机和连接周期内自动执行受控操作；删除数据、重启、终止进程等破坏性命令仍需确认 | 明确范围内的连续自动化任务 |
 
 #### 开始使用
 
@@ -107,28 +114,44 @@ FineShell 将 AI 助手放在当前 SSH 工作区右侧。它可以结合服务�
 
 ## 下载与安装
 
+官网：<https://www.fineshell.cn/>
+
 前往 [GitHub Releases](https://github.com/Max0897/fineshell/releases) 下载对应平台的安装包：
 
 - macOS：Apple Silicon / Intel `.dmg`
-- Linux：x64 / ARM64 `.deb`
+- Linux：x64 / ARM64 `.deb`，需要 Ubuntu 22.04、Debian 12 或更新的发行版
 - Windows：x64 `.exe`（NSIS）/ `.msi`，ARM64 `.exe`（NSIS）
+
+### macOS
+
+安装包目前使用 ad-hoc 签名，尚未接入 Apple 公证。首次打开如果被系统拦截，请在“系统设置 → 隐私与安全性”中选择“仍要打开”。
+
+### Windows
+
+安装包尚未配置代码签名证书。安装时如果出现 SmartScreen 提示，请点击“更多信息”，再选择“仍要运行”。
 
 ### Linux
 
-请使用 APT 安装 `.deb`，APT 会同时安装 FineShell 所需的 WebKitGTK 等系统依赖：
+FineShell 依赖 `libwebkit2gtk-4.1`。更早的系统（例如基于 Ubuntu 20.04 的发行版）软件源里没有这个依赖，暂时无法安装。
+
+请在安装包所在目录使用 APT 安装 `.deb`，APT 会同时安装 WebKitGTK 等系统依赖：
 
 ```bash
 sudo apt update
-sudo apt install ./FineShell_0.1.12_linux_arm64.deb
+sudo apt install ./FineShell_*.deb
 ```
 
-请根据实际下载的文件名调整命令。不要直接使用 `dpkg -i`，因为 `dpkg` 不会自动下载缺失的依赖。
+目录里有多个版本的安装包时，请把命令里的文件名换成具体的那一个。不要直接使用 `dpkg -i`，因为 `dpkg` 不会自动下载缺失的依赖。
 
 如果已经使用 `dpkg -i` 导致软件包处于未配置状态，可执行：
 
 ```bash
 sudo apt --fix-broken install
 ```
+
+### 应用更新
+
+FineShell 启动时会检查新版本，安装包下载后先校验签名再安装。默认更新线路会先尝试第三方 GitHub 镜像（gh-proxy.com、ghproxy.net），不可用时回退 GitHub 直连；可以在“设置 → 关于”中改为 GitHub 直连或自定义镜像。
 
 ## 从源码运行
 
@@ -191,8 +214,9 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib \
 | 前端    | React 18、TypeScript、Vite、Arco Design |
 | 终端    | xterm.js                             |
 | 图表    | VChart                               |
-| 后端    | Rust、ssh2、Tokio                      |
+| 后端    | Rust、ssh2、Tokio、rig                  |
 | 凭据存储  | keyring / 操作系统凭据库                    |
+| 云备份   | S3 兼容对象存储、Argon2id、XChaCha20-Poly1305 |
 | 工具链   | Bun、Cargo、GitHub Actions             |
 
 前端通过版本化的 Tauri 命令与事件协议调用 Rust 后端。SSH、SFTP、文件传输和系统监控都在后端执行，前端只接收展示所需的数据与状态事件。
