@@ -153,6 +153,18 @@ export function trackTerminalInput(
   return { state: current, submissions };
 }
 
+/**
+ * Only a line entered at a waiting shell prompt is a command. Anything typed
+ * while a program is running — a sudo password, a REPL statement, the rest of
+ * a pasted block — must not be stored or offered back as a completion.
+ */
+export function recordableTerminalSubmissions(
+  submissions: readonly string[],
+  enteredAtShellPrompt: boolean,
+) {
+  return enteredAtShellPrompt ? submissions.slice(0, 1) : [];
+}
+
 interface SessionTabTarget {
   id: string;
   host: Pick<HostRecord, "id" | "name">;

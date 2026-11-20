@@ -11,17 +11,45 @@ use ssh2::FileStat;
 use super::{
     archive_create_command, archive_listing_is_safe, decode_remote_text, download_temporary_path,
     entry_kind, fast_delete_command, inspect_upload_paths, is_remote_descendant,
-    normalize_remote_operation_path, parse_identity_names, remote_archive_temporary_directory,
-    remote_text_backup_path, remote_text_temporary_path, remote_upload_temporary_path,
-    replace_remote_upload_file, validate_ai_file_operation_content, validate_archive_file_name,
-    AiSftpFileOperationKind, AiSftpFileOperationRequest, RemoteArchiveFormat, RemoteIdentityCache,
-    SftpCommand, SftpSessionManager, REMOTE_TEXT_MAX_BYTES,
+    normalize_remote_operation_path, owner_attributes, parse_identity_names,
+    remote_archive_temporary_directory, remote_text_backup_path, remote_text_temporary_path,
+    remote_upload_temporary_path, replace_remote_upload_file, validate_ai_file_operation_content,
+    validate_archive_file_name, AiSftpFileOperationKind, AiSftpFileOperationRequest,
+    RemoteArchiveFormat, RemoteIdentityCache, SftpCommand, SftpSessionManager,
+    REMOTE_TEXT_MAX_BYTES,
 };
 // 仅 Unix 平台的替换测试会用到，加在分组导入里会让 Windows 构建报未使用导入。
 #[cfg(unix)]
 use super::replace_download_file;
 use crate::remote_shell::shell_quote;
 use crate::ssh::{connect_authenticated_session, SshAuthConfig, SshAuthMethod};
+
+#[test]
+fn changing_one_owner_half_keeps_the_other() {
+    let current = FileStat {
+        size: Some(1),
+        uid: Some(1001),
+        gid: Some(1002),
+        perm: Some(0o100644),
+        atime: None,
+        mtime: None,
+    };
+
+    let group_only = owner_attributes(&current, None, Some(33)).unwrap();
+    assert_eq!((group_only.uid, group_only.gid), (Some(1001), Some(33)));
+    let user_only = owner_attributes(&current, Some(0), None).unwrap();
+    assert_eq!((user_only.uid, user_only.gid), (Some(0), Some(1002)));
+    // Only ownership is sent; size, mode and times stay untouched.
+    assert_eq!((group_only.size, group_only.perm), (None, None));
+
+    let unknown = FileStat {
+        uid: None,
+        gid: None,
+        ..current
+    };
+    assert!(owner_attributes(&unknown, None, Some(33)).is_err());
+    assert!(owner_attributes(&unknown, Some(1001), Some(33)).is_ok());
+}
 
 fn test_auth() -> SshAuthConfig {
     SshAuthConfig {

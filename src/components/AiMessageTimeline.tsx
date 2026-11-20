@@ -38,6 +38,7 @@ import {
 } from "../ai-presets";
 import type { AiToolRun } from "../ai-tools";
 import type { AiMessage } from "../hooks/useAiConversations";
+import { openApplicationUrl } from "../app-updater";
 import { commandErrorMessage } from "../tauri-protocol";
 import AiCommandProposalList from "./AiCommandProposalList";
 import AiDiagnosticPlanList from "./AiDiagnosticPlanList";
@@ -354,6 +355,30 @@ const AiMarkdown = memo(
     return (
     <ReactMarkdown
       components={{
+        // Answers can echo text from logs and files the model was asked to
+        // read. A link must never navigate this window, and it only opens in
+        // the system browser when the user clicks it.
+        a: ({ children: linkChildren, href }) => (
+          <a
+            href={href}
+            onClick={(event) => {
+              event.preventDefault();
+              if (href && /^https?:\/\//i.test(href)) {
+                void openApplicationUrl(href);
+              }
+            }}
+            title={href}
+          >
+            {linkChildren}
+          </a>
+        ),
+        // Loading a remote image sends a request without any click, which
+        // would let injected text smuggle data out in the image address.
+        img: ({ alt, src }) => (
+          <span className="ai-markdown-image-placeholder" title={src}>
+            [图片未加载{alt ? `：${alt}` : ""}]
+          </span>
+        ),
         pre: ({ children: codeNode }) => {
           const command = textContent(codeNode).trim();
           const language = codeLanguage(codeNode);

